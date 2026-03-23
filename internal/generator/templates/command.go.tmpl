@@ -13,7 +13,7 @@ var _ = strings.ReplaceAll // ensure import
 func new{{title .ResourceName}}Cmd(flags *rootFlags) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "{{.ResourceName}}",
-		Short: "{{.Resource.Description}}",
+		Short: "{{oneline .Resource.Description}}",
 	}
 {{range $eName, $endpoint := .Resource.Endpoints}}
 	cmd.AddCommand(new{{title $.ResourceName}}{{title $eName}}Cmd(flags))
@@ -33,7 +33,7 @@ func new{{title $.ResourceName}}{{title $eName}}Cmd(flags *rootFlags) *cobra.Com
 
 	cmd := &cobra.Command{
 		Use:   "{{$eName}}{{positionalArgs $endpoint}}",
-		Short: "{{$endpoint.Description}}",
+		Short: "{{oneline $endpoint.Description}}",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			c, err := flags.newClient()
 			if err != nil {
@@ -94,14 +94,14 @@ func new{{title $.ResourceName}}{{title $eName}}Cmd(flags *rootFlags) *cobra.Com
 
 {{- range $endpoint.Params}}
 {{- if not .Positional}}
-	cmd.Flags().{{cobraFlagFunc .Type}}(&flag{{camel .Name}}, "{{.Name}}", {{defaultVal .}}, "{{.Description}}")
+	cmd.Flags().{{cobraFlagFunc .Type}}(&flag{{camel .Name}}, "{{.Name}}", {{defaultVal .}}, "{{oneline .Description}}")
 {{- if .Required}}
 	_ = cmd.MarkFlagRequired("{{.Name}}")
 {{- end}}
 {{- end}}
 {{- end}}
 {{- range $endpoint.Body}}
-	cmd.Flags().{{cobraFlagFunc .Type}}(&body{{camel .Name}}, "{{.Name}}", {{defaultVal .}}, "{{.Description}}")
+	cmd.Flags().{{cobraFlagFunc .Type}}(&body{{camel .Name}}, "{{.Name}}", {{defaultVal .}}, "{{oneline .Description}}")
 {{- if .Required}}
 	_ = cmd.MarkFlagRequired("{{.Name}}")
 {{- end}}

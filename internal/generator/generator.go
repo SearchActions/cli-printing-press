@@ -38,6 +38,7 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 		"envVarField":      envVarField,
 		"envVarPlaceholder": envVarPlaceholder,
 		"add":              func(a, b int) int { return a + b },
+		"oneline":          oneline,
 	}
 	return g
 }
@@ -247,6 +248,22 @@ func envVarField(envVar string) string {
 		}
 	}
 	return result
+}
+
+func oneline(s string) string {
+	s = strings.ReplaceAll(s, "\r\n", " ")
+	s = strings.ReplaceAll(s, "\n", " ")
+	s = strings.ReplaceAll(s, "\r", " ")
+	s = strings.ReplaceAll(s, `"`, `'`)
+	s = strings.ReplaceAll(s, "\\", "")
+	for strings.Contains(s, "  ") {
+		s = strings.ReplaceAll(s, "  ", " ")
+	}
+	s = strings.TrimSpace(s)
+	if len(s) > 120 {
+		s = s[:117] + "..."
+	}
+	return s
 }
 
 func envVarPlaceholder(envVar string) string {
