@@ -1,0 +1,120 @@
+package spec
+
+import (
+	"fmt"
+	"os"
+
+	"gopkg.in/yaml.v3"
+)
+
+type APISpec struct {
+	Name        string              `yaml:"name"`
+	Description string              `yaml:"description"`
+	Version     string              `yaml:"version"`
+	BaseURL     string              `yaml:"base_url"`
+	Auth        AuthConfig          `yaml:"auth"`
+	Config      ConfigSpec          `yaml:"config"`
+	Resources   map[string]Resource `yaml:"resources"`
+	Types       map[string]TypeDef  `yaml:"types"`
+}
+
+type AuthConfig struct {
+	Type    string   `yaml:"type"` // api_key, oauth2, bearer_token, none
+	Header  string   `yaml:"header"`
+	Format  string   `yaml:"format"`
+	EnvVars []string `yaml:"env_vars"`
+}
+
+type ConfigSpec struct {
+	Format string `yaml:"format"` // toml, yaml
+	Path   string `yaml:"path"`
+}
+
+type Resource struct {
+	Description string               `yaml:"description"`
+	Endpoints   map[string]Endpoint  `yaml:"endpoints"`
+}
+
+type Endpoint struct {
+	Method      string      `yaml:"method"`
+	Path        string      `yaml:"path"`
+	Description string      `yaml:"description"`
+	Params      []Param     `yaml:"params"`
+	Body        []Param     `yaml:"body"`
+	Response    ResponseDef `yaml:"response"`
+	Pagination  *Pagination `yaml:"pagination"`
+}
+
+type Param struct {
+	Name        string  `yaml:"name"`
+	Type        string  `yaml:"type"`
+	Required    bool    `yaml:"required"`
+	Positional  bool    `yaml:"positional"`
+	Default     any     `yaml:"default"`
+	Description string  `yaml:"description"`
+	Fields      []Param `yaml:"fields"` // for nested objects
+}
+
+type ResponseDef struct {
+	Type string `yaml:"type"` // object, array
+	Item string `yaml:"item"` // type name
+}
+
+type Pagination struct {
+	Type         string `yaml:"type"`          // cursor, offset, page_token
+	CursorField  string `yaml:"cursor_field"`
+	HasMoreField string `yaml:"has_more_field"`
+}
+
+type TypeDef struct {
+	Fields []TypeField `yaml:"fields"`
+}
+
+type TypeField struct {
+	Name string `yaml:"name"`
+	Type string `yaml:"type"`
+}
+
+func Parse(path string) (*APISpec, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("reading file: %w", err)
+	}
+
+	var s APISpec
+	if err := yaml.Unmarshal(data, &s); err != nil {
+		return nil, fmt.Errorf("parsing yaml: %w", err)
+	}
+
+	if err := s.Validate(); err != nil {
+		return nil, fmt.Errorf("validation: %w", err)
+	}
+
+	return &s, nil
+}
+
+func (s *APISpec) Validate() error {
+	if s.Name == "" {
+		return fmt.Errorf("name is required")
+	}
+	if s.BaseURL == "" {
+		return fmt.Errorf("base_url is required")
+	}
+	if len(s.Resources) == 0 {
+		return fmt.Errorf("at least one resource is required")
+	}
+	for name, r := range s.Resources {
+		if len(r.Endpoints) == 0 {
+			return fmt.Errorf("resource %q has no endpoints", name)
+		}
+		for eName, e := range r.Endpoints {
+			if e.Method == "" {
+				return fmt.Errorf("resource %q endpoint %q: method is required", name, eName)
+			}
+			if e.Path == "" {
+				return fmt.Errorf("resource %q endpoint %q: path is required", name, eName)
+			}
+		}
+	}
+	return nil
+}
