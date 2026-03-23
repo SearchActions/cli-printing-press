@@ -31,6 +31,7 @@ func Execute() error {
 func newGenerateCmd() *cobra.Command {
 	var specFile string
 	var outputDir string
+	var validate bool
 
 	cmd := &cobra.Command{
 		Use:   "generate",
@@ -58,6 +59,11 @@ func newGenerateCmd() *cobra.Command {
 			if err := gen.Generate(); err != nil {
 				return fmt.Errorf("generating project: %w", err)
 			}
+			if validate {
+				if err := gen.Validate(); err != nil {
+					return fmt.Errorf("validating generated project: %w", err)
+				}
+			}
 
 			fmt.Fprintf(os.Stderr, "Generated %s-cli at %s\n", apiSpec.Name, absOut)
 			return nil
@@ -66,6 +72,7 @@ func newGenerateCmd() *cobra.Command {
 
 	cmd.Flags().StringVar(&specFile, "spec", "", "Path to API spec YAML file (required)")
 	cmd.Flags().StringVar(&outputDir, "output", "", "Output directory (default: <name>-cli)")
+	cmd.Flags().BoolVar(&validate, "validate", true, "Run quality gates on the generated project")
 
 	return cmd
 }

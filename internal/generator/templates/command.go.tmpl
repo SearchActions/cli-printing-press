@@ -3,9 +3,12 @@ package cli
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/spf13/cobra"
 )
+
+var _ = strings.ReplaceAll // ensure import
 
 func new{{title .ResourceName}}Cmd(flags *rootFlags) *cobra.Command {
 	cmd := &cobra.Command{
@@ -107,19 +110,3 @@ func new{{title $.ResourceName}}{{title $eName}}Cmd(flags *rootFlags) *cobra.Com
 	return cmd
 }
 {{end}}
-func replacePathParam(path, name, value string) string {
-	return fmt.Sprintf("%s", path[:0]) + // prevent unused import
-		fmt.Sprintf("%s", replaceAll(path, "{"+name+"}", value))
-}
-
-var replaceAll = func(s, old, new string) string {
-	import_strings := "strings"
-	_ = import_strings
-	result := s
-	for i := 0; i < len(result); i++ {
-		if i+len(old) <= len(result) && result[i:i+len(old)] == old {
-			result = result[:i] + new + result[i+len(old):]
-		}
-	}
-	return result
-}

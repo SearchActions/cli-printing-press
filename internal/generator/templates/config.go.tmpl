@@ -12,12 +12,12 @@ import (
 )
 
 type Config struct {
-	BaseURL    string `{{configTag .Config.Format}} :"base_url"`
-	AuthHeader string `{{configTag .Config.Format}} :"auth_header"`
-	AuthSource string `{{configTag .Config.Format}} :"-"`
-	Path       string `{{configTag .Config.Format}} :"-"`
+	BaseURL        string `{{configTag .Config.Format}}:"base_url"`
+	AuthHeaderVal  string `{{configTag .Config.Format}}:"auth_header"`
+	AuthSource     string `{{configTag .Config.Format}}:"-"`
+	Path           string `{{configTag .Config.Format}}:"-"`
 {{- range .Auth.EnvVars}}
-	{{envVarField .}} string `{{configTag $.Config.Format}} :"{{snake .}}"`
+	{{envVarField .}} string `{{configTag $.Config.Format}}:"{{envVarPlaceholder .}}"`
 {{- end}}
 }
 
@@ -59,8 +59,8 @@ func Load(configPath string) (*Config, error) {
 }
 
 func (c *Config) AuthHeader() string {
-	if c.AuthHeader != "" {
-		return c.AuthHeader
+	if c.AuthHeaderVal != "" {
+		return c.AuthHeaderVal
 	}
 {{- if eq .Auth.Type "api_key"}}
 	format := "{{.Auth.Format}}"

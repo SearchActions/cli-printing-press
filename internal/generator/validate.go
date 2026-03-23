@@ -1,0 +1,123 @@
+package generator
+
+import (
+	"bytes"
+	"context"
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"time"
+)
+
+type validationGate struct {
+	name string
+	run  func() error
+}
+
+func (g *Generator) Validate() error {
+	binPath := filepath.Join(g.OutputDir, g.Spec.Name+"-cli-validation")
+
+	gates := []validationGate{
+		{
+			name: "go mod tidy",
+			run: func() error {
+				_, err := runCommand(g.OutputDir, 2*time.Minute, "go", "mod", "tidy")
+				return err
+			},
+		},
+		{
+			name: "go vet ./...",
+			run: func() error {
+				_, err := runCommand(g.OutputDir, 2*time.Minute, "go", "vet", "./...")
+				return err
+			},
+		},
+		{
+			name: "go build ./...",
+			run: func() error {
+				_, err := runCommand(g.OutputDir, 2*time.Minute, "go", "build", "./...")
+				return err
+			},
+		},
+		{
+			name: "build runnable binary",
+			run: func() error {
+				_, err := runCommand(g.OutputDir, 2*time.Minute, "go", "build", "-o", binPath, "./cmd/"+g.Spec.Name+"-cli")
+				return err
+			},
+		},
+		{
+			name: g.Spec.Name + "-cli --help",
+			run: func() error {
+				return validateCommandOutput(g.OutputDir, 15*time.Second, binPath, "--help")
+			},
+		},
+		{
+			name: g.Spec.Name + "-cli version",
+			run: func() error {
+				return validateCommandOutput(g.OutputDir, 15*time.Second, binPath, "version")
+			},
+		},
+		{
+			name: g.Spec.Name + "-cli doctor",
+			run: func() error {
+				return validateCommandOutput(g.OutputDir, 15*time.Second, binPath, "doctor")
+			},
+		},
+	}
+
+	for _, gate := range gates {
+		if err := gate.run(); err != nil {
+			fmt.Fprintf(os.Stderr, "FAIL %s\n", gate.name)
+			return fmt.Errorf("gate %q failed: %w", gate.name, err)
+		}
+		fmt.Fprintf(os.Stderr, "PASS %s\n", gate.name)
+	}
+
+	return nil
+}
+
+func validateCommandOutput(dir string, timeout time.Duration, name string, args ...string) error {
+	output, err := runCommand(dir, timeout, name, args...)
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(output) == "" {
+		return fmt.Errorf("%s produced no output", strings.Join(append([]string{name}, args...), " "))
+	}
+	return nil
+}
+
+func runCommand(dir string, timeout time.Duration, name string, args ...string) (string, error) {
+	ctx := context.Background()
+	if timeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, timeout)
+		defer cancel()
+	}
+
+	cmd := exec.CommandContext(ctx, name, args...)
+	cmd.Dir = dir
+	cmd.Env = append(os.Environ(), "GOCACHE="+filepath.Join(dir, ".cache", "go-build"))
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	err := cmd.Run()
+	output := strings.TrimSpace(strings.Join([]string{stdout.String(), stderr.String()}, "\n"))
+	if err != nil {
+		if ctx.Err() == context.DeadlineExceeded {
+			err = fmt.Errorf("timed out after %s", timeout)
+		}
+		if output == "" {
+			return "", err
+		}
+		return output, fmt.Errorf("%w\n%s", err, output)
+	}
+
+	return output, nil
+}
