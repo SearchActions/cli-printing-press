@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 
 	"github.com/mvanhorn/cli-printing-press/internal/generator"
+	"github.com/mvanhorn/cli-printing-press/internal/openapi"
 	"github.com/mvanhorn/cli-printing-press/internal/spec"
 	"github.com/spf13/cobra"
 )
@@ -41,7 +42,17 @@ func newGenerateCmd() *cobra.Command {
 				return fmt.Errorf("--spec is required")
 			}
 
-			apiSpec, err := spec.Parse(specFile)
+			data, err := os.ReadFile(specFile)
+			if err != nil {
+				return fmt.Errorf("reading spec file: %w", err)
+			}
+
+			var apiSpec *spec.APISpec
+			if openapi.IsOpenAPI(data) {
+				apiSpec, err = openapi.Parse(data)
+			} else {
+				apiSpec, err = spec.ParseBytes(data)
+			}
 			if err != nil {
 				return fmt.Errorf("parsing spec: %w", err)
 			}
@@ -70,7 +81,7 @@ func newGenerateCmd() *cobra.Command {
 		},
 	}
 
-	cmd.Flags().StringVar(&specFile, "spec", "", "Path to API spec YAML file (required)")
+	cmd.Flags().StringVar(&specFile, "spec", "", "Path to API spec (internal YAML or OpenAPI 3.0+)")
 	cmd.Flags().StringVar(&outputDir, "output", "", "Output directory (default: <name>-cli)")
 	cmd.Flags().BoolVar(&validate, "validate", true, "Run quality gates on the generated project")
 
