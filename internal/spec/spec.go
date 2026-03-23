@@ -23,6 +23,8 @@ type AuthConfig struct {
 	Header  string   `yaml:"header"`
 	Format  string   `yaml:"format"`
 	EnvVars []string `yaml:"env_vars"`
+	Scheme  string   `yaml:"scheme,omitempty"` // OpenAPI security scheme name
+	In      string   `yaml:"in,omitempty"`     // header, query, cookie
 }
 
 type ConfigSpec struct {
@@ -31,28 +33,31 @@ type ConfigSpec struct {
 }
 
 type Resource struct {
-	Description string               `yaml:"description"`
-	Endpoints   map[string]Endpoint  `yaml:"endpoints"`
+	Description string              `yaml:"description"`
+	Endpoints   map[string]Endpoint `yaml:"endpoints"`
 }
 
 type Endpoint struct {
-	Method      string      `yaml:"method"`
-	Path        string      `yaml:"path"`
-	Description string      `yaml:"description"`
-	Params      []Param     `yaml:"params"`
-	Body        []Param     `yaml:"body"`
-	Response    ResponseDef `yaml:"response"`
-	Pagination  *Pagination `yaml:"pagination"`
+	Method       string      `yaml:"method"`
+	Path         string      `yaml:"path"`
+	Description  string      `yaml:"description"`
+	Params       []Param     `yaml:"params"`
+	Body         []Param     `yaml:"body"`
+	Response     ResponseDef `yaml:"response"`
+	Pagination   *Pagination `yaml:"pagination"`
+	ResponsePath string      `yaml:"response_path,omitempty"` // path to extract data array from response (e.g., "data", "results.items")
 }
 
 type Param struct {
-	Name        string  `yaml:"name"`
-	Type        string  `yaml:"type"`
-	Required    bool    `yaml:"required"`
-	Positional  bool    `yaml:"positional"`
-	Default     any     `yaml:"default"`
-	Description string  `yaml:"description"`
-	Fields      []Param `yaml:"fields"` // for nested objects
+	Name        string   `yaml:"name"`
+	Type        string   `yaml:"type"`
+	Required    bool     `yaml:"required"`
+	Positional  bool     `yaml:"positional"`
+	Default     any      `yaml:"default"`
+	Description string   `yaml:"description"`
+	Fields      []Param  `yaml:"fields"`           // for nested objects
+	Enum        []string `yaml:"enum,omitempty"`   // enum constraints for the parameter
+	Format      string   `yaml:"format,omitempty"` // OpenAPI format hints (date-time, email, uri, etc.)
 }
 
 type ResponseDef struct {
@@ -61,7 +66,7 @@ type ResponseDef struct {
 }
 
 type Pagination struct {
-	Type         string `yaml:"type"`          // cursor, offset, page_token
+	Type         string `yaml:"type"` // cursor, offset, page_token
 	CursorField  string `yaml:"cursor_field"`
 	HasMoreField string `yaml:"has_more_field"`
 }
@@ -81,15 +86,17 @@ func Parse(path string) (*APISpec, error) {
 		return nil, fmt.Errorf("reading file: %w", err)
 	}
 
+	return ParseBytes(data)
+}
+
+func ParseBytes(data []byte) (*APISpec, error) {
 	var s APISpec
 	if err := yaml.Unmarshal(data, &s); err != nil {
 		return nil, fmt.Errorf("parsing yaml: %w", err)
 	}
-
 	if err := s.Validate(); err != nil {
 		return nil, fmt.Errorf("validation: %w", err)
 	}
-
 	return &s, nil
 }
 

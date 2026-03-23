@@ -85,3 +85,44 @@ func TestValidation(t *testing.T) {
 		})
 	}
 }
+
+func TestNewFields(t *testing.T) {
+	s := APISpec{
+		Name:    "x",
+		BaseURL: "http://x",
+		Auth: AuthConfig{
+			Type:    "api_key",
+			Scheme:  "ApiKeyAuth",
+			In:      "header",
+			EnvVars: []string{"API_KEY"},
+		},
+		Resources: map[string]Resource{
+			"users": {
+				Endpoints: map[string]Endpoint{
+					"list": {
+						Method:       "GET",
+						Path:         "/users",
+						ResponsePath: "results.items",
+						Params: []Param{
+							{
+								Name:   "status",
+								Type:   "string",
+								Enum:   []string{"active", "inactive"},
+								Format: "email",
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	require.NoError(t, s.Validate())
+
+	endpoint := s.Resources["users"].Endpoints["list"]
+	assert.Equal(t, "results.items", endpoint.ResponsePath)
+	assert.Equal(t, []string{"active", "inactive"}, endpoint.Params[0].Enum)
+	assert.Equal(t, "email", endpoint.Params[0].Format)
+	assert.Equal(t, "ApiKeyAuth", s.Auth.Scheme)
+	assert.Equal(t, "header", s.Auth.In)
+}
