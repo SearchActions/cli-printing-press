@@ -1,0 +1,7 @@
+{
+  "name": "cli-printing-press",
+  "version": "0.4.0",
+  "description": "Generate production Go CLIs from API descriptions or OpenAPI specs",
+  "repository": "mvanhorn/cli-printing-press",
+  "skills": ["printing-press", "printing-press-catalog"]
+}

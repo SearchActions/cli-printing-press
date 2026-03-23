@@ -1,0 +1,24 @@
+{
+  "plugins": [
+    {
+      "name": "cli-printing-press",
+      "version": "0.4.0",
+      "description": "Describe your API. Get a production CLI. Generates Go CLI tools from OpenAPI specs or natural language descriptions.",
+      "author": "mvanhorn",
+      "repository": "mvanhorn/cli-printing-press",
+      "tags": ["cli", "codegen", "openapi", "go", "api"],
+      "skills": [
+        {
+          "name": "printing-press",
+          "command": "/printing-press",
+          "description": "Generate a CLI from an API name or spec file"
+        },
+        {
+          "name": "printing-press-catalog",
+          "command": "/printing-press-catalog",
+          "description": "Browse and install pre-built CLIs for popular APIs"
+        }
+      ]
+    }
+  ]
+}
