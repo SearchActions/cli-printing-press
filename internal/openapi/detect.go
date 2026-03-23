@@ -11,5 +11,8 @@ func IsOpenAPI(data []byte) bool {
 	}
 
 	content := strings.ToLower(string(data))
-	return strings.Contains(content, "openapi:") || strings.Contains(content, "\"openapi\"")
+	return strings.Contains(content, "openapi:") ||
+		strings.Contains(content, "\"openapi\"") ||
+		strings.Contains(content, "swagger:") ||
+		strings.Contains(content, "\"swagger\"")
 }

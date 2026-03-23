@@ -69,6 +69,13 @@ info:
 paths: {}
 `)
 	openAPIJSON := []byte(`{"openapi":"3.0.1","info":{"title":"Demo","version":"1.0.0"},"paths":{}}`)
+	swagger20YAML := []byte(`swagger: "2.0"
+info:
+  title: Demo
+  version: 1.0.0
+paths: {}
+`)
+	swagger20JSON := []byte(`{"swagger":"2.0","info":{"title":"Demo","version":"1.0.0"},"paths":{}}`)
 	internalYAML := []byte(`
 name: demo
 base_url: https://api.example.com
@@ -82,6 +89,8 @@ resources:
 
 	assert.True(t, IsOpenAPI(openAPIYAML))
 	assert.True(t, IsOpenAPI(openAPIJSON))
+	assert.True(t, IsOpenAPI(swagger20YAML))
+	assert.True(t, IsOpenAPI(swagger20JSON))
 	assert.False(t, IsOpenAPI(internalYAML))
 }
 
@@ -130,4 +139,28 @@ func runGo(t *testing.T, dir string, args ...string) {
 	cmd.Env = append(os.Environ(), "GOCACHE="+filepath.Join(dir, ".cache", "go-build"))
 	output, err := cmd.CombinedOutput()
 	require.NoError(t, err, string(output))
+}
+
+func TestSanitizeResourceName(t *testing.T) {
+	tests := []struct {
+		input string
+		want  string
+	}{
+		{"users", "users"},
+		{"user-accounts", "user_accounts"},
+		{"../../../etc/passwd", "etc_passwd"},
+		{"foo/bar", "foo_bar"},
+		{"foo\\bar", "foo_bar"},
+		{"..", ""},
+		{".", ""},
+		{"___", ""},
+		{"normal_name", "normal_name"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			got := sanitizeResourceName(toSnakeCase(tt.input))
+			assert.Equal(t, tt.want, got)
+		})
+	}
 }

@@ -836,7 +836,7 @@ func resourceNameFromPath(path, basePath string) string {
 	if isPathParamSegment(segments[0]) {
 		return ""
 	}
-	return toSnakeCase(segments[0])
+	return sanitizeResourceName(toSnakeCase(segments[0]))
 }
 
 func endpointCollisionSuffix(path, resourceName, basePath string) string {
@@ -960,6 +960,17 @@ func toSnakeCase(input string) string {
 	}
 
 	return strings.Trim(b.String(), "_")
+}
+
+func sanitizeResourceName(name string) string {
+	name = strings.ReplaceAll(name, ".", "")
+	name = strings.ReplaceAll(name, "/", "")
+	name = strings.ReplaceAll(name, "\\", "")
+	name = strings.Trim(name, "_")
+	if name == "" {
+		return ""
+	}
+	return name
 }
 
 func toKebabCase(input string) string {
