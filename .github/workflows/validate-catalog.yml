@@ -1,0 +1,70 @@
+name: Validate Catalog
+
+on:
+  pull_request:
+    paths:
+      - 'catalog/**'
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+
+      - name: Build printing-press
+        run: go build -o ./printing-press ./cmd/printing-press
+
+      - name: Validate catalog schemas
+        run: go test ./internal/catalog/... -v
+
+      - name: Validate changed catalog entries
+        run: |
+          for file in $(git diff --name-only --diff-filter=ACMR origin/${{ github.base_ref }}...HEAD -- 'catalog/*.yaml'); do
+            echo "=== Validating $file ==="
+
+            # Extract spec_url
+            SPEC_URL=$(grep 'spec_url:' "$file" | sed 's/spec_url: *//')
+
+            # Verify HTTPS
+            if [[ ! "$SPEC_URL" =~ ^https:// ]]; then
+              echo "FAIL: spec_url must use HTTPS: $SPEC_URL"
+              exit 1
+            fi
+
+            # Verify URL is accessible
+            HTTP_STATUS=$(curl -sL -o /dev/null -w '%{http_code}' "$SPEC_URL")
+            if [[ "$HTTP_STATUS" != "200" ]]; then
+              echo "FAIL: spec_url returned HTTP $HTTP_STATUS: $SPEC_URL"
+              exit 1
+            fi
+
+            echo "PASS: URL accessible ($HTTP_STATUS)"
+
+            # Download and generate
+            curl -sL -o /tmp/spec-validate.yaml "$SPEC_URL"
+            NAME=$(grep 'name:' "$file" | head -1 | sed 's/name: *//')
+
+            ./printing-press generate \
+              --spec /tmp/spec-validate.yaml \
+              --output /tmp/${NAME}-cli \
+              --validate
+
+            echo "PASS: Generated CLI compiles"
+            rm -rf /tmp/${NAME}-cli /tmp/spec-validate.yaml
+          done
+
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+
+      - name: Run all tests
+        run: go test ./...
