@@ -1,0 +1,8 @@
+package types
+{{range $name, $typeDef := .Types}}
+type {{$name}} struct {
+{{- range $typeDef.Fields}}
+	{{title .Name}} {{goType .Type}} `json:"{{.Name}}"`
+{{- end}}
+}
+{{end}}

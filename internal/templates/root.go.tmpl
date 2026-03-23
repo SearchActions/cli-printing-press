@@ -1,0 +1,108 @@
+package cli
+
+import (
+	"encoding/json"
+	"fmt"
+	"os"
+	"text/tabwriter"
+	"time"
+
+	"github.com/USER/{{.Name}}-cli/internal/client"
+	"github.com/USER/{{.Name}}-cli/internal/config"
+	"github.com/spf13/cobra"
+)
+
+var version = "{{.Version}}"
+
+type rootFlags struct {
+	asJSON     bool
+	plain      bool
+	quiet      bool
+	configPath string
+	timeout    time.Duration
+}
+
+func Execute() error {
+	var flags rootFlags
+
+	rootCmd := &cobra.Command{
+		Use:           "{{.Name}}-cli",
+		Short:         "{{.Description}}",
+		SilenceUsage:  true,
+		SilenceErrors: true,
+		Version:       version,
+	}
+	rootCmd.SetVersionTemplate("{{.Name}}-cli {{"{{"}} .Version {{"}}"}}\n")
+
+	rootCmd.PersistentFlags().BoolVar(&flags.asJSON, "json", false, "Output as JSON")
+	rootCmd.PersistentFlags().BoolVar(&flags.plain, "plain", false, "Output as plain tab-separated text")
+	rootCmd.PersistentFlags().BoolVar(&flags.quiet, "quiet", false, "Bare output, one value per line")
+	rootCmd.PersistentFlags().StringVar(&flags.configPath, "config", "", "Config file path")
+	rootCmd.PersistentFlags().DurationVar(&flags.timeout, "timeout", 30*time.Second, "Request timeout")
+
+{{- range $name, $resource := .Resources}}
+	rootCmd.AddCommand(new{{title $name}}Cmd(&flags))
+{{- end}}
+	rootCmd.AddCommand(newDoctorCmd(&flags))
+	rootCmd.AddCommand(newVersionCliCmd())
+
+	return rootCmd.Execute()
+}
+
+func ExitCode(err error) int {
+	var codeErr *cliError
+	if As(err, &codeErr) {
+		return codeErr.code
+	}
+	return 1
+}
+
+func (f *rootFlags) newClient() (*client.Client, error) {
+	cfg, err := config.Load(f.configPath)
+	if err != nil {
+		return nil, configErr(err)
+	}
+	return client.New(cfg.BaseURL, cfg.AuthHeader(), f.timeout), nil
+}
+
+func (f *rootFlags) printJSON(w *cobra.Command, v any) error {
+	enc := json.NewEncoder(w.OutOrStdout())
+	enc.SetIndent("", "  ")
+	return enc.Encode(v)
+}
+
+func (f *rootFlags) printTable(w *cobra.Command, headers []string, rows [][]string) error {
+	if f.asJSON {
+		return fmt.Errorf("use printJSON for JSON output")
+	}
+	tw := tabwriter.NewWriter(w.OutOrStdout(), 2, 4, 2, ' ', 0)
+	header := ""
+	for i, h := range headers {
+		if i > 0 {
+			header += "\t"
+		}
+		header += h
+	}
+	fmt.Fprintln(tw, header)
+	for _, row := range rows {
+		line := ""
+		for i, cell := range row {
+			if i > 0 {
+				line += "\t"
+			}
+			line += cell
+		}
+		fmt.Fprintln(tw, line)
+	}
+	return tw.Flush()
+}
+
+func newVersionCliCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "version",
+		Short: "Print version",
+		Run: func(cmd *cobra.Command, args []string) {
+			fmt.Printf("{{.Name}}-cli %s\n", version)
+		},
+	}
+}

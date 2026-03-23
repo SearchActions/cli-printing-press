@@ -1,0 +1,101 @@
+package client
+
+import (
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"strings"
+	"time"
+)
+
+type Client struct {
+	BaseURL    string
+	AuthHeader string
+	HTTPClient *http.Client
+}
+
+func New(baseURL, authHeader string, timeout time.Duration) *Client {
+	return &Client{
+		BaseURL:    strings.TrimRight(baseURL, "/"),
+		AuthHeader: authHeader,
+		HTTPClient: &http.Client{Timeout: timeout},
+	}
+}
+
+func (c *Client) Get(path string, params map[string]string) (json.RawMessage, error) {
+	return c.do("GET", path, params, nil)
+}
+
+func (c *Client) Post(path string, body any) (json.RawMessage, error) {
+	return c.do("POST", path, nil, body)
+}
+
+func (c *Client) Delete(path string) (json.RawMessage, error) {
+	return c.do("DELETE", path, nil, nil)
+}
+
+func (c *Client) Put(path string, body any) (json.RawMessage, error) {
+	return c.do("PUT", path, nil, body)
+}
+
+func (c *Client) do(method, path string, params map[string]string, body any) (json.RawMessage, error) {
+	url := c.BaseURL + path
+
+	var bodyReader io.Reader
+	if body != nil {
+		b, err := json.Marshal(body)
+		if err != nil {
+			return nil, fmt.Errorf("marshaling body: %w", err)
+		}
+		bodyReader = strings.NewReader(string(b))
+	}
+
+	req, err := http.NewRequest(method, url, bodyReader)
+	if err != nil {
+		return nil, fmt.Errorf("creating request: %w", err)
+	}
+
+	if c.AuthHeader != "" {
+		req.Header.Set("Authorization", c.AuthHeader)
+	}
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	req.Header.Set("User-Agent", "{{.Name}}-cli/{{.Version}}")
+
+	if params != nil {
+		q := req.URL.Query()
+		for k, v := range params {
+			if v != "" {
+				q.Set(k, v)
+			}
+		}
+		req.URL.RawQuery = q.Encode()
+	}
+
+	resp, err := c.HTTPClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("%s %s: %w", method, path, err)
+	}
+	defer resp.Body.Close()
+
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("reading response: %w", err)
+	}
+
+	if resp.StatusCode >= 400 {
+		return nil, fmt.Errorf("%s %s returned HTTP %d: %s", method, path, resp.StatusCode, truncateBody(respBody))
+	}
+
+	return json.RawMessage(respBody), nil
+}
+
+func truncateBody(b []byte) string {
+	s := string(b)
+	if len(s) > 200 {
+		return s[:200] + "..."
+	}
+	return s
+}

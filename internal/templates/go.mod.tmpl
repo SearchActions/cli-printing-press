@@ -1,0 +1,10 @@
+module github.com/USER/{{.Name}}-cli
+
+go 1.23
+
+require (
+	github.com/spf13/cobra v1.9.1
+{{- if eq .Config.Format "toml"}}
+	github.com/pelletier/go-toml/v2 v2.2.4
+{{- end}}
+)

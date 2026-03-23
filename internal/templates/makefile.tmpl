@@ -1,0 +1,16 @@
+.PHONY: build test lint install clean
+
+build:
+	go build -o bin/{{.Name}}-cli ./cmd/{{.Name}}-cli
+
+test:
+	go test ./...
+
+lint:
+	golangci-lint run
+
+install:
+	go install ./cmd/{{.Name}}-cli
+
+clean:
+	rm -rf bin/

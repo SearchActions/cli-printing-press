@@ -1,0 +1,87 @@
+package config
+
+import (
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+{{- if eq .Config.Format "toml"}}
+
+	"github.com/pelletier/go-toml/v2"
+{{- end}}
+)
+
+type Config struct {
+	BaseURL    string `{{configTag .Config.Format}} :"base_url"`
+	AuthHeader string `{{configTag .Config.Format}} :"auth_header"`
+	AuthSource string `{{configTag .Config.Format}} :"-"`
+	Path       string `{{configTag .Config.Format}} :"-"`
+{{- range .Auth.EnvVars}}
+	{{envVarField .}} string `{{configTag $.Config.Format}} :"{{snake .}}"`
+{{- end}}
+}
+
+func Load(configPath string) (*Config, error) {
+	cfg := &Config{
+		BaseURL: "{{.BaseURL}}",
+	}
+
+	// Resolve config path
+	path := configPath
+	if path == "" {
+		path = os.Getenv("{{upper .Name}}_CONFIG")
+	}
+	if path == "" {
+		home, _ := os.UserHomeDir()
+		path = filepath.Join(home, ".config", "{{.Name}}-cli", "config.{{.Config.Format}}")
+	}
+	cfg.Path = path
+
+	// Try to load config file
+	data, err := os.ReadFile(path)
+	if err == nil {
+{{- if eq .Config.Format "toml"}}
+		if err := toml.Unmarshal(data, cfg); err != nil {
+			return nil, fmt.Errorf("parsing config %s: %w", path, err)
+		}
+{{- end}}
+	}
+
+	// Env var overrides
+{{- range .Auth.EnvVars}}
+	if v := os.Getenv("{{.}}"); v != "" {
+		cfg.{{envVarField .}} = v
+		cfg.AuthSource = "env:{{.}}"
+	}
+{{- end}}
+
+	return cfg, nil
+}
+
+func (c *Config) AuthHeader() string {
+	if c.AuthHeader != "" {
+		return c.AuthHeader
+	}
+{{- if eq .Auth.Type "api_key"}}
+	format := "{{.Auth.Format}}"
+{{- range .Auth.EnvVars}}
+	format = strings.ReplaceAll(format, "{ {{- envVarPlaceholder . -}} }", c.{{envVarField .}})
+{{- end}}
+	if strings.Contains(format, "{") {
+		return "" // not all vars resolved
+	}
+	return format
+{{- else if eq .Auth.Type "bearer_token"}}
+	{{- if gt (len .Auth.EnvVars) 0}}
+	if c.{{envVarField (index .Auth.EnvVars 0)}} != "" {
+		return "Bearer " + c.{{envVarField (index .Auth.EnvVars 0)}}
+	}
+	{{- end}}
+	return ""
+{{- else}}
+	return ""
+{{- end}}
+}
+
+// Ensure strings import is used
+var _ = strings.ReplaceAll

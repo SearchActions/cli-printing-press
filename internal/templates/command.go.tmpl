@@ -1,0 +1,125 @@
+package cli
+
+import (
+	"encoding/json"
+	"fmt"
+
+	"github.com/spf13/cobra"
+)
+
+func new{{title .ResourceName}}Cmd(flags *rootFlags) *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "{{.ResourceName}}",
+		Short: "{{.Resource.Description}}",
+	}
+{{range $eName, $endpoint := .Resource.Endpoints}}
+	cmd.AddCommand(new{{title $.ResourceName}}{{title $eName}}Cmd(flags))
+{{- end}}
+	return cmd
+}
+{{range $eName, $endpoint := .Resource.Endpoints}}
+func new{{title $.ResourceName}}{{title $eName}}Cmd(flags *rootFlags) *cobra.Command {
+{{- range $endpoint.Params}}
+{{- if not .Positional}}
+	var flag{{camel .Name}} {{goType .Type}}
+{{- end}}
+{{- end}}
+{{- range $endpoint.Body}}
+	var body{{camel .Name}} {{goType .Type}}
+{{- end}}
+
+	cmd := &cobra.Command{
+		Use:   "{{$eName}}{{positionalArgs $endpoint}}",
+		Short: "{{$endpoint.Description}}",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			c, err := flags.newClient()
+			if err != nil {
+				return err
+			}
+
+			path := "{{$endpoint.Path}}"
+{{- range $i, $p := $endpoint.Params}}
+{{- if .Positional}}
+			if len(args) < {{add $i 1}} {
+				return usageErr(fmt.Errorf("{{.Name}} is required"))
+			}
+			path = replacePathParam(path, "{{.Name}}", args[{{$i}}])
+{{- end}}
+{{- end}}
+
+{{- if eq $endpoint.Method "GET"}}
+			params := map[string]string{}
+{{- range $endpoint.Params}}
+{{- if not .Positional}}
+			if flag{{camel .Name}} != {{zeroVal .Type}} {
+				params["{{.Name}}"] = fmt.Sprintf("%v", flag{{camel .Name}})
+			}
+{{- end}}
+{{- end}}
+			data, err := c.Get(path, params)
+{{- else if eq $endpoint.Method "POST"}}
+			body := map[string]any{}
+{{- range $endpoint.Body}}
+			if body{{camel .Name}} != {{zeroVal .Type}} {
+				body["{{.Name}}"] = body{{camel .Name}}
+			}
+{{- end}}
+			data, err := c.Post(path, body)
+{{- else if eq $endpoint.Method "DELETE"}}
+			data, err := c.Delete(path)
+{{- else if eq $endpoint.Method "PUT"}}
+			body := map[string]any{}
+{{- range $endpoint.Body}}
+			if body{{camel .Name}} != {{zeroVal .Type}} {
+				body["{{.Name}}"] = body{{camel .Name}}
+			}
+{{- end}}
+			data, err := c.Put(path, body)
+{{- end}}
+			if err != nil {
+				return apiErr(err)
+			}
+
+			if flags.asJSON {
+				return flags.printJSON(cmd, json.RawMessage(data))
+			}
+
+			fmt.Fprintln(cmd.OutOrStdout(), string(data))
+			return nil
+		},
+	}
+
+{{- range $endpoint.Params}}
+{{- if not .Positional}}
+	cmd.Flags().{{cobraFlagFunc .Type}}(&flag{{camel .Name}}, "{{.Name}}", {{defaultVal .}}, "{{.Description}}")
+{{- if .Required}}
+	_ = cmd.MarkFlagRequired("{{.Name}}")
+{{- end}}
+{{- end}}
+{{- end}}
+{{- range $endpoint.Body}}
+	cmd.Flags().{{cobraFlagFunc .Type}}(&body{{camel .Name}}, "{{.Name}}", {{defaultVal .}}, "{{.Description}}")
+{{- if .Required}}
+	_ = cmd.MarkFlagRequired("{{.Name}}")
+{{- end}}
+{{- end}}
+
+	return cmd
+}
+{{end}}
+func replacePathParam(path, name, value string) string {
+	return fmt.Sprintf("%s", path[:0]) + // prevent unused import
+		fmt.Sprintf("%s", replaceAll(path, "{"+name+"}", value))
+}
+
+var replaceAll = func(s, old, new string) string {
+	import_strings := "strings"
+	_ = import_strings
+	result := s
+	for i := 0; i < len(result); i++ {
+		if i+len(old) <= len(result) && result[i:i+len(old)] == old {
+			result = result[:i] + new + result[i+len(old):]
+		}
+	}
+	return result
+}
