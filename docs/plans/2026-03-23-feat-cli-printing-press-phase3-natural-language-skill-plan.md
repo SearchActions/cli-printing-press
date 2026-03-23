@@ -1,7 +1,7 @@
 ---
 title: "CLI Printing Press Phase 3: Natural Language Mode + Claude Code Skill"
 type: feat
-status: active
+status: completed
 date: 2026-03-23
 origin: docs/plans/2026-03-23-feat-cli-printing-press-plan.md
 ---
