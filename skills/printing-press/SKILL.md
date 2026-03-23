@@ -152,6 +152,54 @@ When the user provides `--spec <url>`:
 2. Run `cd ~/cli-printing-press && ./printing-press generate --spec /tmp/printing-press-spec-$$.yaml [--output <dir>]`
 3. Present result (Step 7 above)
 
+### Workflow 3: Submit to Catalog
+
+When the user invokes `/printing-press submit <name>`:
+
+**Step 1: Gather metadata**
+Ask the user for:
+- API display name (e.g., "Stripe")
+- One-line description
+- Category (payments, auth, email, developer-tools, project-management, communication, crm, example)
+- Homepage URL
+- OpenAPI spec URL (if they used one)
+
+**Step 2: Create catalog entry**
+Write a YAML file to `~/cli-printing-press/catalog/<name>.yaml`:
+
+```yaml
+name: <name>
+display_name: <display_name>
+description: <description>
+category: <category>
+spec_url: <spec_url>
+spec_format: <yaml|json>
+openapi_version: "3.0"
+tier: community
+verified_date: "<today's date>"
+homepage: <homepage>
+notes: <any notes>
+```
+
+**Step 3: Open a PR**
+```bash
+cd ~/cli-printing-press
+git checkout -b catalog/<name>
+git add catalog/<name>.yaml
+git commit -m "feat(catalog): add <display_name> catalog entry"
+git push -u origin catalog/<name>
+gh pr create --title "feat(catalog): add <display_name>" --body "Adds catalog entry for <display_name> API.
+
+Spec URL: <spec_url>
+Category: <category>
+Tier: community
+
+Tested locally - generated CLI compiles and passes all quality gates."
+```
+
+**Step 4: Present the PR URL**
+Show the user the PR link and note that CI will validate the entry.
+
 ## Safety Gates
 
 - **Preview before generating**: Show the API name, base URL, and estimated resource count before running the generator
