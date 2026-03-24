@@ -1,8 +1,13 @@
 package cli
 
 import (
+	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
+	"sort"
 	"strings"
+	"text/tabwriter"
 )
 
 var As = errors.As
@@ -39,6 +44,110 @@ func firstNonEmpty(items ...string) string {
 	return ""
 }
 
+func newTabWriter(w io.Writer) *tabwriter.Writer {
+	return tabwriter.NewWriter(w, 2, 4, 2, ' ', 0)
+}
+
 func replacePathParam(path, name, value string) string {
 	return strings.ReplaceAll(path, "{"+name+"}", value)
+}
+
+// printOutput auto-detects arrays and renders as tables, or prints raw JSON for objects.
+func printOutput(w io.Writer, data json.RawMessage, asJSON bool) error {
+	if asJSON {
+		enc := json.NewEncoder(w)
+		enc.SetIndent("", "  ")
+		return enc.Encode(data)
+	}
+
+	// Try to detect if response is an array
+	var items []map[string]any
+	if err := json.Unmarshal(data, &items); err == nil && len(items) > 0 {
+		return printAutoTable(w, items)
+	}
+
+	// Single object - pretty print
+	var obj map[string]any
+	if err := json.Unmarshal(data, &obj); err == nil {
+		enc := json.NewEncoder(w)
+		enc.SetIndent("", "  ")
+		return enc.Encode(obj)
+	}
+
+	// Fallback: print raw
+	fmt.Fprintln(w, string(data))
+	return nil
+}
+
+func printAutoTable(w io.Writer, items []map[string]any) error {
+	if len(items) == 0 {
+		return nil
+	}
+
+	// Collect headers from first item, prioritize common fields
+	priority := []string{"id", "name", "username", "title", "status", "type", "email", "description"}
+	headerSet := map[string]struct{}{}
+	for k := range items[0] {
+		headerSet[k] = struct{}{}
+	}
+
+	var headers []string
+	for _, p := range priority {
+		if _, ok := headerSet[p]; ok {
+			headers = append(headers, p)
+			delete(headerSet, p)
+		}
+	}
+	// Add remaining headers sorted
+	var rest []string
+	for k := range headerSet {
+		rest = append(rest, k)
+	}
+	sort.Strings(rest)
+	headers = append(headers, rest...)
+
+	// Limit to 6 columns max for readability
+	if len(headers) > 6 {
+		headers = headers[:6]
+	}
+
+	// Build rows
+	rows := make([][]string, 0, len(items))
+	for _, item := range items {
+		row := make([]string, len(headers))
+		for i, h := range headers {
+			v := item[h]
+			switch val := v.(type) {
+			case string:
+				row[i] = truncate(val, 40)
+			case float64:
+				if val == float64(int64(val)) {
+					row[i] = fmt.Sprintf("%d", int64(val))
+				} else {
+					row[i] = fmt.Sprintf("%g", val)
+				}
+			case bool:
+				row[i] = fmt.Sprintf("%t", val)
+			case nil:
+				row[i] = ""
+			default:
+				b, _ := json.Marshal(val)
+				row[i] = truncate(string(b), 40)
+			}
+		}
+		rows = append(rows, row)
+	}
+
+	// Print with tab alignment using tabwriter
+	tw := newTabWriter(w)
+	upperHeaders := make([]string, len(headers))
+	for i, h := range headers {
+		upperHeaders[i] = strings.ToUpper(h)
+	}
+
+	fmt.Fprintln(tw, strings.Join(upperHeaders, "\t"))
+	for _, row := range rows {
+		fmt.Fprintln(tw, strings.Join(row, "\t"))
+	}
+	return tw.Flush()
 }

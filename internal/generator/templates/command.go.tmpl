@@ -1,16 +1,14 @@
 package cli
 
 import (
-{{- if .Resource.Endpoints}}
-	"encoding/json"
 	"fmt"
-{{- end}}
 	"strings"
 
 	"github.com/spf13/cobra"
 )
 
 var _ = strings.ReplaceAll // ensure import
+var _ = fmt.Sprintf        // ensure import
 
 func new{{camel .FuncPrefix}}Cmd(flags *rootFlags) *cobra.Command {
 	cmd := &cobra.Command{
@@ -97,12 +95,7 @@ func new{{camel $.FuncPrefix}}{{camel $eName}}Cmd(flags *rootFlags) *cobra.Comma
 				return apiErr(err)
 			}
 
-			if flags.asJSON {
-				return flags.printJSON(cmd, json.RawMessage(data))
-			}
-
-			fmt.Fprintln(cmd.OutOrStdout(), string(data))
-			return nil
+			return printOutput(cmd.OutOrStdout(), data, flags.asJSON)
 		},
 	}
 
