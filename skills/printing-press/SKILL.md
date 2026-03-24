@@ -1,16 +1,22 @@
 ---
 name: printing-press
-description: Generate production Go CLIs from API descriptions or OpenAPI specs. Say an API name and get a compiled CLI binary.
-version: 0.3.0
+description: Generate production Go CLIs from API descriptions or OpenAPI specs. Say an API name and get a compiled CLI binary. Supports autonomous multi-phase pipeline with plan-per-phase chaining.
+version: 0.4.0
 allowed-tools:
   - Bash
   - Read
   - Write
+  - Edit
   - Glob
   - Grep
   - WebFetch
   - WebSearch
   - AskUserQuestion
+  - Skill
+  - Agent
+  - CronCreate
+  - CronList
+  - CronDelete
 ---
 
 # /printing-press
@@ -200,6 +206,133 @@ Tested locally - generated CLI compiles and passes all quality gates."
 **Step 4: Present the PR URL**
 Show the user the PR link and note that CI will validate the entry.
 
+### Workflow 4: Autonomous Pipeline (print mode)
+
+When the user says "print <api-name>" or invokes `/printing-press print <api-name>`:
+
+This runs a multi-phase pipeline where each phase writes its own plan.md (via ce:plan), executes it (via ce:work), then chains to the next phase. Same pattern as osc-nightnight.
+
+**Step 1: Initialize pipeline**
+
+```bash
+cd ~/cli-printing-press && go build -o ./printing-press ./cmd/printing-press
+./printing-press print <api-name> [--output ./<api-name>-cli] [--force]
+```
+
+This creates `docs/plans/<api-name>-pipeline/` with 6 plan seed files and a state.json.
+
+If `--resume` and state.json exists, skip to Step 2 with existing state.
+
+**Step 2: Schedule heartbeat safety net**
+
+Immediately schedule a recovery cron in case this session dies:
+
+```
+CronCreate(
+  schedule: "in 45 minutes",
+  prompt: "/printing-press print <api-name> --resume"
+)
+```
+
+**Step 3: Phase execution loop**
+
+Read state.json to find the next incomplete phase.
+
+```
+PHASES = [preflight, scaffold, enrich, regenerate, review, ship]
+
+for each phase in PHASES:
+  if state.phases[phase].status == "completed":
+    continue  # already done
+
+  plan_path = state.phases[phase].plan_path
+
+  # Step 3a: Enhance the plan seed with ce:plan research
+  # The seed is a structured prompt. ce:plan expands it with
+  # parallel research agents, codebase analysis, and learnings.
+  if state.phases[phase].status == "planned":
+    Skill("compound-engineering:ce:plan", plan_path)
+    # ce:plan rewrites the plan with research. Update state.
+    state.phases[phase].status = "executing"
+    save state.json
+
+  # Step 3b: Execute the plan with ce:work
+  Skill("compound-engineering:ce:work", plan_path)
+
+  # Step 3c: Mark completed
+  state.phases[phase].status = "completed"
+  save state.json
+
+  # Step 3d: Chain to next phase (fresh context)
+  # After completing a phase, chain to get fresh context for the next one.
+  # This prevents context exhaustion on large APIs.
+  next_phase = next incomplete phase from state.json
+  if next_phase exists:
+    # Schedule chain: 30 seconds from now, fresh session
+    CronCreate(
+      schedule: "in 30 seconds",
+      prompt: "/printing-press print <api-name> --resume"
+    )
+    # End this session. Fresh context picks up at next phase.
+    print "[<phase>] Complete. Chaining to [<next_phase>] in 30s..."
+    return
+```
+
+**Step 4: Budget gate (between phases)**
+
+Before chaining to the next phase, check elapsed time:
+
+```bash
+python3 -c "
+import json, datetime
+s = json.load(open('docs/plans/<api-name>-pipeline/state.json'))
+started = datetime.datetime.fromisoformat(s['started_at'])
+elapsed = (datetime.datetime.now(datetime.timezone.utc) - started).total_seconds() / 3600
+if elapsed > 3:
+    print('STOP: 3-hour budget exceeded')
+else:
+    print('CONTINUE')
+"
+```
+
+If STOP: write a partial morning report and end. Do not chain.
+
+**Step 5: Morning report**
+
+After all phases complete (or budget exceeded), write `docs/plans/<api-name>-pipeline/report.md`:
+
+- API name and spec source
+- Resources and endpoint count
+- Quality score from review phase
+- Enrichments applied (from overlay.yaml)
+- Time per phase
+- Next steps for the human
+
+Print the report to the user.
+
+**Resume logic:**
+
+When invoked with `--resume`:
+1. Load state.json
+2. Run budget gate FIRST (before any work)
+3. If CONTINUE: find next incomplete phase, go to Step 3
+4. If STOP: write morning report
+
+**Error handling:**
+
+- If ce:plan fails: log error, mark phase as failed, skip to next phase
+- If ce:work fails: retry once with the same plan. If still fails, mark failed, skip to next
+- If 2+ consecutive phases fail: write morning report and stop
+- NEVER die silently. Always update state.json before ending.
+
+### Workflow 5: Resume Pipeline
+
+When the user says "resume <api-name>" or invokes `/printing-press print <api-name> --resume`:
+
+1. Load `docs/plans/<api-name>-pipeline/state.json`
+2. Show current status: which phases are done, which is next
+3. Run Workflow 4 Step 3 from the next incomplete phase
+
 ## Safety Gates
 
 - **Preview before generating**: Show the API name, base URL, and estimated resource count before running the generator
@@ -210,7 +343,8 @@ Show the user the PR link and note that CI will validate the entry.
 
 - Only generates Go CLIs (no Bash, Python, etc.)
 - OpenAPI 3.0+ and Swagger 2.0 supported; other formats are not
-- Large APIs (500+ endpoints) are automatically truncated to 50 resources / 20 endpoints per resource
-- OAuth2 flows are simplified to bearer_token
+- Large APIs (500+ endpoints) are automatically truncated to 50 resources / 50 endpoints per resource
 - No GraphQL support
-- Generated CLIs do not include retry/rate-limiting (basic HTTP client only)
+- No file upload/download (binary content handling)
+- Pipeline mode requires Compound Engineering plugin for ce:plan and ce:work
+- Pipeline budget gate is 3 hours max (configurable in state.json)
