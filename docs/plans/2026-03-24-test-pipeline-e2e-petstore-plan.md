@@ -1,7 +1,7 @@
 ---
 title: "E2E Test - Run Pipeline on Petstore"
 type: test
-status: active
+status: completed
 date: 2026-03-24
 ---
 

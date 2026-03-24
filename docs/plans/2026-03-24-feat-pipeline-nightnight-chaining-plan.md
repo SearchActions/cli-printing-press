@@ -1,7 +1,7 @@
 ---
 title: "Pipeline Nightnight-Style Chaining - Autonomous Phase Execution"
 type: feat
-status: active
+status: completed
 date: 2026-03-24
 ---
 
