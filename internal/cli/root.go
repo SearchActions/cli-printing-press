@@ -43,6 +43,7 @@ func newGenerateCmd() *cobra.Command {
 	var outputDir string
 	var validate bool
 	var refresh bool
+	var force bool
 
 	cmd := &cobra.Command{
 		Use:   "generate",
@@ -90,6 +91,11 @@ func newGenerateCmd() *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("resolving output path: %w", err)
 			}
+			if force {
+				if err := os.RemoveAll(absOut); err != nil {
+					return fmt.Errorf("removing existing output dir: %w", err)
+				}
+			}
 
 			gen := generator.New(apiSpec, absOut)
 			if err := gen.Generate(); err != nil {
@@ -111,6 +117,7 @@ func newGenerateCmd() *cobra.Command {
 	cmd.Flags().StringVar(&outputDir, "output", "", "Output directory (default: <name>-cli)")
 	cmd.Flags().BoolVar(&validate, "validate", true, "Run quality gates on the generated project")
 	cmd.Flags().BoolVar(&refresh, "refresh", false, "Refresh cached remote spec before generating")
+	cmd.Flags().BoolVar(&force, "force", false, "Remove existing output directory before generating")
 
 	return cmd
 }
