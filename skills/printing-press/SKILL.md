@@ -243,25 +243,41 @@ RESUME_MONTH=$(date -v+45M '+%m')
 Then CronCreate with cron expression `$RESUME_MIN $RESUME_HOUR $RESUME_DAY $RESUME_MONTH *` and prompt: `/printing-press resume <api-name>`
 
 **Step 3: Phase execution loop**
-For each phase in state.json where status is not "completed" and not "failed":
+For each phase in state.json where `plan_status` is not "completed":
 
-a. Read the plan seed at the phase's `plan_path`
-b. Run `Skill("compound-engineering:ce:plan", plan_path)` to expand the seed into a full plan with research
-c. Run `Skill("compound-engineering:ce:work", plan_path)` to implement, test, and check off criteria
-d. Update state.json: mark phase "completed" using python3:
-```bash
-python3 -c "
-import json
-s = json.load(open('docs/plans/<api-name>-pipeline/state.json'))
-s['phases']['<phase>']['status'] = 'completed'
-json.dump(s, open('docs/plans/<api-name>-pipeline/state.json', 'w'), indent=2)
-"
-```
-e. Run budget gate (Step 4)
-f. If more phases remain and budget gate says CONTINUE:
+a. Read the plan file at the phase's `plan_path`
+b. Check the `status` field in the plan's YAML frontmatter:
+   - If `status: seed` - the plan is a thin prompt that needs expansion:
+     1. Run `Skill("compound-engineering:ce:plan", plan_path)` to expand the seed into a full plan with research
+     2. ce:plan overwrites the file with the expanded plan (frontmatter becomes `status: active`)
+     3. Update state.json: set `plan_status` to "expanded":
+     ```bash
+     python3 -c "
+     import json
+     s = json.load(open('docs/plans/<api-name>-pipeline/state.json'))
+     s['phases']['<phase>']['plan_status'] = 'expanded'
+     json.dump(s, open('docs/plans/<api-name>-pipeline/state.json', 'w'), indent=2)
+     "
+     ```
+   - If `status: active` - the plan is already expanded, ready for execution:
+     1. Run `Skill("compound-engineering:ce:work", plan_path)` to implement, test, and check off criteria
+     2. Update state.json: mark phase completed:
+     ```bash
+     python3 -c "
+     import json
+     s = json.load(open('docs/plans/<api-name>-pipeline/state.json'))
+     s['phases']['<phase>']['status'] = 'completed'
+     s['phases']['<phase>']['plan_status'] = 'completed'
+     json.dump(s, open('docs/plans/<api-name>-pipeline/state.json', 'w'), indent=2)
+     "
+     ```
+c. Run budget gate (Step 4)
+d. If more phases remain and budget gate says CONTINUE:
    - CronCreate 30 seconds from now: `/printing-press resume <api-name>`
    - Print: `"[phase] complete. Chaining to [next_phase] in 30s with fresh context..."`
    - END SESSION (the cron fires a new session with fresh context)
+
+**Note:** Each phase may take TWO sessions - one for ce:plan expansion, one for ce:work execution. This is by design: ce:plan gets a fresh context window for research, ce:work gets a fresh context window for implementation.
 
 **Step 4: Budget gate (between every phase)**
 ```bash
