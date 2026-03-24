@@ -1,6 +1,6 @@
 # Dogfood Gauntlet Findings - 2026-03-24
 
-## Scorecard: 3/10 Pass All 7 Gates
+## Scorecard: 4/10 Pass All 7 Gates (was 3/10 before parser fixes)
 
 | # | API | Paths | Result | Failure Point | Root Cause |
 |---|-----|-------|--------|---------------|------------|
@@ -15,9 +15,12 @@
 | 9 | Jira | 317 | FAIL | go vet | types.go: malformed type definitions from deeply nested $ref schemas with numeric keys |
 | 10 | Cloudflare | 1716 | FAIL | parse | `name is required` - spec missing required `info.title` field (Cloudflare uses `x-api-name` extension) |
 
-## Grade: D (3/10 pass)
+## Grade: D (4/10 pass after parser fixes, was 3/10)
 
-Below the 7/10 target. Generator needs targeted fixes for common patterns.
+Below the 7/10 target. Parser fixes (commit 3f096bc) unlocked Jira (317 paths).
+Remaining failures are in generated CLI command files and templates, not just types.
+The `$` and `/` characters leak through template rendering, not just type mapping.
+Next round of fixes needs to target `internal/generator/templates/*.tmpl`.
 
 ## Bugs Found
 
