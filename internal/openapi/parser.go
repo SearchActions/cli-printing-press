@@ -393,7 +393,99 @@ func mapResources(doc *openapi3.T, out *spec.APISpec, basePath string) {
 		out.Resources[primaryName] = resource
 	}
 
+	assignEndpointAliases(out.Resources)
 	filterGlobalParams(out.Resources)
+}
+
+func assignEndpointAliases(resources map[string]spec.Resource) {
+	resourceNames := make([]string, 0, len(resources))
+	for name := range resources {
+		resourceNames = append(resourceNames, name)
+	}
+	sort.Strings(resourceNames)
+
+	for _, name := range resourceNames {
+		resource := resources[name]
+		assignAliasesInResource(&resource)
+		resources[name] = resource
+	}
+}
+
+func assignAliasesInResource(resource *spec.Resource) {
+	if resource == nil {
+		return
+	}
+
+	assignAliasesForEndpoints(resource.Endpoints)
+
+	subNames := make([]string, 0, len(resource.SubResources))
+	for name := range resource.SubResources {
+		subNames = append(subNames, name)
+	}
+	sort.Strings(subNames)
+
+	for _, name := range subNames {
+		subResource := resource.SubResources[name]
+		assignAliasesInResource(&subResource)
+		resource.SubResources[name] = subResource
+	}
+}
+
+func assignAliasesForEndpoints(endpoints map[string]spec.Endpoint) {
+	if len(endpoints) == 0 {
+		return
+	}
+
+	endpointNames := make([]string, 0, len(endpoints))
+	nameSet := make(map[string]struct{}, len(endpoints))
+	for name := range endpoints {
+		endpointNames = append(endpointNames, name)
+		nameSet[name] = struct{}{}
+	}
+	sort.Strings(endpointNames)
+
+	usedAliases := map[string]struct{}{}
+	for _, name := range endpointNames {
+		endpoint := endpoints[name]
+		alias := computeAlias(endpoint.Method, endpoint.Path, name)
+		if alias == "" || alias == name {
+			endpoints[name] = endpoint
+			continue
+		}
+		if _, exists := nameSet[alias]; exists {
+			endpoints[name] = endpoint
+			continue
+		}
+		if _, used := usedAliases[alias]; used {
+			endpoints[name] = endpoint
+			continue
+		}
+
+		endpoint.Alias = alias
+		endpoints[name] = endpoint
+		usedAliases[alias] = struct{}{}
+	}
+}
+
+func computeAlias(method, path, endpointName string) string {
+	_ = endpointName
+
+	hasPathParam := strings.Contains(path, "{")
+	switch strings.ToUpper(method) {
+	case "GET":
+		if hasPathParam {
+			return "get"
+		}
+		return "list"
+	case "POST":
+		return "create"
+	case "PUT", "PATCH":
+		return "update"
+	case "DELETE":
+		return "delete"
+	default:
+		return ""
+	}
 }
 
 func filterGlobalParams(resources map[string]spec.Resource) {

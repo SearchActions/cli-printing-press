@@ -51,6 +51,7 @@ type Endpoint struct {
 	Response     ResponseDef `yaml:"response"`
 	Pagination   *Pagination `yaml:"pagination"`
 	ResponsePath string      `yaml:"response_path,omitempty"` // path to extract data array from response (e.g., "data", "results.items")
+	Alias        string      `yaml:"-"`                       // computed, not from YAML
 }
 
 type Param struct {
