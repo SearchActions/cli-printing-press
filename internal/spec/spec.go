@@ -111,6 +111,7 @@ func (s *APISpec) Validate() error {
 	if s.Name == "" {
 		return fmt.Errorf("name is required")
 	}
+	// Parser fallback may supply a placeholder base_url when the source spec omits servers.
 	if s.BaseURL == "" && s.BasePath == "" {
 		return fmt.Errorf("base_url is required")
 	}

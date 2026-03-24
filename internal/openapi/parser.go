@@ -32,8 +32,17 @@ func Parse(data []byte) (*spec.APISpec, error) {
 	description := ""
 	version := ""
 	if doc.Info != nil {
-		if v := cleanSpecName(doc.Info.Title); v != "" {
+		if v := cleanSpecName(doc.Info.Title); v != "" && v != "api" {
 			name = v
+		}
+		if name == "api" && doc.Info.Extensions != nil {
+			if raw, ok := doc.Info.Extensions["x-api-name"]; ok {
+				if s, ok := raw.(string); ok {
+					if v := cleanSpecName(s); v != "" && v != "api" {
+						name = v
+					}
+				}
+			}
 		}
 		description = strings.TrimSpace(doc.Info.Description)
 		version = strings.TrimSpace(doc.Info.Version)
@@ -43,6 +52,28 @@ func Parse(data []byte) (*spec.APISpec, error) {
 	basePath := ""
 	if len(doc.Servers) > 0 && doc.Servers[0] != nil {
 		serverURL := strings.TrimRight(strings.TrimSpace(doc.Servers[0].URL), "/")
+		// Resolve server URL template variables using defaults.
+		if strings.Contains(serverURL, "{") && doc.Servers[0].Variables != nil {
+			for varName, variable := range doc.Servers[0].Variables {
+				if variable != nil && variable.Default != "" {
+					serverURL = strings.ReplaceAll(serverURL, "{"+varName+"}", variable.Default)
+				}
+			}
+		}
+		// Strip any remaining unresolved template variables.
+		for strings.Contains(serverURL, "{") {
+			start := strings.Index(serverURL, "{")
+			end := strings.Index(serverURL, "}")
+			if start == -1 || end == -1 || end < start {
+				break
+			}
+			serverURL = serverURL[:start] + serverURL[end+1:]
+		}
+		serverURL = strings.ReplaceAll(serverURL, "//", "/")
+		// Restore protocol double-slash if normalization collapsed it.
+		serverURL = strings.Replace(serverURL, "http:/", "http://", 1)
+		serverURL = strings.Replace(serverURL, "https:/", "https://", 1)
+		serverURL = strings.TrimRight(serverURL, "/")
 		if serverURL != "" {
 			lowerURL := strings.ToLower(serverURL)
 			if strings.HasPrefix(lowerURL, "http://") || strings.HasPrefix(lowerURL, "https://") {
@@ -53,6 +84,10 @@ func Parse(data []byte) (*spec.APISpec, error) {
 				warnf("server URL %q is relative; generated CLI will require base_url in config (e.g. https://example.com%s)", serverURL, serverURL)
 			}
 		}
+	}
+	if baseURL == "" && basePath == "" {
+		warnf("no servers defined in spec; generated CLI will require base_url in config")
+		baseURL = "https://api.example.com"
 	}
 
 	result := &spec.APISpec{
@@ -872,6 +907,11 @@ func mapTypes(doc *openapi3.T, out *spec.APISpec) {
 	sort.Strings(names)
 
 	for _, name := range names {
+		goName := sanitizeTypeName(name)
+		if goName == "" {
+			continue
+		}
+
 		schemaRef := schemaMap[name]
 		schema := schemaRefValue(schemaRef)
 		if schema == nil {
@@ -902,7 +942,7 @@ func mapTypes(doc *openapi3.T, out *spec.APISpec) {
 			})
 		}
 
-		out.Types[name] = spec.TypeDef{Fields: fields}
+		out.Types[goName] = spec.TypeDef{Fields: fields}
 	}
 }
 
@@ -924,7 +964,7 @@ func collectTypeProperties(schemaRef *openapi3.SchemaRef, properties map[string]
 		if strings.HasPrefix(name, "_") {
 			continue
 		}
-		properties[name] = prop
+		properties[sanitizeTypeName(name)] = prop
 	}
 	for _, sub := range schema.AllOf {
 		collectTypeProperties(sub, properties, visited)
@@ -1503,6 +1543,22 @@ func sanitizeResourceName(name string) string {
 	return name
 }
 
+func sanitizeTypeName(name string) string {
+	name = strings.TrimLeft(name, "$")
+	name = strings.NewReplacer(".", "_", "/", "_", "\\", "_", "-", "_", " ", "_").Replace(name)
+	var b strings.Builder
+	for _, r := range name {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) || r == '_' {
+			b.WriteRune(r)
+		}
+	}
+	result := b.String()
+	if len(result) > 0 && !unicode.IsLetter(rune(result[0])) {
+		result = "T" + result
+	}
+	return result
+}
+
 func toKebabCase(input string) string {
 	var b strings.Builder
 	lastHyphen := true
@@ -1559,6 +1615,18 @@ func cleanSpecName(title string) string {
 		"specification": {},
 		"preview":       {},
 		"http":          {},
+		"with":          {},
+		"and":           {},
+		"from":          {},
+		"for":           {},
+		"the":           {},
+		"by":            {},
+		"of":            {},
+		"in":            {},
+		"on":            {},
+		"to":            {},
+		"fixes":         {},
+		"improvements":  {},
 	}
 
 	filtered := make([]string, 0, len(tokens))
@@ -1570,6 +1638,9 @@ func cleanSpecName(title string) string {
 			continue
 		}
 		filtered = append(filtered, token)
+	}
+	if len(filtered) > 3 {
+		filtered = filtered[:3]
 	}
 
 	name := toKebabCase(strings.Join(filtered, " "))
