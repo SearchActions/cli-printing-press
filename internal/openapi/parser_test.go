@@ -210,3 +210,38 @@ func TestSanitizeResourceName(t *testing.T) {
 		})
 	}
 }
+
+func TestOperationIDToName(t *testing.T) {
+	tests := []struct {
+		operationID  string
+		resourceName string
+		want         string
+	}{
+		{operationID: "api_user_v1_create", resourceName: "users", want: "create"},
+		{operationID: "api_user_v1_delete_biometric_registration", resourceName: "users", want: "delete-biometric-registration"},
+		{operationID: "api_user_v1_connected_apps", resourceName: "users", want: "connected-apps"},
+		{operationID: "api_user_v1_get", resourceName: "users", want: "get"},
+		{operationID: "api_user_v1_search", resourceName: "users", want: "search"},
+		{operationID: "listPets", resourceName: "pet", want: "list"},
+		{operationID: "createPet", resourceName: "pet", want: "create"},
+		{operationID: "getPetById", resourceName: "pet", want: "get-by-id"},
+		{operationID: "addPet", resourceName: "pet", want: "add"},
+		{operationID: "deletePet", resourceName: "pet", want: "delete"},
+		{operationID: "findPetsByStatus", resourceName: "pet", want: "find-by-status"},
+		{operationID: "findPetsByTags", resourceName: "pet", want: "find-by-tags"},
+		{operationID: "getInventory", resourceName: "store", want: "get-inventory"},
+		{operationID: "placeOrder", resourceName: "store", want: "place-order"},
+		{operationID: "createUser", resourceName: "user", want: "create"},
+		{operationID: "loginUser", resourceName: "user", want: "login"},
+		{operationID: "GetApplicationCommandPermissions", resourceName: "applications", want: "get-command-permissions"},
+		{operationID: "", resourceName: "users", want: ""},
+		{operationID: "list", resourceName: "users", want: "list"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.operationID+"_"+tt.resourceName, func(t *testing.T) {
+			got := operationIDToName(tt.operationID, tt.resourceName)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}

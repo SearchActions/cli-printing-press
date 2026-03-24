@@ -298,7 +298,8 @@ func resourceDescription(op *openapi3.Operation, tagDescriptions map[string]stri
 }
 
 func resolveEndpointName(method, path string, op *openapi3.Operation, existing map[string]spec.Endpoint, resourceName, basePath string) string {
-	name := operationIDToName(operationID(op))
+	name := operationIDToName(operationID(op), resourceName)
+	name = strings.ReplaceAll(name, "-", "_")
 	if name == "" {
 		name = defaultEndpointName(method, path)
 	}
@@ -938,11 +939,151 @@ func baseURLPath(baseURL string) string {
 	return parsed.Path
 }
 
-func operationIDToName(operationID string) string {
-	if operationID == "" {
+func operationIDToName(operationID, resourceName string) string {
+	if strings.TrimSpace(operationID) == "" {
 		return ""
 	}
-	return toSnakeCase(operationID)
+	original := toSnakeCase(operationID)
+	if original == "" {
+		return ""
+	}
+
+	name := strings.TrimPrefix(original, "api_")
+	resourceVariants := operationIDResourceVariants(resourceName)
+
+	name = stripOperationIDVersionPrefix(name)
+	name = stripOperationIDResourcePrefix(name, resourceVariants)
+	name = stripOperationIDVersionPrefix(name)
+	name = stripOperationIDResourceSegments(name, resourceVariants)
+	name = strings.Trim(name, "_")
+
+	if name == "" {
+		return original
+	}
+
+	return strings.ReplaceAll(name, "_", "-")
+}
+
+func operationIDResourceVariants(resourceName string) []string {
+	resource := toSnakeCase(strings.TrimSpace(resourceName))
+	if resource == "" {
+		return nil
+	}
+
+	seen := map[string]struct{}{}
+	variants := make([]string, 0, 3)
+	addVariant := func(candidate string) {
+		if candidate == "" {
+			return
+		}
+		if _, ok := seen[candidate]; ok {
+			return
+		}
+		seen[candidate] = struct{}{}
+		variants = append(variants, candidate)
+	}
+
+	addVariant(resource)
+	if strings.HasSuffix(resource, "s") && len(resource) > 1 {
+		addVariant(strings.TrimSuffix(resource, "s"))
+	} else {
+		addVariant(resource + "s")
+	}
+
+	return variants
+}
+
+func stripOperationIDVersionPrefix(name string) string {
+	for {
+		switch {
+		case strings.HasPrefix(name, "v1_"):
+			name = strings.TrimPrefix(name, "v1_")
+		case strings.HasPrefix(name, "v2_"):
+			name = strings.TrimPrefix(name, "v2_")
+		case strings.HasPrefix(name, "v3_"):
+			name = strings.TrimPrefix(name, "v3_")
+		default:
+			return name
+		}
+	}
+}
+
+func stripOperationIDResourcePrefix(name string, variants []string) string {
+	if name == "" || len(variants) == 0 {
+		return name
+	}
+
+	for {
+		stripped := false
+		for _, variant := range variants {
+			prefix := variant + "_"
+			if strings.HasPrefix(name, prefix) {
+				name = strings.TrimPrefix(name, prefix)
+				stripped = true
+				break
+			}
+		}
+		if !stripped {
+			return name
+		}
+	}
+}
+
+func stripOperationIDResourceSegments(name string, variants []string) string {
+	if name == "" || len(variants) == 0 {
+		return name
+	}
+
+	tokens := strings.Split(name, "_")
+	if len(tokens) == 0 {
+		return name
+	}
+
+	sequences := make([][]string, 0, len(variants))
+	for _, variant := range variants {
+		parts := strings.Split(variant, "_")
+		if len(parts) == 0 {
+			continue
+		}
+		sequences = append(sequences, parts)
+	}
+
+	if len(sequences) == 0 {
+		return name
+	}
+
+	filtered := make([]string, 0, len(tokens))
+	for i := 0; i < len(tokens); {
+		matched := false
+		for _, sequence := range sequences {
+			if len(sequence) == 0 || i+len(sequence) > len(tokens) {
+				continue
+			}
+
+			sequenceMatches := true
+			for j, part := range sequence {
+				if tokens[i+j] != part {
+					sequenceMatches = false
+					break
+				}
+			}
+			if !sequenceMatches {
+				continue
+			}
+
+			i += len(sequence)
+			matched = true
+			break
+		}
+		if matched {
+			continue
+		}
+
+		filtered = append(filtered, tokens[i])
+		i++
+	}
+
+	return strings.Join(filtered, "_")
 }
 
 func toSnakeCase(input string) string {
