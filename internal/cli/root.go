@@ -13,6 +13,7 @@ import (
 
 	"github.com/mvanhorn/cli-printing-press/internal/generator"
 	"github.com/mvanhorn/cli-printing-press/internal/openapi"
+	"github.com/mvanhorn/cli-printing-press/internal/pipeline"
 	"github.com/mvanhorn/cli-printing-press/internal/spec"
 	"github.com/spf13/cobra"
 )
@@ -31,6 +32,7 @@ func Execute() error {
 
 	rootCmd.AddCommand(newGenerateCmd())
 	rootCmd.AddCommand(newVersionCmd())
+	rootCmd.AddCommand(newPrintCmd())
 
 	return rootCmd.Execute()
 }
@@ -227,4 +229,46 @@ func newVersionCmd() *cobra.Command {
 			fmt.Printf("printing-press %s\n", version)
 		},
 	}
+}
+
+func newPrintCmd() *cobra.Command {
+	var outputDir string
+	var force bool
+	var resume bool
+
+	cmd := &cobra.Command{
+		Use:   "print <api-name>",
+		Short: "Create an autonomous CLI generation pipeline",
+		Long:  "Creates a pipeline directory with plan seeds for each phase. Use /ce:work on each plan to execute.",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			apiName := args[0]
+
+			state, err := pipeline.Init(apiName, pipeline.Options{
+				OutputDir: outputDir,
+				Force:     force,
+				Resume:    resume,
+			})
+			if err != nil {
+				return err
+			}
+
+			fmt.Fprintf(os.Stderr, "Pipeline created for %s\n", apiName)
+			fmt.Fprintf(os.Stderr, "  Spec: %s\n", state.SpecURL)
+			fmt.Fprintf(os.Stderr, "  Output: %s\n", state.OutputDir)
+			fmt.Fprintf(os.Stderr, "  Plans:\n")
+			for i, phase := range pipeline.PhaseOrder {
+				fmt.Fprintf(os.Stderr, "    %d. %s\n", i, state.PlanPath(phase))
+			}
+			fmt.Fprintf(os.Stderr, "\nStart with: /ce:work %s\n", state.PlanPath(pipeline.PhasePreflight))
+
+			return nil
+		},
+	}
+
+	cmd.Flags().StringVar(&outputDir, "output", "", "Output directory (default: ./<api-name>-cli)")
+	cmd.Flags().BoolVar(&force, "force", false, "Overwrite existing pipeline")
+	cmd.Flags().BoolVar(&resume, "resume", false, "Resume from existing checkpoint")
+
+	return cmd
 }
