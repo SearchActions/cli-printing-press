@@ -81,6 +81,46 @@ var KnownSpecs = map[string]KnownSpec{
 		URL:         "https://raw.githubusercontent.com/anthropics/anthropic-cookbook/main/misc/anthropic.openapi.yaml",
 		SandboxSafe: false,
 	},
+	"cloudflare": {
+		URL:         "https://raw.githubusercontent.com/cloudflare/api-schemas/main/openapi.json",
+		SandboxSafe: false,
+	},
+	"flyio": {
+		URL:         "https://docs.machines.dev/spec/openapi3.json",
+		SandboxSafe: false,
+	},
+	"jira": {
+		URL:         "https://api.apis.guru/v2/specs/atlassian.com/jira/1001.0.0-SNAPSHOT/openapi.json",
+		SandboxSafe: false,
+	},
+	"launchdarkly": {
+		URL:         "https://app.launchdarkly.com/api/v2/openapi.json",
+		SandboxSafe: false,
+	},
+	"sentry": {
+		URL:         "https://raw.githubusercontent.com/getsentry/sentry-api-schema/main/openapi-derefed.json",
+		SandboxSafe: false,
+	},
+	"spotify": {
+		URL:         "https://api.apis.guru/v2/specs/spotify.com/sonallux/2023.2.27/openapi.json",
+		SandboxSafe: false,
+	},
+	"supabase": {
+		URL:         "https://api.supabase.com/api/v1-json",
+		SandboxSafe: false,
+	},
+	"telegram": {
+		URL:         "https://api.apis.guru/v2/specs/telegram.org/5.0.0/openapi.json",
+		SandboxSafe: false,
+	},
+	"trello": {
+		URL:         "https://api.apis.guru/v2/specs/trello.com/1.0/openapi.json",
+		SandboxSafe: false,
+	},
+	"vercel": {
+		URL:         "https://api.apis.guru/v2/specs/vercel.com/0.0.1/openapi.json",
+		SandboxSafe: false,
+	},
 }
 
 // ApisGuruPattern builds an apis-guru URL for a provider and version.
