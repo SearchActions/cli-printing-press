@@ -111,6 +111,10 @@ func mapAuth(doc *openapi3.T, name string) spec.AuthConfig {
 			auth.Header = "Authorization"
 		}
 		auth.In = strings.TrimSpace(scheme.In)
+		// Detect bot token pattern from scheme name (e.g. "BotToken")
+		if strings.Contains(strings.ToLower(schemeName), "bot") && strings.EqualFold(auth.Header, "Authorization") {
+			auth.Format = "Bot {bot_token}"
+		}
 	case "oauth2":
 		auth.Type = "bearer_token"
 		auth.Header = "Authorization"
@@ -119,7 +123,13 @@ func mapAuth(doc *openapi3.T, name string) spec.AuthConfig {
 	envPrefix := strings.ToUpper(strings.ReplaceAll(name, "-", "_"))
 	switch auth.Type {
 	case "api_key":
-		auth.EnvVars = []string{envPrefix + "_API_KEY"}
+		// Use scheme name for more specific env var (e.g. BotToken -> DISCORD_BOT_TOKEN)
+		schemeEnvSuffix := toSnakeCase(schemeName)
+		if schemeEnvSuffix != "" && schemeEnvSuffix != "api_key" {
+			auth.EnvVars = []string{envPrefix + "_" + strings.ToUpper(schemeEnvSuffix)}
+		} else {
+			auth.EnvVars = []string{envPrefix + "_API_KEY"}
+		}
 	case "bearer_token":
 		auth.EnvVars = []string{envPrefix + "_TOKEN"}
 	}

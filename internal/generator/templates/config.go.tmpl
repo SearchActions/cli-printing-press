@@ -65,6 +65,11 @@ func (c *Config) AuthHeader() string {
 		return c.AuthHeaderVal
 	}
 {{- if eq .Auth.Type "api_key"}}
+{{- range .Auth.EnvVars}}
+	if c.{{envVarField .}} == "" {
+		return ""
+	}
+{{- end}}
 	format := "{{.Auth.Format}}"
 {{- range .Auth.EnvVars}}
 	format = strings.ReplaceAll(format, "{ {{- envVarPlaceholder . -}} }", c.{{envVarField .}})
