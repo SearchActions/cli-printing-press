@@ -41,12 +41,40 @@ func newDoctorCmd(flags *rootFlags) *cobra.Command {
 			// Check API connectivity
 			if cfg != nil && cfg.BaseURL != "" {
 				httpClient := &http.Client{Timeout: 5 * time.Second}
-				resp, err := httpClient.Get(cfg.BaseURL)
-				if err != nil {
-					report["api"] = fmt.Sprintf("unreachable: %s", err)
-				} else {
+				
+				// Try common health-check paths in order
+				paths := []string{
+					"",
+					"/health",
+					"/healthz",
+					"/status",
+					"/ping",
+				}
+
+				reached := false
+				for _, p := range paths {
+					url := strings.TrimRight(cfg.BaseURL, "/") + p
+					resp, err := httpClient.Get(url)
+					if err != nil {
+						continue
+					}
 					resp.Body.Close()
-					report["api"] = fmt.Sprintf("reachable (HTTP %d)", resp.StatusCode)
+					if resp.StatusCode >= 200 && resp.StatusCode < 400 {
+						report["api"] = fmt.Sprintf("reachable (HTTP %d)", resp.StatusCode)
+						reached = true
+						break
+					}
+				}
+
+				if !reached {
+					// Fall back to reporting the base URL status
+					resp, err := httpClient.Get(cfg.BaseURL)
+					if err != nil {
+						report["api"] = fmt.Sprintf("unreachable: %s", err)
+					} else {
+						resp.Body.Close()
+						report["api"] = fmt.Sprintf("degraded (HTTP %d)", resp.StatusCode)
+					}
 				}
 			} else if cfg != nil && cfg.BaseURL == "" {
 				report["api"] = "not configured (set base_url in config file)"
