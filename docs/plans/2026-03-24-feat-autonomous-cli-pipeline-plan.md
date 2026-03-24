@@ -1,218 +1,382 @@
 ---
-title: "Autonomous CLI Pipeline - From API Name to Finished CLI"
+title: "Autonomous CLI Pipeline - Plan-First, Phase-Chained, From API Name to Finished CLI"
 type: feat
 status: active
 date: 2026-03-24
 ---
 
-# Autonomous CLI Pipeline - From API Name to Finished CLI
+# Autonomous CLI Pipeline - Plan-First, Phase-Chained
+
+## The Philosophy
+
+"The moment I have an idea, it's /ce:plan." - @mvanhorn
+
+Traditional dev is 80% coding, 20% planning. This flips it. The thinking happens in the plan. The execution is mechanical. Every phase of the pipeline follows the same discipline: write a plan.md first, execute it with ce:work, then write the next plan. No phase starts work without a plan. No plan ships without execution.
+
+The pipeline is not a Go binary that runs 7 functions. It's a chain of plan.md files, each one written by ce:plan with full research agents, each one executed by ce:work with test verification. The Go binary is thin - it manages pipeline state and triggers the next plan. The intelligence lives in the plans.
+
+This is the same pattern that produced 70 plan files and 263 commits on /last30days. The same pattern that runs OSC nightnight for 8 hours overnight. The same pattern that turned a lunch transcript into a product proposal.
 
 ## Overview
 
-Transform the printing press from a single-pass generator into a multi-phase autonomous pipeline. The user says `printing-press print gmail`. The press discovers the spec, scaffolds, enriches with deep research, reviews, and ships - each phase writing checkpoint state and chaining to the next. Zero human intervention. Overnight quality.
+User says: `printing-press print gmail`
 
-Inspired by OSC nightnight's proven patterns: checkpoint-based resumption, mechanical budget gates, CronCreate session chaining, JSONL event logging.
-
-## Problem Statement
-
-The press currently does one pass: spec in, CLI out, 70% quality. The missing 30% is information that exists in the spec and public docs but requires multiple analysis passes with different lenses to extract. A single context window can't hold spec parsing + deep doc research + dogfood analysis + enrichment application. The solution is phase chaining - the same pattern that lets OSC run for 8 hours overnight.
-
-## Architecture: The Print Pipeline
+What happens:
 
 ```
-printing-press print gmail
-        |
-    [PREFLIGHT] - Go installed? Binary fresh? Disk space?
-        |
-    [DISCOVER]  - Find OpenAPI spec (known-specs, apis-guru, WebSearch)
-        |
-    [SCAFFOLD]  - Generate initial CLI (existing generate command)
-        |
-    [ENRICH]    - Deep-read spec hints + research API docs -> spec overlay
-        |
-    [REGENERATE]- Re-run generator with enriched spec (SCAFFOLD + overlay)
-        |
-    [REVIEW]    - Static analysis: help output, name quality, compilation, coverage
-        |
-    [SHIP]      - git init, README, goreleaser validate, morning report
-        |
-    Done. CLI at ./gmail-cli/
+Phase 0: PREFLIGHT
+  -> ce:plan writes preflight-plan.md (check environment, find spec)
+  -> ce:work executes it
+  -> checkpoint updated
+
+Phase 1: SCAFFOLD
+  -> ce:plan writes scaffold-plan.md (generate initial CLI from spec)
+  -> ce:work executes it (runs printing-press generate, validates 7 gates)
+  -> checkpoint updated
+
+Phase 2: ENRICH
+  -> ce:plan writes enrich-plan.md (deep-read spec, research API docs, find hints)
+  -> ce:work executes it (produces spec overlay YAML)
+  -> checkpoint updated
+
+Phase 3: REGENERATE
+  -> ce:plan writes regenerate-plan.md (merge overlay, re-generate, re-validate)
+  -> ce:work executes it
+  -> checkpoint updated
+
+Phase 4: REVIEW
+  -> ce:plan writes review-plan.md (dogfood every command, check quality)
+  -> ce:work executes it (produces quality score + issue list)
+  -> checkpoint updated
+
+Phase 5: SHIP
+  -> ce:plan writes ship-plan.md (git init, README, morning report)
+  -> ce:work executes it
+  -> Done.
 ```
 
-**Key decision: ENRICH modifies the spec, not generated code.** The generator remains the single source of truth for code output. ENRICH produces a YAML overlay that gets merged into the original spec before re-generation. This collapses the original 6-phase plan into 7 tighter phases (PREFLIGHT + DISCOVER + SCAFFOLD + ENRICH + REGENERATE + REVIEW + SHIP) where ENRICH + REGENERATE replace the earlier ENRICH + POLISH split.
+Each phase is a full ce:plan -> ce:work cycle. Each plan.md gets the benefit of parallel research agents, codebase analysis, and prior learnings. Each ce:work execution gets fresh context, task tracking, and test verification.
+
+The plan.md IS the checkpoint that survives everything. Context gets lost? Start a new session, point it at the plan, pick up where you left off.
+
+## Why Plan-First Per Phase
+
+1. **Fresh context per phase.** ENRICH needs to deeply analyze an API's docs. That's a full context window. If it ran in the same session as SCAFFOLD, context would be exhausted. A new ce:plan session starts clean.
+
+2. **Research agents per phase.** ce:plan launches parallel research agents - repo analysis, learnings search, external docs. DISCOVER's research is different from ENRICH's research is different from REVIEW's research. Each phase needs its own research pass.
+
+3. **Human checkpoint between phases.** Each plan.md is reviewable. In autonomous mode, the mechanical gate reviews it. In interactive mode, the human can read the plan before ce:work starts. "Does this enrichment plan look right before I spend 20 minutes executing it?"
+
+4. **Crash recovery is free.** If a session dies mid-ENRICH, the enrich-plan.md is already on disk. Next session reads it and picks up. No special checkpoint serialization needed - the plan IS the state.
+
+5. **Compounding context.** Each plan.md can reference all prior plans. The REVIEW plan can say "In the scaffold plan, we generated 12 resources. In the enrich plan, we added defaults to 3 of them. Now let's verify all 12 look right." Plans compound like your strategy docs compound.
+
+## Architecture
+
+### The Thin Orchestrator (Go)
+
+The `printing-press print` command is a thin loop:
+
+```go
+func RunPipeline(apiName string, opts Options) error {
+    state := loadOrCreateState(apiName)
+
+    phases := []string{"preflight", "scaffold", "enrich", "regenerate", "review", "ship"}
+
+    for _, phase := range phases {
+        if state.IsCompleted(phase) {
+            continue // resume mode - skip done phases
+        }
+
+        // Write the plan for this phase
+        planPath := state.PlanPath(phase) // e.g., docs/plans/gmail-pipeline/02-scaffold-plan.md
+        if !fileExists(planPath) {
+            // Generate phase-specific prompt and write it as the plan seed
+            writePlanSeed(state, phase, planPath)
+        }
+
+        // Mark phase in progress
+        state.Start(phase)
+        state.Save()
+
+        fmt.Fprintf(os.Stderr, "[%s] Plan at %s\n", phase, planPath)
+        fmt.Fprintf(os.Stderr, "[%s] Execute with: /ce:work %s\n", phase, planPath)
+
+        // In autonomous mode: the skill chains ce:plan -> ce:work automatically
+        // In interactive mode: the user runs ce:work manually
+    }
+
+    return nil
+}
+```
+
+The Go binary doesn't execute phases. It writes plan seeds (structured prompts with all the context each phase needs) and manages state. The Claude Code skill does the actual ce:plan -> ce:work chaining.
+
+### The Claude Code Skill (The Real Engine)
+
+The printing-press skill becomes the orchestrator:
+
+```
+User: "print me a gmail CLI"
+
+Skill reads pipeline state
+  -> If no state: create it, start at preflight
+  -> If existing state: find next incomplete phase
+
+For each phase:
+  1. Run ce:plan with phase-specific prompt
+     - Prompt includes: API name, prior phase outputs, conventions cache
+     - ce:plan research agents analyze the specific needs of THIS phase
+     - ce:plan writes the plan.md
+
+  2. Run ce:work on the plan.md
+     - ce:work breaks it into tasks, implements, tests, checks off criteria
+     - On completion: update pipeline state
+
+  3. Chain to next phase
+     - CronCreate schedules the skill to resume in 30 seconds
+     - Fresh session, fresh context, next phase
+```
+
+This is exactly OSC nightnight's pattern: implement -> checkpoint -> chain -> fresh session -> implement.
+
+### Plan Directory Structure
+
+```
+docs/plans/gmail-pipeline/
+  00-preflight-plan.md     # Environment checks, spec discovery
+  01-scaffold-plan.md      # Initial CLI generation
+  02-enrich-plan.md        # Deep spec analysis, overlay creation
+  03-regenerate-plan.md    # Merge overlay, re-generate
+  04-review-plan.md        # Quality analysis, dogfooding
+  05-ship-plan.md          # Finalize, morning report
+  state.json               # Pipeline state (which phases are done)
+  conventions.json         # Cached spec analysis (reused across phases)
+  overlay.yaml             # Spec overlay from ENRICH (consumed by REGENERATE)
+  report.md                # Final morning report
+```
+
+Each plan.md follows the standard ce:plan format with frontmatter, acceptance criteria, implementation units. They're real plans, not stubs.
+
+### Phase-Specific Plan Seeds
+
+The Go binary writes "plan seeds" - structured prompts that ce:plan uses to write the full plan. Each seed contains:
+
+**Preflight seed:**
+- Check Go version, check press binary, check disk space
+- Find OpenAPI spec: check known-specs registry, then apis-guru (`APIs-guru/openapi-directory/APIs/<provider>/`), then WebSearch
+- Validate spec quality (parses, has 3+ endpoints, has base URL)
+- Write conventions cache (auth type, pagination patterns, resource count)
+- Acceptance: spec file downloaded, conventions cached, environment validated
+
+**Scaffold seed:**
+- Spec path from preflight
+- Run `printing-press generate --spec <path> --output <dir>`
+- Validate 7 quality gates pass
+- Acceptance: CLI compiles, all gates pass, `<cli> --help` works
+
+**Enrich seed:**
+- Read original spec from scaffold
+- Read conventions cache from preflight
+- Deep-read every parameter description for default value hints (e.g., "The special value `me` can be used")
+- Scan for `mediaUpload`, `x-google-*` extensions, multipart content types
+- Scan response schemas for sync token patterns (`historyId`, `syncToken`)
+- Scan for batch endpoint patterns (`:batchGet`, `:batchCreate`)
+- Check for endpoints with empty descriptions that could be enriched
+- WebSearch for `<api-name> API best practices CLI` to find community patterns
+- Write overlay.yaml with all discovered enrichments
+- Acceptance: overlay file exists, at least 1 enrichment found
+
+**Regenerate seed:**
+- Merge overlay.yaml with original spec
+- Re-run `printing-press generate` with merged spec
+- Re-validate 7 quality gates
+- If gates fail: fall back to original spec, log what broke
+- Acceptance: CLI compiles with enrichments, no regressions
+
+**Review seed:**
+- Build the CLI binary
+- Run `<cli> --help` and `<cli> <resource> --help` for every resource
+- Check: no command name > 40 chars, no empty descriptions on resources
+- Check: every GET endpoint has at least 1 query param flag
+- Check: no duplicate command names
+- Check: `<cli> doctor` exits 0
+- Check: binary size < 50MB
+- Produce quality score (0-100) and issue list
+- Acceptance: score > 70, all critical checks pass
+
+**Ship seed:**
+- Run `git init` in output directory
+- Create initial commit
+- Validate goreleaser config if present
+- Write morning report with: time per phase, enrichments applied, quality score, next steps for human
+- Acceptance: git repo initialized, morning report written
 
 ## Scope Boundaries
 
-- No runtime library - templates only
-- No real API testing in REVIEW (no credential management) - static analysis only
-- No GitHub repo creation or release publishing in SHIP - local only
-- No Google Discovery format converter - use apis-guru pre-converted specs
-- No file upload/download generation (separate plan)
-- No batch mode (one API per pipeline invocation)
-- Single Claude Code skill with phase routing (not 7 separate skills)
+- No real API testing (no credential management in autonomous mode)
+- No GitHub repo creation or release publishing
+- No Google Discovery format converter (use apis-guru)
+- No file upload/download generation
+- No batch mode (one API per invocation)
+- No Codex delegation for plan writing (ce:plan runs on Claude)
 
 ## Implementation Units
 
-### Unit 1: Checkpoint Schema and State Machine
+### Unit 1: Pipeline State Manager (Go)
 
-**Goal:** Define the pipeline's backbone - the checkpoint JSON that every phase reads and writes. Model after nightnight's `~/.osc/nightnight-session.json`.
+**Goal:** The thin Go package that manages pipeline state and writes plan seeds.
 
 **Files:**
-- New: `internal/pipeline/checkpoint.go` - checkpoint types, read/write, phase enum
-- New: `internal/pipeline/events.go` - JSONL event logger
+- New: `internal/pipeline/state.go` - state types, read/write, phase tracking
+- New: `internal/pipeline/seeds.go` - plan seed templates per phase
+- New: `internal/pipeline/state_test.go`
 
 **Approach:**
 
-Checkpoint schema:
+State is minimal JSON:
 ```go
-type Checkpoint struct {
-    APIName          string            `json:"api_name"`
-    StartedAt        time.Time         `json:"started_at"`
-    OutputDir        string            `json:"output_dir"`
-    SpecPath         string            `json:"spec_path"`         // discovered spec file
-    OverlayPath      string            `json:"overlay_path"`      // enrichment overlay
-    ConventionsPath  string            `json:"conventions_path"`  // conventions cache
-    EventsLogPath    string            `json:"events_log_path"`   // JSONL log
-    Phases           map[string]Phase  `json:"phases"`
-    Errors           []string          `json:"errors"`
+type PipelineState struct {
+    APIName    string                 `json:"api_name"`
+    OutputDir  string                 `json:"output_dir"`
+    StartedAt  time.Time              `json:"started_at"`
+    Phases     map[string]PhaseState  `json:"phases"`
+    SpecPath   string                 `json:"spec_path,omitempty"`
 }
 
-type Phase struct {
-    Status    string    `json:"status"`    // pending, in_progress, completed, failed
-    StartedAt time.Time `json:"started_at"`
-    Duration  string    `json:"duration"`
-    Retries   int       `json:"retries"`
+type PhaseState struct {
+    Status   string `json:"status"` // pending, planned, executing, completed, failed
+    PlanPath string `json:"plan_path,omitempty"`
 }
 ```
 
-Checkpoint location: `~/.cache/printing-press/pipelines/<api-name>/checkpoint.json`
-Events log: `~/.cache/printing-press/pipelines/<api-name>/events.jsonl`
-Conventions cache: `~/.cache/printing-press/pipelines/<api-name>/conventions.json`
+Note the extra status: `planned` means the plan.md exists but hasn't been executed yet. This is the human checkpoint - you can review the plan before ce:work runs.
 
-Phase order: `preflight -> discover -> scaffold -> enrich -> regenerate -> review -> ship`
-
-Mechanical gate between phases: phase must be `completed` to advance. Failed after 2 retries = pipeline parks with morning report.
-
-**Test scenarios:**
-- Checkpoint round-trips through JSON marshal/unmarshal
-- Phase state machine transitions correctly (pending -> in_progress -> completed)
-- Events append to JSONL without corruption
+Plan seeds are Go templates that produce markdown. Each seed is a structured prompt that ce:plan will expand into a full plan with research.
 
 **Verification:** `go test ./internal/pipeline/...`
 
 ---
 
-### Unit 2: PREFLIGHT Phase
+### Unit 2: `print` CLI Command
 
-**Goal:** Validate environment before burning any tokens. Go installed, printing-press binary compiles, output dir clean.
+**Goal:** Add `printing-press print <api-name>` command that creates the pipeline directory and writes plan seeds.
 
 **Files:**
-- New: `internal/pipeline/preflight.go`
+- Update: `internal/cli/root.go` - add print command
+- New: `internal/pipeline/pipeline.go` - orchestration logic
 
 **Approach:**
-1. Check `go version` succeeds
-2. Check printing-press binary builds: `go build -o /tmp/pp-check ./cmd/printing-press`
-3. Check output dir doesn't exist (or `--force` flag)
-4. Check disk space > 500MB free
-5. Write checkpoint with preflight=completed
 
-**Test scenarios:**
-- Preflight passes on healthy system
-- Preflight fails gracefully when Go missing (clear error message)
+The print command:
+```
+printing-press print gmail [--output ./gmail-cli] [--force] [--resume]
+```
 
-**Verification:** Unit tests with mock exec
+It does NOT execute phases. It:
+1. Creates `docs/plans/<api-name>-pipeline/` directory
+2. Writes `state.json` with all phases pending
+3. Writes plan seeds for each phase as markdown files
+4. Prints instructions: "Pipeline ready. Run /ce:work docs/plans/gmail-pipeline/00-preflight-plan.md to start"
+
+In skill mode (autonomous), the skill takes over from here and chains ce:plan -> ce:work for each phase.
+
+**Verification:** `go test ./...`, `printing-press print petstore` creates pipeline directory with plan seeds
 
 ---
 
-### Unit 3: DISCOVER Phase
+### Unit 3: Claude Code Skill Update
 
-**Goal:** Given an API name, find a usable OpenAPI spec. Check known-specs registry, then apis-guru, then WebSearch.
+**Goal:** Update the printing-press skill to support the autonomous pipeline with phase chaining.
 
 **Files:**
-- New: `internal/pipeline/discover.go`
-- Update: `skills/printing-press/references/known-specs.md` - add apis-guru URL patterns
+- Update: `skills/printing-press/SKILL.md`
 
 **Approach:**
 
-Discovery pipeline (ordered by reliability):
-1. **Known-specs registry** - exact match on API name. Already has 12 verified URLs.
-2. **apis-guru directory** - fetch `https://raw.githubusercontent.com/APIs-guru/openapi-directory/main/APIs/<provider>/` and find the latest version. This covers 2,000+ APIs including all Google services.
-3. **WebSearch** - `"<api-name> openapi spec" site:github.com OR site:swagger.io` with 3 strategies
-4. **Fallback** - prompt the user (in interactive mode) or park (in autonomous mode)
+New workflow in the skill:
 
-Spec quality gate: after fetching, validate:
-- Parses as valid OpenAPI (use existing `openapi.IsOpenAPI()` + `openapi.Parse()`)
-- Has at least 3 endpoints
-- Has at least 1 resource
-- Has a base URL
+```
+Workflow: Autonomous Pipeline
 
-If quality gate fails, try next discovery source.
+When user says "print <api-name>":
 
-**Conventions cache:** After successful parse, write to conventions cache:
-- Auth type and schemes detected
-- Number of resources/endpoints
-- Pagination patterns found
-- Global params detected
-- Common prefix (if any)
+1. Run `printing-press print <api-name>` to create pipeline directory
+2. Read state.json to find next phase
+3. For the next incomplete phase:
+   a. If plan.md doesn't exist yet:
+      - Read the plan seed
+      - Run ce:plan with the seed as input (this writes the full plan)
+   b. If plan.md exists but phase isn't completed:
+      - Run ce:work on the plan.md
+   c. After ce:work completes:
+      - Update state.json (mark phase completed)
+      - CronCreate to chain back to this skill in 30 seconds
+      - Fresh session picks up at step 2 with next phase
 
-**Test scenarios:**
-- Discovery finds Petstore from known-specs
-- Discovery finds Gmail from apis-guru
-- Discovery falls back to WebSearch for unknown APIs
-- Quality gate rejects specs with 0 endpoints
+Budget gate: after each phase, check total elapsed time. If > 3 hours, write
+partial morning report and stop. This prevents runaway overnight sessions.
+```
 
-**Verification:** `go test ./internal/pipeline/...`, manual test with `gmail` and `stripe`
+The skill is the brain. The Go binary is the skeleton. The plans are the memory.
+
+**Verification:** Manual test in Claude Code: "print me a petstore CLI"
 
 ---
 
-### Unit 4: SCAFFOLD Phase
+### Unit 4: Known-Specs Registry + apis-guru Integration
 
-**Goal:** Run the existing `printing-press generate` command on the discovered spec. Validate with 7 quality gates.
+**Goal:** Make PREFLIGHT's spec discovery actually work for common APIs.
 
 **Files:**
-- New: `internal/pipeline/scaffold.go`
-- Existing: `internal/generator/generator.go`, `internal/generator/validate.go`
+- Update: `skills/printing-press/references/known-specs.md` - add apis-guru patterns
+- New: `internal/pipeline/discover.go` - spec discovery logic (used by plan seed generation)
 
 **Approach:**
-1. Read spec from checkpoint's `spec_path`
-2. Parse with existing openapi/spec parser
-3. Generate with existing generator
-4. Run 7 quality gates
-5. If gates fail: retry once with relaxed settings (skip lint gate), then park
-6. Update checkpoint with scaffold=completed
 
-This is a thin wrapper around the existing `generate` + `validate` pipeline.
+Expand known-specs.md with apis-guru URL patterns:
+```
+## apis-guru patterns
+For any API not in the registry, try:
+https://raw.githubusercontent.com/APIs-guru/openapi-directory/main/APIs/{provider}/{version}/openapi.yaml
 
-**Test scenarios:**
-- SCAFFOLD succeeds for Petstore, Gmail, Discord, Stytch specs
-- SCAFFOLD retries on quality gate failure
-- SCAFFOLD parks after 2 failures
+Common providers:
+- googleapis.com/gmail/v1
+- googleapis.com/calendar/v3
+- googleapis.com/drive/v3
+- stripe.com/2023-10-16
+- twilio.com/2010-04-01
+```
 
-**Verification:** `go test ./...`, regenerate all 4 test specs
+The discover.go file provides a `DiscoverSpec(apiName string) (string, error)` function that:
+1. Checks known-specs registry (exact match)
+2. Tries apis-guru URL pattern
+3. Returns the URL or path to the spec
+
+This is used by the preflight plan seed to tell ce:plan where to look.
+
+**Verification:** `go test ./internal/pipeline/...` with test cases for gmail, stripe, petstore
 
 ---
 
-### Unit 5: ENRICH Phase - The Intelligence Layer
+### Unit 5: Spec Overlay Types and Merge
 
-**Goal:** Deep-read the original spec for hints the parser missed. Research the API's public docs. Produce a spec overlay that improves the generated CLI.
+**Goal:** Define the overlay format that ENRICH produces and REGENERATE consumes.
 
 **Files:**
-- New: `internal/pipeline/enrich.go`
-- New: `internal/pipeline/overlay.go` - spec overlay types and merge logic
+- New: `internal/pipeline/overlay.go` - overlay types
+- Update: `internal/spec/spec.go` - add MergeOverlay method
 
 **Approach:**
 
-The overlay format mirrors `spec.APISpec` but every field is optional. Non-nil fields override the original spec when merged.
-
+The overlay is a YAML file that mirrors APISpec but every field is optional:
 ```go
 type SpecOverlay struct {
-    Description  *string                       `yaml:"description,omitempty"`
-    Resources    map[string]ResourceOverlay     `yaml:"resources,omitempty"`
+    Resources map[string]ResourceOverlay `yaml:"resources,omitempty"`
 }
 
 type ResourceOverlay struct {
-    Description *string                        `yaml:"description,omitempty"`
-    Endpoints   map[string]EndpointOverlay     `yaml:"endpoints,omitempty"`
+    Endpoints map[string]EndpointOverlay `yaml:"endpoints,omitempty"`
 }
 
 type EndpointOverlay struct {
@@ -222,292 +386,87 @@ type EndpointOverlay struct {
 
 type ParamPatch struct {
     Name    string  `yaml:"name"`
-    Default *string `yaml:"default,omitempty"` // e.g., "me" for userId
+    Default *string `yaml:"default,omitempty"`
 }
 ```
 
-Enrichment strategies (each runs independently, results merged):
+`MergeOverlay` on APISpec applies the overlay: non-nil fields override originals.
 
-1. **Description hints** - scan param descriptions for default value hints. Gmail's userId says "The special value `me` can be used" - extract `me` as default.
-2. **mediaUpload detection** - scan for `x-]google-*` extensions or multipart content types. Flag endpoints that support file upload (future: generate upload commands).
-3. **Sync token patterns** - scan response schemas for `historyId`, `syncToken`, `nextSyncToken` fields. Flag resources that support incremental sync.
-4. **Batch endpoint detection** - scan for paths ending in `:batchGet`, `:batchCreate`, or `batch*` with array request bodies.
-5. **Better descriptions** - for endpoints with empty or generic descriptions, check if the operationId or path provides a clearer name.
-6. **Endpoint grouping hints** - for flat resources with many endpoints (like settings), detect naming patterns that suggest sub-groups (e.g., `cse-*`, `send-as-*`).
-
-Time budget: 15 minutes max. Each strategy gets 2 minutes. Partial results are written if time runs out.
-
-**Test scenarios:**
-- Gmail enrichment detects `me` default for userId
-- Gmail enrichment detects mediaUpload on messages/send
-- Overlay merges correctly with original spec (non-nil fields override)
-- Overlay merge preserves unmodified fields
-
-**Verification:** `go test ./internal/pipeline/...`, manual test with Gmail spec
+**Verification:** `go test ./internal/pipeline/...`, `go test ./internal/spec/...`
 
 ---
 
-### Unit 6: REGENERATE Phase
+### Unit 6: End-to-End Test
 
-**Goal:** Merge the spec overlay with the original spec and re-run the generator.
+**Goal:** Run the full pipeline on Petstore to prove it works.
 
-**Files:**
-- New: `internal/pipeline/regenerate.go`
-- Update: `internal/spec/spec.go` - add `MergeOverlay()` method
+**Files:** No new files - verification only.
 
 **Approach:**
-1. Load original spec from checkpoint
-2. Load overlay from checkpoint
-3. Merge: overlay fields replace original fields where non-nil
-4. Re-run generator with merged spec (overwrite existing output)
-5. Re-run 7 quality gates
-6. If gates fail: fall back to original spec (enrichment broke something), log the error
+1. `printing-press print petstore`
+2. Verify pipeline directory created with plan seeds
+3. Manually run ce:work on each plan seed in order
+4. Verify final CLI compiles and works
+5. Verify morning report generated
 
-**Test scenarios:**
-- Regenerate with overlay produces different output than without
-- Regenerate fallback works when overlay breaks compilation
-- Quality gates still pass after regeneration
-
-**Verification:** `go test ./...`
-
----
-
-### Unit 7: REVIEW Phase - Static Quality Analysis
-
-**Goal:** Automated quality assessment of the generated CLI. No API calls - static analysis only.
-
-**Files:**
-- New: `internal/pipeline/review.go`
-
-**Approach:**
-
-Review checks (binary pass/fail):
-1. **Help completeness** - run `<cli> --help` and every `<cli> <resource> --help`. Verify exit code 0, non-empty output.
-2. **Name quality** - no command name > 40 chars, no raw operationId passthrough (contains dots or underscores), no duplicate command names.
-3. **Param coverage** - every GET endpoint has at least 1 non-positional param (if the original spec had query params). Flag endpoints where all params were filtered.
-4. **Description quality** - no empty descriptions on top-level resources. No descriptions that are just the endpoint name repeated.
-5. **Compilation clean** - `go vet` passes with zero warnings.
-6. **Binary size** - warn if > 50MB (something is wrong).
-7. **Doctor works** - `<cli> doctor` exits 0.
-
-Review produces a quality score (0-100) and a list of issues. Score > 70 = PASS. Score < 70 = log issues in morning report but still PASS (don't block shipping over cosmetics).
-
-**Test scenarios:**
-- Review passes for a well-generated CLI
-- Review catches empty descriptions
-- Review catches overly long command names
-
-**Verification:** `go test ./internal/pipeline/...`
-
----
-
-### Unit 8: SHIP Phase
-
-**Goal:** Finalize the generated CLI for human consumption.
-
-**Files:**
-- New: `internal/pipeline/ship.go`
-
-**Approach:**
-1. Run `git init` in output directory
-2. Create initial commit: "Initial CLI generated by printing-press"
-3. Validate goreleaser config: `goreleaser check` (if installed) or skip
-4. Write morning report to `~/.cache/printing-press/pipelines/<api-name>/report.md`
-5. Update checkpoint with ship=completed, total duration
-6. Print summary to stderr
-
-Morning report includes:
-- API name and spec source
-- Resources and endpoint count
-- Quality score from REVIEW
-- Enrichments applied
-- Issues found
-- Time per phase
-- Next steps for the human (configure auth, test against real API, publish)
-
-**Test scenarios:**
-- SHIP creates git repo with initial commit
-- Morning report contains all required sections
-- Pipeline completion updates checkpoint correctly
-
-**Verification:** `go test ./internal/pipeline/...`
-
----
-
-### Unit 9: Pipeline Orchestrator and CLI Command
-
-**Goal:** Wire all phases together. Add `printing-press print <api-name>` command. Handle chaining, resume, and error recovery.
-
-**Files:**
-- New: `internal/pipeline/pipeline.go` - orchestrator
-- Update: `internal/cli/root.go` - add `print` command
-
-**Approach:**
-
-The `print` command:
-```
-printing-press print gmail [--output ./gmail-cli] [--force] [--resume] [--phase enrich]
-```
-
-Flags:
-- `--output` - output directory (default: `./<api-name>-cli`)
-- `--force` - overwrite existing output
-- `--resume` - resume from checkpoint
-- `--phase` - run only a specific phase (for debugging)
-
-Orchestrator loop:
-```go
-func RunPipeline(apiName string, opts Options) error {
-    checkpoint := loadOrCreateCheckpoint(apiName, opts)
-
-    phases := []struct {
-        name string
-        fn   func(*Checkpoint) error
-    }{
-        {"preflight", runPreflight},
-        {"discover", runDiscover},
-        {"scaffold", runScaffold},
-        {"enrich", runEnrich},
-        {"regenerate", runRegenerate},
-        {"review", runReview},
-        {"ship", runShip},
-    }
-
-    for _, phase := range phases {
-        if checkpoint.Phases[phase.name].Status == "completed" {
-            continue // already done (resume mode)
-        }
-
-        logEvent(checkpoint, "phase_start", phase.name)
-        checkpoint.Phases[phase.name] = Phase{Status: "in_progress", StartedAt: time.Now()}
-        saveCheckpoint(checkpoint)
-
-        var err error
-        for attempt := 0; attempt < 3; attempt++ {
-            err = phase.fn(checkpoint)
-            if err == nil {
-                break
-            }
-            checkpoint.Phases[phase.name] = Phase{Status: "failed", Retries: attempt + 1}
-            logEvent(checkpoint, "phase_retry", phase.name, err.Error())
-        }
-
-        if err != nil {
-            checkpoint.Errors = append(checkpoint.Errors, fmt.Sprintf("%s: %v", phase.name, err))
-            saveCheckpoint(checkpoint)
-            writeMorningReport(checkpoint) // partial report
-            return fmt.Errorf("pipeline failed at %s: %w", phase.name, err)
-        }
-
-        checkpoint.Phases[phase.name] = Phase{Status: "completed", Duration: time.Since(...).String()}
-        saveCheckpoint(checkpoint)
-        logEvent(checkpoint, "phase_completed", phase.name)
-    }
-
-    writeMorningReport(checkpoint)
-    return nil
-}
-```
-
-**Test scenarios:**
-- Full pipeline completes for Petstore (simplest spec)
-- Resume skips completed phases
-- Pipeline parks on repeated failure with morning report
-- `--phase` runs only the specified phase
-
-**Verification:** `go test ./...`, manual end-to-end: `printing-press print petstore`
-
----
-
-### Unit 10: Claude Code Skill - The `print` Skill
-
-**Goal:** Update the printing-press Claude Code skill to support the autonomous pipeline. User says "print me a gmail CLI" or `/printing-press gmail` and it runs the full pipeline.
-
-**Files:**
-- Update: `skills/printing-press/SKILL.md`
-
-**Approach:**
-
-Add a new workflow to the existing skill:
-
-**Workflow 0 (updated): Autonomous Pipeline**
-1. Parse API name from user's message
-2. Run `printing-press print <api-name> --output ./<api-name>-cli`
-3. Monitor output for phase completion messages
-4. On completion: present morning report, show example commands
-5. On failure: show error, offer to resume or debug specific phase
-
-For overnight/autonomous mode (when invoked by nightnight-style chaining):
-- Read checkpoint, determine current phase
-- Execute next phase
-- If more phases remain: CronCreate to chain back in 30 seconds
-- If pipeline complete: write morning report, stop chaining
-
-**Test scenarios:**
-- User says "print me a stripe CLI" - full pipeline runs
-- User says "resume gmail" - picks up from checkpoint
-
-**Verification:** Manual test in Claude Code session
+**Verification:** Petstore CLI works, all plan.md files exist, morning report is readable
 
 ## Dependencies
 
 ```
-Unit 1 (Checkpoint) - foundation, everything depends on this
-Unit 2 (Preflight) - depends on Unit 1
-Unit 3 (Discover) - depends on Unit 1
-Unit 4 (Scaffold) - depends on Unit 1
-Unit 5 (Enrich) - depends on Unit 1
-Unit 6 (Regenerate) - depends on Unit 5
-Unit 7 (Review) - depends on Unit 1
-Unit 8 (Ship) - depends on Unit 1
-Unit 9 (Orchestrator) - depends on Units 1-8
-Unit 10 (Skill) - depends on Unit 9
+Unit 1 (State) - foundation
+Unit 2 (print command) - depends on Unit 1
+Unit 3 (Skill) - depends on Unit 2
+Unit 4 (Discovery) - independent
+Unit 5 (Overlay) - independent
+Unit 6 (E2E test) - depends on all
 ```
 
-Units 2-5, 7-8 can be built in parallel after Unit 1.
-Unit 6 needs Unit 5's overlay types.
-Unit 9 wires everything together.
-Unit 10 is the skill layer on top.
+Units 1, 4, 5 can be built in parallel.
+Unit 2 wires Unit 1 into the CLI.
+Unit 3 is the skill layer.
+Unit 6 is verification.
 
 ## What "Done" Looks Like
 
 ```bash
-# One command, one API name, finished CLI
+# Two words. That's the input.
 printing-press print gmail
 
-# Output:
-# [preflight] Go 1.23 OK, disk OK
-# [discover] Found Gmail spec via apis-guru (79 endpoints, OAuth2)
-# [scaffold] Generated gmail-cli (7/7 gates passed)
-# [enrich] Applied 12 enrichments (userId default=me, 3 upload hints, 8 better descriptions)
-# [regenerate] Re-generated with enrichments (7/7 gates passed)
-# [review] Quality score: 87/100 (2 minor issues)
-# [ship] Initialized git repo, wrote morning report
-#
-# gmail-cli ready at ./gmail-cli/
-# Resources: messages, labels, drafts, threads, history, settings, profile
-# Auth: OAuth2 (run `gmail-cli auth login` to authenticate)
-# Total time: 4m 23s
+# Pipeline creates:
+# docs/plans/gmail-pipeline/
+#   00-preflight-plan.md    <- ce:plan writes this with full research
+#   01-scaffold-plan.md     <- ce:plan writes this after preflight completes
+#   02-enrich-plan.md       <- ce:plan deep-analyzes the spec and API docs
+#   03-regenerate-plan.md   <- ce:plan plans the overlay merge
+#   04-review-plan.md       <- ce:plan plans the quality review
+#   05-ship-plan.md         <- ce:plan plans the finalization
+#   state.json              <- tracks which phases are done
+#   conventions.json        <- cached spec analysis
+#   overlay.yaml            <- enrichments from phase 2
+#   report.md               <- morning report
 
+# Each plan is a real plan. Research agents. Acceptance criteria. Implementation units.
+# Each plan gets executed by ce:work with task tracking and test verification.
+# Each phase chains to the next via CronCreate. Fresh context every time.
+
+# Output:
 cd gmail-cli && go build -o ./gmail ./cmd/gmail-cli
 ./gmail auth login --client-id $GOOGLE_CLIENT_ID
-./gmail messages list me --limit 5
-./gmail doctor
+./gmail messages list me --limit 5    # 'me' is the default, detected from spec hints
+./gmail doctor                        # colored output, all green
 ```
 
-That's not a scaffold. That's a finished CLI. From two words.
+That's not a scaffold. That's a finished CLI. From two words. Built by 6 plans, each one meticulous, each one researched, each one executed and verified. The same workflow that produces 70 plan files and 263 commits.
 
-## Sources & References
+Plan, execute, plan, execute. All the way down.
 
-### Internal
-- OSC nightnight chaining pattern: `~/.claude/skills/osc-nightnight/SKILL.md` - checkpoint JSON, CronCreate chaining, mechanical budget gates, JSONL events
-- OSC work execution: `~/.claude/skills/osc-work/SKILL.md` - phased CI execution, conventions cache, post-submission monitoring
-- OSC plan discovery: `~/.claude/skills/osc-plan/SKILL.md` - 7-layer discovery pipeline, per-issue scoring
+## Sources
+
+- Matt Van Horn, "Every Claude Code Hack I Know (March 2026)" - the plan-first philosophy
+- OSC nightnight: `~/.claude/skills/osc-nightnight/SKILL.md` - session chaining, budget gates, CronCreate
+- OSC work: `~/.claude/skills/osc-work/SKILL.md` - phased execution, conventions cache
+- Compound Engineering ce:plan - parallel research agents, structured plans
 - Press generator: `internal/generator/generator.go` - 14 templates, 7 quality gates
-- Press parser: `internal/openapi/parser.go` - 1,900 lines, extracts auth/resources/params/pagination
-- Press spec types: `internal/spec/spec.go` - APISpec struct, validation
-- Known specs registry: `skills/printing-press/references/known-specs.md` - 12 verified URLs
-
-### External
-- apis-guru OpenAPI directory: `https://github.com/APIs-guru/openapi-directory` - 2,000+ pre-converted specs
-- Google Discovery -> OpenAPI conversions at `APIs-guru/openapi-directory/APIs/googleapis.com/`
+- Press parser: `internal/openapi/parser.go` - spec extraction
+- apis-guru: `github.com/APIs-guru/openapi-directory` - 2,000+ pre-converted specs
