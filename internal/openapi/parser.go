@@ -331,6 +331,108 @@ func mapResources(doc *openapi3.T, out *spec.APISpec, basePath string) {
 		}
 		out.Resources[primaryName] = resource
 	}
+
+	filterGlobalParams(out.Resources)
+}
+
+func filterGlobalParams(resources map[string]spec.Resource) {
+	totalEndpoints := 0
+	paramCounts := map[string]int{}
+
+	walkResourceEndpoints(resources, func(endpoint *spec.Endpoint) {
+		totalEndpoints++
+
+		seen := map[string]struct{}{}
+		for _, param := range endpoint.Params {
+			if param.Positional {
+				continue
+			}
+			if _, ok := seen[param.Name]; ok {
+				continue
+			}
+			seen[param.Name] = struct{}{}
+			paramCounts[param.Name]++
+		}
+	})
+
+	if totalEndpoints == 0 {
+		return
+	}
+
+	globalParams := map[string]int{}
+	threshold := float64(totalEndpoints) * 0.8
+	for name, count := range paramCounts {
+		if float64(count) > threshold {
+			globalParams[name] = count
+		}
+	}
+
+	if len(globalParams) == 0 {
+		return
+	}
+
+	walkResourceEndpoints(resources, func(endpoint *spec.Endpoint) {
+		filtered := endpoint.Params[:0]
+		for _, param := range endpoint.Params {
+			if !param.Positional {
+				if _, ok := globalParams[param.Name]; ok {
+					continue
+				}
+			}
+			filtered = append(filtered, param)
+		}
+		endpoint.Params = filtered
+	})
+
+	names := make([]string, 0, len(globalParams))
+	for name := range globalParams {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	for _, name := range names {
+		warnf("filtered global query param %q from generated commands: present on %d/%d endpoints", name, globalParams[name], totalEndpoints)
+	}
+}
+
+func walkResourceEndpoints(resources map[string]spec.Resource, fn func(endpoint *spec.Endpoint)) {
+	resourceNames := make([]string, 0, len(resources))
+	for name := range resources {
+		resourceNames = append(resourceNames, name)
+	}
+	sort.Strings(resourceNames)
+
+	for _, name := range resourceNames {
+		resource := resources[name]
+		walkResourceEndpointsInResource(&resource, fn)
+		resources[name] = resource
+	}
+}
+
+func walkResourceEndpointsInResource(resource *spec.Resource, fn func(endpoint *spec.Endpoint)) {
+	endpointNames := make([]string, 0, len(resource.Endpoints))
+	for name := range resource.Endpoints {
+		endpointNames = append(endpointNames, name)
+	}
+	sort.Strings(endpointNames)
+
+	for _, name := range endpointNames {
+		endpoint := resource.Endpoints[name]
+		fn(&endpoint)
+		resource.Endpoints[name] = endpoint
+	}
+
+	subNames := make([]string, 0, len(resource.SubResources))
+	for name := range resource.SubResources {
+		subNames = append(subNames, name)
+	}
+	sort.Strings(subNames)
+
+	for _, name := range subNames {
+		subResource := resource.SubResources[name]
+		walkResourceEndpointsInResource(&subResource, fn)
+		resource.SubResources[name] = subResource
+	}
 }
 
 func mapTagDescriptions(tags openapi3.Tags) map[string]string {
