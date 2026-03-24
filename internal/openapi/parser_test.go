@@ -21,7 +21,8 @@ func TestParsePetstore(t *testing.T) {
 	require.NoError(t, err)
 
 	assert.Equal(t, "petstore", parsed.Name)
-	assert.Equal(t, "/api/v3", parsed.BaseURL)
+	assert.Equal(t, "", parsed.BaseURL)
+	assert.Equal(t, "/api/v3", parsed.BasePath)
 	assert.NotEmpty(t, parsed.Resources)
 
 	hasEndpoint := false

@@ -23,7 +23,9 @@ type Config struct {
 
 func Load(configPath string) (*Config, error) {
 	cfg := &Config{
+{{- if .BaseURL}}
 		BaseURL: "{{.BaseURL}}",
+{{- end}}
 	}
 
 	// Resolve config path

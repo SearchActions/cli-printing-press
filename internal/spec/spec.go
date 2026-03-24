@@ -12,6 +12,7 @@ type APISpec struct {
 	Description string              `yaml:"description"`
 	Version     string              `yaml:"version"`
 	BaseURL     string              `yaml:"base_url"`
+	BasePath    string              `yaml:"base_path,omitempty"`
 	Auth        AuthConfig          `yaml:"auth"`
 	Config      ConfigSpec          `yaml:"config"`
 	Resources   map[string]Resource `yaml:"resources"`
@@ -104,7 +105,7 @@ func (s *APISpec) Validate() error {
 	if s.Name == "" {
 		return fmt.Errorf("name is required")
 	}
-	if s.BaseURL == "" {
+	if s.BaseURL == "" && s.BasePath == "" {
 		return fmt.Errorf("base_url is required")
 	}
 	if len(s.Resources) == 0 {

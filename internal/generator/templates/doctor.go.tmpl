@@ -47,6 +47,8 @@ func newDoctorCmd(flags *rootFlags) *cobra.Command {
 					resp.Body.Close()
 					report["api"] = fmt.Sprintf("reachable (HTTP %d)", resp.StatusCode)
 				}
+			} else if cfg != nil && cfg.BaseURL == "" {
+				report["api"] = "not configured (set base_url in config file)"
 			}
 
 			report["version"] = version

@@ -40,12 +40,17 @@ func Parse(data []byte) (*spec.APISpec, error) {
 	}
 
 	baseURL := ""
+	basePath := ""
 	if len(doc.Servers) > 0 && doc.Servers[0] != nil {
-		baseURL = strings.TrimRight(strings.TrimSpace(doc.Servers[0].URL), "/")
-		if baseURL != "" {
-			lowerBaseURL := strings.ToLower(baseURL)
-			if !strings.HasPrefix(lowerBaseURL, "http://") && !strings.HasPrefix(lowerBaseURL, "https://") {
-				warnf("server URL %q has no http scheme; generated CLI may require manual base_url config", baseURL)
+		serverURL := strings.TrimRight(strings.TrimSpace(doc.Servers[0].URL), "/")
+		if serverURL != "" {
+			lowerURL := strings.ToLower(serverURL)
+			if strings.HasPrefix(lowerURL, "http://") || strings.HasPrefix(lowerURL, "https://") {
+				baseURL = serverURL
+			} else {
+				// Relative URL - store the path portion to append when user configures a host
+				basePath = serverURL
+				warnf("server URL %q is relative; generated CLI will require base_url in config (e.g. https://example.com%s)", serverURL, serverURL)
 			}
 		}
 	}
@@ -55,6 +60,7 @@ func Parse(data []byte) (*spec.APISpec, error) {
 		Description: description,
 		Version:     version,
 		BaseURL:     baseURL,
+		BasePath:    basePath,
 		Auth:        mapAuth(doc, name),
 		Config: spec.ConfigSpec{
 			Format: "toml",
@@ -64,7 +70,11 @@ func Parse(data []byte) (*spec.APISpec, error) {
 		Types:     map[string]spec.TypeDef{},
 	}
 
-	mapResources(doc, result, baseURLPath(baseURL))
+	resourceBasePath := basePath
+	if baseURL != "" {
+		resourceBasePath = baseURLPath(baseURL)
+	}
+	mapResources(doc, result, resourceBasePath)
 	mapTypes(doc, result)
 
 	if err := result.Validate(); err != nil {
@@ -255,9 +265,12 @@ func mapResources(doc *openapi3.T, out *spec.APISpec, basePath string) {
 			}
 
 			endpointName := resolveEndpointName(method, path, op, resource.Endpoints, resourceName, basePath)
-			description := firstNonEmpty(strings.TrimSpace(op.Summary), strings.TrimSpace(op.Description))
-			if shouldHumanizeDescription(description) {
-				description = humanizeDescription(description)
+			summary := strings.TrimSpace(op.Summary)
+			desc := strings.TrimSpace(op.Description)
+			description := selectDescription(summary, desc)
+
+			if description == "" {
+				description = humanizeEndpointName(endpointName)
 			}
 
 			endpoint := spec.Endpoint{
@@ -275,6 +288,9 @@ func mapResources(doc *openapi3.T, out *spec.APISpec, basePath string) {
 			resource.Endpoints[endpointName] = endpoint
 		}
 
+		if resource.Description == "" {
+			resource.Description = humanizeResourceName(resourceName)
+		}
 		out.Resources[resourceName] = resource
 	}
 }
@@ -329,8 +345,11 @@ func tagDescriptionKeys(name string) []string {
 		keys = append(keys, key)
 	}
 
+	snake := toSnakeCase(name)
+	kebab := strings.ReplaceAll(snake, "_", "-")
 	bases := []string{
-		toSnakeCase(name),
+		snake,
+		kebab,
 		strings.ToLower(name),
 	}
 	for _, base := range bases {
@@ -347,7 +366,6 @@ func tagDescriptionKeys(name string) []string {
 
 func resolveEndpointName(method, path string, op *openapi3.Operation, existing map[string]spec.Endpoint, resourceName, basePath string) string {
 	name := operationIDToName(operationID(op), resourceName)
-	name = strings.ReplaceAll(name, "-", "_")
 	if name == "" {
 		name = defaultEndpointName(method, path)
 	}
@@ -418,12 +436,16 @@ func mapParameters(pathItem *openapi3.PathItem, op *openapi3.Operation) []spec.P
 		}
 
 		schema := schemaRefValue(parameter.Schema)
+		description := strings.TrimSpace(parameter.Description)
+		if description == "" {
+			description = humanizeFieldName(parameter.Name)
+		}
 		param := spec.Param{
 			Name:        parameter.Name,
 			Type:        mapSchemaType(schema),
 			Required:    parameter.Required,
 			Positional:  parameter.In == openapi3.ParameterInPath,
-			Description: strings.TrimSpace(parameter.Description),
+			Description: description,
 			Enum:        schemaEnum(schema),
 			Format:      schemaFormat(schema),
 		}
@@ -508,11 +530,15 @@ func mapRequestBody(requestBodyRef *openapi3.RequestBodyRef, method, path string
 			warnf("skipping body field %q: complex type not supported as CLI flag", name)
 			continue
 		}
+		description := schemaDescription(schema)
+		if description == "" {
+			description = humanizeFieldName(name)
+		}
 		param := spec.Param{
 			Name:        name,
 			Type:        mapSchemaType(schema),
 			Required:    isRequired(required, name),
-			Description: schemaDescription(schema),
+			Description: description,
 			Enum:        schemaEnum(schema),
 			Format:      schemaFormat(schema),
 		}
@@ -899,7 +925,7 @@ func resourceNameFromPath(path, basePath string) string {
 	if isPathParamSegment(segments[0]) {
 		return ""
 	}
-	return sanitizeResourceName(toSnakeCase(segments[0]))
+	return sanitizeResourceName(strings.ReplaceAll(toSnakeCase(segments[0]), "_", "-"))
 }
 
 func endpointCollisionSuffix(path, resourceName, basePath string) string {
@@ -1044,6 +1070,12 @@ func operationIDResourceVariants(resourceName string) []string {
 		addVariant(strings.TrimSuffix(resource, "s"))
 	} else {
 		addVariant(resource + "s")
+	}
+	// Add collapsed variant (no underscores) for operationIDs like "connectedapps"
+	collapsed := strings.ReplaceAll(resource, "_", "")
+	addVariant(collapsed)
+	if strings.HasSuffix(collapsed, "s") && len(collapsed) > 1 {
+		addVariant(strings.TrimSuffix(collapsed, "s"))
 	}
 
 	return variants
@@ -1293,6 +1325,24 @@ func shouldHumanizeDescription(description string) bool {
 	return false
 }
 
+func looksLikeMangledOperationID(s string) bool {
+	s = strings.TrimSpace(s)
+	if s == "" || strings.ContainsAny(s, " \t\r\n") {
+		return false
+	}
+	// Single word, no spaces - likely an operationID
+	// Check for CamelCase
+	if shouldHumanizeDescription(s) {
+		return true
+	}
+	// Check for lowercase concatenated words (e.g. "deleteexternalid")
+	// Heuristic: single token > 12 chars with no separators
+	if len(s) > 12 && !strings.ContainsAny(s, " _-\t") {
+		return true
+	}
+	return false
+}
+
 func humanizeDescription(description string) string {
 	description = strings.TrimSpace(description)
 	if description == "" {
@@ -1395,6 +1445,81 @@ func firstNonEmpty(values ...string) string {
 		}
 	}
 	return ""
+}
+
+func selectDescription(summary, description string) string {
+	summaryHasSpaces := summary != "" && strings.ContainsAny(summary, " \t")
+
+	// If summary is a real sentence (has spaces), prefer it
+	if summaryHasSpaces {
+		return summary
+	}
+
+	// Summary is a single word or empty - prefer the description if available
+	if description != "" {
+		return description
+	}
+
+	// No description - use summary, humanizing if it looks like a mangled operationID
+	if summary != "" {
+		if shouldHumanizeDescription(summary) {
+			return humanizeDescription(summary)
+		}
+		if looksLikeMangledOperationID(summary) {
+			return humanizeConcatenated(summary)
+		}
+		return summary
+	}
+
+	return ""
+}
+
+func humanizeEndpointName(name string) string {
+	words := strings.Split(strings.ReplaceAll(name, "_", "-"), "-")
+	if len(words) == 0 {
+		return ""
+	}
+	sentence := strings.Join(words, " ")
+	runes := []rune(sentence)
+	runes[0] = unicode.ToUpper(runes[0])
+	return string(runes)
+}
+
+func humanizeResourceName(name string) string {
+	words := strings.Split(strings.ReplaceAll(name, "_", "-"), "-")
+	if len(words) == 0 {
+		return ""
+	}
+	sentence := "Manage " + strings.Join(words, " ")
+	return sentence
+}
+
+func humanizeConcatenated(s string) string {
+	lower := strings.ToLower(s)
+	// Try to split on known verb prefixes
+	prefixes := []string{"delete", "create", "update", "get", "list", "search", "revoke", "exchange", "rotate", "authenticate", "migrate"}
+	for _, prefix := range prefixes {
+		if strings.HasPrefix(lower, prefix) && len(lower) > len(prefix) {
+			rest := lower[len(prefix):]
+			words := strings.Fields(strings.ReplaceAll(strings.ReplaceAll(toSnakeCase(rest), "_", " "), "-", " "))
+			if len(words) > 0 {
+				sentence := strings.Title(prefix) + " " + strings.Join(words, " ")
+				return sentence
+			}
+		}
+	}
+	return s
+}
+
+func humanizeFieldName(name string) string {
+	words := strings.Fields(strings.ReplaceAll(strings.ReplaceAll(toSnakeCase(name), "_", " "), "-", " "))
+	if len(words) == 0 {
+		return ""
+	}
+	sentence := strings.Join(words, " ")
+	runes := []rune(sentence)
+	runes[0] = unicode.ToUpper(runes[0])
+	return string(runes)
 }
 
 func warnf(format string, args ...any) {

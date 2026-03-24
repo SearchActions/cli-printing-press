@@ -39,6 +39,7 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 		"envVarPlaceholder": envVarPlaceholder,
 		"add":              func(a, b int) int { return a + b },
 		"oneline":          oneline,
+		"flagName":         flagName,
 	}
 	return g
 }
@@ -269,6 +270,10 @@ func oneline(s string) string {
 		}
 	}
 	return s
+}
+
+func flagName(name string) string {
+	return strings.ReplaceAll(name, "_", "-")
 }
 
 func envVarPlaceholder(envVar string) string {
