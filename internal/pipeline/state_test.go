@@ -1,6 +1,7 @@
 package pipeline
 
 import (
+	"encoding/json"
 	"os"
 	"testing"
 
@@ -24,7 +25,7 @@ func TestStateRoundTrip(t *testing.T) {
 	s := NewState("roundtrip-test", "/tmp/rt-cli")
 	s.SpecPath = "/tmp/spec.yaml"
 	s.Complete(PhasePreflight)
-	s.MarkPlanned(PhaseScaffold)
+	s.MarkSeedWritten(PhaseScaffold)
 
 	require.NoError(t, s.Save())
 	defer os.RemoveAll(PipelineDir("roundtrip-test"))
@@ -35,8 +36,11 @@ func TestStateRoundTrip(t *testing.T) {
 	assert.Equal(t, "roundtrip-test", loaded.APIName)
 	assert.Equal(t, "/tmp/spec.yaml", loaded.SpecPath)
 	assert.Equal(t, StatusCompleted, loaded.Phases[PhasePreflight].Status)
+	assert.Equal(t, PlanStatusCompleted, loaded.Phases[PhasePreflight].PlanStatus)
 	assert.Equal(t, StatusPlanned, loaded.Phases[PhaseScaffold].Status)
+	assert.Equal(t, PlanStatusSeed, loaded.Phases[PhaseScaffold].PlanStatus)
 	assert.Equal(t, StatusPending, loaded.Phases[PhaseEnrich].Status)
+	assert.Empty(t, loaded.Phases[PhaseEnrich].PlanStatus)
 }
 
 func TestNextPhase(t *testing.T) {
@@ -45,6 +49,9 @@ func TestNextPhase(t *testing.T) {
 
 	s.Complete(PhasePreflight)
 	assert.Equal(t, PhaseScaffold, s.NextPhase())
+
+	s.Complete(PhaseScaffold)
+	assert.Equal(t, PhaseEnrich, s.NextPhase())
 
 	for _, name := range PhaseOrder {
 		s.Complete(name)
@@ -56,15 +63,54 @@ func TestNextPhase(t *testing.T) {
 func TestPhaseTransitions(t *testing.T) {
 	s := NewState("transition-test", "/tmp/test")
 
-	s.MarkPlanned(PhasePreflight)
+	s.MarkSeedWritten(PhasePreflight)
 	assert.Equal(t, StatusPlanned, s.Phases[PhasePreflight].Status)
+	assert.Equal(t, PlanStatusSeed, s.Phases[PhasePreflight].PlanStatus)
+
+	s.MarkExpanded(PhasePreflight)
+	assert.Equal(t, StatusPlanned, s.Phases[PhasePreflight].Status)
+	assert.Equal(t, PlanStatusExpanded, s.Phases[PhasePreflight].PlanStatus)
 
 	s.Start(PhasePreflight)
 	assert.Equal(t, StatusExecuting, s.Phases[PhasePreflight].Status)
 
 	s.Complete(PhasePreflight)
 	assert.Equal(t, StatusCompleted, s.Phases[PhasePreflight].Status)
+	assert.Equal(t, PlanStatusCompleted, s.Phases[PhasePreflight].PlanStatus)
 
 	s.Fail(PhaseScaffold)
 	assert.Equal(t, StatusFailed, s.Phases[PhaseScaffold].Status)
+}
+
+func TestMarkExpandedFromPendingMarksPlanned(t *testing.T) {
+	s := NewState("expanded-test", "/tmp/test")
+
+	s.MarkExpanded(PhaseScaffold)
+
+	assert.Equal(t, StatusPlanned, s.Phases[PhaseScaffold].Status)
+	assert.Equal(t, PlanStatusExpanded, s.Phases[PhaseScaffold].PlanStatus)
+}
+
+func TestIsSeedBackwardCompatible(t *testing.T) {
+	s := NewState("seed-test", "/tmp/test")
+	assert.True(t, s.IsSeed(PhasePreflight))
+
+	s.MarkSeedWritten(PhasePreflight)
+	assert.True(t, s.IsSeed(PhasePreflight))
+
+	s.MarkExpanded(PhasePreflight)
+	assert.False(t, s.IsSeed(PhasePreflight))
+}
+
+func TestPhaseStateJSONIncludesPlanStatus(t *testing.T) {
+	state := PhaseState{
+		Status:     StatusPlanned,
+		PlanPath:   "docs/plans/test.md",
+		PlanStatus: PlanStatusSeed,
+	}
+
+	data, err := json.Marshal(state)
+	require.NoError(t, err)
+
+	assert.JSONEq(t, `{"status":"planned","plan_path":"docs/plans/test.md","plan_status":"seed"}`, string(data))
 }

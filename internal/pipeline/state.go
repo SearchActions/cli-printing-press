@@ -36,6 +36,12 @@ const (
 	StatusFailed    = "failed"
 )
 
+const (
+	PlanStatusSeed      = "seed"
+	PlanStatusExpanded  = "expanded"
+	PlanStatusCompleted = "completed"
+)
+
 // PipelineState tracks which phases are done across sessions.
 type PipelineState struct {
 	APIName        string                `json:"api_name"`
@@ -49,8 +55,9 @@ type PipelineState struct {
 
 // PhaseState tracks a single phase.
 type PhaseState struct {
-	Status   string `json:"status"`
-	PlanPath string `json:"plan_path,omitempty"`
+	Status     string `json:"status"`
+	PlanPath   string `json:"plan_path,omitempty"`
+	PlanStatus string `json:"plan_status,omitempty"`
 }
 
 // PipelineDir returns the pipeline state directory path.
@@ -128,10 +135,29 @@ func (s *PipelineState) MarkPlanned(phase string) {
 	s.Phases[phase] = p
 }
 
+// MarkSeedWritten marks a phase as having its initial seed plan written.
+func (s *PipelineState) MarkSeedWritten(phase string) {
+	s.MarkPlanned(phase)
+	p := s.Phases[phase]
+	p.PlanStatus = PlanStatusSeed
+	s.Phases[phase] = p
+}
+
+// MarkExpanded marks a phase plan as expanded beyond the initial seed.
+func (s *PipelineState) MarkExpanded(phase string) {
+	p := s.Phases[phase]
+	if p.Status == "" || p.Status == StatusPending {
+		p.Status = StatusPlanned
+	}
+	p.PlanStatus = PlanStatusExpanded
+	s.Phases[phase] = p
+}
+
 // Complete marks a phase as completed.
 func (s *PipelineState) Complete(phase string) {
 	p := s.Phases[phase]
 	p.Status = StatusCompleted
+	p.PlanStatus = PlanStatusCompleted
 	s.Phases[phase] = p
 }
 
@@ -145,7 +171,7 @@ func (s *PipelineState) Fail(phase string) {
 // NextPhase returns the name of the next incomplete phase, or "".
 func (s *PipelineState) NextPhase() string {
 	for _, name := range PhaseOrder {
-		if s.Phases[name].Status != StatusCompleted {
+		if s.Phases[name].PlanStatus != PlanStatusCompleted {
 			return name
 		}
 	}
@@ -160,4 +186,9 @@ func (s *PipelineState) IsComplete() bool {
 // PlanPath returns the plan.md path for a given phase.
 func (s *PipelineState) PlanPath(phase string) string {
 	return s.Phases[phase].PlanPath
+}
+
+// IsSeed reports whether a phase is still at the seed-plan stage.
+func (s *PipelineState) IsSeed(phase string) bool {
+	return s.Phases[phase].PlanStatus == "" || s.Phases[phase].PlanStatus == PlanStatusSeed
 }
