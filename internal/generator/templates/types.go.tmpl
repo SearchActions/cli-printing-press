@@ -1,8 +1,8 @@
 package types
 {{range $name, $typeDef := .Types}}
-type {{$name}} struct {
+type {{safeTypeName $name}} struct {
 {{- range $typeDef.Fields}}
-	{{title .Name}} {{goType .Type}} `json:"{{.Name}}"`
+	{{camel .Name}} {{goType .Type}} `json:"{{.Name}}"`
 {{- end}}
 }
 {{end}}

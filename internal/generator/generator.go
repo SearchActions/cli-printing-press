@@ -40,6 +40,7 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 		"add":               func(a, b int) int { return a + b },
 		"oneline":           oneline,
 		"flagName":          flagName,
+		"safeTypeName":      safeTypeName,
 		"exampleLine":       g.exampleLine,
 	}
 	return g
@@ -163,15 +164,22 @@ func (g *Generator) renderTemplate(tmplName, outPath string, data any) error {
 // Template helper functions
 
 func toCamel(s string) string {
+	// Strip characters that are invalid in Go identifiers
+	s = strings.TrimLeft(s, "$")
 	parts := strings.FieldsFunc(s, func(r rune) bool {
-		return r == '_' || r == '-' || r == ' '
+		return r == '_' || r == '-' || r == ' ' || r == '.' || r == '/' || r == '\\' || r == '$' || r == '#' || r == '@'
 	})
 	for i, p := range parts {
 		if len(p) > 0 {
 			parts[i] = strings.ToUpper(p[:1]) + p[1:]
 		}
 	}
-	return strings.Join(parts, "")
+	result := strings.Join(parts, "")
+	// Ensure starts with letter
+	if len(result) > 0 && !unicode.IsLetter(rune(result[0])) {
+		result = "V" + result
+	}
+	return result
 }
 
 func toSnake(s string) string {
@@ -334,7 +342,25 @@ func (g *Generator) exampleLine(commandPath, endpointName string, endpoint spec.
 }
 
 func flagName(name string) string {
-	return strings.ReplaceAll(name, "_", "-")
+	name = strings.TrimLeft(name, "$")
+	name = strings.NewReplacer("_", "-", "/", "-", ".", "-", "\\", "-").Replace(name)
+	return strings.Trim(name, "-")
+}
+
+func safeTypeName(name string) string {
+	name = strings.TrimLeft(name, "$")
+	name = strings.NewReplacer(".", "_", "/", "_", "\\", "_", "-", "_", " ", "_").Replace(name)
+	var b strings.Builder
+	for _, r := range name {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) || r == '_' {
+			b.WriteRune(r)
+		}
+	}
+	result := b.String()
+	if len(result) > 0 && !unicode.IsLetter(rune(result[0])) {
+		result = "T" + result
+	}
+	return result
 }
 
 func envVarPlaceholder(envVar string) string {

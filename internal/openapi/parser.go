@@ -906,10 +906,17 @@ func mapTypes(doc *openapi3.T, out *spec.APISpec) {
 	}
 	sort.Strings(names)
 
+	usedTypeNames := map[string]int{}
 	for _, name := range names {
 		goName := sanitizeTypeName(name)
 		if goName == "" {
 			continue
+		}
+		if count, exists := usedTypeNames[goName]; exists {
+			usedTypeNames[goName] = count + 1
+			goName = fmt.Sprintf("%s%d", goName, count+1)
+		} else {
+			usedTypeNames[goName] = 1
 		}
 
 		schemaRef := schemaMap[name]
