@@ -32,7 +32,7 @@ func Parse(data []byte) (*spec.APISpec, error) {
 	description := ""
 	version := ""
 	if doc.Info != nil {
-		if v := toKebabCase(doc.Info.Title); v != "" {
+		if v := cleanSpecName(doc.Info.Title); v != "" {
 			name = v
 		}
 		description = strings.TrimSpace(doc.Info.Description)
@@ -42,6 +42,12 @@ func Parse(data []byte) (*spec.APISpec, error) {
 	baseURL := ""
 	if len(doc.Servers) > 0 && doc.Servers[0] != nil {
 		baseURL = strings.TrimRight(strings.TrimSpace(doc.Servers[0].URL), "/")
+		if baseURL != "" {
+			lowerBaseURL := strings.ToLower(baseURL)
+			if !strings.HasPrefix(lowerBaseURL, "http://") && !strings.HasPrefix(lowerBaseURL, "https://") {
+				warnf("server URL %q has no http scheme; generated CLI may require manual base_url config", baseURL)
+			}
+		}
 	}
 
 	result := &spec.APISpec{
@@ -249,10 +255,15 @@ func mapResources(doc *openapi3.T, out *spec.APISpec, basePath string) {
 			}
 
 			endpointName := resolveEndpointName(method, path, op, resource.Endpoints, resourceName, basePath)
+			description := firstNonEmpty(strings.TrimSpace(op.Summary), strings.TrimSpace(op.Description))
+			if shouldHumanizeDescription(description) {
+				description = humanizeDescription(description)
+			}
+
 			endpoint := spec.Endpoint{
 				Method:      strings.ToUpper(method),
 				Path:        path,
-				Description: firstNonEmpty(strings.TrimSpace(op.Summary), strings.TrimSpace(op.Description)),
+				Description: description,
 				Params:      mapParameters(pathItem, op),
 				Body:        mapRequestBody(op.RequestBody, method, path),
 			}
@@ -274,12 +285,10 @@ func mapTagDescriptions(tags openapi3.Tags) map[string]string {
 		if tag == nil {
 			continue
 		}
-		name := toSnakeCase(tag.Name)
-		if name == "" {
-			continue
-		}
 		if desc := strings.TrimSpace(tag.Description); desc != "" {
-			out[name] = desc
+			for _, key := range tagDescriptionKeys(tag.Name) {
+				out[key] = desc
+			}
 		}
 	}
 	return out
@@ -290,11 +299,50 @@ func resourceDescription(op *openapi3.Operation, tagDescriptions map[string]stri
 		return ""
 	}
 	for _, tag := range op.Tags {
-		if desc := tagDescriptions[toSnakeCase(tag)]; desc != "" {
-			return desc
+		for _, key := range tagDescriptionKeys(tag) {
+			if desc := tagDescriptions[key]; desc != "" {
+				return desc
+			}
 		}
 	}
 	return ""
+}
+
+func tagDescriptionKeys(name string) []string {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return nil
+	}
+
+	seen := map[string]struct{}{}
+	keys := make([]string, 0, 6)
+
+	add := func(key string) {
+		key = strings.TrimSpace(key)
+		if key == "" {
+			return
+		}
+		if _, ok := seen[key]; ok {
+			return
+		}
+		seen[key] = struct{}{}
+		keys = append(keys, key)
+	}
+
+	bases := []string{
+		toSnakeCase(name),
+		strings.ToLower(name),
+	}
+	for _, base := range bases {
+		add(base)
+		if strings.HasSuffix(base, "s") && len(base) > 1 {
+			add(strings.TrimSuffix(base, "s"))
+		} else {
+			add(base + "s")
+		}
+	}
+
+	return keys
 }
 
 func resolveEndpointName(method, path string, op *openapi3.Operation, existing map[string]spec.Endpoint, resourceName, basePath string) string {
@@ -456,6 +504,10 @@ func mapRequestBody(requestBodyRef *openapi3.RequestBodyRef, method, path string
 	body := make([]spec.Param, 0, len(names))
 	for _, name := range names {
 		schema := schemaRefValue(properties[name])
+		if isComplexBodyFieldSchema(schema) {
+			warnf("skipping body field %q: complex type not supported as CLI flag", name)
+			continue
+		}
 		param := spec.Param{
 			Name:        name,
 			Type:        mapSchemaType(schema),
@@ -762,6 +814,10 @@ func isObjectSchema(schema *openapi3.Schema) bool {
 		return true
 	}
 	return len(schema.Properties) > 0 || len(schema.AllOf) > 0
+}
+
+func isComplexBodyFieldSchema(schema *openapi3.Schema) bool {
+	return isObjectSchema(schema) || isArraySchema(schema)
 }
 
 func schemaTypeName(schemaRef *openapi3.SchemaRef, fallback string) string {
@@ -1138,6 +1194,137 @@ func toKebabCase(input string) string {
 	}
 
 	return strings.Trim(b.String(), "-")
+}
+
+func cleanSpecName(title string) string {
+	title = strings.ToLower(strings.TrimSpace(title))
+	if title == "" {
+		return "api"
+	}
+
+	title = strings.ReplaceAll(title, "open api", " ")
+
+	var normalized strings.Builder
+	lastSpace := true
+	for _, r := range title {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) {
+			normalized.WriteRune(r)
+			lastSpace = false
+			continue
+		}
+		if !lastSpace {
+			normalized.WriteByte(' ')
+			lastSpace = true
+		}
+	}
+
+	tokens := strings.Fields(normalized.String())
+	if len(tokens) == 0 {
+		return "api"
+	}
+
+	noiseWords := map[string]struct{}{
+		"swagger":       {},
+		"openapi":       {},
+		"rest":          {},
+		"api":           {},
+		"spec":          {},
+		"specification": {},
+		"preview":       {},
+		"http":          {},
+	}
+
+	filtered := make([]string, 0, len(tokens))
+	for _, token := range tokens {
+		if _, ok := noiseWords[token]; ok {
+			continue
+		}
+		if isVersionToken(token) {
+			continue
+		}
+		filtered = append(filtered, token)
+	}
+
+	name := toKebabCase(strings.Join(filtered, " "))
+	if name == "" {
+		return "api"
+	}
+	return name
+}
+
+func isVersionToken(token string) bool {
+	token = strings.TrimSpace(strings.ToLower(token))
+	if token == "" {
+		return false
+	}
+
+	if strings.HasPrefix(token, "v") {
+		token = strings.TrimPrefix(token, "v")
+		if token == "" {
+			return false
+		}
+	}
+
+	hasDigit := false
+	for _, r := range token {
+		if unicode.IsDigit(r) {
+			hasDigit = true
+			continue
+		}
+		if r == '.' {
+			continue
+		}
+		return false
+	}
+
+	return hasDigit
+}
+
+func shouldHumanizeDescription(description string) bool {
+	description = strings.TrimSpace(description)
+	if description == "" || strings.ContainsAny(description, " \t\r\n") {
+		return false
+	}
+	for i, r := range description {
+		if i > 0 && unicode.IsUpper(r) {
+			return true
+		}
+	}
+	return false
+}
+
+func humanizeDescription(description string) string {
+	description = strings.TrimSpace(description)
+	if description == "" {
+		return ""
+	}
+
+	var b strings.Builder
+	var prev rune
+	for i, r := range description {
+		if i > 0 && unicode.IsUpper(r) && unicode.IsLower(prev) {
+			b.WriteByte(' ')
+		}
+		b.WriteRune(r)
+		prev = r
+	}
+
+	words := strings.Fields(b.String())
+	if len(words) == 1 {
+		word := strings.ToLower(words[0])
+		if strings.HasSuffix(word, "apps") && len(word) > len("apps") {
+			words = []string{word[:len(word)-len("apps")], "apps"}
+		}
+	}
+
+	if len(words) == 0 {
+		return ""
+	}
+
+	sentence := strings.ToLower(strings.Join(words, " "))
+	runes := []rune(sentence)
+	runes[0] = unicode.ToUpper(runes[0])
+	return string(runes)
 }
 
 func toTypeName(input string) string {

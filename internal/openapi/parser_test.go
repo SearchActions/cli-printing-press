@@ -20,7 +20,7 @@ func TestParsePetstore(t *testing.T) {
 	parsed, err := Parse(data)
 	require.NoError(t, err)
 
-	assert.Equal(t, "swagger-petstore-openapi-30", parsed.Name)
+	assert.Equal(t, "petstore", parsed.Name)
 	assert.Equal(t, "/api/v3", parsed.BaseURL)
 	assert.NotEmpty(t, parsed.Resources)
 
@@ -46,7 +46,7 @@ func TestParseStytchOpenAPI(t *testing.T) {
 	parsed, err := Parse(data)
 	require.NoError(t, err)
 
-	assert.Equal(t, "stytch-api", parsed.Name)
+	assert.Equal(t, "stytch", parsed.Name)
 	assert.NotEmpty(t, parsed.BaseURL)
 	assert.NotEmpty(t, parsed.Resources)
 	assert.NotEmpty(t, parsed.Types)
@@ -242,6 +242,42 @@ func TestOperationIDToName(t *testing.T) {
 		t.Run(tt.operationID+"_"+tt.resourceName, func(t *testing.T) {
 			got := operationIDToName(tt.operationID, tt.resourceName)
 			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
+func TestCleanSpecName(t *testing.T) {
+	tests := []struct {
+		title string
+		want  string
+	}{
+		{title: "Swagger Petstore - OpenAPI 3.0", want: "petstore"},
+		{title: "Discord HTTP API (Preview)", want: "discord"},
+		{title: "Stytch API", want: "stytch"},
+		{title: "GitHub REST API", want: "github"},
+		{title: "", want: "api"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.title, func(t *testing.T) {
+			assert.Equal(t, tt.want, cleanSpecName(tt.title))
+		})
+	}
+}
+
+func TestHumanizeDescription(t *testing.T) {
+	tests := []struct {
+		input string
+		want  string
+	}{
+		{input: "Connectedapps", want: "Connected apps"},
+		{input: "DeleteBiometricRegistration", want: "Delete biometric registration"},
+		{input: "Already normal text", want: "Already normal text"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			assert.Equal(t, tt.want, humanizeDescription(tt.input))
 		})
 	}
 }

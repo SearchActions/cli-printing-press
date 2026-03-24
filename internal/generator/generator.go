@@ -261,7 +261,12 @@ func oneline(s string) string {
 	}
 	s = strings.TrimSpace(s)
 	if len(s) > 120 {
-		s = s[:117] + "..."
+		cut := s[:117]
+		if idx := strings.LastIndex(cut, " "); idx > 60 {
+			s = cut[:idx] + "..."
+		} else {
+			s = cut + "..."
+		}
 	}
 	return s
 }
