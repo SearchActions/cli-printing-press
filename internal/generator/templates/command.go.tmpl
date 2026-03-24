@@ -39,6 +39,7 @@ func new{{camel $.FuncPrefix}}{{camel $eName}}Cmd(flags *rootFlags) *cobra.Comma
 	cmd := &cobra.Command{
 		Use:   "{{$eName}}{{positionalArgs $endpoint}}",
 		Short: "{{oneline $endpoint.Description}}",
+		Example: "{{exampleLine $.CommandPath $eName $endpoint}}",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			c, err := flags.newClient()
 			if err != nil {

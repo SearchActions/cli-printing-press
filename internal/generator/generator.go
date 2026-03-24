@@ -40,6 +40,7 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 		"add":              func(a, b int) int { return a + b },
 		"oneline":          oneline,
 		"flagName":         flagName,
+		"exampleLine":      g.exampleLine,
 	}
 	return g
 }
@@ -86,11 +87,13 @@ func (g *Generator) Generate() error {
 		data := struct {
 			ResourceName string
 			FuncPrefix   string
+			CommandPath  string
 			Resource     spec.Resource
 			*spec.APISpec
 		}{
 			ResourceName: name,
 			FuncPrefix:   name,
+			CommandPath:  name,
 			Resource:     resource,
 			APISpec:      g.Spec,
 		}
@@ -104,11 +107,13 @@ func (g *Generator) Generate() error {
 			subData := struct {
 				ResourceName string
 				FuncPrefix   string
+				CommandPath  string
 				Resource     spec.Resource
 				*spec.APISpec
 			}{
 				ResourceName: subName,
 				FuncPrefix:   name + "-" + subName,
+				CommandPath:  name + " " + subName,
 				Resource:     subResource,
 				APISpec:      g.Spec,
 			}
@@ -291,6 +296,33 @@ func oneline(s string) string {
 		}
 	}
 	return s
+}
+
+func (g *Generator) exampleLine(commandPath, endpointName string, endpoint spec.Endpoint) string {
+	var parts []string
+	parts = append(parts, g.Spec.Name+"-cli")
+	parts = append(parts, strings.Fields(commandPath)...)
+	parts = append(parts, endpointName)
+
+	// Add positional arg placeholders
+	for _, p := range endpoint.Params {
+		if p.Positional {
+			parts = append(parts, "<"+p.Name+">")
+		}
+	}
+
+	// Add a sample flag for POST/PUT/PATCH
+	switch endpoint.Method {
+	case "POST", "PUT", "PATCH":
+		for _, p := range endpoint.Body {
+			if p.Required && p.Type == "string" {
+				parts = append(parts, "--"+strings.ReplaceAll(p.Name, "_", "-"), "value")
+				break
+			}
+		}
+	}
+
+	return "  " + strings.Join(parts, " ")
 }
 
 func flagName(name string) string {
