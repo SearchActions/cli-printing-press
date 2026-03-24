@@ -311,6 +311,9 @@ func mapResources(doc *openapi3.T, out *spec.APISpec, basePath string) {
 			}
 
 			endpoint.Response, endpoint.ResponsePath = mapResponse(op, endpointName)
+			if strings.ToUpper(method) == "GET" {
+				endpoint.Pagination = detectPagination(endpoint.Params, op)
+			}
 			targetEndpoints[endpointName] = endpoint
 		}
 
@@ -470,12 +473,17 @@ func mapParameters(pathItem *openapi3.PathItem, op *openapi3.Operation) []spec.P
 		}
 
 		schema := schemaRefValue(parameter.Schema)
+		// Skip parameters with names that can't be Go identifiers
+		paramName := parameter.Name
+		if strings.HasPrefix(paramName, "$") || strings.HasPrefix(paramName, ".") {
+			continue
+		}
 		description := strings.TrimSpace(parameter.Description)
 		if description == "" {
-			description = humanizeFieldName(parameter.Name)
+			description = humanizeFieldName(paramName)
 		}
 		param := spec.Param{
-			Name:        parameter.Name,
+			Name:        paramName,
 			Type:        mapSchemaType(schema),
 			Required:    parameter.Required,
 			Positional:  parameter.In == openapi3.ParameterInPath,
@@ -1531,6 +1539,86 @@ func selectDescription(summary, description string) string {
 	}
 
 	return ""
+}
+
+func detectPagination(params []spec.Param, op *openapi3.Operation) *spec.Pagination {
+	paramNames := map[string]struct{}{}
+	for _, p := range params {
+		paramNames[strings.ToLower(p.Name)] = struct{}{}
+	}
+
+	var pag spec.Pagination
+
+	// Detect limit param
+	for _, name := range []string{"limit", "maxresults", "pagesize", "page_size", "max_results", "per_page"} {
+		if _, ok := paramNames[name]; ok {
+			pag.LimitParam = name
+			break
+		}
+	}
+
+	// Detect cursor param and pagination type
+	for _, name := range []string{"pagetoken", "page_token"} {
+		if _, ok := paramNames[name]; ok {
+			pag.CursorParam = name
+			pag.Type = "page_token"
+			pag.NextCursorPath = "nextPageToken"
+			break
+		}
+	}
+	if pag.Type == "" {
+		for _, name := range []string{"after", "cursor"} {
+			if _, ok := paramNames[name]; ok {
+				pag.CursorParam = name
+				pag.Type = "cursor"
+				break
+			}
+		}
+	}
+	if pag.Type == "" {
+		for _, name := range []string{"offset"} {
+			if _, ok := paramNames[name]; ok {
+				pag.CursorParam = name
+				pag.Type = "offset"
+				break
+			}
+		}
+	}
+
+	// Also check for has_more in response schemas
+	if op != nil && op.Responses != nil {
+		success := selectSuccessResponse(op.Responses)
+		if success != nil && success.Value != nil {
+			schemaRef := selectResponseSchema(success.Value)
+			if schemaRef != nil && schemaRef.Value != nil {
+				for propName := range schemaRef.Value.Properties {
+					lower := strings.ToLower(propName)
+					if lower == "nextpagetoken" || lower == "next_page_token" {
+						pag.NextCursorPath = propName
+						if pag.Type == "" {
+							pag.Type = "page_token"
+						}
+					}
+					if lower == "has_more" || lower == "hasmore" {
+						pag.HasMoreField = propName
+						if pag.Type == "" {
+							pag.Type = "cursor"
+						}
+					}
+				}
+			}
+		}
+	}
+
+	// Only return pagination if we detected at least a limit or cursor param
+	if pag.LimitParam == "" && pag.CursorParam == "" {
+		return nil
+	}
+	if pag.Type == "" {
+		pag.Type = "offset" // default if we found limit but no cursor
+	}
+
+	return &pag
 }
 
 func humanizeEndpointName(name string) string {

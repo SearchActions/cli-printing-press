@@ -68,9 +68,11 @@ type ResponseDef struct {
 }
 
 type Pagination struct {
-	Type         string `yaml:"type"` // cursor, offset, page_token
-	CursorField  string `yaml:"cursor_field"`
-	HasMoreField string `yaml:"has_more_field"`
+	Type           string `yaml:"type"`             // cursor, offset, page_token
+	LimitParam     string `yaml:"limit_param"`      // query param name for page size (limit, maxResults, pageSize)
+	CursorParam    string `yaml:"cursor_param"`     // query param name for cursor (after, pageToken, offset)
+	NextCursorPath string `yaml:"next_cursor_path"` // response field with next cursor (nextPageToken, cursor)
+	HasMoreField   string `yaml:"has_more_field"`   // response field indicating more pages (has_more)
 }
 
 type TypeDef struct {

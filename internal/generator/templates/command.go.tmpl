@@ -33,6 +33,9 @@ func new{{camel $.FuncPrefix}}{{camel $eName}}Cmd(flags *rootFlags) *cobra.Comma
 {{- range $endpoint.Body}}
 	var body{{camel .Name}} {{goType .Type}}
 {{- end}}
+{{- if $endpoint.Pagination}}
+	var flagAll bool
+{{- end}}
 
 	cmd := &cobra.Command{
 		Use:   "{{$eName}}{{positionalArgs $endpoint}}",
@@ -55,6 +58,15 @@ func new{{camel $.FuncPrefix}}{{camel $eName}}Cmd(flags *rootFlags) *cobra.Comma
 {{- end}}
 
 {{- if eq $endpoint.Method "GET"}}
+{{- if $endpoint.Pagination}}
+			data, err := paginatedGet(c, path, map[string]string{
+{{- range $endpoint.Params}}
+{{- if not .Positional}}
+				"{{.Name}}": fmt.Sprintf("%v", flag{{camel .Name}}),
+{{- end}}
+{{- end}}
+			}, flagAll, "{{$endpoint.Pagination.CursorParam}}", "{{$endpoint.Pagination.NextCursorPath}}", "{{$endpoint.Pagination.HasMoreField}}")
+{{- else}}
 			params := map[string]string{}
 {{- range $endpoint.Params}}
 {{- if not .Positional}}
@@ -64,6 +76,7 @@ func new{{camel $.FuncPrefix}}{{camel $eName}}Cmd(flags *rootFlags) *cobra.Comma
 {{- end}}
 {{- end}}
 			data, err := c.Get(path, params)
+{{- end}}
 {{- else if eq $endpoint.Method "POST"}}
 			body := map[string]any{}
 {{- range $endpoint.Body}}
@@ -112,6 +125,9 @@ func new{{camel $.FuncPrefix}}{{camel $eName}}Cmd(flags *rootFlags) *cobra.Comma
 {{- if .Required}}
 	_ = cmd.MarkFlagRequired("{{flagName .Name}}")
 {{- end}}
+{{- end}}
+{{- if $endpoint.Pagination}}
+	cmd.Flags().BoolVar(&flagAll, "all", false, "Fetch all pages")
 {{- end}}
 
 	return cmd

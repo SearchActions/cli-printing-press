@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"sort"
 	"strings"
 	"text/tabwriter"
@@ -77,6 +78,87 @@ func newTabWriter(w io.Writer) *tabwriter.Writer {
 
 func replacePathParam(path, name, value string) string {
 	return strings.ReplaceAll(path, "{"+name+"}", value)
+}
+
+// paginatedGet fetches pages and concatenates array results.
+func paginatedGet(c interface {
+	Get(path string, params map[string]string) (json.RawMessage, error)
+}, path string, params map[string]string, fetchAll bool, cursorParam, nextCursorPath, hasMoreField string) (json.RawMessage, error) {
+	// Clean zero-value params
+	clean := map[string]string{}
+	for k, v := range params {
+		if v != "" && v != "0" && v != "false" {
+			clean[k] = v
+		}
+	}
+
+	if !fetchAll {
+		return c.Get(path, clean)
+	}
+
+	// Fetch all pages
+	var allItems []json.RawMessage
+	page := 0
+	for {
+		page++
+		fmt.Fprintf(os.Stderr, "fetching page %d...\n", page)
+
+		data, err := c.Get(path, clean)
+		if err != nil {
+			return nil, err
+		}
+
+		// Try to extract items array
+		var items []json.RawMessage
+		if json.Unmarshal(data, &items) == nil {
+			allItems = append(allItems, items...)
+		} else {
+			// Response is an object - look for array inside
+			var obj map[string]json.RawMessage
+			if json.Unmarshal(data, &obj) == nil {
+				// Try common data fields
+				for _, field := range []string{"data", "items", "results", "messages", "members", "values"} {
+					if arr, ok := obj[field]; ok {
+						var nested []json.RawMessage
+						if json.Unmarshal(arr, &nested) == nil {
+							allItems = append(allItems, nested...)
+							break
+						}
+					}
+				}
+
+				// Check for next cursor
+				if nextCursorPath != "" {
+					if tokenRaw, ok := obj[nextCursorPath]; ok {
+						var token string
+						if json.Unmarshal(tokenRaw, &token) == nil && token != "" {
+							clean[cursorParam] = token
+							continue
+						}
+					}
+				}
+
+				// Check has_more
+				if hasMoreField != "" {
+					if moreRaw, ok := obj[hasMoreField]; ok {
+						var more bool
+						if json.Unmarshal(moreRaw, &more) == nil && more {
+							continue
+						}
+					}
+				}
+			}
+			// No more pages
+			break
+		}
+
+		// For direct arrays, can't paginate without cursor
+		break
+	}
+
+	fmt.Fprintf(os.Stderr, "fetched %d items across %d pages\n", len(allItems), page)
+	result, _ := json.Marshal(allItems)
+	return json.RawMessage(result), nil
 }
 
 // printOutput auto-detects arrays and renders as tables, or prints raw JSON for objects.
