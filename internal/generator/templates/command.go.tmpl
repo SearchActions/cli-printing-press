@@ -78,6 +78,14 @@ func new{{title $.ResourceName}}{{title $eName}}Cmd(flags *rootFlags) *cobra.Com
 			}
 {{- end}}
 			data, err := c.Put(path, body)
+{{- else if eq $endpoint.Method "PATCH"}}
+			body := map[string]any{}
+{{- range $endpoint.Body}}
+			if body{{camel .Name}} != {{zeroVal .Type}} {
+				body["{{.Name}}"] = body{{camel .Name}}
+			}
+{{- end}}
+			data, err := c.Patch(path, body)
 {{- end}}
 			if err != nil {
 				return apiErr(err)

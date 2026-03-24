@@ -58,6 +58,52 @@ func TestParseStytchOpenAPI(t *testing.T) {
 	assert.Greater(t, totalEndpoints, 10)
 }
 
+func TestSkipUnderscoreFields(t *testing.T) {
+	spec := []byte(`
+openapi: "3.0.0"
+info:
+  title: Test
+  version: "1.0"
+servers:
+  - url: https://api.example.com
+paths:
+  /items:
+    get:
+      operationId: listItems
+      responses:
+        "200":
+          description: OK
+components:
+  schemas:
+    Item:
+      type: object
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        _errors:
+          type: object
+        _internal:
+          type: string
+`)
+	parsed, err := Parse(spec)
+	require.NoError(t, err)
+
+	item, ok := parsed.Types["Item"]
+	require.True(t, ok)
+
+	// Should have id and name but NOT _errors or _internal
+	fieldNames := make([]string, 0)
+	for _, f := range item.Fields {
+		fieldNames = append(fieldNames, f.Name)
+	}
+	assert.Contains(t, fieldNames, "id")
+	assert.Contains(t, fieldNames, "name")
+	assert.NotContains(t, fieldNames, "_errors")
+	assert.NotContains(t, fieldNames, "_internal")
+}
+
 func TestIsOpenAPI(t *testing.T) {
 	t.Parallel()
 

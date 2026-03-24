@@ -39,6 +39,10 @@ func (c *Client) Put(path string, body any) (json.RawMessage, error) {
 	return c.do("PUT", path, nil, body)
 }
 
+func (c *Client) Patch(path string, body any) (json.RawMessage, error) {
+	return c.do("PATCH", path, nil, body)
+}
+
 func (c *Client) do(method, path string, params map[string]string, body any) (json.RawMessage, error) {
 	url := c.BaseURL + path
 

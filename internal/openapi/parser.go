@@ -643,6 +643,9 @@ func mapTypes(doc *openapi3.T, out *spec.APISpec) {
 
 		fields := make([]spec.TypeField, 0, len(fieldNames))
 		for _, fieldName := range fieldNames {
+			if strings.HasPrefix(fieldName, "_") {
+				continue
+			}
 			fields = append(fields, spec.TypeField{
 				Name: fieldName,
 				Type: mapSchemaType(schemaRefValue(properties[fieldName])),
@@ -666,6 +669,9 @@ func collectTypeProperties(schemaRef *openapi3.SchemaRef, properties map[string]
 
 	for name, prop := range schema.Properties {
 		if prop == nil {
+			continue
+		}
+		if strings.HasPrefix(name, "_") {
 			continue
 		}
 		properties[name] = prop
