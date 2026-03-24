@@ -244,7 +244,7 @@ func TestOperationIDToName(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.operationID+"_"+tt.resourceName, func(t *testing.T) {
-			got := operationIDToName(tt.operationID, tt.resourceName)
+			got := operationIDToName(tt.operationID, tt.resourceName, nil)
 			assert.Equal(t, tt.want, got)
 		})
 	}

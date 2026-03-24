@@ -16,7 +16,7 @@ import (
 
 const (
 	maxResources            = 50
-	maxEndpointsPerResource = 20
+	maxEndpointsPerResource = 50
 )
 
 func Parse(data []byte) (*spec.APISpec, error) {
@@ -224,6 +224,7 @@ func mapResources(doc *openapi3.T, out *spec.APISpec, basePath string) {
 		pathKeys = append(pathKeys, path)
 	}
 	sort.Strings(pathKeys)
+	commonPrefix := detectCommonPrefix(pathKeys, basePath)
 
 	for _, path := range pathKeys {
 		pathItem := doc.Paths.Value(path)
@@ -238,7 +239,7 @@ func mapResources(doc *openapi3.T, out *spec.APISpec, basePath string) {
 			continue
 		}
 
-		primaryName, subName := resourceAndSubFromPath(path, basePath)
+		primaryName, subName := resourceAndSubFromPath(path, basePath, commonPrefix)
 		if primaryName == "" {
 			warnf("skipping path %q: could not derive resource name", path)
 			continue
@@ -293,7 +294,7 @@ func mapResources(doc *openapi3.T, out *spec.APISpec, basePath string) {
 				continue
 			}
 
-			endpointName := resolveEndpointName(method, path, op, targetEndpoints, targetResourceName, basePath)
+			endpointName := resolveEndpointName(method, path, op, targetEndpoints, targetResourceName, basePath, commonPrefix)
 			summary := strings.TrimSpace(op.Summary)
 			desc := strings.TrimSpace(op.Description)
 			description := selectDescription(summary, desc)
@@ -401,8 +402,8 @@ func tagDescriptionKeys(name string) []string {
 	return keys
 }
 
-func resolveEndpointName(method, path string, op *openapi3.Operation, existing map[string]spec.Endpoint, resourceName, basePath string) string {
-	name := operationIDToName(operationID(op), resourceName)
+func resolveEndpointName(method, path string, op *openapi3.Operation, existing map[string]spec.Endpoint, resourceName, basePath string, commonPrefix []string) string {
+	name := operationIDToName(operationID(op), resourceName, commonPrefix)
 	if name == "" {
 		name = defaultEndpointName(method, path)
 	}
@@ -961,12 +962,21 @@ func firstJSONMediaType(content openapi3.Content) *openapi3.MediaType {
 }
 
 func resourceNameFromPath(path, basePath string) string {
-	primary, _ := resourceAndSubFromPath(path, basePath)
+	primary, _ := resourceAndSubFromPath(path, basePath, nil)
 	return primary
 }
 
-func resourceAndSubFromPath(path, basePath string) (string, string) {
+func resourceAndSubFromPath(path, basePath string, commonPrefix []string) (string, string) {
 	segments := pathSegmentsAfterBase(path, basePath)
+	if len(commonPrefix) > 0 && hasSegmentPrefix(segments, commonPrefix) {
+		if primary, sub := resourceAndSubFromSegments(segments[len(commonPrefix):]); primary != "" {
+			return primary, sub
+		}
+	}
+	return resourceAndSubFromSegments(segments)
+}
+
+func resourceAndSubFromSegments(segments []string) (string, string) {
 	if len(segments) == 0 {
 		return "", ""
 	}
@@ -993,6 +1003,87 @@ func resourceAndSubFromPath(path, basePath string) (string, string) {
 	// The first non-param segment after the path param is the sub-resource
 	sub := sanitizeResourceName(strings.ReplaceAll(toSnakeCase(rest[0]), "_", "-"))
 	return primary, sub
+}
+
+func detectCommonPrefix(paths []string, basePath string) []string {
+	segmentLists := make([][]string, 0, len(paths))
+	for _, path := range paths {
+		segments := pathSegmentsAfterBase(path, basePath)
+		if len(segments) > 0 {
+			segmentLists = append(segmentLists, segments)
+		}
+	}
+	if len(segmentLists) == 0 {
+		return nil
+	}
+
+	total := len(segmentLists)
+	prefix := make([]string, 0)
+
+	for idx := 0; ; idx++ {
+		counts := map[string]int{}
+		examples := map[string]string{}
+
+		for _, segments := range segmentLists {
+			if len(segments) <= idx || !hasSegmentPrefix(segments, prefix) {
+				continue
+			}
+
+			key := canonicalPrefixSegment(segments[idx])
+			counts[key]++
+			if _, ok := examples[key]; !ok {
+				examples[key] = segments[idx]
+			}
+		}
+
+		bestKey := ""
+		bestCount := 0
+		for key, count := range counts {
+			if count > bestCount {
+				bestKey = key
+				bestCount = count
+			}
+		}
+
+		if bestCount*10 <= total*9 {
+			break
+		}
+
+		prefix = append(prefix, examples[bestKey])
+	}
+
+	lastParam := -1
+	for i, segment := range prefix {
+		if isPathParamSegment(segment) {
+			lastParam = i
+		}
+	}
+	if lastParam == -1 {
+		return nil
+	}
+
+	return prefix[:lastParam+1]
+}
+
+func hasSegmentPrefix(segments, prefix []string) bool {
+	if len(prefix) > len(segments) {
+		return false
+	}
+
+	for i, prefixSegment := range prefix {
+		if canonicalPrefixSegment(segments[i]) != canonicalPrefixSegment(prefixSegment) {
+			return false
+		}
+	}
+
+	return true
+}
+
+func canonicalPrefixSegment(segment string) string {
+	if isPathParamSegment(segment) {
+		return "{}"
+	}
+	return segment
 }
 
 func endpointCollisionSuffix(path, resourceName, basePath string) string {
@@ -1088,7 +1179,7 @@ func baseURLPath(baseURL string) string {
 	return parsed.Path
 }
 
-func operationIDToName(operationID, resourceName string) string {
+func operationIDToName(operationID, resourceName string, commonPrefix []string) string {
 	if strings.TrimSpace(operationID) == "" {
 		return ""
 	}
@@ -1099,6 +1190,15 @@ func operationIDToName(operationID, resourceName string) string {
 
 	name := strings.TrimPrefix(original, "api_")
 	resourceVariants := operationIDResourceVariants(resourceName)
+
+	// Also strip common prefix segments (e.g., "gmail", "users" from "gmail_users_messages_list")
+	for _, seg := range commonPrefix {
+		if isPathParamSegment(seg) {
+			continue
+		}
+		prefixVariants := operationIDResourceVariants(seg)
+		name = stripOperationIDResourcePrefix(name, prefixVariants)
+	}
 
 	name = stripOperationIDVersionPrefix(name)
 	name = stripOperationIDResourcePrefix(name, resourceVariants)
