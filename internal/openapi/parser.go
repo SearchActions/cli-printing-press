@@ -812,15 +812,16 @@ func mapSchemaType(schema *openapi3.Schema) string {
 	if schema == nil || schema.Type == nil {
 		return "string"
 	}
+	// Use Includes instead of Is to handle nullable types like ["boolean", "null"]
 	switch {
-	case schema.Type.Is(openapi3.TypeString):
-		return "string"
-	case schema.Type.Is(openapi3.TypeInteger):
-		return "int"
-	case schema.Type.Is(openapi3.TypeBoolean):
+	case schema.Type.Includes(openapi3.TypeBoolean):
 		return "bool"
-	case schema.Type.Is(openapi3.TypeNumber):
+	case schema.Type.Includes(openapi3.TypeInteger):
+		return "int"
+	case schema.Type.Includes(openapi3.TypeNumber):
 		return "float"
+	case schema.Type.Includes(openapi3.TypeString):
+		return "string"
 	default:
 		return "string"
 	}
@@ -860,7 +861,7 @@ func isArraySchema(schema *openapi3.Schema) bool {
 	if schema == nil {
 		return false
 	}
-	if schema.Type != nil && schema.Type.Is(openapi3.TypeArray) {
+	if schema.Type != nil && schema.Type.Includes(openapi3.TypeArray) {
 		return true
 	}
 	return schema.Items != nil
@@ -870,7 +871,7 @@ func isObjectSchema(schema *openapi3.Schema) bool {
 	if schema == nil {
 		return false
 	}
-	if schema.Type != nil && schema.Type.Is(openapi3.TypeObject) {
+	if schema.Type != nil && schema.Type.Includes(openapi3.TypeObject) {
 		return true
 	}
 	return len(schema.Properties) > 0 || len(schema.AllOf) > 0
