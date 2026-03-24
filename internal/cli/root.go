@@ -36,7 +36,8 @@ func Execute() error {
 }
 
 func newGenerateCmd() *cobra.Command {
-	var specFile string
+	var specFiles []string
+	var cliName string
 	var outputDir string
 	var validate bool
 	var refresh bool
@@ -45,34 +46,38 @@ func newGenerateCmd() *cobra.Command {
 		Use:   "generate",
 		Short: "Generate a Go CLI project from an API spec",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if specFile == "" {
+			if len(specFiles) == 0 {
 				return fmt.Errorf("--spec is required")
 			}
 
-			var (
-				data []byte
-				err  error
-			)
-			if strings.HasPrefix(specFile, "http://") || strings.HasPrefix(specFile, "https://") {
-				data, err = fetchOrCacheSpec(specFile, refresh)
+			var specs []*spec.APISpec
+			for _, specFile := range specFiles {
+				data, err := readSpec(specFile, refresh)
 				if err != nil {
-					return fmt.Errorf("fetching spec from URL: %w", err)
+					return fmt.Errorf("reading spec %s: %w", specFile, err)
 				}
-			} else {
-				data, err = os.ReadFile(specFile)
+
+				var apiSpec *spec.APISpec
+				if openapi.IsOpenAPI(data) {
+					apiSpec, err = openapi.Parse(data)
+				} else {
+					apiSpec, err = spec.ParseBytes(data)
+				}
 				if err != nil {
-					return fmt.Errorf("reading spec file: %w", err)
+					return fmt.Errorf("parsing spec %s: %w", specFile, err)
 				}
+
+				specs = append(specs, apiSpec)
 			}
 
 			var apiSpec *spec.APISpec
-			if openapi.IsOpenAPI(data) {
-				apiSpec, err = openapi.Parse(data)
+			if len(specs) == 1 {
+				apiSpec = specs[0]
 			} else {
-				apiSpec, err = spec.ParseBytes(data)
-			}
-			if err != nil {
-				return fmt.Errorf("parsing spec: %w", err)
+				if cliName == "" {
+					return fmt.Errorf("--name is required when using multiple specs")
+				}
+				apiSpec = mergeSpecs(specs, cliName)
 			}
 
 			if outputDir == "" {
@@ -99,12 +104,66 @@ func newGenerateCmd() *cobra.Command {
 		},
 	}
 
-	cmd.Flags().StringVar(&specFile, "spec", "", "Path to API spec (internal YAML or OpenAPI 3.0+)")
+	cmd.Flags().StringSliceVar(&specFiles, "spec", nil, "Path or URL to API spec (can be repeated)")
+	cmd.Flags().StringVar(&cliName, "name", "", "CLI name (required when using multiple specs)")
 	cmd.Flags().StringVar(&outputDir, "output", "", "Output directory (default: <name>-cli)")
 	cmd.Flags().BoolVar(&validate, "validate", true, "Run quality gates on the generated project")
 	cmd.Flags().BoolVar(&refresh, "refresh", false, "Refresh cached remote spec before generating")
 
 	return cmd
+}
+
+func readSpec(specFile string, refresh bool) ([]byte, error) {
+	if strings.HasPrefix(specFile, "http://") || strings.HasPrefix(specFile, "https://") {
+		return fetchOrCacheSpec(specFile, refresh)
+	}
+
+	return os.ReadFile(specFile)
+}
+
+func mergeSpecs(specs []*spec.APISpec, name string) *spec.APISpec {
+	if len(specs) == 1 {
+		return specs[0]
+	}
+
+	merged := &spec.APISpec{
+		Name:        name,
+		Description: "Combined CLI for multiple API services",
+		Version:     specs[0].Version,
+		BaseURL:     specs[0].BaseURL,
+		BasePath:    specs[0].BasePath,
+		Auth:        specs[0].Auth,
+		Config: spec.ConfigSpec{
+			Format: "toml",
+			Path:   fmt.Sprintf("~/.config/%s-cli/config.toml", name),
+		},
+		Resources: map[string]spec.Resource{},
+		Types:     map[string]spec.TypeDef{},
+	}
+
+	for _, s := range specs {
+		for resourceName, resource := range s.Resources {
+			key := resourceName
+			if _, exists := merged.Resources[key]; exists {
+				key = s.Name + "-" + resourceName
+			}
+			merged.Resources[key] = resource
+		}
+
+		for typeName, typeDef := range s.Types {
+			key := typeName
+			if _, exists := merged.Types[key]; exists {
+				key = s.Name + "-" + typeName
+			}
+			merged.Types[key] = typeDef
+		}
+
+		if s.Auth.AuthorizationURL != "" && merged.Auth.AuthorizationURL == "" {
+			merged.Auth = s.Auth
+		}
+	}
+
+	return merged
 }
 
 func fetchOrCacheSpec(specURL string, refresh bool) ([]byte, error) {
