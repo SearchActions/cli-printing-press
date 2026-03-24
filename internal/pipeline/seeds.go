@@ -20,274 +20,224 @@ var seedTemplates = map[string]string{
 	PhasePreflight: `---
 title: "{{.APIName}} CLI Pipeline - Phase 0: Preflight"
 type: feat
-status: active
+status: seed
+pipeline_phase: preflight
+pipeline_api: {{.APIName}}
 date: {{now}}
 ---
 
-# Preflight: {{.APIName}} CLI
+# Phase Goal
 
-## Goal
-Validate the environment and discover the OpenAPI spec for {{.APIName}}.
-
-## Acceptance Criteria
-- [ ] Go is installed and working (go version succeeds)
-- [ ] printing-press binary compiles (go build ./cmd/printing-press)
-- [ ] OpenAPI spec downloaded and validated
-- [ ] Spec has 3+ endpoints and a base URL
-- [ ] Conventions cache written with auth type, resource count, pagination patterns
-
-## Implementation Units
-
-### Unit 1: Environment Check
-- Run ` + "`go version`" + ` - verify Go 1.23+
-- Run ` + "`go build -o /tmp/pp-check ./cmd/printing-press`" + ` - verify press compiles
-- Check output dir {{.OutputDir}} doesn't exist (or --force was used)
-
-### Unit 2: Spec Discovery
-- Spec URL: {{.SpecURL}} (source: {{.SpecSource}})
-- Download with: ` + "`printing-press generate --spec {{.SpecURL}} --output /dev/null 2>&1 | head -5`" + ` to test parsing
-- If parse fails: try alternative sources
-
-### Unit 3: Write Conventions Cache
-- After successful parse, write conventions.json to {{.PipelineDir}}/
-- Include: auth type, endpoint count, resource names, pagination patterns detected, global params found
+Verify the local environment and source inputs needed to run the {{.APIName}} CLI pipeline.
 
 ## Context
-Pipeline directory: {{.PipelineDir}}
+
+- Pipeline directory: {{.PipelineDir}}
+- Output directory: {{.OutputDir}}
+- Spec URL: {{.SpecURL}}
+- Spec source: {{.SpecSource}}
+
+## What This Phase Must Produce
+
+- Verified Go environment for the pipeline run
+- Verified printing-press binary for local generation work
+- Downloaded and validated OpenAPI spec for {{.APIName}}
+- conventions.json in {{.PipelineDir}}
+
+## Prior Phase Outputs
+
+None.
+
+## Codebase Pointers
+
+- Build entrypoint: go build ./cmd/printing-press
+- OpenAPI parsing: internal/openapi/parser.go
+- Pipeline discovery flow: internal/pipeline/discover.go
 `,
 	PhaseScaffold: `---
 title: "{{.APIName}} CLI Pipeline - Phase 1: Scaffold"
 type: feat
-status: active
+status: seed
+pipeline_phase: scaffold
+pipeline_api: {{.APIName}}
 date: {{now}}
 ---
 
-# Scaffold: {{.APIName}} CLI
+# Phase Goal
 
-## Goal
-Generate the initial CLI from the discovered OpenAPI spec.
+Generate the first working {{.APIName}} CLI from the validated OpenAPI spec.
 
-## Acceptance Criteria
-- [ ] CLI generated at {{.OutputDir}}
-- [ ] All 7 quality gates pass (go mod tidy, go vet, go build, binary, --help, version, doctor)
-- [ ] CLI compiles to a working binary
+## Context
 
-## Implementation Units
+- Pipeline directory: {{.PipelineDir}}
+- Output directory: {{.OutputDir}}
+- Spec URL: {{.SpecURL}}
+- Spec source: {{.SpecSource}}
 
-### Unit 1: Generate CLI
-Run: ` + "`printing-press generate --spec <spec-path-from-preflight> --output {{.OutputDir}}`" + `
+## What This Phase Must Produce
 
-### Unit 2: Validate
-- Build the binary: ` + "`cd {{.OutputDir}} && go build -o ./{{.APIName}}-cli ./cmd/{{.APIName}}-cli`" + `
-- Run: ` + "`./{{.APIName}}-cli --help`" + `
-- Run: ` + "`./{{.APIName}}-cli doctor`" + `
-- Count resources and endpoints
+- Generated CLI source tree in {{.OutputDir}}
+- All seven generator quality gates passing
+- Working CLI binary for {{.APIName}}
 
-### Unit 3: Document
-- List all top-level resources
-- List total endpoint count
-- Note any warnings from generation
+## Prior Phase Outputs
+
+- conventions.json from preflight in {{.PipelineDir}}
+- Validated spec URL and downloaded spec source for generation
+
+## Codebase Pointers
+
+- Generator entrypoint: printing-press generate --spec <url> --output <dir>
+- Generator implementation: internal/generator/
+- Quality gate logic in the generator flow under internal/generator/
 `,
 	PhaseEnrich: `---
 title: "{{.APIName}} CLI Pipeline - Phase 2: Enrich"
 type: feat
-status: active
+status: seed
+pipeline_phase: enrich
+pipeline_api: {{.APIName}}
 date: {{now}}
 ---
 
-# Enrich: {{.APIName}} CLI
+# Phase Goal
 
-## Goal
-Deep-read the original spec for hints the parser missed. Research API docs. Produce a spec overlay.
+Produce a focused overlay that captures useful spec enrichments missing from the original generation pass.
 
-## Acceptance Criteria
-- [ ] overlay.yaml written to {{.PipelineDir}}/
-- [ ] At least 1 enrichment found
-- [ ] Overlay is valid YAML
+## Context
 
-## Implementation Units
+- Pipeline directory: {{.PipelineDir}}
+- Output directory: {{.OutputDir}}
+- Spec URL: {{.SpecURL}}
+- Spec source: {{.SpecSource}}
 
-### Unit 1: Description Hints
-- Read every parameter description in the spec
-- Find default value hints (e.g., "The special value 'me' can be used")
-- Extract as ParamPatch with Default field
+## What This Phase Must Produce
 
-### Unit 2: Upload Detection
-- Scan for mediaUpload fields, x-google extensions, multipart content types
-- Flag endpoints that support file upload (note in overlay comments)
+- overlay.yaml in {{.PipelineDir}}
+- At least one verified enrichment for the source spec
+- Overlay content that is valid for downstream merge and regeneration
 
-### Unit 3: Sync Token Patterns
-- Scan response schemas for historyId, syncToken, nextSyncToken fields
-- Note resources that support incremental sync
+## Prior Phase Outputs
 
-### Unit 4: Better Descriptions
-- Find endpoints with empty or generic descriptions
-- WebSearch for "{{.APIName}} API" to find better descriptions
+- conventions.json from preflight in {{.PipelineDir}}
+- Scaffold-generated CLI in {{.OutputDir}}
 
-### Unit 5: Write Overlay
-- Compile all enrichments into overlay.yaml at {{.PipelineDir}}/overlay.yaml
+## Codebase Pointers
+
+- Overlay model and helpers: internal/pipeline/overlay.go
+- Overlay merge preparation: internal/pipeline/merge.go
+- Source spec artifact downloaded during preflight
 `,
 	PhaseRegenerate: `---
 title: "{{.APIName}} CLI Pipeline - Phase 3: Regenerate"
 type: feat
-status: active
+status: seed
+pipeline_phase: regenerate
+pipeline_api: {{.APIName}}
 date: {{now}}
 ---
 
-# Regenerate: {{.APIName}} CLI with Enrichments
+# Phase Goal
 
-## Goal
-Merge the spec overlay with the original spec and re-generate the CLI.
+Merge the enrichments into the source spec and regenerate the CLI without losing quality.
 
-## Acceptance Criteria
-- [ ] Overlay merged with original spec
-- [ ] CLI re-generated at {{.OutputDir}}
-- [ ] All 7 quality gates still pass
-- [ ] Enrichments visible in CLI help output
+## Context
 
-## Implementation Units
+- Pipeline directory: {{.PipelineDir}}
+- Output directory: {{.OutputDir}}
+- Spec URL: {{.SpecURL}}
+- Spec source: {{.SpecSource}}
 
-### Unit 1: Load and Merge
-- Load original spec
-- Load overlay.yaml from {{.PipelineDir}}/
-- Apply overlay using MergeOverlay function
-- Write merged spec to {{.PipelineDir}}/merged-spec.yaml
+## What This Phase Must Produce
 
-### Unit 2: Regenerate
-- Run ` + "`printing-press generate --spec {{.PipelineDir}}/merged-spec.yaml --output {{.OutputDir}}`" + `
-- If quality gates fail, fall back to original spec
+- Re-generated CLI in {{.OutputDir}} using the merged overlay
+- Merged spec artifact suitable for regeneration
+- All seven quality gates still passing after regeneration
 
-### Unit 3: Verify Enrichments
-- Check CLI help for enriched defaults (e.g., userId now shows default)
-- Compare before/after help output
+## Prior Phase Outputs
+
+- overlay.yaml from enrich in {{.PipelineDir}}
+- Original scaffolded CLI in {{.OutputDir}}
+
+## Codebase Pointers
+
+- Overlay merge implementation: internal/pipeline/merge.go
+- MergeOverlay function in internal/pipeline/merge.go
+- Generator entrypoint: printing-press generate
 `,
 	PhaseReview: `---
 title: "{{.APIName}} CLI Pipeline - Phase 4: Review"
 type: feat
-status: active
+status: seed
+pipeline_phase: review
+pipeline_api: {{.APIName}}
 date: {{now}}
 ---
 
-# Review: {{.APIName}} CLI Quality
+# Phase Goal
 
-## Goal
-Static quality analysis and autonomous dogfooding of the generated CLI.
+Evaluate the generated CLI with static scoring and dogfooding evidence that determines ship readiness.
 
-## Acceptance Criteria
-- [ ] Static quality score calculated (0-50)
-- [ ] Dogfood score calculated (0-50)
-- [ ] Combined score written to review.md (0-100)
-- [ ] dogfood-results.json written with per-test results
-- [ ] All critical static checks pass
+## Context
 
-## Implementation Units
+- Pipeline directory: {{.PipelineDir}}
+- Output directory: {{.OutputDir}}
+- Spec URL: {{.SpecURL}}
+- Spec source: {{.SpecSource}}
+- Sandbox note: petstore is sandbox-safe for Tier 3 dogfooding
 
-### Unit 1: Help Completeness
-- Run ` + "`{{.APIName}}-cli --help`" + ` and check exit code
-- Run ` + "`{{.APIName}}-cli <resource> --help`" + ` for every top-level resource
-- Verify non-empty output for each
+## What This Phase Must Produce
 
-### Unit 2: Name Quality
-- No command name > 40 characters
-- No raw operationId passthrough (no dots or underscores in command names)
-- No duplicate command names
+- Static quality score from 0 to 50
+- Dogfood score from 0 to 50
+- review.md in {{.PipelineDir}}
+- dogfood-results.json in {{.PipelineDir}}
 
-### Unit 3: Description Quality
-- No empty descriptions on top-level resources
-- No descriptions that just repeat the command name
+## Prior Phase Outputs
 
-### Unit 4: Static Scoring
-- +10 compiles cleanly
-- +10 all help commands work
-- +10 no name quality issues
-- +10 no empty descriptions
-- +5 doctor works
-- +5 binary < 50MB
+- Working CLI binary from regenerate, or scaffold if regenerate was skipped
 
-### Unit 5: Dogfood Tier 1 - No Credentials Required
-Build the binary and run zero-config tests:
+## Codebase Pointers
 
-a. Build: ` + "`cd {{.OutputDir}} && go build -o {{.APIName}}-cli ./cmd/{{.APIName}}-cli`" + `
-b. Version: ` + "`./{{.APIName}}-cli version`" + ` - expect exit code 0
-c. Doctor: ` + "`./{{.APIName}}-cli doctor`" + ` - expect runs without crash
-d. Dry-run: pick first POST/PUT endpoint, run with --dry-run
-e. Output modes: run any list command with --json, --plain, --quiet
-
-Record all results to dogfood-results.json.
-
-### Unit 6: Dogfood Tier 2 - Read-Only API Calls
-Check for API credentials in env vars or config file.
-
-If no credentials: print "Tier 2 skipped: no credentials" and score as N/A.
-
-If credentials found:
-a. List: ` + "`./{{.APIName}}-cli <resource> list --limit 5`" + `
-b. Get: ` + "`./{{.APIName}}-cli <resource> get <id-from-list>`" + `
-c. Auth error: run with invalid credentials, expect exit code 4
-d. Record response shape, latency, exit codes
-
-### Unit 7: Dogfood Tier 3 - Write Operations (Sandbox APIs Only)
-Only run on sandbox-safe APIs (petstore, stripe test mode, stytch test).
-If not sandbox-safe: skip entirely.
-
-If sandbox-safe:
-a. Create test resource
-b. Read it back
-c. Delete it (cleanup)
-d. Verify deletion returns exit code 3
-
-### Unit 8: Combined Scoring
-Write dogfood-results.json with per-test results.
-Write review.md with combined score:
-
-Static (0-50): from Unit 4
-Dogfood (0-50):
-  +10 version prints correctly
-  +10 doctor reports API status
-  +10 list/get returns data (Tier 2, 0 if skipped)
-  +10 create/delete roundtrip (Tier 3, 0 if skipped)
-  +5 dry-run works
-  +5 auth error handling correct
-
-Grade: A (90+), B (75+), C (60+), D (40+), F (<40)
+- Review scoring rules defined by the pipeline review plan for this phase
+- Dogfood model uses three tiers: Tier 1 no credentials, Tier 2 read-only, Tier 3 sandbox write
+- Generated CLI binary and help surfaces in {{.OutputDir}}
 `,
 	PhaseShip: `---
 title: "{{.APIName}} CLI Pipeline - Phase 5: Ship"
 type: feat
-status: active
+status: seed
+pipeline_phase: ship
+pipeline_api: {{.APIName}}
 date: {{now}}
 ---
 
-# Ship: {{.APIName}} CLI
+# Phase Goal
 
-## Goal
-Finalize the CLI for human use.
+Package the generated CLI output and produce the final handoff report for humans.
 
-## Acceptance Criteria
-- [ ] Git repo initialized in {{.OutputDir}}
-- [ ] Initial commit created
-- [ ] Morning report written to {{.PipelineDir}}/report.md
+## Context
 
-## Implementation Units
+- Pipeline directory: {{.PipelineDir}}
+- Output directory: {{.OutputDir}}
+- Spec URL: {{.SpecURL}}
+- Spec source: {{.SpecSource}}
 
-### Unit 1: Git Init
-- Run ` + "`cd {{.OutputDir}} && git init && git add -A && git commit -m 'Initial CLI generated by printing-press'`" + `
+## What This Phase Must Produce
 
-### Unit 2: Morning Report
-Write {{.PipelineDir}}/report.md with:
-- API name and spec source
-- Resource and endpoint count
-- Quality score from review phase
-- Enrichments applied
-- Time per phase
-- Next steps: configure auth, test against real API, publish
+- Git repository initialized in {{.OutputDir}}
+- Morning report written in {{.PipelineDir}}
 
-### Unit 3: Summary
-Print to stderr:
-- "{{.APIName}}-cli ready at {{.OutputDir}}/"
-- Resource list
-- Auth type
-- Total pipeline time
+## Prior Phase Outputs
+
+- Review score and review.md from the review phase
+- Working CLI binary ready for packaging and handoff
+
+## Codebase Pointers
+
+- Output CLI tree in {{.OutputDir}}
+- Review artifacts in {{.PipelineDir}}
+- Morning report format from SKILL.md Workflow 4 Step 6
 `,
 }
 
