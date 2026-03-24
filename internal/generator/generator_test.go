@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/mvanhorn/cli-printing-press/internal/openapi"
 	"github.com/mvanhorn/cli-printing-press/internal/spec"
 	"github.com/stretchr/testify/require"
 )
@@ -46,6 +47,37 @@ func TestGenerateProjectsCompile(t *testing.T) {
 			require.NotZero(t, info.Size())
 		})
 	}
+}
+
+func TestGenerateOAuth2AuthTemplateConditionally(t *testing.T) {
+	t.Parallel()
+
+	t.Run("oauth2 spec includes auth command", func(t *testing.T) {
+		data, err := os.ReadFile(filepath.Join("..", "..", "testdata", "openapi", "gmail.yaml"))
+		require.NoError(t, err)
+
+		apiSpec, err := openapi.Parse(data)
+		require.NoError(t, err)
+
+		outputDir := filepath.Join(t.TempDir(), apiSpec.Name+"-cli")
+		gen := New(apiSpec, outputDir)
+		require.NoError(t, gen.Generate())
+
+		_, err = os.Stat(filepath.Join(outputDir, "internal", "cli", "auth.go"))
+		require.NoError(t, err)
+	})
+
+	t.Run("non-oauth2 spec omits auth command", func(t *testing.T) {
+		apiSpec, err := spec.Parse(filepath.Join("..", "..", "testdata", "stytch.yaml"))
+		require.NoError(t, err)
+
+		outputDir := filepath.Join(t.TempDir(), apiSpec.Name+"-cli")
+		gen := New(apiSpec, outputDir)
+		require.NoError(t, gen.Generate())
+
+		_, err = os.Stat(filepath.Join(outputDir, "internal", "cli", "auth.go"))
+		require.True(t, os.IsNotExist(err))
+	})
 }
 
 func countFiles(t *testing.T, root string) int {

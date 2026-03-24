@@ -46,6 +46,9 @@ func Execute() error {
 	rootCmd.AddCommand(new{{camel $name}}Cmd(&flags)) {{/* FuncPrefix matches resource name for top-level */}}
 {{- end}}
 	rootCmd.AddCommand(newDoctorCmd(&flags))
+{{- if .Auth.AuthorizationURL}}
+	rootCmd.AddCommand(newAuthCmd(&flags))
+{{- end}}
 	rootCmd.AddCommand(newVersionCliCmd())
 
 	return rootCmd.Execute()
@@ -64,7 +67,7 @@ func (f *rootFlags) newClient() (*client.Client, error) {
 	if err != nil {
 		return nil, configErr(err)
 	}
-	c := client.New(cfg.BaseURL, cfg.AuthHeader(), f.timeout)
+	c := client.New(cfg, f.timeout)
 	c.DryRun = f.dryRun
 	return c, nil
 }

@@ -6,15 +6,18 @@ import (
 	"io"
 	"math"
 	"net/http"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/USER/{{.Name}}-cli/internal/config"
 )
 
 type Client struct {
 	BaseURL    string
-	AuthHeader string
+	Config     *config.Config
 	HTTPClient *http.Client
 	DryRun     bool
 }
@@ -31,10 +34,10 @@ func (e *APIError) Error() string {
 	return fmt.Sprintf("%s %s returned HTTP %d: %s", e.Method, e.Path, e.StatusCode, e.Body)
 }
 
-func New(baseURL, authHeader string, timeout time.Duration) *Client {
+func New(cfg *config.Config, timeout time.Duration) *Client {
 	return &Client{
-		BaseURL:    strings.TrimRight(baseURL, "/"),
-		AuthHeader: authHeader,
+		BaseURL:    strings.TrimRight(cfg.BaseURL, "/"),
+		Config:     cfg,
 		HTTPClient: &http.Client{Timeout: timeout},
 	}
 }
@@ -90,8 +93,12 @@ func (c *Client) do(method, path string, params map[string]string, body any) (js
 			return nil, fmt.Errorf("creating request: %w", err)
 		}
 
-		if c.AuthHeader != "" {
-			req.Header.Set("Authorization", c.AuthHeader)
+		authHeader, err := c.authHeader()
+		if err != nil {
+			return nil, err
+		}
+		if authHeader != "" {
+			req.Header.Set("Authorization", authHeader)
 		}
 		if bodyBytes != nil {
 			req.Header.Set("Content-Type", "application/json")
@@ -166,9 +173,13 @@ func (c *Client) dryRun(method, url string, params map[string]string, body []byt
 			}
 		}
 	}
-	if c.AuthHeader != "" {
+	authHeader, err := c.authHeader()
+	if err != nil {
+		return nil, err
+	}
+	if authHeader != "" {
 		// Mask token for safety
-		auth := c.AuthHeader
+		auth := authHeader
 		if len(auth) > 20 {
 			auth = auth[:15] + "..."
 		}
@@ -185,6 +196,80 @@ func (c *Client) dryRun(method, url string, params map[string]string, body []byt
 	}
 	fmt.Fprintf(os.Stderr, "\n(dry run - no request sent)\n")
 	return json.RawMessage(`{"dry_run": true}`), nil
+}
+
+func (c *Client) authHeader() (string, error) {
+	if c.Config == nil {
+		return "", nil
+	}
+	if c.Config.AccessToken != "" && !c.Config.TokenExpiry.IsZero() && time.Now().After(c.Config.TokenExpiry) && c.Config.RefreshToken != "" {
+		if err := c.refreshAccessToken(); err != nil {
+			return "", err
+		}
+	}
+	return c.Config.AuthHeader(), nil
+}
+
+func (c *Client) refreshAccessToken() error {
+	if c.Config == nil {
+		return nil
+	}
+	if c.Config.RefreshToken == "" {
+		return nil
+	}
+
+	tokenURL := "{{.Auth.TokenURL}}"
+	if tokenURL == "" {
+		return nil
+	}
+
+	params := url.Values{
+		"grant_type":    {"refresh_token"},
+		"refresh_token": {c.Config.RefreshToken},
+		"client_id":     {c.Config.ClientID},
+	}
+	if c.Config.ClientSecret != "" {
+		params.Set("client_secret", c.Config.ClientSecret)
+	}
+
+	resp, err := c.HTTPClient.PostForm(tokenURL, params)
+	if err != nil {
+		return fmt.Errorf("refreshing access token: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= 400 {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("refreshing access token: HTTP %d: %s", resp.StatusCode, truncateBody(body))
+	}
+
+	var tokenResp struct {
+		AccessToken  string `json:"access_token"`
+		RefreshToken string `json:"refresh_token"`
+		ExpiresIn    int    `json:"expires_in"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&tokenResp); err != nil {
+		return fmt.Errorf("parsing refresh response: %w", err)
+	}
+	if tokenResp.AccessToken == "" {
+		return fmt.Errorf("refreshing access token: no access token in response")
+	}
+
+	refreshToken := c.Config.RefreshToken
+	if tokenResp.RefreshToken != "" {
+		refreshToken = tokenResp.RefreshToken
+	}
+
+	expiry := time.Time{}
+	if tokenResp.ExpiresIn > 0 {
+		expiry = time.Now().Add(time.Duration(tokenResp.ExpiresIn) * time.Second)
+	}
+
+	if err := c.Config.SaveTokens(c.Config.ClientID, c.Config.ClientSecret, tokenResp.AccessToken, refreshToken, expiry); err != nil {
+		return fmt.Errorf("saving refreshed token: %w", err)
+	}
+
+	return nil
 }
 
 func retryAfter(resp *http.Response) time.Duration {

@@ -24,23 +24,23 @@ type Generator struct {
 func New(s *spec.APISpec, outputDir string) *Generator {
 	g := &Generator{Spec: s, OutputDir: outputDir}
 	g.funcs = template.FuncMap{
-		"title":            strings.Title,
-		"lower":            strings.ToLower,
-		"upper":            strings.ToUpper,
-		"camel":            toCamel,
-		"snake":            toSnake,
-		"goType":           goType,
-		"cobraFlagFunc":    cobraFlagFunc,
-		"defaultVal":       defaultVal,
-		"zeroVal":          zeroVal,
-		"positionalArgs":   positionalArgs,
-		"configTag":        configTag,
-		"envVarField":      envVarField,
+		"title":             strings.Title,
+		"lower":             strings.ToLower,
+		"upper":             strings.ToUpper,
+		"camel":             toCamel,
+		"snake":             toSnake,
+		"goType":            goType,
+		"cobraFlagFunc":     cobraFlagFunc,
+		"defaultVal":        defaultVal,
+		"zeroVal":           zeroVal,
+		"positionalArgs":    positionalArgs,
+		"configTag":         configTag,
+		"envVarField":       envVarField,
 		"envVarPlaceholder": envVarPlaceholder,
-		"add":              func(a, b int) int { return a + b },
-		"oneline":          oneline,
-		"flagName":         flagName,
-		"exampleLine":      g.exampleLine,
+		"add":               func(a, b int) int { return a + b },
+		"oneline":           oneline,
+		"flagName":          flagName,
+		"exampleLine":       g.exampleLine,
 	}
 	return g
 }
@@ -62,18 +62,18 @@ func (g *Generator) Generate() error {
 
 	// Generate single files
 	singleFiles := map[string]string{
-		"main.go.tmpl":           filepath.Join("cmd", g.Spec.Name+"-cli", "main.go"),
-		"root.go.tmpl":           filepath.Join("internal", "cli", "root.go"),
-		"helpers.go.tmpl":        filepath.Join("internal", "cli", "helpers.go"),
-		"doctor.go.tmpl":         filepath.Join("internal", "cli", "doctor.go"),
-		"config.go.tmpl":         filepath.Join("internal", "config", "config.go"),
-		"client.go.tmpl":         filepath.Join("internal", "client", "client.go"),
-		"types.go.tmpl":          filepath.Join("internal", "types", "types.go"),
-		"go.mod.tmpl":            "go.mod",
-		"goreleaser.yaml.tmpl":   ".goreleaser.yaml",
-		"golangci.yml.tmpl":      ".golangci.yml",
-		"makefile.tmpl":          "Makefile",
-		"readme.md.tmpl":         "README.md",
+		"main.go.tmpl":         filepath.Join("cmd", g.Spec.Name+"-cli", "main.go"),
+		"root.go.tmpl":         filepath.Join("internal", "cli", "root.go"),
+		"helpers.go.tmpl":      filepath.Join("internal", "cli", "helpers.go"),
+		"doctor.go.tmpl":       filepath.Join("internal", "cli", "doctor.go"),
+		"config.go.tmpl":       filepath.Join("internal", "config", "config.go"),
+		"client.go.tmpl":       filepath.Join("internal", "client", "client.go"),
+		"types.go.tmpl":        filepath.Join("internal", "types", "types.go"),
+		"go.mod.tmpl":          "go.mod",
+		"goreleaser.yaml.tmpl": ".goreleaser.yaml",
+		"golangci.yml.tmpl":    ".golangci.yml",
+		"makefile.tmpl":        "Makefile",
+		"readme.md.tmpl":       "README.md",
 	}
 
 	for tmplName, outPath := range singleFiles {
@@ -121,6 +121,14 @@ func (g *Generator) Generate() error {
 			if err := g.renderTemplate("command.go.tmpl", subOutPath, subData); err != nil {
 				return fmt.Errorf("rendering sub-command %s/%s: %w", name, subName, err)
 			}
+		}
+	}
+
+	// Conditionally render auth command when OAuth2 is detected
+	if g.Spec.Auth.AuthorizationURL != "" {
+		authPath := filepath.Join("internal", "cli", "auth.go")
+		if err := g.renderTemplate("auth.go.tmpl", authPath, g.Spec); err != nil {
+			return fmt.Errorf("rendering auth: %w", err)
 		}
 	}
 

@@ -62,6 +62,22 @@ func TestParseStytchOpenAPI(t *testing.T) {
 	assert.Greater(t, totalEndpoints, 10)
 }
 
+func TestParseGmailOAuth2(t *testing.T) {
+	t.Parallel()
+
+	data, err := os.ReadFile(filepath.Join("..", "..", "testdata", "openapi", "gmail.yaml"))
+	require.NoError(t, err)
+
+	parsed, err := Parse(data)
+	require.NoError(t, err)
+
+	assert.Equal(t, "bearer_token", parsed.Auth.Type)
+	assert.Equal(t, "Authorization", parsed.Auth.Header)
+	assert.Equal(t, "https://accounts.google.com/o/oauth2/auth", parsed.Auth.AuthorizationURL)
+	assert.Equal(t, "https://accounts.google.com/o/oauth2/token", parsed.Auth.TokenURL)
+	assert.NotEmpty(t, parsed.Auth.Scopes)
+}
+
 func TestSkipUnderscoreFields(t *testing.T) {
 	spec := []byte(`
 openapi: "3.0.0"

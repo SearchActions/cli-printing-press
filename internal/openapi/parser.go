@@ -118,6 +118,22 @@ func mapAuth(doc *openapi3.T, name string) spec.AuthConfig {
 	case "oauth2":
 		auth.Type = "bearer_token"
 		auth.Header = "Authorization"
+		if scheme.Flows != nil {
+			if ac := scheme.Flows.AuthorizationCode; ac != nil {
+				auth.AuthorizationURL = ac.AuthorizationURL
+				auth.TokenURL = ac.TokenURL
+				for scope := range ac.Scopes {
+					auth.Scopes = append(auth.Scopes, scope)
+				}
+				sort.Strings(auth.Scopes)
+			} else if ic := scheme.Flows.Implicit; ic != nil {
+				auth.AuthorizationURL = ic.AuthorizationURL
+				for scope := range ic.Scopes {
+					auth.Scopes = append(auth.Scopes, scope)
+				}
+				sort.Strings(auth.Scopes)
+			}
+		}
 	}
 
 	envPrefix := strings.ToUpper(strings.ReplaceAll(name, "-", "_"))
@@ -143,6 +159,16 @@ func selectSecurityScheme(doc *openapi3.T) (string, *openapi3.SecurityScheme) {
 	}
 
 	orderedNames := orderedSecuritySchemeNames(doc)
+	for _, name := range orderedNames {
+		scheme := securitySchemeValue(doc.Components.SecuritySchemes[name])
+		if scheme == nil || !strings.EqualFold(scheme.Type, "oauth2") || scheme.Flows == nil {
+			continue
+		}
+		if ac := scheme.Flows.AuthorizationCode; ac != nil && strings.TrimSpace(ac.AuthorizationURL) != "" && strings.TrimSpace(ac.TokenURL) != "" {
+			return name, scheme
+		}
+	}
+
 	for _, name := range orderedNames {
 		scheme := securitySchemeValue(doc.Components.SecuritySchemes[name])
 		if scheme == nil {

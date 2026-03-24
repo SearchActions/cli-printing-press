@@ -20,12 +20,15 @@ type APISpec struct {
 }
 
 type AuthConfig struct {
-	Type    string   `yaml:"type"` // api_key, oauth2, bearer_token, none
-	Header  string   `yaml:"header"`
-	Format  string   `yaml:"format"`
-	EnvVars []string `yaml:"env_vars"`
-	Scheme  string   `yaml:"scheme,omitempty"` // OpenAPI security scheme name
-	In      string   `yaml:"in,omitempty"`     // header, query, cookie
+	Type             string   `yaml:"type"` // api_key, oauth2, bearer_token, none
+	Header           string   `yaml:"header"`
+	Format           string   `yaml:"format"`
+	EnvVars          []string `yaml:"env_vars"`
+	Scheme           string   `yaml:"scheme,omitempty"` // OpenAPI security scheme name
+	In               string   `yaml:"in,omitempty"`     // header, query, cookie
+	AuthorizationURL string   `yaml:"authorization_url,omitempty"`
+	TokenURL         string   `yaml:"token_url,omitempty"`
+	Scopes           []string `yaml:"scopes,omitempty"`
 }
 
 type ConfigSpec struct {
