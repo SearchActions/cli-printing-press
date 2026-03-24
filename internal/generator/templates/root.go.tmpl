@@ -17,6 +17,7 @@ type rootFlags struct {
 	asJSON     bool
 	plain      bool
 	quiet      bool
+	dryRun     bool
 	configPath string
 	timeout    time.Duration
 }
@@ -38,6 +39,7 @@ func Execute() error {
 	rootCmd.PersistentFlags().BoolVar(&flags.quiet, "quiet", false, "Bare output, one value per line")
 	rootCmd.PersistentFlags().StringVar(&flags.configPath, "config", "", "Config file path")
 	rootCmd.PersistentFlags().DurationVar(&flags.timeout, "timeout", 30*time.Second, "Request timeout")
+	rootCmd.PersistentFlags().BoolVar(&flags.dryRun, "dry-run", false, "Show request without sending")
 
 {{- range $name, $resource := .Resources}}
 	rootCmd.AddCommand(new{{camel $name}}Cmd(&flags)) {{/* FuncPrefix matches resource name for top-level */}}
@@ -61,7 +63,9 @@ func (f *rootFlags) newClient() (*client.Client, error) {
 	if err != nil {
 		return nil, configErr(err)
 	}
-	return client.New(cfg.BaseURL, cfg.AuthHeader(), f.timeout), nil
+	c := client.New(cfg.BaseURL, cfg.AuthHeader(), f.timeout)
+	c.DryRun = f.dryRun
+	return c, nil
 }
 
 func (f *rootFlags) printJSON(w *cobra.Command, v any) error {

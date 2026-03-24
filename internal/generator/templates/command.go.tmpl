@@ -92,7 +92,7 @@ func new{{camel $.FuncPrefix}}{{camel $eName}}Cmd(flags *rootFlags) *cobra.Comma
 			data, err := c.Patch(path, body)
 {{- end}}
 			if err != nil {
-				return apiErr(err)
+				return classifyAPIError(err)
 			}
 
 			return printOutput(cmd.OutOrStdout(), data, flags.asJSON)
