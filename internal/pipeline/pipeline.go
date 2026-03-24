@@ -67,7 +67,7 @@ func Init(apiName string, opts Options) (*PipelineState, error) {
 			return nil, fmt.Errorf("writing plan seed for %s: %w", phase, err)
 		}
 
-		state.MarkPlanned(phase)
+		state.MarkSeedWritten(phase)
 	}
 
 	if err := state.Save(); err != nil {
