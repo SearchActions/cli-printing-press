@@ -208,6 +208,22 @@ Show the user the PR link and note that CI will validate the entry.
 
 ### Workflow 4: Autonomous Pipeline
 
+| Phase | Purpose |
+|-------|---------|
+| 0. Preflight | Validate environment and discover the OpenAPI spec |
+| 1. Scaffold | Generate the initial CLI and verify quality gates |
+| 2. Enrich | Deep-read the spec and research missing hints |
+| 3. Regenerate | Merge enrichments and re-generate the CLI |
+| 4. Review | Static quality checks + autonomous dogfooding against real API |
+| 5. Ship | Initialize git repo, commit, write report |
+
+The Review phase dogfoods the generated CLI in three tiers:
+- **Tier 1** (always): version, doctor, help, dry-run, output modes - no credentials needed
+- **Tier 2** (if credentials available): list, get, auth error handling - read-only API calls
+- **Tier 3** (sandbox APIs only): create/delete roundtrip with cleanup - write operations on safe test servers
+
+Results feed a combined quality score (static 0-50 + dogfood 0-50 = total 0-100).
+
 When the user says "print <api-name>":
 
 **Step 1: Initialize**

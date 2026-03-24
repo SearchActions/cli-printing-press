@@ -171,12 +171,14 @@ date: {{now}}
 # Review: {{.APIName}} CLI Quality
 
 ## Goal
-Static quality analysis of the generated CLI. No API calls.
+Static quality analysis and autonomous dogfooding of the generated CLI.
 
 ## Acceptance Criteria
-- [ ] Quality score calculated (0-100)
-- [ ] All critical checks pass
-- [ ] Issue list written to review.md
+- [ ] Static quality score calculated (0-50)
+- [ ] Dogfood score calculated (0-50)
+- [ ] Combined score written to review.md (0-100)
+- [ ] dogfood-results.json written with per-test results
+- [ ] All critical static checks pass
 
 ## Implementation Units
 
@@ -194,14 +196,60 @@ Static quality analysis of the generated CLI. No API calls.
 - No empty descriptions on top-level resources
 - No descriptions that just repeat the command name
 
-### Unit 4: Scoring
-- +20 points for compiles cleanly
-- +20 points for all help commands work
-- +20 points for no name quality issues
-- +20 points for no empty descriptions
-- +10 points for doctor works
-- +10 points for binary < 50MB
-- Write score and issues to {{.PipelineDir}}/review.md
+### Unit 4: Static Scoring
+- +10 compiles cleanly
+- +10 all help commands work
+- +10 no name quality issues
+- +10 no empty descriptions
+- +5 doctor works
+- +5 binary < 50MB
+
+### Unit 5: Dogfood Tier 1 - No Credentials Required
+Build the binary and run zero-config tests:
+
+a. Build: ` + "`cd {{.OutputDir}} && go build -o {{.APIName}}-cli ./cmd/{{.APIName}}-cli`" + `
+b. Version: ` + "`./{{.APIName}}-cli version`" + ` - expect exit code 0
+c. Doctor: ` + "`./{{.APIName}}-cli doctor`" + ` - expect runs without crash
+d. Dry-run: pick first POST/PUT endpoint, run with --dry-run
+e. Output modes: run any list command with --json, --plain, --quiet
+
+Record all results to dogfood-results.json.
+
+### Unit 6: Dogfood Tier 2 - Read-Only API Calls
+Check for API credentials in env vars or config file.
+
+If no credentials: print "Tier 2 skipped: no credentials" and score as N/A.
+
+If credentials found:
+a. List: ` + "`./{{.APIName}}-cli <resource> list --limit 5`" + `
+b. Get: ` + "`./{{.APIName}}-cli <resource> get <id-from-list>`" + `
+c. Auth error: run with invalid credentials, expect exit code 4
+d. Record response shape, latency, exit codes
+
+### Unit 7: Dogfood Tier 3 - Write Operations (Sandbox APIs Only)
+Only run on sandbox-safe APIs (petstore, stripe test mode, stytch test).
+If not sandbox-safe: skip entirely.
+
+If sandbox-safe:
+a. Create test resource
+b. Read it back
+c. Delete it (cleanup)
+d. Verify deletion returns exit code 3
+
+### Unit 8: Combined Scoring
+Write dogfood-results.json with per-test results.
+Write review.md with combined score:
+
+Static (0-50): from Unit 4
+Dogfood (0-50):
+  +10 version prints correctly
+  +10 doctor reports API status
+  +10 list/get returns data (Tier 2, 0 if skipped)
+  +10 create/delete roundtrip (Tier 3, 0 if skipped)
+  +5 dry-run works
+  +5 auth error handling correct
+
+Grade: A (90+), B (75+), C (60+), D (40+), F (<40)
 `,
 	PhaseShip: `---
 title: "{{.APIName}} CLI Pipeline - Phase 5: Ship"

@@ -38,12 +38,13 @@ const (
 
 // PipelineState tracks which phases are done across sessions.
 type PipelineState struct {
-	APIName   string                `json:"api_name"`
-	OutputDir string                `json:"output_dir"`
-	StartedAt time.Time             `json:"started_at"`
-	Phases    map[string]PhaseState `json:"phases"`
-	SpecPath  string                `json:"spec_path,omitempty"`
-	SpecURL   string                `json:"spec_url,omitempty"`
+	APIName        string                `json:"api_name"`
+	OutputDir      string                `json:"output_dir"`
+	StartedAt      time.Time             `json:"started_at"`
+	Phases         map[string]PhaseState `json:"phases"`
+	SpecPath       string                `json:"spec_path,omitempty"`
+	SpecURL        string                `json:"spec_url,omitempty"`
+	DogfoodTimeout int                   `json:"dogfood_timeout_seconds,omitempty"` // default 600 (10 min)
 }
 
 // PhaseState tracks a single phase.
@@ -71,12 +72,14 @@ func NewState(apiName, outputDir string) *PipelineState {
 			PlanPath: filepath.Join(PipelineDir(apiName), fmt.Sprintf("%02d-%s-plan.md", i, name)),
 		}
 	}
-	return &PipelineState{
-		APIName:   apiName,
-		OutputDir: outputDir,
-		StartedAt: time.Now(),
-		Phases:    phases,
+	state := &PipelineState{
+		APIName:        apiName,
+		OutputDir:      outputDir,
+		StartedAt:      time.Now(),
+		Phases:         phases,
+		DogfoodTimeout: 600, // 10 minutes default
 	}
+	return state
 }
 
 // Save writes state to disk.
