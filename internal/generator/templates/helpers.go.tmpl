@@ -9,9 +9,55 @@ import (
 	"sort"
 	"strings"
 	"text/tabwriter"
+
+	"github.com/mattn/go-isatty"
 )
 
 var As = errors.As
+
+// noColor is set by the --no-color flag
+var noColor bool
+
+func colorEnabled() bool {
+	if noColor {
+		return false
+	}
+	if os.Getenv("NO_COLOR") != "" {
+		return false
+	}
+	if os.Getenv("TERM") == "dumb" {
+		return false
+	}
+	return isatty.IsTerminal(os.Stdout.Fd()) || isatty.IsCygwinTerminal(os.Stdout.Fd())
+}
+
+func bold(s string) string {
+	if !colorEnabled() {
+		return s
+	}
+	return "\033[1m" + s + "\033[0m"
+}
+
+func green(s string) string {
+	if !colorEnabled() {
+		return s
+	}
+	return "\033[32m" + s + "\033[0m"
+}
+
+func red(s string) string {
+	if !colorEnabled() {
+		return s
+	}
+	return "\033[31m" + s + "\033[0m"
+}
+
+func yellow(s string) string {
+	if !colorEnabled() {
+		return s
+	}
+	return "\033[33m" + s + "\033[0m"
+}
 
 type cliError struct {
 	code int
@@ -251,7 +297,7 @@ func printAutoTable(w io.Writer, items []map[string]any) error {
 	tw := newTabWriter(w)
 	upperHeaders := make([]string, len(headers))
 	for i, h := range headers {
-		upperHeaders[i] = strings.ToUpper(h)
+		upperHeaders[i] = bold(strings.ToUpper(h))
 	}
 
 	fmt.Fprintln(tw, strings.Join(upperHeaders, "\t"))

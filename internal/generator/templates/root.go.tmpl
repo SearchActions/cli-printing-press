@@ -40,6 +40,7 @@ func Execute() error {
 	rootCmd.PersistentFlags().StringVar(&flags.configPath, "config", "", "Config file path")
 	rootCmd.PersistentFlags().DurationVar(&flags.timeout, "timeout", 30*time.Second, "Request timeout")
 	rootCmd.PersistentFlags().BoolVar(&flags.dryRun, "dry-run", false, "Show request without sending")
+	rootCmd.PersistentFlags().BoolVar(&noColor, "no-color", false, "Disable colored output")
 
 {{- range $name, $resource := .Resources}}
 	rootCmd.AddCommand(new{{camel $name}}Cmd(&flags)) {{/* FuncPrefix matches resource name for top-level */}}

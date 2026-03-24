@@ -3,6 +3,7 @@ package cli
 import (
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/USER/{{.Name}}-cli/internal/config"
@@ -57,11 +58,31 @@ func newDoctorCmd(flags *rootFlags) *cobra.Command {
 				return flags.printJSON(cmd, report)
 			}
 
-			// Human-readable output
+			// Human-readable output with color
 			w := cmd.OutOrStdout()
-			for _, key := range []string{"config", "config_path", "base_url", "auth", "auth_source", "api", "version"} {
+			checkKeys := []struct{ key, label string }{
+				{"config", "Config"},
+				{"auth", "Auth"},
+				{"api", "API"},
+			}
+			for _, ck := range checkKeys {
+				v, ok := report[ck.key]
+				if !ok {
+					continue
+				}
+				s := fmt.Sprintf("%v", v)
+				indicator := green("OK")
+				if strings.Contains(s, "error") || strings.Contains(s, "not configured") || strings.Contains(s, "unreachable") {
+					indicator = red("FAIL")
+				} else if strings.Contains(s, "not ") {
+					indicator = yellow("WARN")
+				}
+				fmt.Fprintf(w, "  %s %s: %s\n", indicator, ck.label, s)
+			}
+			// Print info keys without status indicator
+			for _, key := range []string{"config_path", "base_url", "auth_source", "version"} {
 				if v, ok := report[key]; ok {
-					fmt.Fprintf(w, "%s=%v\n", key, v)
+					fmt.Fprintf(w, "  %s: %v\n", key, v)
 				}
 			}
 			return nil
