@@ -1,8 +1,10 @@
 package cli
 
 import (
+{{- if .Resource.Endpoints}}
 	"encoding/json"
 	"fmt"
+{{- end}}
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -10,18 +12,21 @@ import (
 
 var _ = strings.ReplaceAll // ensure import
 
-func new{{camel .ResourceName}}Cmd(flags *rootFlags) *cobra.Command {
+func new{{camel .FuncPrefix}}Cmd(flags *rootFlags) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "{{.ResourceName}}",
 		Short: "{{oneline .Resource.Description}}",
 	}
 {{range $eName, $endpoint := .Resource.Endpoints}}
-	cmd.AddCommand(new{{camel $.ResourceName}}{{camel $eName}}Cmd(flags))
+	cmd.AddCommand(new{{camel $.FuncPrefix}}{{camel $eName}}Cmd(flags))
+{{- end}}
+{{- range $subName, $sub := .Resource.SubResources}}
+	cmd.AddCommand(new{{camel $.FuncPrefix}}{{camel $subName}}Cmd(flags))
 {{- end}}
 	return cmd
 }
 {{range $eName, $endpoint := .Resource.Endpoints}}
-func new{{camel $.ResourceName}}{{camel $eName}}Cmd(flags *rootFlags) *cobra.Command {
+func new{{camel $.FuncPrefix}}{{camel $eName}}Cmd(flags *rootFlags) *cobra.Command {
 {{- range $endpoint.Params}}
 {{- if not .Positional}}
 	var flag{{camel .Name}} {{goType .Type}}

@@ -40,7 +40,7 @@ func Execute() error {
 	rootCmd.PersistentFlags().DurationVar(&flags.timeout, "timeout", 30*time.Second, "Request timeout")
 
 {{- range $name, $resource := .Resources}}
-	rootCmd.AddCommand(new{{camel $name}}Cmd(&flags))
+	rootCmd.AddCommand(new{{camel $name}}Cmd(&flags)) {{/* FuncPrefix matches resource name for top-level */}}
 {{- end}}
 	rootCmd.AddCommand(newDoctorCmd(&flags))
 	rootCmd.AddCommand(newVersionCliCmd())

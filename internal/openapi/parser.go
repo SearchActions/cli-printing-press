@@ -228,22 +228,41 @@ func mapResources(doc *openapi3.T, out *spec.APISpec, basePath string) {
 			continue
 		}
 
-		resourceName := resourceNameFromPath(path, basePath)
-		if resourceName == "" {
+		primaryName, subName := resourceAndSubFromPath(path, basePath)
+		if primaryName == "" {
 			warnf("skipping path %q: could not derive resource name", path)
 			continue
 		}
 
-		resource, ok := out.Resources[resourceName]
+		resource, ok := out.Resources[primaryName]
 		if !ok {
 			if len(out.Resources) >= maxResources {
 				warnf("skipping path %q: resource limit (%d) reached", path, maxResources)
 				continue
 			}
 			resource = spec.Resource{
-				Description: tagDescriptions[resourceName],
-				Endpoints:   map[string]spec.Endpoint{},
+				Description:  tagDescriptions[primaryName],
+				Endpoints:    map[string]spec.Endpoint{},
+				SubResources: map[string]spec.Resource{},
 			}
+		}
+
+		// Determine the target: direct resource endpoints or sub-resource endpoints
+		var targetEndpoints map[string]spec.Endpoint
+		targetResourceName := primaryName
+		if subName != "" {
+			sub, ok := resource.SubResources[subName]
+			if !ok {
+				sub = spec.Resource{
+					Description: tagDescriptions[subName],
+					Endpoints:   map[string]spec.Endpoint{},
+				}
+				resource.SubResources[subName] = sub
+			}
+			targetEndpoints = resource.SubResources[subName].Endpoints
+			targetResourceName = subName
+		} else {
+			targetEndpoints = resource.Endpoints
 		}
 
 		methods := make([]string, 0, len(operations))
@@ -259,12 +278,12 @@ func mapResources(doc *openapi3.T, out *spec.APISpec, basePath string) {
 				continue
 			}
 
-			if len(resource.Endpoints) >= maxEndpointsPerResource {
-				warnf("skipping %s %q: endpoint limit (%d) reached for resource %q", method, path, maxEndpointsPerResource, resourceName)
+			if len(targetEndpoints) >= maxEndpointsPerResource {
+				warnf("skipping %s %q: endpoint limit (%d) reached for resource %q.%s", method, path, maxEndpointsPerResource, primaryName, targetResourceName)
 				continue
 			}
 
-			endpointName := resolveEndpointName(method, path, op, resource.Endpoints, resourceName, basePath)
+			endpointName := resolveEndpointName(method, path, op, targetEndpoints, targetResourceName, basePath)
 			summary := strings.TrimSpace(op.Summary)
 			desc := strings.TrimSpace(op.Description)
 			description := selectDescription(summary, desc)
@@ -282,16 +301,21 @@ func mapResources(doc *openapi3.T, out *spec.APISpec, basePath string) {
 			}
 
 			endpoint.Response, endpoint.ResponsePath = mapResponse(op, endpointName)
-			if resource.Description == "" {
-				resource.Description = resourceDescription(op, tagDescriptions)
-			}
-			resource.Endpoints[endpointName] = endpoint
+			targetEndpoints[endpointName] = endpoint
 		}
 
-		if resource.Description == "" {
-			resource.Description = humanizeResourceName(resourceName)
+		// Update descriptions
+		if subName != "" {
+			sub := resource.SubResources[subName]
+			if sub.Description == "" {
+				sub.Description = humanizeResourceName(subName)
+			}
+			resource.SubResources[subName] = sub
 		}
-		out.Resources[resourceName] = resource
+		if resource.Description == "" {
+			resource.Description = humanizeResourceName(primaryName)
+		}
+		out.Resources[primaryName] = resource
 	}
 }
 
@@ -918,14 +942,38 @@ func firstJSONMediaType(content openapi3.Content) *openapi3.MediaType {
 }
 
 func resourceNameFromPath(path, basePath string) string {
+	primary, _ := resourceAndSubFromPath(path, basePath)
+	return primary
+}
+
+func resourceAndSubFromPath(path, basePath string) (string, string) {
 	segments := pathSegmentsAfterBase(path, basePath)
 	if len(segments) == 0 {
-		return ""
+		return "", ""
 	}
 	if isPathParamSegment(segments[0]) {
-		return ""
+		return "", ""
 	}
-	return sanitizeResourceName(strings.ReplaceAll(toSnakeCase(segments[0]), "_", "-"))
+	primary := sanitizeResourceName(strings.ReplaceAll(toSnakeCase(segments[0]), "_", "-"))
+	if primary == "" {
+		return "", ""
+	}
+
+	// Look for sub-resource: requires a path param between primary and sub-resource
+	// e.g. /guilds/{guild_id}/members -> sub-resource "members"
+	// but /store/inventory -> NOT a sub-resource (no param between store and inventory)
+	rest := segments[1:]
+	hasParam := false
+	for len(rest) > 0 && isPathParamSegment(rest[0]) {
+		hasParam = true
+		rest = rest[1:]
+	}
+	if !hasParam || len(rest) == 0 {
+		return primary, ""
+	}
+	// The first non-param segment after the path param is the sub-resource
+	sub := sanitizeResourceName(strings.ReplaceAll(toSnakeCase(rest[0]), "_", "-"))
+	return primary, sub
 }
 
 func endpointCollisionSuffix(path, resourceName, basePath string) string {

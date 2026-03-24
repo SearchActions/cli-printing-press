@@ -55,6 +55,9 @@ func TestParseStytchOpenAPI(t *testing.T) {
 	totalEndpoints := 0
 	for _, resource := range parsed.Resources {
 		totalEndpoints += len(resource.Endpoints)
+		for _, sub := range resource.SubResources {
+			totalEndpoints += len(sub.Endpoints)
+		}
 	}
 	assert.Greater(t, totalEndpoints, 10)
 }

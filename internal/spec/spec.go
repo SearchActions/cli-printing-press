@@ -34,8 +34,9 @@ type ConfigSpec struct {
 }
 
 type Resource struct {
-	Description string              `yaml:"description"`
-	Endpoints   map[string]Endpoint `yaml:"endpoints"`
+	Description  string              `yaml:"description"`
+	Endpoints    map[string]Endpoint `yaml:"endpoints"`
+	SubResources map[string]Resource `yaml:"sub_resources,omitempty"`
 }
 
 type Endpoint struct {
@@ -112,7 +113,7 @@ func (s *APISpec) Validate() error {
 		return fmt.Errorf("at least one resource is required")
 	}
 	for name, r := range s.Resources {
-		if len(r.Endpoints) == 0 {
+		if len(r.Endpoints) == 0 && len(r.SubResources) == 0 {
 			return fmt.Errorf("resource %q has no endpoints", name)
 		}
 		for eName, e := range r.Endpoints {
@@ -121,6 +122,19 @@ func (s *APISpec) Validate() error {
 			}
 			if e.Path == "" {
 				return fmt.Errorf("resource %q endpoint %q: path is required", name, eName)
+			}
+		}
+		for subName, sub := range r.SubResources {
+			if len(sub.Endpoints) == 0 {
+				return fmt.Errorf("resource %q sub-resource %q has no endpoints", name, subName)
+			}
+			for eName, e := range sub.Endpoints {
+				if e.Method == "" {
+					return fmt.Errorf("resource %q sub-resource %q endpoint %q: method is required", name, subName, eName)
+				}
+				if e.Path == "" {
+					return fmt.Errorf("resource %q sub-resource %q endpoint %q: path is required", name, subName, eName)
+				}
 			}
 		}
 	}

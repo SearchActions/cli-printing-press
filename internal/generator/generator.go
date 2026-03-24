@@ -85,16 +85,37 @@ func (g *Generator) Generate() error {
 	for name, resource := range g.Spec.Resources {
 		data := struct {
 			ResourceName string
+			FuncPrefix   string
 			Resource     spec.Resource
 			*spec.APISpec
 		}{
 			ResourceName: name,
+			FuncPrefix:   name,
 			Resource:     resource,
 			APISpec:      g.Spec,
 		}
 		outPath := filepath.Join("internal", "cli", name+".go")
 		if err := g.renderTemplate("command.go.tmpl", outPath, data); err != nil {
 			return fmt.Errorf("rendering command %s: %w", name, err)
+		}
+
+		// Generate sub-resource command files
+		for subName, subResource := range resource.SubResources {
+			subData := struct {
+				ResourceName string
+				FuncPrefix   string
+				Resource     spec.Resource
+				*spec.APISpec
+			}{
+				ResourceName: subName,
+				FuncPrefix:   name + "-" + subName,
+				Resource:     subResource,
+				APISpec:      g.Spec,
+			}
+			subOutPath := filepath.Join("internal", "cli", name+"_"+subName+".go")
+			if err := g.renderTemplate("command.go.tmpl", subOutPath, subData); err != nil {
+				return fmt.Errorf("rendering sub-command %s/%s: %w", name, subName, err)
+			}
 		}
 	}
 
