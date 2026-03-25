@@ -62,10 +62,30 @@ Extract the API name. Then search for an OpenAPI spec:
 3. WebSearch: `"<api-name>" openapi spec site:github.com`
 4. Try common URLs: `https://raw.githubusercontent.com/<org>/openapi/main/openapi.yaml`
 
-If OpenAPI spec found: go to Step 3 (generate from spec).
-If no spec found: go to Step 2 (research and write spec).
+**Step 1.5: Research competitors (ALWAYS runs, regardless of spec source)**
 
-**Step 2: Research the API and write a spec (Claude Code does this)**
+This runs EVERY time, even when an OpenAPI spec was found. Claude Code IS the brain.
+
+a. **Search for competing CLIs:**
+```
+WebSearch: "<api-name> cli" site:github.com
+```
+For each competitor found, note: name, stars, language, last updated, URL.
+
+b. **Analyze top competitors (if any found):**
+For the top 1-3 competitors by stars, WebFetch their README and note:
+- What commands they have
+- What auth methods they support
+- What features they highlight
+- What issues/complaints users have (check their GitHub issues if notable)
+
+c. **Report findings before generating:**
+Tell the user: "Found N competing CLIs. Best: X (Y stars, Z commands). Generating a CLI that matches or beats them."
+
+If OpenAPI spec found: go to Step 3 (generate from spec).
+If no spec found: go to Step 2 (research and write spec from docs).
+
+**Step 2: Write a spec from API docs (only when no OpenAPI spec exists)**
 
 This is where Claude Code IS the brain. No regex. No shelling out to another LLM.
 
@@ -74,13 +94,7 @@ a. **Fetch the API docs:**
 WebFetch the API documentation URL (e.g., developers.notion.com/reference)
 ```
 
-b. **Research competitors:**
-```
-WebSearch: "<api-name> cli" site:github.com
-```
-For each competitor found, note: name, stars, language, last updated.
-
-c. **Read the docs and identify EVERY endpoint:**
+b. **Read the docs and identify EVERY endpoint:**
 Read the fetched docs content. List every API endpoint you find:
 - HTTP method (GET, POST, PUT, PATCH, DELETE)
 - Path (/v1/databases, /v1/pages/{id})
@@ -126,25 +140,35 @@ Use `--lenient` for specs with broken $refs (PagerDuty, Intercom).
 If all 7 quality gates pass: go to Step 4 (polish).
 If gates fail: read error, fix, retry (max 3).
 
-**Step 4: Polish (Claude Code does this)**
+**Step 4: Polish (ALWAYS runs - Claude Code does this)**
 
-Read the generated code and improve it directly:
+After generating, Claude Code improves the output directly. This is NOT optional.
 
-a. **Improve help descriptions:**
+a. **Check the generated CLI:**
+```bash
+cd <output> && go build -o <name>-cli ./cmd/*/ && ./<name>-cli --help
+```
+Count commands and resources. Compare against competitors found in Step 1.5.
+
+b. **Improve help descriptions:**
 Read each command file in `<output>/internal/cli/*.go`. Find `Short:` strings. If any are jargon-heavy spec descriptions, use Edit to rewrite them to be developer-friendly (under 80 chars, starts with a verb).
 
-b. **Improve examples:**
+c. **Improve examples:**
 Read each command's `Example:` string. If it uses generic values like "value" or "<id>", use Edit to replace with realistic values (e.g., "usr_abc123", "2026-01-01", "user@example.com").
 
-c. **Improve README:**
-Read `<output>/README.md`. If the description is generic spec text, use Edit to rewrite:
+d. **Improve README:**
+Read `<output>/README.md`. Rewrite it:
 - Add a one-line hook that makes developers want to install it
-- Add "Why This Exists" if there's no official CLI for this API
-- Ensure Quick Start has real 3-command workflow
+- Add "Why This Exists" section (mention that no official CLI exists, if true)
+- If competitors exist, note: "Inspired by X, with Y improvements"
+- Ensure Quick Start has a real 3-command workflow with realistic values
 
-d. **Note: this step is optional.** If the user doesn't want polish, skip it. If the generated output is already good, skip it. Use judgment.
+e. **Verify polish didn't break anything:**
+```bash
+cd <output> && go build ./... && go vet ./...
+```
 
-**Step 5: Score (optional)**
+**Step 5: Score (ALWAYS runs)**
 
 Run the Steinberger scorecard:
 ```bash
@@ -156,13 +180,18 @@ Report the score to the user.
 
 **Step 6: Present result**
 
-Show:
-1. What was generated (directory, resources, commands)
-2. Example commands to try
-3. How to install: `cd <name>-cli && go install ./cmd/<name>-cli`
-4. Steinberger score if computed
-5. Competitors found (if any)
-6. Note if spec was auto-written vs from OpenAPI
+Show ALL of these:
+1. What was generated (directory, resources, commands, endpoint count)
+2. Steinberger score and grade (ALWAYS - from Step 5)
+3. Competitor comparison (ALWAYS - from Step 1.5):
+   - How many competitors found
+   - Our command count vs best competitor
+   - What we beat them on
+   - What we're missing (if anything)
+4. Example commands to try (use realistic values, not placeholders)
+5. How to install: `cd <name>-cli && go install ./cmd/<name>-cli`
+6. Spec source (OpenAPI URL vs hand-written from docs)
+7. Any limitations (skipped complex body fields, truncated endpoints)
 
 ### Workflow 1: From Spec File
 
