@@ -27,15 +27,24 @@ func Run(prompt string) (string, error) {
 	}
 	defer os.Remove(tmpFile)
 
-	// Try claude first (--print -p runs non-interactively)
+	// Try claude first (-p / --print mode, prompt as positional arg)
 	if path, err := exec.LookPath("claude"); err == nil {
-		cmd := exec.Command(path, "--print", "-p", prompt)
+		// For short prompts, pass directly. For long prompts, use a temp file referenced in the prompt.
+		var cmd *exec.Cmd
+		if len(prompt) < 100000 {
+			cmd = exec.Command(path, "-p", prompt, "--output-format", "text")
+		} else {
+			// Write to temp file and tell Claude to read it
+			metaPrompt := fmt.Sprintf("Read the file at %s and follow the instructions inside it exactly.", tmpFile)
+			cmd = exec.Command(path, "-p", metaPrompt, "--output-format", "text")
+		}
 		cmd.Stderr = os.Stderr
 		out, err := cmd.Output()
 		if err == nil {
 			return strings.TrimSpace(string(out)), nil
 		}
 		// Fall through to codex
+		fmt.Fprintf(os.Stderr, "warning: claude failed (%v), trying codex\n", err)
 	}
 
 	// Try codex (--quiet --prompt runs non-interactively)
