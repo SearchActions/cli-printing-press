@@ -1,18 +1,23 @@
 package openapi
 
-import "strings"
+import "bytes"
 
 func IsOpenAPI(data []byte) bool {
 	if len(data) == 0 {
 		return false
 	}
-	if len(data) > 500 {
-		data = data[:500]
+
+	// Check for JSON-style keys (case-sensitive, covers 99% of specs)
+	if bytes.Contains(data, []byte(`"openapi"`)) ||
+		bytes.Contains(data, []byte(`"swagger"`)) {
+		return true
 	}
 
-	content := strings.ToLower(string(data))
-	return strings.Contains(content, "openapi:") ||
-		strings.Contains(content, "\"openapi\"") ||
-		strings.Contains(content, "swagger:") ||
-		strings.Contains(content, "\"swagger\"")
+	// Check for YAML-style keys
+	if bytes.Contains(data, []byte("openapi:")) ||
+		bytes.Contains(data, []byte("swagger:")) {
+		return true
+	}
+
+	return false
 }

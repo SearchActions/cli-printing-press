@@ -364,12 +364,30 @@ func mapResources(doc *openapi3.T, out *spec.APISpec, basePath string) {
 				description = humanizeEndpointName(endpointName)
 			}
 
+			params := mapParameters(pathItem, op)
+			body := mapRequestBody(op.RequestBody, method, path)
+
+			// Deduplicate body params that collide with query/path params by flag name
+			if len(body) > 0 && len(params) > 0 {
+				paramFlags := map[string]bool{}
+				for _, p := range params {
+					paramFlags[toKebabCase(p.Name)] = true
+				}
+				filtered := make([]spec.Param, 0, len(body))
+				for _, b := range body {
+					if !paramFlags[toKebabCase(b.Name)] {
+						filtered = append(filtered, b)
+					}
+				}
+				body = filtered
+			}
+
 			endpoint := spec.Endpoint{
 				Method:      strings.ToUpper(method),
 				Path:        path,
 				Description: description,
-				Params:      mapParameters(pathItem, op),
-				Body:        mapRequestBody(op.RequestBody, method, path),
+				Params:      params,
+				Body:        body,
 			}
 
 			endpoint.Response, endpoint.ResponsePath = mapResponse(op, endpointName)
@@ -822,7 +840,13 @@ func mapRequestBody(requestBodyRef *openapi3.RequestBodyRef, method, path string
 	sort.Strings(names)
 
 	body := make([]spec.Param, 0, len(names))
+	seenCamelNames := map[string]bool{}
 	for _, name := range names {
+		camelName := toCamelCase(name)
+		if seenCamelNames[camelName] {
+			continue
+		}
+		seenCamelNames[camelName] = true
 		schema := schemaRefValue(properties[name])
 		if isComplexBodyFieldSchema(schema) {
 			warnf("skipping body field %q: complex type not supported as CLI flag", name)
@@ -1031,10 +1055,16 @@ func mapTypes(doc *openapi3.T, out *spec.APISpec) {
 		sort.Strings(fieldNames)
 
 		fields := make([]spec.TypeField, 0, len(fieldNames))
+		seenGoNames := map[string]bool{}
 		for _, fieldName := range fieldNames {
 			if strings.HasPrefix(fieldName, "_") {
 				continue
 			}
+			goFieldName := toCamelCase(fieldName)
+			if seenGoNames[goFieldName] {
+				continue
+			}
+			seenGoNames[goFieldName] = true
 			fields = append(fields, spec.TypeField{
 				Name: fieldName,
 				Type: mapSchemaType(schemaRefValue(properties[fieldName])),
@@ -1654,6 +1684,23 @@ func sanitizeTypeName(name string) string {
 	result := b.String()
 	if len(result) > 0 && !unicode.IsLetter(rune(result[0])) {
 		result = "T" + result
+	}
+	return result
+}
+
+func toCamelCase(s string) string {
+	s = strings.TrimLeft(s, "$")
+	parts := strings.FieldsFunc(s, func(r rune) bool {
+		return r == '_' || r == '-' || r == ' ' || r == '.' || r == '/' || r == '\\' || r == '$' || r == '#' || r == '@'
+	})
+	for i, p := range parts {
+		if len(p) > 0 {
+			parts[i] = strings.ToUpper(p[:1]) + p[1:]
+		}
+	}
+	result := strings.Join(parts, "")
+	if len(result) > 0 && !unicode.IsLetter(rune(result[0])) {
+		result = "V" + result
 	}
 	return result
 }

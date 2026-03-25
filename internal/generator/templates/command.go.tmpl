@@ -60,7 +60,7 @@ func new{{camel $.FuncPrefix}}{{camel $eName}}Cmd(flags *rootFlags) *cobra.Comma
 {{- end}}
 {{- end}}
 
-{{- if eq $endpoint.Method "GET"}}
+{{- if or (eq $endpoint.Method "GET") (eq $endpoint.Method "HEAD")}}
 {{- if $endpoint.Pagination}}
 			data, err := paginatedGet(c, path, map[string]string{
 {{- range $endpoint.Params}}

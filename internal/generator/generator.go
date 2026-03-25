@@ -167,7 +167,7 @@ func toCamel(s string) string {
 	// Strip characters that are invalid in Go identifiers
 	s = strings.TrimLeft(s, "$")
 	parts := strings.FieldsFunc(s, func(r rune) bool {
-		return r == '_' || r == '-' || r == ' ' || r == '.' || r == '/' || r == '\\' || r == '$' || r == '#' || r == '@'
+		return !unicode.IsLetter(r) && !unicode.IsDigit(r)
 	})
 	for i, p := range parts {
 		if len(p) > 0 {
@@ -225,18 +225,36 @@ func cobraFlagFunc(t string) string {
 
 func defaultVal(p spec.Param) string {
 	if p.Default != nil {
-		switch v := p.Default.(type) {
-		case string:
-			return fmt.Sprintf("%q", v)
-		case int:
-			return fmt.Sprintf("%d", v)
-		case float64:
-			if v == float64(int(v)) {
-				return fmt.Sprintf("%d", int(v))
+		// Coerce the default value to match the declared param type
+		switch p.Type {
+		case "string":
+			return fmt.Sprintf("%q", fmt.Sprintf("%v", p.Default))
+		case "bool":
+			switch v := p.Default.(type) {
+			case bool:
+				return fmt.Sprintf("%t", v)
+			case string:
+				if v == "true" || v == "false" {
+					return v
+				}
 			}
-			return fmt.Sprintf("%f", v)
-		case bool:
-			return fmt.Sprintf("%t", v)
+			return "false"
+		case "int":
+			switch v := p.Default.(type) {
+			case float64:
+				return fmt.Sprintf("%d", int(v))
+			case int:
+				return fmt.Sprintf("%d", v)
+			}
+			return "0"
+		case "float":
+			switch v := p.Default.(type) {
+			case float64:
+				return fmt.Sprintf("%f", v)
+			case int:
+				return fmt.Sprintf("%f", float64(v))
+			}
+			return "0.0"
 		}
 	}
 	return zeroVal(p.Type)
@@ -343,8 +361,19 @@ func (g *Generator) exampleLine(commandPath, endpointName string, endpoint spec.
 
 func flagName(name string) string {
 	name = strings.TrimLeft(name, "$")
-	name = strings.NewReplacer("_", "-", "/", "-", ".", "-", "\\", "-").Replace(name)
-	return strings.Trim(name, "-")
+	// Replace common separators with hyphens, strip anything not alphanumeric or hyphen
+	var b strings.Builder
+	lastHyphen := true
+	for _, r := range name {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) {
+			b.WriteRune(unicode.ToLower(r))
+			lastHyphen = false
+		} else if !lastHyphen && b.Len() > 0 {
+			b.WriteByte('-')
+			lastHyphen = true
+		}
+	}
+	return strings.Trim(b.String(), "-")
 }
 
 func safeTypeName(name string) string {
