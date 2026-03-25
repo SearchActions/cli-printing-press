@@ -1,7 +1,7 @@
 ---
 title: "Fix Template Sanitization - Gauntlet Round 2 (4/10 to 8/10+)"
 type: fix
-status: completed
+status: completed-verified
 date: 2026-03-24
 origin: docs/plans/dogfood-gauntlet-findings.md
 ---
