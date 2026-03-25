@@ -2,6 +2,7 @@ package openapi
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/url"
 	"os"
@@ -19,11 +20,110 @@ const (
 	maxEndpointsPerResource = 50
 )
 
+// stripBrokenRefs attempts to remove broken component references from a spec.
+// It extracts the broken key name from the error message, finds and removes it
+// from the raw JSON/YAML, then returns the cleaned data.
+func stripBrokenRefs(data []byte, errMsg string) []byte {
+	// Extract the broken ref path like "#/components/requestBodies/BadKey"
+	// from error messages like: bad data in "#/components/requestBodies/BadKey"
+	parts := strings.SplitN(errMsg, "\"#/", 2)
+	if len(parts) < 2 {
+		return data
+	}
+	refPath := strings.SplitN(parts[1], "\"", 2)[0] // e.g. "components/requestBodies/BadKey"
+	segments := strings.Split(refPath, "/")
+	if len(segments) < 2 {
+		return data
+	}
+	brokenKey := segments[len(segments)-1]
+	section := segments[len(segments)-2] // e.g. "requestBodies"
+
+	refStr := fmt.Sprintf("#/components/%s/%s", section, brokenKey)
+
+	// Try to parse as JSON and remove the broken key + any paths referencing it
+	var raw map[string]json.RawMessage
+	if json.Unmarshal(data, &raw) == nil {
+		modified := false
+
+		// Remove from components
+		if componentsRaw, ok := raw["components"]; ok {
+			var components map[string]json.RawMessage
+			if json.Unmarshal(componentsRaw, &components) == nil {
+				if sectionRaw, ok := components[section]; ok {
+					var sectionMap map[string]json.RawMessage
+					if json.Unmarshal(sectionRaw, &sectionMap) == nil {
+						if _, exists := sectionMap[brokenKey]; exists {
+							delete(sectionMap, brokenKey)
+							fmt.Fprintf(os.Stderr, "info: removed broken component %s/%s\n", section, brokenKey)
+							sectionBytes, _ := json.Marshal(sectionMap)
+							components[section] = sectionBytes
+							componentsBytes, _ := json.Marshal(components)
+							raw["components"] = componentsBytes
+							modified = true
+						}
+					}
+				}
+			}
+		}
+
+		// Also strip any paths that reference the broken component
+		if pathsRaw, ok := raw["paths"]; ok {
+			var paths map[string]json.RawMessage
+			if json.Unmarshal(pathsRaw, &paths) == nil {
+				for pathKey, pathVal := range paths {
+					if strings.Contains(string(pathVal), refStr) {
+						delete(paths, pathKey)
+						fmt.Fprintf(os.Stderr, "info: removed path %s (references broken %s)\n", pathKey, brokenKey)
+						modified = true
+					}
+				}
+				pathsBytes, _ := json.Marshal(paths)
+				raw["paths"] = pathsBytes
+			}
+		}
+
+		if modified {
+			cleaned, _ := json.Marshal(raw)
+			return cleaned
+		}
+	}
+
+	return data
+}
+
+// Parse parses an OpenAPI spec strictly. Use ParseLenient for specs with broken $refs.
 func Parse(data []byte) (*spec.APISpec, error) {
+	return parse(data, false)
+}
+
+// ParseLenient parses an OpenAPI spec, skipping validation errors from broken $refs.
+// It logs warnings to stderr for any issues found but continues parsing.
+func ParseLenient(data []byte) (*spec.APISpec, error) {
+	return parse(data, true)
+}
+
+func parse(data []byte, lenient bool) (*spec.APISpec, error) {
 	loader := openapi3.NewLoader()
+	loader.IsExternalRefsAllowed = lenient
 	doc, err := loader.LoadFromData(data)
 	if err != nil {
-		return nil, fmt.Errorf("loading OpenAPI spec: %w", err)
+		if !lenient {
+			return nil, fmt.Errorf("loading OpenAPI spec: %w", err)
+		}
+		// In lenient mode, strip broken refs and retry up to 10 times
+		for attempt := 0; attempt < 10 && err != nil; attempt++ {
+			fmt.Fprintf(os.Stderr, "warning: spec parse error (attempt %d), cleaning: %v\n", attempt+1, err)
+			cleaned := stripBrokenRefs(data, err.Error())
+			if len(cleaned) == len(data) {
+				break // stripBrokenRefs couldn't remove anything
+			}
+			data = cleaned
+			doc, err = loader.LoadFromData(data)
+		}
+		if err != nil {
+			return nil, fmt.Errorf("loading OpenAPI spec (even after cleanup): %w", err)
+		}
+		fmt.Fprintf(os.Stderr, "info: spec loaded after stripping broken references\n")
 	}
 
 	doc.InternalizeRefs(context.Background(), nil)

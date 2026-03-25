@@ -4,10 +4,12 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/mvanhorn/cli-printing-press/internal/openapi"
 	"github.com/mvanhorn/cli-printing-press/internal/spec"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -103,4 +105,184 @@ func runGoCommand(t *testing.T, dir string, args ...string) {
 	cmd.Env = append(os.Environ(), "GOCACHE="+filepath.Join(dir, ".cache", "go-build"))
 	output, err := cmd.CombinedOutput()
 	require.NoError(t, err, string(output))
+}
+
+// --- Unit 1: Template Regression Tests ---
+
+func TestGenerateWithNoAuth(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := &spec.APISpec{
+		Name:    "noauth",
+		Version: "0.1.0",
+		BaseURL: "https://api.example.com",
+		Auth: spec.AuthConfig{
+			Type:    "",
+			EnvVars: nil,
+		},
+		Config: spec.ConfigSpec{
+			Format: "toml",
+			Path:   "~/.config/noauth-cli/config.toml",
+		},
+		Resources: map[string]spec.Resource{
+			"items": {
+				Description: "Manage items",
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:      "GET",
+						Path:        "/items",
+						Description: "List all items",
+					},
+				},
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), "noauth-cli")
+	gen := New(apiSpec, outputDir)
+	require.NoError(t, gen.Generate())
+	require.NoError(t, gen.Validate())
+}
+
+func TestGenerateWithOwnerField(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := &spec.APISpec{
+		Name:    "owned",
+		Version: "0.1.0",
+		BaseURL: "https://api.example.com",
+		Owner:   "testowner",
+		Auth: spec.AuthConfig{
+			Type:    "api_key",
+			Header:  "Authorization",
+			Format:  "Bearer {token}",
+			EnvVars: []string{"OWNED_API_KEY"},
+		},
+		Config: spec.ConfigSpec{
+			Format: "toml",
+			Path:   "~/.config/owned-cli/config.toml",
+		},
+		Resources: map[string]spec.Resource{
+			"things": {
+				Description: "Manage things",
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:      "GET",
+						Path:        "/things",
+						Description: "List things",
+					},
+				},
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), "owned-cli")
+	gen := New(apiSpec, outputDir)
+	require.NoError(t, gen.Generate())
+
+	gomod, err := os.ReadFile(filepath.Join(outputDir, "go.mod"))
+	require.NoError(t, err)
+	assert.Contains(t, string(gomod), "github.com/testowner/")
+}
+
+func TestGenerateWithEmptyOwner(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := &spec.APISpec{
+		Name:    "unowned",
+		Version: "0.1.0",
+		BaseURL: "https://api.example.com",
+		Owner:   "",
+		Auth: spec.AuthConfig{
+			Type:    "api_key",
+			Header:  "Authorization",
+			Format:  "Bearer {token}",
+			EnvVars: []string{"UNOWNED_API_KEY"},
+		},
+		Config: spec.ConfigSpec{
+			Format: "toml",
+			Path:   "~/.config/unowned-cli/config.toml",
+		},
+		Resources: map[string]spec.Resource{
+			"widgets": {
+				Description: "Manage widgets",
+				Endpoints: map[string]spec.Endpoint{
+					"get": {
+						Method:      "GET",
+						Path:        "/widgets/{id}",
+						Description: "Get a widget",
+					},
+				},
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), "unowned-cli")
+	gen := New(apiSpec, outputDir)
+	require.NoError(t, gen.Generate())
+
+	gomod, err := os.ReadFile(filepath.Join(outputDir, "go.mod"))
+	require.NoError(t, err)
+	assert.Contains(t, string(gomod), "github.com/USER/")
+}
+
+// --- Unit 7: Feature Verification Tests ---
+
+func generatePetstore(t *testing.T) string {
+	t.Helper()
+
+	data, err := os.ReadFile(filepath.Join("..", "..", "testdata", "openapi", "petstore.yaml"))
+	require.NoError(t, err)
+
+	apiSpec, err := openapi.Parse(data)
+	require.NoError(t, err)
+
+	outputDir := filepath.Join(t.TempDir(), apiSpec.Name+"-cli")
+	gen := New(apiSpec, outputDir)
+	require.NoError(t, gen.Generate())
+
+	return outputDir
+}
+
+func TestGeneratedOutput_HasSelectFlag(t *testing.T) {
+	t.Parallel()
+
+	outputDir := generatePetstore(t)
+	rootGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "root.go"))
+	require.NoError(t, err)
+	assert.True(t, strings.Contains(string(rootGo), "select"), "root.go should contain the --select flag")
+}
+
+func TestGeneratedOutput_HasErrorHints(t *testing.T) {
+	t.Parallel()
+
+	outputDir := generatePetstore(t)
+	helpersGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "helpers.go"))
+	require.NoError(t, err)
+	assert.True(t, strings.Contains(string(helpersGo), "hint:"), "helpers.go should contain error hints")
+}
+
+func TestGeneratedOutput_HasGenerationComment(t *testing.T) {
+	t.Parallel()
+
+	outputDir := generatePetstore(t)
+	// Find the actual cmd directory (name derived from spec title)
+	entries, err := os.ReadDir(filepath.Join(outputDir, "cmd"))
+	require.NoError(t, err)
+	require.NotEmpty(t, entries, "cmd/ should have at least one subdirectory")
+	mainGo, err := os.ReadFile(filepath.Join(outputDir, "cmd", entries[0].Name(), "main.go"))
+	require.NoError(t, err)
+	assert.True(t, strings.Contains(string(mainGo), "Code generated by CLI Printing Press"), "main.go should contain generation comment")
+}
+
+func TestGeneratedOutput_READMEHasQuickStart(t *testing.T) {
+	t.Parallel()
+
+	outputDir := generatePetstore(t)
+	readme, err := os.ReadFile(filepath.Join(outputDir, "README.md"))
+	require.NoError(t, err)
+	content := string(readme)
+	assert.Contains(t, content, "Quick Start")
+	assert.Contains(t, content, "Output Formats")
+	assert.Contains(t, content, "Agent Usage")
 }

@@ -44,6 +44,7 @@ func newGenerateCmd() *cobra.Command {
 	var validate bool
 	var refresh bool
 	var force bool
+	var lenient bool
 
 	cmd := &cobra.Command{
 		Use:   "generate",
@@ -62,7 +63,11 @@ func newGenerateCmd() *cobra.Command {
 
 				var apiSpec *spec.APISpec
 				if openapi.IsOpenAPI(data) {
-					apiSpec, err = openapi.Parse(data)
+					if lenient {
+						apiSpec, err = openapi.ParseLenient(data)
+					} else {
+						apiSpec, err = openapi.Parse(data)
+					}
 				} else {
 					apiSpec, err = spec.ParseBytes(data)
 				}
@@ -118,6 +123,7 @@ func newGenerateCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&validate, "validate", true, "Run quality gates on the generated project")
 	cmd.Flags().BoolVar(&refresh, "refresh", false, "Refresh cached remote spec before generating")
 	cmd.Flags().BoolVar(&force, "force", false, "Remove existing output directory before generating")
+	cmd.Flags().BoolVar(&lenient, "lenient", false, "Skip validation errors from broken $refs in OpenAPI specs")
 
 	return cmd
 }
