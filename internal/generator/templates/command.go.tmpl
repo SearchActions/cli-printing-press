@@ -3,7 +3,10 @@
 package cli
 
 import (
+	"encoding/json"
 	"fmt"
+	"io"
+	"os"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -11,6 +14,9 @@ import (
 
 var _ = strings.ReplaceAll // ensure import
 var _ = fmt.Sprintf        // ensure import
+var _ = io.ReadAll         // ensure import
+var _ = os.Stdin           // ensure import
+var _ json.RawMessage      // ensure import
 
 func new{{camel .FuncPrefix}}Cmd(flags *rootFlags) *cobra.Command {
 	cmd := &cobra.Command{
@@ -37,6 +43,9 @@ func new{{camel $.FuncPrefix}}{{camel $eName}}Cmd(flags *rootFlags) *cobra.Comma
 {{- end}}
 {{- if $endpoint.Pagination}}
 	var flagAll bool
+{{- end}}
+{{- if or (eq $endpoint.Method "POST") (eq $endpoint.Method "PUT") (eq $endpoint.Method "PATCH")}}
+	var stdinBody bool
 {{- end}}
 
 	cmd := &cobra.Command{
@@ -83,35 +92,80 @@ func new{{camel $.FuncPrefix}}{{camel $eName}}Cmd(flags *rootFlags) *cobra.Comma
 			data, err := c.Get(path, params)
 {{- end}}
 {{- else if eq $endpoint.Method "POST"}}
-			body := map[string]any{}
+			var body map[string]any
+			if stdinBody {
+				stdinData, err := io.ReadAll(os.Stdin)
+				if err != nil {
+					return fmt.Errorf("reading stdin: %w", err)
+				}
+				var jsonBody map[string]any
+				if err := json.Unmarshal(stdinData, &jsonBody); err != nil {
+					return fmt.Errorf("parsing stdin JSON: %w", err)
+				}
+				body = jsonBody
+			} else {
+				body = map[string]any{}
 {{- range $endpoint.Body}}
-			if body{{camel .Name}} != {{zeroVal .Type}} {
-				body["{{.Name}}"] = body{{camel .Name}}
-			}
+				if body{{camel .Name}} != {{zeroVal .Type}} {
+					body["{{.Name}}"] = body{{camel .Name}}
+				}
 {{- end}}
+			}
 			data, err := c.Post(path, body)
 {{- else if eq $endpoint.Method "DELETE"}}
 			data, err := c.Delete(path)
 {{- else if eq $endpoint.Method "PUT"}}
-			body := map[string]any{}
+			var body map[string]any
+			if stdinBody {
+				stdinData, err := io.ReadAll(os.Stdin)
+				if err != nil {
+					return fmt.Errorf("reading stdin: %w", err)
+				}
+				var jsonBody map[string]any
+				if err := json.Unmarshal(stdinData, &jsonBody); err != nil {
+					return fmt.Errorf("parsing stdin JSON: %w", err)
+				}
+				body = jsonBody
+			} else {
+				body = map[string]any{}
 {{- range $endpoint.Body}}
-			if body{{camel .Name}} != {{zeroVal .Type}} {
-				body["{{.Name}}"] = body{{camel .Name}}
-			}
+				if body{{camel .Name}} != {{zeroVal .Type}} {
+					body["{{.Name}}"] = body{{camel .Name}}
+				}
 {{- end}}
+			}
 			data, err := c.Put(path, body)
 {{- else if eq $endpoint.Method "PATCH"}}
-			body := map[string]any{}
+			var body map[string]any
+			if stdinBody {
+				stdinData, err := io.ReadAll(os.Stdin)
+				if err != nil {
+					return fmt.Errorf("reading stdin: %w", err)
+				}
+				var jsonBody map[string]any
+				if err := json.Unmarshal(stdinData, &jsonBody); err != nil {
+					return fmt.Errorf("parsing stdin JSON: %w", err)
+				}
+				body = jsonBody
+			} else {
+				body = map[string]any{}
 {{- range $endpoint.Body}}
-			if body{{camel .Name}} != {{zeroVal .Type}} {
-				body["{{.Name}}"] = body{{camel .Name}}
-			}
+				if body{{camel .Name}} != {{zeroVal .Type}} {
+					body["{{.Name}}"] = body{{camel .Name}}
+				}
 {{- end}}
+			}
 			data, err := c.Patch(path, body)
 {{- end}}
+{{- if eq $endpoint.Method "DELETE"}}
+			if err != nil {
+				return classifyDeleteError(err)
+			}
+{{- else}}
 			if err != nil {
 				return classifyAPIError(err)
 			}
+{{- end}}
 
 			return printOutput(cmd.OutOrStdout(), data, flags.asJSON)
 		},
@@ -133,6 +187,9 @@ func new{{camel $.FuncPrefix}}{{camel $eName}}Cmd(flags *rootFlags) *cobra.Comma
 {{- end}}
 {{- if $endpoint.Pagination}}
 	cmd.Flags().BoolVar(&flagAll, "all", false, "Fetch all pages")
+{{- end}}
+{{- if or (eq $endpoint.Method "POST") (eq $endpoint.Method "PUT") (eq $endpoint.Method "PATCH")}}
+	cmd.Flags().BoolVar(&stdinBody, "stdin", false, "Read request body as JSON from stdin")
 {{- end}}
 
 	return cmd

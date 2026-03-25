@@ -336,25 +336,61 @@ func oneline(s string) string {
 	return s
 }
 
+func exampleValue(paramName, paramType string) string {
+	name := strings.ToLower(paramName)
+	switch {
+	case strings.HasSuffix(name, "_id") || strings.HasSuffix(name, "id") || name == "id":
+		return "abc123"
+	case strings.Contains(name, "email"):
+		return "user@example.com"
+	case strings.Contains(name, "name"):
+		return "my-resource"
+	case strings.Contains(name, "date") || strings.HasSuffix(name, "_at"):
+		return "2026-01-01"
+	case strings.Contains(name, "url") || strings.Contains(name, "link"):
+		return "https://example.com"
+	case strings.Contains(name, "status"):
+		return "active"
+	case strings.Contains(name, "limit") || strings.Contains(name, "count"):
+		return "25"
+	case strings.Contains(name, "page"):
+		return "1"
+	case paramType == "integer" || paramType == "int":
+		return "42"
+	case paramType == "boolean" || paramType == "bool":
+		return ""
+	default:
+		return "value"
+	}
+}
+
 func (g *Generator) exampleLine(commandPath, endpointName string, endpoint spec.Endpoint) string {
 	var parts []string
 	parts = append(parts, g.Spec.Name+"-cli")
 	parts = append(parts, strings.Fields(commandPath)...)
 	parts = append(parts, endpointName)
 
-	// Add positional arg placeholders
+	// Add positional arg placeholders with realistic values
 	for _, p := range endpoint.Params {
 		if p.Positional {
-			parts = append(parts, "<"+p.Name+">")
+			val := exampleValue(p.Name, p.Type)
+			if val == "" {
+				val = "<" + p.Name + ">"
+			}
+			parts = append(parts, val)
 		}
 	}
 
-	// Add a sample flag for POST/PUT/PATCH
+	// Add a sample flag for POST/PUT/PATCH with realistic values
 	switch endpoint.Method {
 	case "POST", "PUT", "PATCH":
 		for _, p := range endpoint.Body {
 			if p.Required && p.Type == "string" {
-				parts = append(parts, "--"+strings.ReplaceAll(p.Name, "_", "-"), "value")
+				val := exampleValue(p.Name, p.Type)
+				if val == "" {
+					val = "value"
+				}
+				parts = append(parts, "--"+strings.ReplaceAll(p.Name, "_", "-"), val)
 				break
 			}
 		}

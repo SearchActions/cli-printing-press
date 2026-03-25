@@ -75,16 +75,14 @@ export {{index .Auth.EnvVars 0}}="your-key-here"
 
 This CLI is designed for AI agent consumption:
 
-```bash
-# All commands support --json for structured output
-{{.Name}}-cli {{range $name, $_ := .Resources}}{{$name}}{{break}}{{end}} list --json --select id,name
-
-# --dry-run shows the exact API request without sending
-{{.Name}}-cli {{range $name, $_ := .Resources}}{{$name}}{{break}}{{end}} list --dry-run
-
-# Non-interactive - never prompts, never pages
-# Errors go to stderr with typed exit codes
-```
+- **Non-interactive** - never prompts, every input is a flag
+- **Pipeable** - `--json` output to stdout, errors to stderr
+- **Filterable** - `--select id,name` returns only fields you need
+- **Previewable** - `--dry-run` shows the request without sending
+- **Retryable** - creates return "already exists" on retry, deletes return "already deleted"
+- **Confirmable** - `--yes` for explicit confirmation of destructive actions
+- **Piped input** - `echo '{"key":"value"}' | {{.Name}}-cli <resource> create --stdin`
+- **Cacheable** - GET responses cached for 5 minutes, bypass with `--no-cache`
 
 Exit codes: `0` success, `2` usage error, `3` not found, `4` auth error, `5` API error, `7` rate limited, `10` config error.
 

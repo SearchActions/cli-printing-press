@@ -21,6 +21,7 @@ type rootFlags struct {
 	quiet        bool
 	dryRun       bool
 	noCache      bool
+	yes          bool
 	selectFields string
 	configPath   string
 	timeout      time.Duration
@@ -46,6 +47,7 @@ func Execute() error {
 	rootCmd.PersistentFlags().BoolVar(&flags.dryRun, "dry-run", false, "Show request without sending")
 	rootCmd.PersistentFlags().BoolVar(&flags.noCache, "no-cache", false, "Bypass response cache")
 	rootCmd.PersistentFlags().StringVar(&flags.selectFields, "select", "", "Comma-separated fields to include in output (e.g. --select id,name,status)")
+	rootCmd.PersistentFlags().BoolVar(&flags.yes, "yes", false, "Skip confirmation prompts (for agents and scripts)")
 	rootCmd.PersistentFlags().BoolVar(&noColor, "no-color", false, "Disable colored output")
 
 {{- range $name, $resource := .Resources}}

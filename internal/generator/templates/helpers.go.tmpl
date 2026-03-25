@@ -80,6 +80,10 @@ func rateLimitErr(err error) error { return &cliError{code: 7, err: err} }
 func classifyAPIError(err error) error {
 	msg := err.Error()
 	switch {
+	case strings.Contains(msg, "HTTP 409"):
+		// 409 Conflict = resource already exists. For agents retrying creates, this is success.
+		fmt.Fprintln(os.Stderr, "already exists (no-op)")
+		return nil
 	case strings.Contains(msg, "HTTP 401") || strings.Contains(msg, "HTTP 403"):
 		return authErr(fmt.Errorf("%w\nhint: check your API credentials. Run '{{.Name}}-cli doctor' to verify auth, or set the required environment variable", err))
 	case strings.Contains(msg, "HTTP 404"):
@@ -89,6 +93,16 @@ func classifyAPIError(err error) error {
 	default:
 		return apiErr(err)
 	}
+}
+
+// classifyDeleteError treats 404 as success for DELETE (already deleted = idempotent no-op).
+func classifyDeleteError(err error) error {
+	msg := err.Error()
+	if strings.Contains(msg, "HTTP 404") {
+		fmt.Fprintln(os.Stderr, "already deleted (no-op)")
+		return nil
+	}
+	return classifyAPIError(err)
 }
 
 func truncate(s string, max int) string {

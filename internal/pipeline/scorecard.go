@@ -209,15 +209,27 @@ func scoreAgentNative(dir string) int {
 
 	score := 0
 	if strings.Contains(combined, "json") {
-		score += 3
+		score += 2
 	}
 	if strings.Contains(combined, "select") {
-		score += 3
+		score += 2
 	}
 	if strings.Contains(combined, "dry-run") || strings.Contains(combined, "dryRun") || strings.Contains(combined, "dry_run") {
-		score += 3
+		score += 2
 	}
 	if strings.Contains(combined, "non-interactive") || strings.Contains(combined, "nonInteractive") {
+		score += 1
+	}
+	// Check for --stdin support
+	if strings.Contains(combined, "stdin") {
+		score += 1
+	}
+	// Check for --yes flag
+	if strings.Contains(combined, `"yes"`) {
+		score += 1
+	}
+	// Check for idempotency handling (409 or "already exists")
+	if strings.Contains(helpersContent, "409") || strings.Contains(helpersContent, "already exists") {
 		score += 1
 	}
 	if score > 10 {
