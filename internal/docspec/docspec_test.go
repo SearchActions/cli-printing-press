@@ -139,3 +139,47 @@ func TestNoEndpointsError(t *testing.T) {
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "no endpoints found")
 }
+
+func TestBuildDocSpecLLMPrompt(t *testing.T) {
+	prompt := BuildDocSpecLLMPrompt("stripe", "<html>GET /v1/charges</html>")
+	assert.Contains(t, prompt, "stripe")
+	assert.Contains(t, prompt, "GET /v1/charges")
+	assert.Contains(t, prompt, "base_url")
+	assert.Contains(t, prompt, "resources")
+	assert.Contains(t, prompt, "~/.config/stripe-cli/config.toml")
+}
+
+func TestExtractYAML(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{
+			name:  "plain yaml",
+			input: "name: myapi\nversion: 1.0.0",
+			want:  "name: myapi\nversion: 1.0.0",
+		},
+		{
+			name:  "yaml fenced",
+			input: "```yaml\nname: myapi\nversion: 1.0.0\n```",
+			want:  "name: myapi\nversion: 1.0.0",
+		},
+		{
+			name:  "generic fenced",
+			input: "```\nname: myapi\nversion: 1.0.0\n```",
+			want:  "name: myapi\nversion: 1.0.0",
+		},
+		{
+			name:  "with surrounding whitespace",
+			input: "\n\n```yaml\nname: myapi\n```\n\n",
+			want:  "name: myapi",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := ExtractYAML(tt.input)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}

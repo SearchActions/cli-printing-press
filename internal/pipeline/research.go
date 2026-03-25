@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/mvanhorn/cli-printing-press/internal/catalog"
+	"github.com/mvanhorn/cli-printing-press/internal/llm"
 )
 
 // ResearchResult holds the output of the research phase.
@@ -98,17 +99,46 @@ func RunResearch(apiName, catalogDir, pipelineDir string) (*ResearchResult, erro
 	result.Gaps, result.Patterns = analyzeAlternatives(result.Alternatives)
 
 	// Step 5.5: Competitor intelligence - analyze GitHub repos
+	useLLM := llm.Available()
 	var analyses []CompetitorAnalysis
 	for _, alt := range result.Alternatives {
 		owner, repo := parseGitHubURL(alt.URL)
 		if owner == "" || repo == "" {
 			continue
 		}
+
+		// Always fetch README and issues via API (needed for both paths)
 		analysis, err := analyzeCompetitorRepo(owner, repo)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "warning: competitor analysis failed for %s/%s: %v\n", owner, repo, err)
 			continue
 		}
+
+		// If LLM is available, enhance with deeper analysis
+		if useLLM {
+			client := &http.Client{Timeout: 15 * time.Second}
+			readmeContent, readmeErr := fetchReadme(client, owner, repo)
+			if readmeErr == nil {
+				issueTitles := analysis.FeatureRequests
+				llmAnalysis, llmErr := analyzeCompetitorRepoLLM(owner, repo, readmeContent, issueTitles)
+				if llmErr != nil {
+					fmt.Fprintf(os.Stderr, "warning: LLM competitor analysis failed for %s/%s, using regex: %v\n", owner, repo, llmErr)
+				} else {
+					// Merge LLM insights into the base analysis
+					if len(llmAnalysis.CommandsFound) > len(analysis.CommandsFound) {
+						analysis.CommandsFound = llmAnalysis.CommandsFound
+						analysis.CommandCount = len(llmAnalysis.CommandsFound)
+					}
+					if len(llmAnalysis.PainPoints) > len(analysis.PainPoints) {
+						analysis.PainPoints = llmAnalysis.PainPoints
+					}
+					if len(llmAnalysis.FeatureRequests) > len(analysis.FeatureRequests) {
+						analysis.FeatureRequests = llmAnalysis.FeatureRequests
+					}
+				}
+			}
+		}
+
 		analyses = append(analyses, *analysis)
 	}
 	if len(analyses) > 0 {
@@ -594,6 +624,107 @@ func containsPainSignal(text string) bool {
 		}
 	}
 	return false
+}
+
+// analyzeCompetitorRepoLLM uses an LLM to deeply analyze a competitor's README
+// and issue titles, extracting richer intelligence than regex alone.
+func analyzeCompetitorRepoLLM(owner, repo, readmeContent string, issueTitles []string) (*CompetitorAnalysis, error) {
+	prompt := BuildCompetitorPrompt(owner, repo, readmeContent, issueTitles)
+	response, err := llm.Run(prompt)
+	if err != nil {
+		return nil, err
+	}
+	return parseCompetitorResponse(response, owner, repo)
+}
+
+// BuildCompetitorPrompt constructs a prompt for LLM-based competitor analysis.
+func BuildCompetitorPrompt(owner, repo, readmeContent string, issueTitles []string) string {
+	// Truncate README to avoid exceeding context
+	if len(readmeContent) > 20000 {
+		readmeContent = readmeContent[:20000]
+	}
+
+	issueList := ""
+	for i, title := range issueTitles {
+		if i >= 20 {
+			break
+		}
+		issueList += fmt.Sprintf("- %s\n", title)
+	}
+
+	return fmt.Sprintf(`Analyze this CLI tool repository and extract intelligence.
+
+Repository: %s/%s
+
+README:
+%s
+
+Open Issues/Feature Requests:
+%s
+
+Respond with ONLY a JSON object (no markdown fences) in this exact format:
+{
+  "commands_found": ["list", "create", "get", "delete"],
+  "feature_requests": ["requested feature 1", "requested feature 2"],
+  "pain_points": ["pain point 1", "pain point 2"],
+  "auth_method": "api_key or oauth2 or bearer_token or none",
+  "output_formats": ["json", "table", "csv"],
+  "install_method": "brew or npm or pip or cargo or binary"
+}
+
+Rules:
+- commands_found: Extract ALL CLI subcommands mentioned in the README
+- feature_requests: Summarize unmet user needs from issues
+- pain_points: Identify user frustrations, bugs, UX issues
+- Be specific and actionable in your analysis`, owner, repo, readmeContent, issueList)
+}
+
+// parseCompetitorResponse parses the LLM JSON response into a CompetitorAnalysis.
+func parseCompetitorResponse(response, owner, repo string) (*CompetitorAnalysis, error) {
+	// Extract JSON from response (might be wrapped in markdown fences)
+	jsonStr := extractJSONObject(response)
+
+	var parsed struct {
+		CommandsFound   []string `json:"commands_found"`
+		FeatureRequests []string `json:"feature_requests"`
+		PainPoints      []string `json:"pain_points"`
+		AuthMethod      string   `json:"auth_method"`
+		OutputFormats   []string `json:"output_formats"`
+		InstallMethod   string   `json:"install_method"`
+	}
+
+	if err := json.Unmarshal([]byte(jsonStr), &parsed); err != nil {
+		return nil, fmt.Errorf("parsing LLM response: %w", err)
+	}
+
+	return &CompetitorAnalysis{
+		RepoURL:         fmt.Sprintf("https://github.com/%s/%s", owner, repo),
+		CommandsFound:   parsed.CommandsFound,
+		CommandCount:    len(parsed.CommandsFound),
+		FeatureRequests: parsed.FeatureRequests,
+		PainPoints:      parsed.PainPoints,
+	}, nil
+}
+
+// extractJSONObject finds and returns the first JSON object in the string.
+func extractJSONObject(s string) string {
+	start := -1
+	depth := 0
+	for i, c := range s {
+		if c == '{' {
+			if depth == 0 {
+				start = i
+			}
+			depth++
+		}
+		if c == '}' {
+			depth--
+			if depth == 0 && start >= 0 {
+				return s[start : i+1]
+			}
+		}
+	}
+	return "{}"
 }
 
 // synthesizeInsights aggregates competitor analyses into actionable insights.

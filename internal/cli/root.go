@@ -13,6 +13,7 @@ import (
 
 	"github.com/mvanhorn/cli-printing-press/internal/docspec"
 	"github.com/mvanhorn/cli-printing-press/internal/generator"
+	"github.com/mvanhorn/cli-printing-press/internal/llm"
 	"github.com/mvanhorn/cli-printing-press/internal/llmpolish"
 	"github.com/mvanhorn/cli-printing-press/internal/openapi"
 	"github.com/mvanhorn/cli-printing-press/internal/pipeline"
@@ -60,7 +61,20 @@ func newGenerateCmd() *cobra.Command {
 				if apiName == "" {
 					apiName = "myapi"
 				}
-				docSpec, err := docspec.GenerateFromDocs(docsURL, apiName)
+
+				var docSpec *spec.APISpec
+				var err error
+
+				if llm.Available() {
+					fmt.Fprintln(os.Stderr, "Using LLM to understand API docs...")
+					docSpec, err = docspec.GenerateFromDocsLLM(docsURL, apiName)
+					if err != nil {
+						fmt.Fprintf(os.Stderr, "warning: LLM doc-to-spec failed, falling back to regex: %v\n", err)
+						docSpec, err = docspec.GenerateFromDocs(docsURL, apiName)
+					}
+				} else {
+					docSpec, err = docspec.GenerateFromDocs(docsURL, apiName)
+				}
 				if err != nil {
 					return fmt.Errorf("generating spec from docs: %w", err)
 				}

@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/mvanhorn/cli-printing-press/internal/llm"
 	"github.com/mvanhorn/cli-printing-press/internal/spec"
 )
 
@@ -328,4 +329,125 @@ func normalizeType(t string) string {
 	default:
 		return "string"
 	}
+}
+
+// GenerateFromDocsLLM uses an LLM to understand API documentation and produce
+// a structured APISpec. Falls back to regex-based GenerateFromDocs on failure.
+func GenerateFromDocsLLM(docsURL, apiName string) (*spec.APISpec, error) {
+	html, err := fetchHTML(docsURL)
+	if err != nil {
+		return nil, fmt.Errorf("fetching docs: %w", err)
+	}
+
+	// Truncate to ~40K chars to fit LLM context limits
+	if len(html) > 40000 {
+		html = html[:40000]
+	}
+
+	prompt := BuildDocSpecLLMPrompt(apiName, html)
+
+	response, err := llm.Run(prompt)
+	if err != nil {
+		return nil, fmt.Errorf("LLM doc-to-spec failed: %w", err)
+	}
+
+	yamlContent := ExtractYAML(response)
+
+	return spec.ParseBytes([]byte(yamlContent))
+}
+
+// BuildDocSpecLLMPrompt constructs a prompt that asks the LLM to read API docs
+// and output a YAML spec in the format expected by spec.ParseBytes.
+func BuildDocSpecLLMPrompt(apiName, docsContent string) string {
+	return fmt.Sprintf(`You are an API documentation expert. Read the following API documentation and produce a YAML spec.
+
+The YAML must follow this exact format:
+
+name: %s
+description: "CLI for %s"
+version: "1.0.0"
+base_url: "https://api.example.com"
+auth:
+  type: "bearer_token"   # one of: api_key, oauth2, bearer_token, none
+  header: "Authorization"
+  format: "Bearer {token}"
+  env_vars:
+    - "API_TOKEN"
+config:
+  format: "toml"
+  path: "~/.config/%s-cli/config.toml"
+resources:
+  resource_name:
+    description: "Operations on resource_name"
+    endpoints:
+      list:
+        method: GET
+        path: "/resource_name"
+        description: "List all resource_name"
+        params: []
+        response:
+          type: array
+      get:
+        method: GET
+        path: "/resource_name/{id}"
+        description: "Get a resource_name by ID"
+        params:
+          - name: id
+            type: string
+            required: true
+            positional: true
+            description: "The resource identifier"
+        response:
+          type: object
+      create:
+        method: POST
+        path: "/resource_name"
+        description: "Create a new resource_name"
+        body:
+          - name: field_name
+            type: string
+            description: "Field description"
+        response:
+          type: object
+
+Rules:
+- Extract ALL endpoints you can find in the docs
+- Detect the correct auth type from the documentation
+- Extract the real base URL from the docs
+- Group endpoints by resource (the first path segment after version prefix)
+- Every resource must have at least one endpoint
+- Every endpoint must have method and path
+- Output ONLY the YAML, no explanation or markdown fences
+
+API Documentation:
+%s`, apiName, apiName, apiName, docsContent)
+}
+
+// ExtractYAML strips markdown code fences from LLM output to get raw YAML.
+func ExtractYAML(response string) string {
+	s := strings.TrimSpace(response)
+
+	// Remove ```yaml ... ``` wrapper if present
+	if strings.HasPrefix(s, "```yaml") {
+		s = s[len("```yaml"):]
+		if idx := strings.LastIndex(s, "```"); idx >= 0 {
+			s = s[:idx]
+		}
+		return strings.TrimSpace(s)
+	}
+
+	// Remove ``` ... ``` wrapper if present
+	if strings.HasPrefix(s, "```") {
+		s = s[len("```"):]
+		// Skip the rest of the first line (could be "yaml\n" or just "\n")
+		if idx := strings.Index(s, "\n"); idx >= 0 {
+			s = s[idx+1:]
+		}
+		if idx := strings.LastIndex(s, "```"); idx >= 0 {
+			s = s[:idx]
+		}
+		return strings.TrimSpace(s)
+	}
+
+	return s
 }

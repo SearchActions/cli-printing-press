@@ -4,9 +4,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"os/exec"
-	"path/filepath"
 	"time"
+
+	"github.com/mvanhorn/cli-printing-press/internal/llm"
 )
 
 // PolishRequest defines what the polish pass needs.
@@ -36,8 +36,7 @@ func Polish(req PolishRequest) (*PolishResult, error) {
 	start := time.Now()
 	result := &PolishResult{}
 
-	llmCmd, llmArgs := findLLMCLI()
-	if llmCmd == "" {
+	if !llm.Available() {
 		result.Skipped = true
 		result.SkipReason = "no LLM CLI found (install claude or codex)"
 		result.Duration = time.Since(start)
@@ -47,7 +46,7 @@ func Polish(req PolishRequest) (*PolishResult, error) {
 	// Step 1: Improve help texts
 	helpPrompt := buildHelpPrompt(req.OutputDir)
 	if helpPrompt != "" {
-		helpOutput, err := runLLM(llmCmd, llmArgs, helpPrompt)
+		helpOutput, err := llm.Run(helpPrompt)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "warning: help text polish failed: %v\n", err)
 		} else {
@@ -67,7 +66,7 @@ func Polish(req PolishRequest) (*PolishResult, error) {
 	// Step 2: Add examples
 	examplePrompt := buildExamplePrompt(req.OutputDir)
 	if examplePrompt != "" {
-		exampleOutput, err := runLLM(llmCmd, llmArgs, examplePrompt)
+		exampleOutput, err := llm.Run(examplePrompt)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "warning: example polish failed: %v\n", err)
 		} else {
@@ -87,7 +86,7 @@ func Polish(req PolishRequest) (*PolishResult, error) {
 	// Step 3: Rewrite README
 	readmePrompt := buildREADMEPrompt(req.OutputDir, req.APIName)
 	if readmePrompt != "" {
-		readmeOutput, err := runLLM(llmCmd, llmArgs, readmePrompt)
+		readmeOutput, err := llm.Run(readmePrompt)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "warning: README polish failed: %v\n", err)
 		} else {
@@ -104,44 +103,6 @@ func Polish(req PolishRequest) (*PolishResult, error) {
 
 	result.Duration = time.Since(start)
 	return result, nil
-}
-
-// findLLMCLI checks for available LLM CLIs in preference order.
-// Returns the command name and base args to use.
-func findLLMCLI() (string, []string) {
-	if path, err := exec.LookPath("claude"); err == nil {
-		return path, []string{"--print", "-p"}
-	}
-	if path, err := exec.LookPath("codex"); err == nil {
-		return path, []string{"--quiet", "--prompt"}
-	}
-	return "", nil
-}
-
-// runLLM shells out to the LLM CLI with the given prompt and returns stdout.
-func runLLM(llmCmd string, baseArgs []string, prompt string) (string, error) {
-	// Write prompt to temp file for debugging/logging
-	tmpFile, err := os.CreateTemp("", "polish-prompt-*.md")
-	if err != nil {
-		return "", fmt.Errorf("creating temp file: %w", err)
-	}
-	defer os.Remove(tmpFile.Name())
-
-	if _, err := tmpFile.WriteString(prompt); err != nil {
-		tmpFile.Close()
-		return "", fmt.Errorf("writing prompt: %w", err)
-	}
-	tmpFile.Close()
-
-	args := append(baseArgs, prompt)
-	cmd := exec.Command(llmCmd, args...)
-	cmd.Stderr = os.Stderr
-
-	output, err := cmd.Output()
-	if err != nil {
-		return "", fmt.Errorf("running %s: %w", filepath.Base(llmCmd), err)
-	}
-	return string(output), nil
 }
 
 // extractJSON finds and returns the first JSON array in the LLM output.
