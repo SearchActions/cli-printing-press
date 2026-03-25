@@ -11,11 +11,13 @@ import (
 	"strings"
 	"time"
 
+	"github.com/mvanhorn/cli-printing-press/internal/docspec"
 	"github.com/mvanhorn/cli-printing-press/internal/generator"
 	"github.com/mvanhorn/cli-printing-press/internal/openapi"
 	"github.com/mvanhorn/cli-printing-press/internal/pipeline"
 	"github.com/mvanhorn/cli-printing-press/internal/spec"
 	"github.com/spf13/cobra"
+	"gopkg.in/yaml.v3"
 )
 
 var version = "0.1.0"
@@ -45,11 +47,58 @@ func newGenerateCmd() *cobra.Command {
 	var refresh bool
 	var force bool
 	var lenient bool
+	var docsURL string
 
 	cmd := &cobra.Command{
 		Use:   "generate",
 		Short: "Generate a Go CLI project from an API spec",
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if docsURL != "" {
+				apiName := cliName
+				if apiName == "" {
+					apiName = "myapi"
+				}
+				docSpec, err := docspec.GenerateFromDocs(docsURL, apiName)
+				if err != nil {
+					return fmt.Errorf("generating spec from docs: %w", err)
+				}
+				docYAML, err := yaml.Marshal(docSpec)
+				if err != nil {
+					return fmt.Errorf("marshaling doc spec: %w", err)
+				}
+				// Re-parse through the standard path so validation is consistent
+				parsed, err := spec.ParseBytes(docYAML)
+				if err != nil {
+					return fmt.Errorf("parsing generated spec: %w", err)
+				}
+
+				if outputDir == "" {
+					outputDir = parsed.Name + "-cli"
+				}
+				absOut, err := filepath.Abs(outputDir)
+				if err != nil {
+					return fmt.Errorf("resolving output path: %w", err)
+				}
+				if force {
+					if err := os.RemoveAll(absOut); err != nil {
+						return fmt.Errorf("removing existing output dir: %w", err)
+					}
+				}
+
+				gen := generator.New(parsed, absOut)
+				if err := gen.Generate(); err != nil {
+					return fmt.Errorf("generating project: %w", err)
+				}
+				if validate {
+					if err := gen.Validate(); err != nil {
+						return fmt.Errorf("validating generated project: %w", err)
+					}
+				}
+
+				fmt.Fprintf(os.Stderr, "Generated %s-cli at %s (from docs)\n", parsed.Name, absOut)
+				return nil
+			}
+
 			if len(specFiles) == 0 {
 				return fmt.Errorf("--spec is required")
 			}
@@ -124,6 +173,7 @@ func newGenerateCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&refresh, "refresh", false, "Refresh cached remote spec before generating")
 	cmd.Flags().BoolVar(&force, "force", false, "Remove existing output directory before generating")
 	cmd.Flags().BoolVar(&lenient, "lenient", false, "Skip validation errors from broken $refs in OpenAPI specs")
+	cmd.Flags().StringVar(&docsURL, "docs", "", "API documentation URL to generate spec from")
 
 	return cmd
 }

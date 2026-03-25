@@ -183,6 +183,30 @@ func (s *PipelineState) Complete(phase string) {
 	s.Phases[phase] = p
 }
 
+// CompleteAndPlanNext marks a phase as completed, then generates a dynamic
+// plan for the next phase using outputs from all completed phases.
+func (s *PipelineState) CompleteAndPlanNext(phase string) error {
+	s.Complete(phase)
+	nextPhase := s.NextPhase()
+	if nextPhase == "" {
+		return nil // all phases done
+	}
+
+	plan, err := GenerateNextPlan(s, nextPhase)
+	if err != nil {
+		// Fall back to existing seed plan (already written at init time)
+		fmt.Fprintf(os.Stderr, "warning: dynamic plan generation failed for %s, using seed: %v\n", nextPhase, err)
+		return nil
+	}
+
+	planPath := s.PlanPath(nextPhase)
+	if err := os.WriteFile(planPath, []byte(plan), 0o644); err != nil {
+		return fmt.Errorf("writing dynamic plan for %s: %w", nextPhase, err)
+	}
+	s.MarkExpanded(nextPhase)
+	return nil
+}
+
 // Fail marks a phase as failed.
 func (s *PipelineState) Fail(phase string) {
 	p := s.Phases[phase]

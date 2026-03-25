@@ -56,17 +56,35 @@ func Init(apiName string, opts Options) (*PipelineState, error) {
 		PipelineDir: pipeDir,
 	}
 
-	for _, phase := range PhaseOrder {
+	// Write only the first two phases as static seeds (preflight + research).
+	// Subsequent phases are generated dynamically after prior phases complete.
+	staticPhases := []string{PhasePreflight, PhaseResearch}
+	for _, phase := range staticPhases {
 		content, err := RenderSeed(phase, seedData)
 		if err != nil {
 			return nil, fmt.Errorf("rendering seed for %s: %w", phase, err)
 		}
-
 		planPath := state.PlanPath(phase)
 		if err := os.WriteFile(planPath, []byte(content), 0o644); err != nil {
 			return nil, fmt.Errorf("writing plan seed for %s: %w", phase, err)
 		}
+		state.MarkSeedWritten(phase)
+	}
 
+	// For remaining phases, write placeholder plans that will be replaced
+	// dynamically when prior phases complete (via CompleteAndPlanNext).
+	for _, phase := range PhaseOrder {
+		if phase == PhasePreflight || phase == PhaseResearch {
+			continue
+		}
+		content, err := RenderSeed(phase, seedData)
+		if err != nil {
+			return nil, fmt.Errorf("rendering seed for %s: %w", phase, err)
+		}
+		planPath := state.PlanPath(phase)
+		if err := os.WriteFile(planPath, []byte(content), 0o644); err != nil {
+			return nil, fmt.Errorf("writing plan seed for %s: %w", phase, err)
+		}
 		state.MarkSeedWritten(phase)
 	}
 

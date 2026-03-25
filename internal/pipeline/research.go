@@ -1,12 +1,15 @@
 package pipeline
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
@@ -15,13 +18,32 @@ import (
 
 // ResearchResult holds the output of the research phase.
 type ResearchResult struct {
-	APIName        string        `json:"api_name"`
-	NoveltyScore   int           `json:"novelty_score"` // 1-10
-	Alternatives   []Alternative `json:"alternatives"`
-	Gaps           []string      `json:"gaps"`           // what alternatives miss
-	Patterns       []string      `json:"patterns"`       // what alternatives do well
-	Recommendation string        `json:"recommendation"` // "proceed", "proceed-with-gaps", "skip"
-	ResearchedAt   time.Time     `json:"researched_at"`
+	APIName             string              `json:"api_name"`
+	NoveltyScore        int                 `json:"novelty_score"` // 1-10
+	Alternatives        []Alternative       `json:"alternatives"`
+	Gaps                []string            `json:"gaps"`           // what alternatives miss
+	Patterns            []string            `json:"patterns"`       // what alternatives do well
+	Recommendation      string              `json:"recommendation"` // "proceed", "proceed-with-gaps", "skip"
+	ResearchedAt        time.Time           `json:"researched_at"`
+	CompetitorInsights  *CompetitorInsights `json:"competitor_insights,omitempty"`
+}
+
+// CompetitorAnalysis holds intelligence gathered from a single competitor repo.
+type CompetitorAnalysis struct {
+	RepoURL         string   `json:"repo_url"`
+	CommandsFound   []string `json:"commands_found"`
+	FeatureRequests []string `json:"feature_requests"`
+	AbandonedPRs    []string `json:"abandoned_prs"`
+	PainPoints      []string `json:"pain_points"`
+	CommandCount    int      `json:"command_count"`
+}
+
+// CompetitorInsights aggregates intelligence across all analyzed competitors.
+type CompetitorInsights struct {
+	Analyses          []CompetitorAnalysis `json:"analyses"`
+	CommandTarget     int                  `json:"command_target"`
+	UnmetFeatures     []string             `json:"unmet_features"`
+	PainPointsToAvoid []string             `json:"pain_points_to_avoid"`
 }
 
 // Alternative represents a known competing CLI tool.
@@ -74,6 +96,25 @@ func RunResearch(apiName, catalogDir, pipelineDir string) (*ResearchResult, erro
 
 	// Step 5: Analyze gaps and patterns
 	result.Gaps, result.Patterns = analyzeAlternatives(result.Alternatives)
+
+	// Step 5.5: Competitor intelligence - analyze GitHub repos
+	var analyses []CompetitorAnalysis
+	for _, alt := range result.Alternatives {
+		owner, repo := parseGitHubURL(alt.URL)
+		if owner == "" || repo == "" {
+			continue
+		}
+		analysis, err := analyzeCompetitorRepo(owner, repo)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "warning: competitor analysis failed for %s/%s: %v\n", owner, repo, err)
+			continue
+		}
+		analyses = append(analyses, *analysis)
+	}
+	if len(analyses) > 0 {
+		insights := synthesizeInsights(analyses)
+		result.CompetitorInsights = &insights
+	}
 
 	// Step 6: Write research.json
 	if err := writeResearchJSON(result, pipelineDir); err != nil {
@@ -303,4 +344,296 @@ func writeResearchJSON(result *ResearchResult, pipelineDir string) error {
 		return err
 	}
 	return os.WriteFile(filepath.Join(pipelineDir, "research.json"), data, 0o644)
+}
+
+// parseGitHubURL extracts owner and repo from a GitHub URL.
+// Returns empty strings if the URL is not a valid GitHub repo URL.
+func parseGitHubURL(url string) (owner, repo string) {
+	// Match https://github.com/owner/repo or https://github.com/owner/repo/...
+	url = strings.TrimSuffix(url, "/")
+	url = strings.TrimSuffix(url, ".git")
+	if !strings.Contains(url, "github.com/") {
+		return "", ""
+	}
+	parts := strings.Split(url, "github.com/")
+	if len(parts) < 2 {
+		return "", ""
+	}
+	segments := strings.SplitN(parts[1], "/", 3)
+	if len(segments) < 2 {
+		return "", ""
+	}
+	return segments[0], segments[1]
+}
+
+// ghIssue models a GitHub issue from the API.
+type ghIssue struct {
+	Title     string `json:"title"`
+	Body      string `json:"body"`
+	HTMLURL   string `json:"html_url"`
+	State     string `json:"state"`
+	CreatedAt string `json:"created_at"`
+}
+
+// ghPull models a GitHub pull request from the API.
+type ghPull struct {
+	Title    string `json:"title"`
+	HTMLURL  string `json:"html_url"`
+	MergedAt *string `json:"merged_at"`
+}
+
+// ghReadmeResponse models the GitHub README API response.
+type ghReadmeResponse struct {
+	Content  string `json:"content"`
+	Encoding string `json:"encoding"`
+}
+
+// analyzeCompetitorRepo gathers intelligence from a competitor's GitHub repo.
+func analyzeCompetitorRepo(owner, repo string) (*CompetitorAnalysis, error) {
+	client := &http.Client{Timeout: 15 * time.Second}
+	repoURL := fmt.Sprintf("https://github.com/%s/%s", owner, repo)
+	analysis := &CompetitorAnalysis{
+		RepoURL: repoURL,
+	}
+
+	// Fetch feature requests (issues labeled enhancement or feature-request)
+	featureIssues, err := fetchIssues(client, owner, repo, "enhancement,feature-request")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "warning: failed to fetch labeled issues for %s/%s: %v\n", owner, repo, err)
+	}
+	// If no labeled issues found, fall back to any open issues
+	if len(featureIssues) == 0 {
+		featureIssues, err = fetchIssues(client, owner, repo, "")
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "warning: failed to fetch open issues for %s/%s: %v\n", owner, repo, err)
+		}
+	}
+	for _, issue := range featureIssues {
+		analysis.FeatureRequests = append(analysis.FeatureRequests, issue.Title)
+		// Extract pain points from issue bodies mentioning common frustration signals
+		if containsPainSignal(issue.Title) || containsPainSignal(issue.Body) {
+			analysis.PainPoints = append(analysis.PainPoints, issue.Title)
+		}
+	}
+
+	// Fetch README and parse for CLI commands
+	readmeContent, err := fetchReadme(client, owner, repo)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "warning: failed to fetch README for %s/%s: %v\n", owner, repo, err)
+	} else {
+		analysis.CommandsFound = parseCommandsFromReadme(readmeContent)
+		analysis.CommandCount = len(analysis.CommandsFound)
+	}
+
+	// Fetch abandoned PRs (closed but not merged)
+	abandonedPRs, err := fetchAbandonedPRs(client, owner, repo)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "warning: failed to fetch PRs for %s/%s: %v\n", owner, repo, err)
+	}
+	for _, pr := range abandonedPRs {
+		analysis.AbandonedPRs = append(analysis.AbandonedPRs, pr.Title)
+	}
+
+	return analysis, nil
+}
+
+// newGitHubRequest creates an http.Request with appropriate headers.
+func newGitHubRequest(url string) (*http.Request, error) {
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Accept", "application/vnd.github+json")
+	if token := os.Getenv("GITHUB_TOKEN"); token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	return req, nil
+}
+
+func fetchIssues(client *http.Client, owner, repo, labels string) ([]ghIssue, error) {
+	url := fmt.Sprintf("https://api.github.com/repos/%s/%s/issues?state=open&per_page=10", owner, repo)
+	if labels != "" {
+		url += "&labels=" + labels
+	}
+
+	req, err := newGitHubRequest(url)
+	if err != nil {
+		return nil, err
+	}
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("GitHub API returned %d: %s", resp.StatusCode, string(body[:min(len(body), 200)]))
+	}
+
+	var issues []ghIssue
+	if err := json.NewDecoder(resp.Body).Decode(&issues); err != nil {
+		return nil, err
+	}
+	return issues, nil
+}
+
+func fetchReadme(client *http.Client, owner, repo string) (string, error) {
+	url := fmt.Sprintf("https://api.github.com/repos/%s/%s/readme", owner, repo)
+
+	req, err := newGitHubRequest(url)
+	if err != nil {
+		return "", err
+	}
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		return "", fmt.Errorf("GitHub API returned %d", resp.StatusCode)
+	}
+
+	var readme ghReadmeResponse
+	if err := json.NewDecoder(resp.Body).Decode(&readme); err != nil {
+		return "", err
+	}
+
+	if readme.Encoding != "base64" {
+		return "", fmt.Errorf("unexpected encoding: %s", readme.Encoding)
+	}
+
+	decoded, err := base64.StdEncoding.DecodeString(strings.ReplaceAll(readme.Content, "\n", ""))
+	if err != nil {
+		return "", fmt.Errorf("decoding base64: %w", err)
+	}
+	return string(decoded), nil
+}
+
+func fetchAbandonedPRs(client *http.Client, owner, repo string) ([]ghPull, error) {
+	url := fmt.Sprintf("https://api.github.com/repos/%s/%s/pulls?state=closed&per_page=5", owner, repo)
+
+	req, err := newGitHubRequest(url)
+	if err != nil {
+		return nil, err
+	}
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		return nil, fmt.Errorf("GitHub API returned %d", resp.StatusCode)
+	}
+
+	var prs []ghPull
+	if err := json.NewDecoder(resp.Body).Decode(&prs); err != nil {
+		return nil, err
+	}
+
+	// Filter to only abandoned (closed but not merged)
+	var abandoned []ghPull
+	for _, pr := range prs {
+		if pr.MergedAt == nil {
+			abandoned = append(abandoned, pr)
+		}
+	}
+	return abandoned, nil
+}
+
+// commandPattern matches CLI command patterns in READMEs.
+// Looks for lines like: `toolname subcommand`, `$ toolname subcommand`, or indented command blocks.
+var commandPattern = regexp.MustCompile(`(?m)^\s*(?:\$\s+)?(\w[\w-]+)\s+([\w-]+)(?:\s|$)`)
+
+func parseCommandsFromReadme(content string) []string {
+	seen := make(map[string]bool)
+	var commands []string
+
+	matches := commandPattern.FindAllStringSubmatch(content, -1)
+	for _, m := range matches {
+		cmd := m[2]
+		// Skip common non-command words
+		if isCommonWord(cmd) {
+			continue
+		}
+		if !seen[cmd] {
+			seen[cmd] = true
+			commands = append(commands, cmd)
+		}
+	}
+	return commands
+}
+
+func isCommonWord(w string) bool {
+	common := map[string]bool{
+		"the": true, "and": true, "for": true, "with": true, "that": true,
+		"this": true, "from": true, "are": true, "was": true, "will": true,
+		"can": true, "has": true, "have": true, "not": true, "but": true,
+		"all": true, "your": true, "you": true, "use": true, "how": true,
+		"about": true, "more": true, "when": true, "into": true,
+	}
+	return common[strings.ToLower(w)]
+}
+
+// containsPainSignal checks if text contains signals of user frustration.
+func containsPainSignal(text string) bool {
+	lower := strings.ToLower(text)
+	signals := []string{
+		"bug", "broken", "crash", "error", "fail", "slow",
+		"confusing", "unclear", "missing", "wrong", "doesn't work",
+		"not working", "can't", "cannot", "won't", "frustrat",
+	}
+	for _, s := range signals {
+		if strings.Contains(lower, s) {
+			return true
+		}
+	}
+	return false
+}
+
+// synthesizeInsights aggregates competitor analyses into actionable insights.
+func synthesizeInsights(analyses []CompetitorAnalysis) CompetitorInsights {
+	insights := CompetitorInsights{
+		Analyses: analyses,
+	}
+
+	// Find max command count and set target to 1.2x
+	maxCommands := 0
+	for _, a := range analyses {
+		if a.CommandCount > maxCommands {
+			maxCommands = a.CommandCount
+		}
+	}
+	insights.CommandTarget = int(math.Ceil(float64(maxCommands) * 1.2))
+
+	// Collect all unique feature requests as unmet features
+	seenFeatures := make(map[string]bool)
+	for _, a := range analyses {
+		for _, f := range a.FeatureRequests {
+			lower := strings.ToLower(f)
+			if !seenFeatures[lower] {
+				seenFeatures[lower] = true
+				insights.UnmetFeatures = append(insights.UnmetFeatures, f)
+			}
+		}
+	}
+
+	// Collect all unique pain points
+	seenPains := make(map[string]bool)
+	for _, a := range analyses {
+		for _, p := range a.PainPoints {
+			lower := strings.ToLower(p)
+			if !seenPains[lower] {
+				seenPains[lower] = true
+				insights.PainPointsToAvoid = append(insights.PainPointsToAvoid, p)
+			}
+		}
+	}
+
+	return insights
 }
