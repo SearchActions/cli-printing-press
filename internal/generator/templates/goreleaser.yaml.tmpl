@@ -25,3 +25,12 @@ archives:
         formats: [zip]
 checksum:
   name_template: checksums.txt
+brews:
+  - name: {{.Name}}-cli
+    repository:
+      owner: USER
+      name: homebrew-tap
+    homepage: "https://github.com/USER/{{.Name}}-cli"
+    description: "{{.Description}}"
+    install: |
+      bin.install "{{.Name}}-cli"
