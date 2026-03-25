@@ -1,7 +1,7 @@
 ---
 name: printing-press
-description: Generate production Go CLIs from API descriptions or OpenAPI specs. Say an API name and get a compiled CLI binary. Supports autonomous multi-phase pipeline mode.
-version: 0.4.0
+description: Generate production Go CLIs from any API. Claude Code is the brain - it researches, writes specs, generates, polishes, and scores. Say an API name and get a complete CLI.
+version: 0.5.0
 allowed-tools:
   - Bash
   - Read
@@ -21,333 +21,246 @@ allowed-tools:
 
 # /printing-press
 
-Generate a production Go CLI from an API description or spec file.
+Generate a production Go CLI from any API. Claude Code does the thinking. The Go binary does the template rendering.
+
+## Architecture
+
+```
+Claude Code (brain)  ->  printing-press binary (template engine)  ->  Claude Code (polish)
+  researches API           renders Go templates                       improves help text
+  writes YAML spec         runs quality gates                         rewrites README
+  analyzes competitors     deterministic, fast                        scores output
+```
 
 ## Quick Start
 
 ```
-/printing-press Stytch authentication API
+/printing-press Notion
+/printing-press Plaid payments API
 /printing-press --spec ./openapi.yaml
-/printing-press --spec https://raw.githubusercontent.com/stripe/openapi/master/openapi/spec3.json
+/printing-press --docs https://developers.notion.com/reference --name notion
 ```
 
 ## Prerequisites
 
-- Go 1.21+ installed (`go version`)
+- Go 1.21+ installed
 - The printing-press repo at `~/cli-printing-press`
+- printing-press binary built: `cd ~/cli-printing-press && go build -o ./printing-press ./cmd/printing-press`
 
 ## Workflows
 
 ### Workflow 0: Natural Language (Primary)
 
-When the user provides an API name or description (no --spec flag):
+When the user provides an API name or description:
 
-**Step 1: Parse intent**
-Extract the API name from the user's message. Examples:
-- "Stytch authentication API" -> API name: "Stytch"
-- "Stripe payments" -> API name: "Stripe"
-- "the Loops email API" -> API name: "Loops"
+**Step 1: Parse intent and find the spec**
 
-**Step 2: Check known-specs registry**
-Read `~/cli-printing-press/skills/printing-press/references/known-specs.md` and search for the API name.
+Extract the API name. Then search for an OpenAPI spec:
 
-If found: use the spec URL from the registry. Go to Step 4.
+1. Check KnownSpecs in `~/cli-printing-press/internal/pipeline/discover.go`
+2. Check catalog: `ls ~/cli-printing-press/catalog/<name>.yaml`
+3. WebSearch: `"<api-name>" openapi spec site:github.com`
+4. Try common URLs: `https://raw.githubusercontent.com/<org>/openapi/main/openapi.yaml`
 
-**Step 3: Search for OpenAPI spec online**
-If not in registry, search in this order:
+If OpenAPI spec found: go to Step 3 (generate from spec).
+If no spec found: go to Step 2 (research and write spec).
 
-1. WebSearch: `"<api-name>" openapi spec site:github.com`
-2. WebSearch: `"<api-name>" openapi.yaml OR openapi.json`
-3. Try common URL patterns:
-   - `https://raw.githubusercontent.com/<org>/openapi/main/openapi.yaml`
-   - `https://api.<domain>/openapi.json`
+**Step 2: Research the API and write a spec (Claude Code does this)**
 
-If a URL is found, verify it's accessible with a brief WebFetch check (first 200 bytes should contain `openapi:` or `"openapi"` or `swagger:`).
+This is where Claude Code IS the brain. No regex. No shelling out to another LLM.
 
-If no spec found: go to Step 6 (generate from docs).
+a. **Fetch the API docs:**
+```
+WebFetch the API documentation URL (e.g., developers.notion.com/reference)
+```
 
-**Step 4: Download and generate from OpenAPI spec**
+b. **Research competitors:**
+```
+WebSearch: "<api-name> cli" site:github.com
+```
+For each competitor found, note: name, stars, language, last updated.
 
+c. **Read the docs and identify EVERY endpoint:**
+Read the fetched docs content. List every API endpoint you find:
+- HTTP method (GET, POST, PUT, PATCH, DELETE)
+- Path (/v1/databases, /v1/pages/{id})
+- Description
+- Parameters (path params, query params, body fields)
+- Auth method (Bearer, API key, OAuth)
+- Base URL
+
+d. **Write the YAML spec:**
+Read the spec format reference: `cat ~/cli-printing-press/skills/printing-press/references/spec-format.md`
+
+Write a complete YAML spec to `/tmp/<name>-spec.yaml` with ALL endpoints found. Include:
+- name (kebab-case)
+- description
+- base_url
+- auth (type, header, env_vars)
+- resources (group endpoints by resource)
+- endpoints (method, path, params, body)
+
+e. **Generate:**
 ```bash
-# Download the spec
-curl -sL -o /tmp/printing-press-spec-$$.yaml "<spec-url>"
-
-# Generate the CLI
 cd ~/cli-printing-press && ./printing-press generate \
-  --spec /tmp/printing-press-spec-$$.yaml \
+  --spec /tmp/<name>-spec.yaml \
   --output ./<name>-cli \
-  --validate
+  --force
 ```
 
-If the binary doesn't exist, build it first:
+f. **If quality gates fail:** Read the error. Fix the YAML spec. Regenerate. Max 3 retries.
+
+g. Go to Step 4 (polish).
+
+**Step 3: Generate from OpenAPI spec**
+
 ```bash
-cd ~/cli-printing-press && go build -o ./printing-press ./cmd/printing-press
+cd ~/cli-printing-press && ./printing-press generate \
+  --spec "<spec-url>" \
+  --output ./<name>-cli \
+  --force --lenient
 ```
 
-If all 7 quality gates pass: go to Step 7 (present result).
-If gates fail: go to Step 5 (retry).
+Use `--lenient` for specs with broken $refs (PagerDuty, Intercom).
 
-**Step 5: Retry on quality gate failure**
+If all 7 quality gates pass: go to Step 4 (polish).
+If gates fail: read error, fix, retry (max 3).
 
-Read the error output carefully. Common fixes:
-- "newline in string" -> descriptions have unescaped newlines (should not happen with current templates, but if it does, the spec description needs cleaning)
-- "undefined" -> a template function is missing a type mapping
-- Module errors -> run `go mod tidy` in the output directory
+**Step 4: Polish (Claude Code does this)**
 
-If the error is in the spec (not the templates):
-1. Read the spec file
-2. Fix the issue (e.g., remove problematic descriptions, fix types)
-3. Delete the output directory
-4. Re-run `printing-press generate`
+Read the generated code and improve it directly:
 
-Max 2 retries. If still failing after retries, present the error to the user and suggest they inspect the generated code.
+a. **Improve help descriptions:**
+Read each command file in `<output>/internal/cli/*.go`. Find `Short:` strings. If any are jargon-heavy spec descriptions, use Edit to rewrite them to be developer-friendly (under 80 chars, starts with a verb).
 
-**Step 6: Generate internal YAML spec from documentation**
+b. **Improve examples:**
+Read each command's `Example:` string. If it uses generic values like "value" or "<id>", use Edit to replace with realistic values (e.g., "usr_abc123", "2026-01-01", "user@example.com").
 
-When no OpenAPI spec exists:
+c. **Improve README:**
+Read `<output>/README.md`. If the description is generic spec text, use Edit to rewrite:
+- Add a one-line hook that makes developers want to install it
+- Add "Why This Exists" if there's no official CLI for this API
+- Ensure Quick Start has real 3-command workflow
 
-1. Read the API documentation using WebFetch
-2. Read `~/cli-printing-press/skills/printing-press/references/spec-format.md` for the YAML format
-3. Generate a YAML spec following the format exactly. Include:
-   - name (kebab-case)
-   - base_url (from API docs)
-   - auth config (type, header, env_vars)
-   - resources (group endpoints logically)
-   - endpoints (method, path, params, body)
-   - types (for response objects)
-4. Save to `./<name>-spec.yaml`
-5. Run `printing-press generate --spec ./<name>-spec.yaml`
-6. On failure: read error, fix YAML, retry (max 2 attempts)
-7. Present result with note: "Generated spec saved to ./<name>-spec.yaml - you can edit and regenerate."
+d. **Note: this step is optional.** If the user doesn't want polish, skip it. If the generated output is already good, skip it. Use judgment.
 
-**Step 7: Present result**
+**Step 5: Score (optional)**
 
-Show the user:
-1. What was generated (directory name, number of resources/endpoints)
-2. Example commands they can try
+Run the Steinberger scorecard:
+```bash
+cd ~/cli-printing-press && SCORECARD_CLI_DIR=./<name>-cli SCORECARD_PIPELINE_DIR=/tmp/<name>-pipeline \
+  go test ./internal/pipeline/ -run TestScorecardOnRealCLI -v 2>&1 | tail -20
+```
+
+Report the score to the user.
+
+**Step 6: Present result**
+
+Show:
+1. What was generated (directory, resources, commands)
+2. Example commands to try
 3. How to install: `cd <name>-cli && go install ./cmd/<name>-cli`
-4. If resource/endpoint limits were hit, note what was truncated
-
-Example output:
-```
-Generated stytch-cli with 8 resources and 42 endpoints.
-
-Try it:
-  cd stytch-cli
-  go install ./cmd/stytch-cli
-  stytch-cli --help
-  stytch-cli users list --limit 10
-  stytch-cli doctor
-
-All 7 quality gates passed.
-```
+4. Steinberger score if computed
+5. Competitors found (if any)
+6. Note if spec was auto-written vs from OpenAPI
 
 ### Workflow 1: From Spec File
 
-When the user provides `--spec <local-path>`:
+When `--spec <local-path>`:
+1. Verify file exists
+2. `cd ~/cli-printing-press && ./printing-press generate --spec <path> [--output <dir>] --lenient`
+3. Optional: polish (Step 4 above)
+4. Present result
 
-1. Verify the file exists
-2. Run `cd ~/cli-printing-press && ./printing-press generate --spec <path> [--output <dir>]`
-3. Present result (Step 7 above)
+### Workflow 2: From Docs URL
 
-### Workflow 2: From URL
-
-When the user provides `--spec <url>`:
-
-1. Download with `curl -sL -o /tmp/printing-press-spec-$$.yaml "<url>"`
-2. Run `cd ~/cli-printing-press && ./printing-press generate --spec /tmp/printing-press-spec-$$.yaml [--output <dir>]`
-3. Present result (Step 7 above)
+When `--docs <url>`:
+1. WebFetch the docs URL
+2. Claude Code reads the docs and writes a YAML spec (Step 2 above)
+3. Generate from the spec
+4. Polish
+5. Present result
 
 ### Workflow 3: Submit to Catalog
 
-When the user invokes `/printing-press submit <name>`:
-
-**Step 1: Gather metadata**
-Ask the user for:
-- API display name (e.g., "Stripe")
-- One-line description
-- Category (payments, auth, email, developer-tools, project-management, communication, crm, example)
-- Homepage URL
-- OpenAPI spec URL (if they used one)
-
-**Step 2: Create catalog entry**
-Write a YAML file to `~/cli-printing-press/catalog/<name>.yaml`:
-
-```yaml
-name: <name>
-display_name: <display_name>
-description: <description>
-category: <category>
-spec_url: <spec_url>
-spec_format: <yaml|json>
-openapi_version: "3.0"
-tier: community
-verified_date: "<today's date>"
-homepage: <homepage>
-notes: <any notes>
-```
-
-**Step 3: Open a PR**
-```bash
-cd ~/cli-printing-press
-git checkout -b catalog/<name>
-git add catalog/<name>.yaml
-git commit -m "feat(catalog): add <display_name> catalog entry"
-git push -u origin catalog/<name>
-gh pr create --title "feat(catalog): add <display_name>" --body "Adds catalog entry for <display_name> API.
-
-Spec URL: <spec_url>
-Category: <category>
-Tier: community
-
-Tested locally - generated CLI compiles and passes all quality gates."
-```
-
-**Step 4: Present the PR URL**
-Show the user the PR link and note that CI will validate the entry.
+When `submit <name>`:
+1. Gather metadata (ask user for display name, description, category, homepage)
+2. Write `~/cli-printing-press/catalog/<name>.yaml`
+3. `git checkout -b catalog/<name> && git add catalog/<name>.yaml && git commit && git push && gh pr create`
+4. Present PR URL
 
 ### Workflow 4: Autonomous Pipeline
 
-| Phase | Purpose |
-|-------|---------|
-| 0. Preflight | Validate environment and discover the OpenAPI spec |
-| 1. Scaffold | Generate the initial CLI and verify quality gates |
-| 2. Enrich | Deep-read the spec and research missing hints |
-| 3. Regenerate | Merge enrichments and re-generate the CLI |
-| 4. Review | Static quality checks + autonomous dogfooding against real API |
-| 5. Ship | Initialize git repo, commit, write report |
+When `print <api-name>`:
 
-The Review phase dogfoods the generated CLI in three tiers:
-- **Tier 1** (always): version, doctor, help, dry-run, output modes - no credentials needed
-- **Tier 2** (if credentials available): list, get, auth error handling - read-only API calls
-- **Tier 3** (sandbox APIs only): create/delete roundtrip with cleanup - write operations on safe test servers
+Uses the multi-phase pipeline with ce:plan -> ce:work loops:
 
-Results feed a combined quality score (static 0-50 + dogfood 0-50 = total 0-100).
+| Phase | What Claude Code Does |
+|-------|----------------------|
+| Preflight | Verify Go, download spec, cache conventions |
+| Research | WebSearch competitors, WebFetch their READMEs, analyze |
+| Scaffold | Write spec (if needed), run `printing-press generate` |
+| Enrich | Read generated output, identify missing endpoints, improve spec |
+| Regenerate | Re-run generator with enriched spec |
+| Review | Run scorecard, dogfood Tier 1, polish output |
+| Comparative | Score vs competitors |
+| Ship | Git init, write report |
 
-When the user says "print <api-name>":
+Each phase: read the plan seed -> expand with ce:plan -> execute with ce:work -> write next phase's plan -> chain to next session.
 
 **Step 1: Initialize**
-- Build the press binary: `go build -o ./printing-press ./cmd/printing-press`
-- Run: `./printing-press print <api-name> [--output <dir>] [--force]`
-- This creates `docs/plans/<api-name>-pipeline/` with 6 plan seeds + `state.json`
-- Show the user: API name, spec URL, output directory, and phase list
-
-**Step 2: Heartbeat safety net**
-Schedule a heartbeat to resume if the session dies unexpectedly:
 ```bash
-RESUME_MIN=$(date -v+45M '+%M')
-RESUME_HOUR=$(date -v+45M '+%H')
-RESUME_DAY=$(date -v+45M '+%d')
-RESUME_MONTH=$(date -v+45M '+%m')
+cd ~/cli-printing-press && go build -o ./printing-press ./cmd/printing-press
+./printing-press print <api-name> [--output <dir>] [--force]
 ```
-Then CronCreate with cron expression `$RESUME_MIN $RESUME_HOUR $RESUME_DAY $RESUME_MONTH *` and prompt: `/printing-press resume <api-name>`
 
-**Step 3: Phase execution loop**
-For each phase in state.json where `plan_status` is not "completed":
+**Step 2: Phase execution loop**
+For each phase where `plan_status` is not "completed":
+a. Read plan file
+b. If `status: seed`: run `Skill("compound-engineering:ce:plan", plan_path)` to expand
+c. If `status: active`: run `Skill("compound-engineering:ce:work", plan_path)` to execute
+d. Update state.json
+e. Chain to next session via CronCreate (30s)
 
-a. Read the plan file at the phase's `plan_path`
-b. Check the `status` field in the plan's YAML frontmatter:
-   - If `status: seed` - the plan is a thin prompt that needs expansion:
-     1. Run `Skill("compound-engineering:ce:plan", plan_path)` to expand the seed into a full plan with research
-     2. ce:plan overwrites the file with the expanded plan (frontmatter becomes `status: active`)
-     3. Update state.json: set `plan_status` to "expanded":
-     ```bash
-     python3 -c "
-     import json
-     s = json.load(open('docs/plans/<api-name>-pipeline/state.json'))
-     s['phases']['<phase>']['plan_status'] = 'expanded'
-     json.dump(s, open('docs/plans/<api-name>-pipeline/state.json', 'w'), indent=2)
-     "
-     ```
-   - If `status: active` - the plan is already expanded, ready for execution:
-     1. Run `Skill("compound-engineering:ce:work", plan_path)` to implement, test, and check off criteria
-     2. Update state.json: mark phase completed:
-     ```bash
-     python3 -c "
-     import json
-     s = json.load(open('docs/plans/<api-name>-pipeline/state.json'))
-     s['phases']['<phase>']['status'] = 'completed'
-     s['phases']['<phase>']['plan_status'] = 'completed'
-     json.dump(s, open('docs/plans/<api-name>-pipeline/state.json', 'w'), indent=2)
-     "
-     ```
-c. Run budget gate (Step 4)
-d. If more phases remain and budget gate says CONTINUE:
-   - CronCreate 30 seconds from now: `/printing-press resume <api-name>`
-   - Print: `"[phase] complete. Chaining to [next_phase] in 30s with fresh context..."`
-   - END SESSION (the cron fires a new session with fresh context)
-
-**Note:** Each phase may take TWO sessions - one for ce:plan expansion, one for ce:work execution. This is by design: ce:plan gets a fresh context window for research, ce:work gets a fresh context window for implementation.
-
-**Step 4: Budget gate (between every phase)**
-```bash
-python3 -c "
-import json, datetime
-s = json.load(open('docs/plans/<api-name>-pipeline/state.json'))
-started = datetime.datetime.fromisoformat(s['started_at'].replace('Z', '+00:00'))
-elapsed = (datetime.datetime.now(datetime.timezone.utc) - started).total_seconds() / 3600
-print('STOP' if elapsed > 3 else 'CONTINUE')
-print(f'Elapsed: {elapsed:.1f}h / 3h budget')
-"
-```
-If STOP: go to Step 6 (morning report), do NOT chain.
-
-**Step 5: Error handling**
-- If ce:plan fails on a phase: log error to state.json errors array, retry once. If still fails, mark phase "failed", skip to next phase.
-- If ce:work fails: retry once with same plan. If still fails, mark "failed", skip to next.
-- If 2+ consecutive phases fail: write morning report and STOP. Do not chain.
-- NEVER die silently. Always update state.json before ending a session.
-- If CronCreate fails: print manual resume command as fallback: `claude "/printing-press resume <api-name>"`
-
-**Step 6: Morning report**
-Write `docs/plans/<api-name>-pipeline/report.md`:
-```markdown
-# Pipeline Report: <api-name>
-
-- **API:** <api-name>
-- **Spec URL:** <spec_url from state.json>
-- **Output:** <output_dir from state.json>
-- **Phases completed:** N/M
-- **Total elapsed:** Xh Ym
-- **Status:** completed | budget-exhausted | failed
-
-## Phase Results
-| Phase | Status | Notes |
-|-------|--------|-------|
-| preflight | completed | ... |
-| scaffold | completed | ... |
-| ... | ... | ... |
-
-## Next Steps
-- [ ] Review generated CLI at <output_dir>
-- [ ] Run `<cli-name> doctor` to verify
-- [ ] Submit to catalog: `/printing-press submit <api-name>`
-```
+Budget gate: stop after 3 hours. Write morning report.
 
 ### Workflow 5: Resume Pipeline
 
-When the user says "resume <api-name>" or the `--resume` flag is detected:
+When `resume <api-name>`:
+1. Load state.json
+2. Budget gate first
+3. Continue from next incomplete phase
 
-1. Load `docs/plans/<api-name>-pipeline/state.json`
-2. **MANDATORY:** Run budget gate FIRST (Workflow 4 Step 4) before any work
-3. If STOP: write morning report if not already written, print summary, exit
-4. If CONTINUE:
-   - Show status table: which phases are done, which is next
-   - Delete stale heartbeat crons: CronList, then CronDelete any matching `/printing-press resume`
-   - Schedule new heartbeat (45 min from now, same as Workflow 4 Step 2)
-   - Go to Workflow 4 Step 3 (phase execution loop) starting from the next incomplete phase
+### Workflow 6: Scorecard
+
+When `score <dir>`:
+```bash
+cd ~/cli-printing-press && SCORECARD_CLI_DIR=<dir> SCORECARD_PIPELINE_DIR=/tmp/score-pipeline \
+  go test ./internal/pipeline/ -run TestScorecardOnRealCLI -v
+```
+
+### Workflow 7: Full Test Run
+
+When `test` or `fullrun`:
+```bash
+cd ~/cli-printing-press && FULL_RUN=1 go test ./internal/pipeline/ -run TestFullRun -v -timeout 10m
+```
+
+## Key Principle
+
+**Claude Code IS the LLM brain.** The printing-press Go binary is a template engine. When the skill says "read the API docs and write a spec," that means YOU (Claude Code) use WebFetch to read the docs and Write to create the spec file. You don't shell out to another LLM. You ARE the LLM.
+
+The Go binary's `internal/llm/` and `internal/llmpolish/` packages exist as a fallback for when someone runs `printing-press generate --polish` from their terminal without Claude Code. But inside this skill, YOU do the thinking.
 
 ## Safety Gates
 
-- **Preview before generating**: Show the API name, base URL, and estimated resource count before running the generator
-- **Output directory conflict**: If the output directory already exists, ask the user before overwriting
-- **Untrusted specs**: If the spec was downloaded from a URL not in the known-specs registry, note this to the user
+- Preview before generating: show API name, base URL, estimated resources
+- Output directory conflict: ask before overwriting
+- Untrusted specs: note if spec is from a URL not in known-specs registry
 
 ## Limitations
 
-- Only generates Go CLIs (no Bash, Python, etc.)
-- OpenAPI 3.0+ and Swagger 2.0 supported; other formats are not
-- Large APIs (500+ endpoints) are automatically truncated to 50 resources / 50 endpoints per resource
-- No GraphQL support
-- Pipeline mode requires Compound Engineering plugin (`compound-engineering:ce:plan` and `compound-engineering:ce:work`)
-- Pipeline budget gate is 3 hours max
+- Only generates Go CLIs
+- OpenAPI 3.0+ and Swagger 2.0 supported
+- Large APIs truncated to 50 resources / 50 endpoints per resource
+- No GraphQL support (but Claude Code can write a YAML spec that wraps GraphQL, as we did for Linear)
