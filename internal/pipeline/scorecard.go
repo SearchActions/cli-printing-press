@@ -87,7 +87,7 @@ func RunScorecard(outputDir, pipelineDir string) (*Scorecard, error) {
 }
 
 func scoreOutputModes(dir string) int {
-	content := readFileContent(filepath.Join(dir, "cmd", "root.go"))
+	content := readFileContent(filepath.Join(dir, "internal", "cli", "root.go"))
 	score := 0
 	if strings.Contains(content, "json") {
 		score += 2
@@ -112,14 +112,14 @@ func scoreOutputModes(dir string) int {
 
 func scoreAuth(dir string) int {
 	score := 0
-	configContent := readFileContent(filepath.Join(dir, "internal", "config.go"))
+	configContent := readFileContent(filepath.Join(dir, "internal", "config", "config.go"))
 	envCount := strings.Count(configContent, "os.Getenv")
 	if envCount >= 2 {
 		score += 8
 	} else if envCount >= 1 {
 		score += 5
 	}
-	if fileExists(filepath.Join(dir, "internal", "auth.go")) {
+	if fileExists(filepath.Join(dir, "internal", "cli", "auth.go")) {
 		score += 2
 	}
 	if score > 10 {
@@ -129,13 +129,13 @@ func scoreAuth(dir string) int {
 }
 
 func scoreErrorHandling(dir string) int {
-	content := readFileContent(filepath.Join(dir, "internal", "helpers.go"))
+	content := readFileContent(filepath.Join(dir, "internal", "cli", "helpers.go"))
 	score := 0
 	if strings.Contains(content, "hint:") || strings.Contains(content, "Hint:") {
 		score += 5
 	}
-	// Count distinct exit codes (os.Exit calls with different values)
-	exitCount := strings.Count(content, "os.Exit(")
+	// Count typed exit codes (cliError with code:)
+	exitCount := strings.Count(content, "code:")
 	if exitCount > 5 {
 		exitCount = 5
 	}
@@ -147,7 +147,7 @@ func scoreErrorHandling(dir string) int {
 }
 
 func scoreTerminalUX(dir string) int {
-	content := readFileContent(filepath.Join(dir, "internal", "helpers.go"))
+	content := readFileContent(filepath.Join(dir, "internal", "cli", "helpers.go"))
 	score := 0
 	if strings.Contains(content, "colorEnabled") {
 		score += 5
@@ -186,11 +186,9 @@ func scoreREADME(dir string) int {
 }
 
 func scoreDoctor(dir string) int {
-	content := readFileContent(filepath.Join(dir, "cmd", "doctor.go"))
-	if content == "" {
-		content = readFileContent(filepath.Join(dir, "internal", "doctor.go"))
-	}
-	healthChecks := strings.Count(content, "http.Get")
+	content := readFileContent(filepath.Join(dir, "internal", "cli", "doctor.go"))
+	// Count health check patterns
+	healthChecks := strings.Count(content, "http.Get") + strings.Count(content, "http.Head") + strings.Count(content, "http.NewRequest") + strings.Count(content, "http.Client")
 	score := healthChecks * 2
 	if score > 10 {
 		score = 10
@@ -199,8 +197,8 @@ func scoreDoctor(dir string) int {
 }
 
 func scoreAgentNative(dir string) int {
-	rootContent := readFileContent(filepath.Join(dir, "cmd", "root.go"))
-	helpersContent := readFileContent(filepath.Join(dir, "internal", "helpers.go"))
+	rootContent := readFileContent(filepath.Join(dir, "internal", "cli", "root.go"))
+	helpersContent := readFileContent(filepath.Join(dir, "internal", "cli", "helpers.go"))
 	combined := rootContent + helpersContent
 
 	score := 0
