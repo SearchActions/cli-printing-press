@@ -20,8 +20,14 @@ var As = errors.As
 // noColor is set by the --no-color flag
 var noColor bool
 
+// humanFriendly is set by the --human-friendly flag; colors are off by default (agent-safe)
+var humanFriendly bool
+
 func colorEnabled() bool {
 	if noColor {
+		return false
+	}
+	if !humanFriendly {
 		return false
 	}
 	if os.Getenv("NO_COLOR") != "" {
@@ -153,7 +159,11 @@ func paginatedGet(c interface {
 	page := 0
 	for {
 		page++
-		fmt.Fprintf(os.Stderr, "fetching page %d...\n", page)
+		if humanFriendly {
+			fmt.Fprintf(os.Stderr, "fetching page %d...\n", page)
+		} else {
+			fmt.Fprintf(os.Stderr, `{"event":"page_fetch","page":%d}`+"\n", page)
+		}
 
 		data, err := c.Get(path, clean)
 		if err != nil {
@@ -208,7 +218,11 @@ func paginatedGet(c interface {
 		break
 	}
 
-	fmt.Fprintf(os.Stderr, "fetched %d items across %d pages\n", len(allItems), page)
+	if humanFriendly {
+		fmt.Fprintf(os.Stderr, "fetched %d items across %d pages\n", len(allItems), page)
+	} else {
+		fmt.Fprintf(os.Stderr, `{"event":"complete","total":%d,"pages":%d}`+"\n", len(allItems), page)
+	}
 	result, _ := json.Marshal(allItems)
 	return json.RawMessage(result), nil
 }

@@ -232,6 +232,10 @@ func scoreAgentNative(dir string) int {
 	if strings.Contains(helpersContent, "409") || strings.Contains(helpersContent, "already exists") {
 		score += 1
 	}
+	// Check for --human-friendly flag (agent-safe-by-default coloring)
+	if strings.Contains(combined, "human-friendly") || strings.Contains(combined, "humanFriendly") {
+		score += 1
+	}
 	if score > 10 {
 		score = 10
 	}

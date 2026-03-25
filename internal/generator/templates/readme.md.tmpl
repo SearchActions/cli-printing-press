@@ -83,6 +83,8 @@ This CLI is designed for AI agent consumption:
 - **Confirmable** - `--yes` for explicit confirmation of destructive actions
 - **Piped input** - `echo '{"key":"value"}' | {{.Name}}-cli <resource> create --stdin`
 - **Cacheable** - GET responses cached for 5 minutes, bypass with `--no-cache`
+- **Agent-safe by default** - no colors or formatting unless `--human-friendly` is set
+- **Progress events** - paginated commands emit NDJSON events to stderr in default mode
 
 Exit codes: `0` success, `2` usage error, `3` not found, `4` auth error, `5` API error, `7` rate limited, `10` config error.
 
