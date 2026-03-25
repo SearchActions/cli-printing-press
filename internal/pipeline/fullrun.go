@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/mvanhorn/cli-printing-press/internal/llmpolish"
 )
 
 // FullRunResult holds everything the press produced for one API.
@@ -29,6 +31,9 @@ type FullRunResult struct {
 	// Step 3: Coverage
 	SpecEndpoints   int
 	CoveragePercent int
+
+	// Step 2.5: Polish
+	PolishResult *llmpolish.PolishResult
 
 	// Step 4: Dogfood
 	Dogfood      *DogfoodResults
@@ -94,6 +99,17 @@ func MakeBestCLI(apiName, level, specFlag, specURL, outputDir, pressBinary strin
 		result.Errors = append(result.Errors, fmt.Sprintf("generate: %v", genErr))
 		result.Duration = time.Since(start)
 		return result
+	}
+
+	// Step 2.5: LLM Polish
+	polishResult, polishErr := llmpolish.Polish(llmpolish.PolishRequest{
+		APIName:   apiName,
+		OutputDir: outputDir,
+	})
+	if polishErr != nil {
+		result.Errors = append(result.Errors, "polish: "+polishErr.Error())
+	} else {
+		result.PolishResult = polishResult
 	}
 
 	// Step 3: Count commands and resources
@@ -320,6 +336,20 @@ func PrintComparisonTable(results []*FullRunResult) string {
 		}
 		pct := (r.Dogfood.PassedCommands * 100) / r.Dogfood.TotalCommands
 		return fmt.Sprintf("%d/%d (%d%%)", r.Dogfood.PassedCommands, r.Dogfood.TotalCommands, pct)
+	})
+
+	// LLM Polish
+	writeRow(&b, "LLM Polish", results, func(r *FullRunResult) string {
+		if r.PolishResult == nil {
+			return "n/a"
+		}
+		if r.PolishResult.Skipped {
+			return "skipped"
+		}
+		return fmt.Sprintf("%dh/%de/%v",
+			r.PolishResult.HelpTextsImproved,
+			r.PolishResult.ExamplesAdded,
+			r.PolishResult.READMERewritten)
 	})
 
 	// Fix plans generated

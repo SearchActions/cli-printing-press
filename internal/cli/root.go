@@ -13,6 +13,7 @@ import (
 
 	"github.com/mvanhorn/cli-printing-press/internal/docspec"
 	"github.com/mvanhorn/cli-printing-press/internal/generator"
+	"github.com/mvanhorn/cli-printing-press/internal/llmpolish"
 	"github.com/mvanhorn/cli-printing-press/internal/openapi"
 	"github.com/mvanhorn/cli-printing-press/internal/pipeline"
 	"github.com/mvanhorn/cli-printing-press/internal/spec"
@@ -48,6 +49,7 @@ func newGenerateCmd() *cobra.Command {
 	var force bool
 	var lenient bool
 	var docsURL string
+	var polish bool
 
 	cmd := &cobra.Command{
 		Use:   "generate",
@@ -92,6 +94,22 @@ func newGenerateCmd() *cobra.Command {
 				if validate {
 					if err := gen.Validate(); err != nil {
 						return fmt.Errorf("validating generated project: %w", err)
+					}
+				}
+
+				if polish {
+					fmt.Fprintln(os.Stderr, "Running LLM polish pass...")
+					polishResult, polishErr := llmpolish.Polish(llmpolish.PolishRequest{
+						APIName:   parsed.Name,
+						OutputDir: absOut,
+					})
+					if polishErr != nil {
+						fmt.Fprintf(os.Stderr, "warning: polish failed: %v\n", polishErr)
+					} else if polishResult.Skipped {
+						fmt.Fprintf(os.Stderr, "polish skipped: %s\n", polishResult.SkipReason)
+					} else {
+						fmt.Fprintf(os.Stderr, "Polish: %d help texts improved, %d examples added, README %v\n",
+							polishResult.HelpTextsImproved, polishResult.ExamplesAdded, polishResult.READMERewritten)
 					}
 				}
 
@@ -161,6 +179,22 @@ func newGenerateCmd() *cobra.Command {
 				}
 			}
 
+			if polish {
+				fmt.Fprintln(os.Stderr, "Running LLM polish pass...")
+				polishResult, polishErr := llmpolish.Polish(llmpolish.PolishRequest{
+					APIName:   apiSpec.Name,
+					OutputDir: absOut,
+				})
+				if polishErr != nil {
+					fmt.Fprintf(os.Stderr, "warning: polish failed: %v\n", polishErr)
+				} else if polishResult.Skipped {
+					fmt.Fprintf(os.Stderr, "polish skipped: %s\n", polishResult.SkipReason)
+				} else {
+					fmt.Fprintf(os.Stderr, "Polish: %d help texts improved, %d examples added, README %v\n",
+						polishResult.HelpTextsImproved, polishResult.ExamplesAdded, polishResult.READMERewritten)
+				}
+			}
+
 			fmt.Fprintf(os.Stderr, "Generated %s-cli at %s\n", apiSpec.Name, absOut)
 			return nil
 		},
@@ -174,6 +208,7 @@ func newGenerateCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&force, "force", false, "Remove existing output directory before generating")
 	cmd.Flags().BoolVar(&lenient, "lenient", false, "Skip validation errors from broken $refs in OpenAPI specs")
 	cmd.Flags().StringVar(&docsURL, "docs", "", "API documentation URL to generate spec from")
+	cmd.Flags().BoolVar(&polish, "polish", false, "Run LLM polish pass on generated CLI (requires claude or codex CLI)")
 
 	return cmd
 }
