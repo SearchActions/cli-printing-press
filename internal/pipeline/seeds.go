@@ -17,6 +17,104 @@ type SeedData struct {
 }
 
 var seedTemplates = map[string]string{
+	PhaseResearch: `---
+title: "{{.APIName}} CLI Pipeline - Research: Discover Alternatives"
+type: feat
+status: seed
+pipeline_phase: research
+pipeline_api: {{.APIName}}
+date: {{now}}
+---
+
+# Phase Goal
+
+Discover existing CLI tools for the {{.APIName}} API and assess whether generating a new one adds value.
+
+## Context
+
+- Pipeline directory: {{.PipelineDir}}
+- Output directory: {{.OutputDir}}
+- Spec URL: {{.SpecURL}}
+- Spec source: {{.SpecSource}}
+
+## What This Phase Must Produce
+
+- research.json in {{.PipelineDir}} with:
+  - List of discovered alternative CLIs (name, URL, language, stars)
+  - Novelty score (1-10)
+  - Recommendation: proceed, proceed-with-gaps, or skip
+  - Gap analysis: what alternatives miss
+  - Pattern analysis: what alternatives do well
+
+## Steps
+
+1. Check catalog/{{.APIName}}.yaml for known_alternatives field
+2. Search GitHub for "{{.APIName}} cli" repos sorted by stars
+3. Deduplicate and score alternatives
+4. If novelty score <= 3, flag: "Official CLI exists - consider whether this CLI adds value"
+5. Write research.json
+
+## Prior Phase Outputs
+
+- Validated spec URL from preflight
+
+## Codebase Pointers
+
+- Research logic: internal/pipeline/research.go
+- Catalog entries: catalog/
+- Known specs registry: internal/pipeline/discover.go
+`,
+	PhaseComparative: `---
+title: "{{.APIName}} CLI Pipeline - Comparative Analysis"
+type: feat
+status: seed
+pipeline_phase: comparative
+pipeline_api: {{.APIName}}
+date: {{now}}
+---
+
+# Phase Goal
+
+Score the generated {{.APIName}} CLI against discovered alternatives on 6 dimensions.
+
+## Context
+
+- Pipeline directory: {{.PipelineDir}}
+- Output directory: {{.OutputDir}}
+- Spec URL: {{.SpecURL}}
+- Spec source: {{.SpecSource}}
+
+## What This Phase Must Produce
+
+- comparative-analysis.md in {{.PipelineDir}} with:
+  - Score table (our CLI vs each alternative, 100 points max)
+  - Gap summary: what we're missing
+  - Advantage summary: what we have that others don't
+  - Ship recommendation: ship, ship-with-gaps, or hold
+
+## Scoring Dimensions (100 points max)
+
+| Dimension | Points | How Measured |
+|-----------|--------|-------------|
+| Breadth | 20 | Command count ratio vs best alternative |
+| Install Friction | 20 | Go binary = 20, clone+build = 15, runtime = 10 |
+| Auth UX | 15 | env var + config = 15, env only = 10, manual = 5 |
+| Output Formats | 15 | 5 per format (JSON, table, plain) |
+| Agent Friendliness | 15 | --json (5) + --dry-run (5) + non-interactive (5) |
+| Freshness | 15 | <30d = 15, <90d = 10, <1yr = 5, >1yr = 0 |
+
+## Prior Phase Outputs
+
+- research.json from research phase
+- dogfood-results.json from review phase
+- Working CLI binary in {{.OutputDir}}
+
+## Codebase Pointers
+
+- Comparative logic: internal/pipeline/comparative.go
+- Research results: {{.PipelineDir}}/research.json
+- Dogfood results: {{.PipelineDir}}/dogfood-results.json
+`,
 	PhasePreflight: `---
 title: "{{.APIName}} CLI Pipeline - Phase 0: Preflight"
 type: feat

@@ -34,18 +34,26 @@ var validTiers = map[string]struct{}{
 	"community": {},
 }
 
+type KnownAlt struct {
+	Name     string `yaml:"name"`
+	URL      string `yaml:"url"`
+	Language string `yaml:"language"`
+}
+
 type Entry struct {
-	Name           string `yaml:"name"`
-	DisplayName    string `yaml:"display_name"`
-	Description    string `yaml:"description"`
-	Category       string `yaml:"category"`
-	SpecURL        string `yaml:"spec_url"`
-	SpecFormat     string `yaml:"spec_format"`
-	OpenAPIVersion string `yaml:"openapi_version"`
-	Tier           string `yaml:"tier"`
-	VerifiedDate   string `yaml:"verified_date"`
-	Homepage       string `yaml:"homepage"`
-	Notes          string `yaml:"notes"`
+	Name              string     `yaml:"name"`
+	DisplayName       string     `yaml:"display_name"`
+	Description       string     `yaml:"description"`
+	Category          string     `yaml:"category"`
+	SpecURL           string     `yaml:"spec_url"`
+	SpecFormat        string     `yaml:"spec_format"`
+	OpenAPIVersion    string     `yaml:"openapi_version"`
+	Tier              string     `yaml:"tier"`
+	VerifiedDate      string     `yaml:"verified_date"`
+	Homepage          string     `yaml:"homepage"`
+	Notes             string     `yaml:"notes"`
+	KnownAlternatives []KnownAlt `yaml:"known_alternatives,omitempty"`
+	SandboxEndpoint   string     `yaml:"sandbox_endpoint,omitempty"`
 }
 
 func ParseEntry(data []byte) (*Entry, error) {

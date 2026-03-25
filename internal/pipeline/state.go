@@ -10,21 +10,25 @@ import (
 
 // Phase names in execution order.
 const (
-	PhasePreflight  = "preflight"
-	PhaseScaffold   = "scaffold"
-	PhaseEnrich     = "enrich"
-	PhaseRegenerate = "regenerate"
-	PhaseReview     = "review"
-	PhaseShip       = "ship"
+	PhasePreflight   = "preflight"
+	PhaseResearch    = "research"
+	PhaseScaffold    = "scaffold"
+	PhaseEnrich      = "enrich"
+	PhaseRegenerate  = "regenerate"
+	PhaseReview      = "review"
+	PhaseComparative = "comparative"
+	PhaseShip        = "ship"
 )
 
 // PhaseOrder defines execution order.
 var PhaseOrder = []string{
 	PhasePreflight,
+	PhaseResearch,
 	PhaseScaffold,
 	PhaseEnrich,
 	PhaseRegenerate,
 	PhaseReview,
+	PhaseComparative,
 	PhaseShip,
 }
 
@@ -44,6 +48,7 @@ const (
 
 // PipelineState tracks which phases are done across sessions.
 type PipelineState struct {
+	Version        int                   `json:"version"`                           // state schema version for migration
 	APIName        string                `json:"api_name"`
 	OutputDir      string                `json:"output_dir"`
 	StartedAt      time.Time             `json:"started_at"`
@@ -51,7 +56,10 @@ type PipelineState struct {
 	SpecPath       string                `json:"spec_path,omitempty"`
 	SpecURL        string                `json:"spec_url,omitempty"`
 	DogfoodTimeout int                   `json:"dogfood_timeout_seconds,omitempty"` // default 600 (10 min)
+	DogfoodTier    int                   `json:"dogfood_tier,omitempty"`            // max tier to run (1-3, default 1)
 }
+
+const currentStateVersion = 1
 
 // PhaseState tracks a single phase.
 type PhaseState struct {
@@ -80,11 +88,13 @@ func NewState(apiName, outputDir string) *PipelineState {
 		}
 	}
 	state := &PipelineState{
+		Version:        currentStateVersion,
 		APIName:        apiName,
 		OutputDir:      outputDir,
 		StartedAt:      time.Now(),
 		Phases:         phases,
 		DogfoodTimeout: 600, // 10 minutes default
+		DogfoodTier:    1,   // default to Tier 1 (no auth)
 	}
 	return state
 }
@@ -102,7 +112,7 @@ func (s *PipelineState) Save() error {
 	return os.WriteFile(StatePath(s.APIName), data, 0o644)
 }
 
-// LoadState reads existing state from disk.
+// LoadState reads existing state from disk, migrating old formats.
 func LoadState(apiName string) (*PipelineState, error) {
 	data, err := os.ReadFile(StatePath(apiName))
 	if err != nil {
@@ -111,6 +121,18 @@ func LoadState(apiName string) (*PipelineState, error) {
 	var s PipelineState
 	if err := json.Unmarshal(data, &s); err != nil {
 		return nil, fmt.Errorf("parsing state: %w", err)
+	}
+	// Migrate: add any missing phases from PhaseOrder (e.g., research, comparative).
+	if s.Version < currentStateVersion {
+		for i, name := range PhaseOrder {
+			if _, ok := s.Phases[name]; !ok {
+				s.Phases[name] = PhaseState{
+					Status:   StatusCompleted,
+					PlanPath: filepath.Join(PipelineDir(apiName), fmt.Sprintf("%02d-%s-plan.md", i, name)),
+				}
+			}
+		}
+		s.Version = currentStateVersion
 	}
 	return &s, nil
 }

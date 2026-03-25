@@ -9,3 +9,10 @@ tier: official
 verified_date: "2026-03-23"
 homepage: https://docs.github.com/en/rest
 notes: Very large spec. Generator truncates significantly.
+known_alternatives:
+  - name: gh
+    url: https://github.com/cli/cli
+    language: go
+  - name: hub
+    url: https://github.com/mislav/hub
+    language: go

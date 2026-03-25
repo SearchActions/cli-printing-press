@@ -138,9 +138,11 @@ func DiscoverSpec(apiName string) (string, string, error) {
 		return spec.URL, "known-specs registry", nil
 	}
 
-	// Try apis-guru with common version patterns
-	for _, version := range []string{"v1", "v2", "v3", "1.0", "2.0"} {
-		url := ApisGuruPattern(normalized+".com", version)
+	// Try apis-guru with common version patterns - return the first one
+	// (caller should validate with an HTTP fetch).
+	versions := []string{"v1", "v2", "v3", "1.0", "2.0"}
+	if len(versions) > 0 {
+		url := ApisGuruPattern(normalized+".com", versions[0])
 		return url, "apis-guru (unverified, needs fetch validation)", nil
 	}
 

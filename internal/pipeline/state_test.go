@@ -48,10 +48,10 @@ func TestNextPhase(t *testing.T) {
 	assert.Equal(t, PhasePreflight, s.NextPhase())
 
 	s.Complete(PhasePreflight)
-	assert.Equal(t, PhaseScaffold, s.NextPhase())
+	assert.Equal(t, PhaseResearch, s.NextPhase())
 
-	s.Complete(PhaseScaffold)
-	assert.Equal(t, PhaseEnrich, s.NextPhase())
+	s.Complete(PhaseResearch)
+	assert.Equal(t, PhaseScaffold, s.NextPhase())
 
 	for _, name := range PhaseOrder {
 		s.Complete(name)
