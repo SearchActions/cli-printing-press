@@ -23,10 +23,12 @@ Download from [Releases](https://github.com/{{.Owner}}/{{.Name}}-cli/releases).
 ## Quick Start
 
 ```bash
+{{- if .Auth.EnvVars}}
 # 1. Set your API credentials
 export {{index .Auth.EnvVars 0}}="your-key-here"
+{{- end}}
 
-# 2. Verify everything works
+# {{if .Auth.EnvVars}}2{{else}}1{{end}}. Verify everything works
 {{.Name}}-cli doctor
 
 # 3. Start using it
@@ -107,7 +109,9 @@ Environment variables:
 
 **Authentication errors (exit code 4)**
 - Run `{{.Name}}-cli doctor` to check credentials
+{{- if .Auth.EnvVars}}
 - Verify the environment variable is set: `echo ${{index .Auth.EnvVars 0}}`
+{{- end}}
 
 **Not found errors (exit code 3)**
 - Check the resource ID is correct
