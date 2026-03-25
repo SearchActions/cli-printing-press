@@ -1,0 +1,308 @@
+package cli
+
+import (
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"os"
+	"sort"
+	"strings"
+	"text/tabwriter"
+
+	"github.com/mattn/go-isatty"
+)
+
+var As = errors.As
+
+// noColor is set by the --no-color flag
+var noColor bool
+
+func colorEnabled() bool {
+	if noColor {
+		return false
+	}
+	if os.Getenv("NO_COLOR") != "" {
+		return false
+	}
+	if os.Getenv("TERM") == "dumb" {
+		return false
+	}
+	return isatty.IsTerminal(os.Stdout.Fd()) || isatty.IsCygwinTerminal(os.Stdout.Fd())
+}
+
+func bold(s string) string {
+	if !colorEnabled() {
+		return s
+	}
+	return "\033[1m" + s + "\033[0m"
+}
+
+func green(s string) string {
+	if !colorEnabled() {
+		return s
+	}
+	return "\033[32m" + s + "\033[0m"
+}
+
+func red(s string) string {
+	if !colorEnabled() {
+		return s
+	}
+	return "\033[31m" + s + "\033[0m"
+}
+
+func yellow(s string) string {
+	if !colorEnabled() {
+		return s
+	}
+	return "\033[33m" + s + "\033[0m"
+}
+
+type cliError struct {
+	code int
+	err  error
+}
+
+func (e *cliError) Error() string { return e.err.Error() }
+func (e *cliError) Unwrap() error { return e.err }
+
+func usageErr(err error) error    { return &cliError{code: 2, err: err} }
+func notFoundErr(err error) error { return &cliError{code: 3, err: err} }
+func authErr(err error) error     { return &cliError{code: 4, err: err} }
+func apiErr(err error) error      { return &cliError{code: 5, err: err} }
+func configErr(err error) error   { return &cliError{code: 10, err: err} }
+func rateLimitErr(err error) error { return &cliError{code: 7, err: err} }
+
+// classifyAPIError maps API errors to structured exit codes.
+func classifyAPIError(err error) error {
+	var apiError interface{ Error() string }
+	// Check if it has StatusCode field (client.APIError)
+	type statusCoder interface {
+		Error() string
+	}
+	type withStatus interface {
+		statusCoder
+	}
+	// Use reflection-free approach: check error message for HTTP status
+	msg := err.Error()
+	switch {
+	case strings.Contains(msg, "HTTP 401") || strings.Contains(msg, "HTTP 403"):
+		return authErr(err)
+	case strings.Contains(msg, "HTTP 404"):
+		return notFoundErr(err)
+	case strings.Contains(msg, "HTTP 429"):
+		return rateLimitErr(err)
+	default:
+		_ = apiError
+		return apiErr(err)
+	}
+}
+
+func truncate(s string, max int) string {
+	if len(s) <= max {
+		return s
+	}
+	if max <= 3 {
+		return s[:max]
+	}
+	return s[:max-3] + "..."
+}
+
+func firstNonEmpty(items ...string) string {
+	for _, s := range items {
+		if s != "" {
+			return s
+		}
+	}
+	return ""
+}
+
+func newTabWriter(w io.Writer) *tabwriter.Writer {
+	return tabwriter.NewWriter(w, 2, 4, 2, ' ', 0)
+}
+
+func replacePathParam(path, name, value string) string {
+	return strings.ReplaceAll(path, "{"+name+"}", value)
+}
+
+// paginatedGet fetches pages and concatenates array results.
+func paginatedGet(c interface {
+	Get(path string, params map[string]string) (json.RawMessage, error)
+}, path string, params map[string]string, fetchAll bool, cursorParam, nextCursorPath, hasMoreField string) (json.RawMessage, error) {
+	// Clean zero-value params
+	clean := map[string]string{}
+	for k, v := range params {
+		if v != "" && v != "0" && v != "false" {
+			clean[k] = v
+		}
+	}
+
+	if !fetchAll {
+		return c.Get(path, clean)
+	}
+
+	// Fetch all pages
+	var allItems []json.RawMessage
+	page := 0
+	for {
+		page++
+		fmt.Fprintf(os.Stderr, "fetching page %d...\n", page)
+
+		data, err := c.Get(path, clean)
+		if err != nil {
+			return nil, err
+		}
+
+		// Try to extract items array
+		var items []json.RawMessage
+		if json.Unmarshal(data, &items) == nil {
+			allItems = append(allItems, items...)
+		} else {
+			// Response is an object - look for array inside
+			var obj map[string]json.RawMessage
+			if json.Unmarshal(data, &obj) == nil {
+				// Try common data fields
+				for _, field := range []string{"data", "items", "results", "messages", "members", "values"} {
+					if arr, ok := obj[field]; ok {
+						var nested []json.RawMessage
+						if json.Unmarshal(arr, &nested) == nil {
+							allItems = append(allItems, nested...)
+							break
+						}
+					}
+				}
+
+				// Check for next cursor
+				if nextCursorPath != "" {
+					if tokenRaw, ok := obj[nextCursorPath]; ok {
+						var token string
+						if json.Unmarshal(tokenRaw, &token) == nil && token != "" {
+							clean[cursorParam] = token
+							continue
+						}
+					}
+				}
+
+				// Check has_more
+				if hasMoreField != "" {
+					if moreRaw, ok := obj[hasMoreField]; ok {
+						var more bool
+						if json.Unmarshal(moreRaw, &more) == nil && more {
+							continue
+						}
+					}
+				}
+			}
+			// No more pages
+			break
+		}
+
+		// For direct arrays, can't paginate without cursor
+		break
+	}
+
+	fmt.Fprintf(os.Stderr, "fetched %d items across %d pages\n", len(allItems), page)
+	result, _ := json.Marshal(allItems)
+	return json.RawMessage(result), nil
+}
+
+// printOutput auto-detects arrays and renders as tables, or prints raw JSON for objects.
+func printOutput(w io.Writer, data json.RawMessage, asJSON bool) error {
+	if asJSON {
+		enc := json.NewEncoder(w)
+		enc.SetIndent("", "  ")
+		return enc.Encode(data)
+	}
+
+	// Try to detect if response is an array
+	var items []map[string]any
+	if err := json.Unmarshal(data, &items); err == nil && len(items) > 0 {
+		return printAutoTable(w, items)
+	}
+
+	// Single object - pretty print
+	var obj map[string]any
+	if err := json.Unmarshal(data, &obj); err == nil {
+		enc := json.NewEncoder(w)
+		enc.SetIndent("", "  ")
+		return enc.Encode(obj)
+	}
+
+	// Fallback: print raw
+	fmt.Fprintln(w, string(data))
+	return nil
+}
+
+func printAutoTable(w io.Writer, items []map[string]any) error {
+	if len(items) == 0 {
+		return nil
+	}
+
+	// Collect headers from first item, prioritize common fields
+	priority := []string{"id", "name", "username", "title", "status", "type", "email", "description"}
+	headerSet := map[string]struct{}{}
+	for k := range items[0] {
+		headerSet[k] = struct{}{}
+	}
+
+	var headers []string
+	for _, p := range priority {
+		if _, ok := headerSet[p]; ok {
+			headers = append(headers, p)
+			delete(headerSet, p)
+		}
+	}
+	// Add remaining headers sorted
+	var rest []string
+	for k := range headerSet {
+		rest = append(rest, k)
+	}
+	sort.Strings(rest)
+	headers = append(headers, rest...)
+
+	// Limit to 6 columns max for readability
+	if len(headers) > 6 {
+		headers = headers[:6]
+	}
+
+	// Build rows
+	rows := make([][]string, 0, len(items))
+	for _, item := range items {
+		row := make([]string, len(headers))
+		for i, h := range headers {
+			v := item[h]
+			switch val := v.(type) {
+			case string:
+				row[i] = truncate(val, 40)
+			case float64:
+				if val == float64(int64(val)) {
+					row[i] = fmt.Sprintf("%d", int64(val))
+				} else {
+					row[i] = fmt.Sprintf("%g", val)
+				}
+			case bool:
+				row[i] = fmt.Sprintf("%t", val)
+			case nil:
+				row[i] = ""
+			default:
+				b, _ := json.Marshal(val)
+				row[i] = truncate(string(b), 40)
+			}
+		}
+		rows = append(rows, row)
+	}
+
+	// Print with tab alignment using tabwriter
+	tw := newTabWriter(w)
+	upperHeaders := make([]string, len(headers))
+	for i, h := range headers {
+		upperHeaders[i] = bold(strings.ToUpper(h))
+	}
+
+	fmt.Fprintln(tw, strings.Join(upperHeaders, "\t"))
+	for _, row := range rows {
+		fmt.Fprintln(tw, strings.Join(row, "\t"))
+	}
+	return tw.Flush()
+}
