@@ -1,7 +1,7 @@
 ---
 name: printing-press
-description: Generate production Go CLIs from any API. 5-phase loop - research, generate, audit, fix, score. Each phase is mandatory with artifact gates.
-version: 1.0.0
+description: Generate the GOAT CLI for any API. 5-phase loop with dual Steinberger analysis, deep competitor research, complex body field handling, and before/after scoring delta.
+version: 1.1.0
 allowed-tools:
   - Bash
   - Read
@@ -17,13 +17,12 @@ allowed-tools:
 
 # /printing-press
 
-Generate a production Go CLI from any API. Five mandatory phases. No shortcuts.
+Generate the best CLI that has ever existed for any API. Five mandatory phases. Dual Steinberger analysis. No shortcuts.
 
 ```
 /printing-press Notion
 /printing-press Plaid payments API
 /printing-press --spec ./openapi.yaml
-/printing-press --spec https://raw.githubusercontent.com/.../openapi.json
 ```
 
 ## Prerequisites
@@ -34,20 +33,22 @@ Generate a production Go CLI from any API. Five mandatory phases. No shortcuts.
 
 ## How This Works
 
-Every run goes through 5 mandatory phases. You cannot skip phases. Each phase produces an artifact that the next phase needs.
+Every run produces the GOAT CLI through 5 mandatory phases:
 
 ```
-PHASE 1: RESEARCH  ->  PHASE 2: GENERATE  ->  PHASE 3: AUDIT  ->  PHASE 4: FIX  ->  PHASE 5: SCORE
- (3-5 min)              (1-2 min)               (3-5 min)           (2-3 min)          (1 min)
+PHASE 1: DEEP RESEARCH  ->  PHASE 2: GENERATE  ->  PHASE 3: STEINBERGER AUDIT  ->  PHASE 4: GOAT FIX  ->  PHASE 5: FINAL STEINBERGER
+     (5-8 min)                  (1-2 min)               (5-8 min)                     (3-5 min)                (2-3 min)
 ```
 
-Total expected time: 10-20 minutes. If a run completes in under 5 minutes, something was skipped.
+Total expected time: 15-25 minutes. If a run completes in under 10 minutes, phases were shortcut.
+
+**The Steinberger bar:** Peter Steinberger's gogcli is the 10/10 reference. Every generated CLI is scored against it TWICE - once during audit to find gaps, once after fixes to prove improvement. The delta is the proof of work.
 
 ---
 
 ## Workflow: `--spec` shortcut
 
-When the user provides `--spec <path-or-url>`, skip Phase 1 (spec is provided). Run Phases 2-5.
+When the user provides `--spec <path-or-url>`, skip Phase 1 spec search (spec is provided). STILL run competitor research (Steps 1.2-1.5). Run all other phases.
 
 ## Workflow: Natural Language (Primary)
 
@@ -55,49 +56,67 @@ When the user provides an API name, run ALL five phases.
 
 ### Step 0: Parse intent and check known specs
 
-Extract the API name from the user's message. Check `~/cli-printing-press/skills/printing-press/references/known-specs.md` for a known spec URL.
+Extract the API name. Check `~/cli-printing-press/skills/printing-press/references/known-specs.md`.
 
-If found in registry: note the URL for Phase 2, but STILL run Phase 1 research (competitors, demand signals).
-If not found: Phase 1 will also search for the spec.
+If found in registry: note the URL for Phase 2, but STILL run full Phase 1 research.
+If not found: Phase 1 searches for spec too.
 
 ---
 
-# PHASE 1: RESEARCH
+# PHASE 1: DEEP RESEARCH
 
 ## THIS PHASE IS MANDATORY. DO NOT SKIP IT.
 
-Research the API landscape before generating anything. You need to know what exists so you can beat it.
+Research the API landscape deeply. You need to understand the competitive terrain, user pain points, and strategic opportunity before generating anything.
 
 ### Step 1.1: Search for the OpenAPI spec
 
-If not found in known-specs registry:
+If not in known-specs registry:
 
 1. **WebSearch**: `"<API name>" openapi spec site:github.com`
 2. **WebSearch**: `"<API name>" openapi.yaml OR openapi.json specification`
-3. Try common URL patterns:
-   - `https://raw.githubusercontent.com/<org>/openapi/main/openapi.yaml`
-   - `https://api.<domain>/openapi.json`
-4. If a URL is found, **WebFetch** the first 500 bytes to verify it contains `openapi:` or `"openapi"` or `swagger:`
+3. Try common URL patterns
+4. If found, **WebFetch** first 500 bytes to verify
 
-If no spec found after these searches: plan to write one from docs in Phase 2.
+If no spec found: plan to write one from docs in Phase 2.
 
 ### Step 1.2: Search for competing CLIs
 
 **WebSearch**: `"<API name>" CLI tool github`
 **WebSearch**: `"<API name>" command line client`
 
-For each competitor found:
-- Note the repo URL, star count, language
-- **WebFetch** their README to count commands and note features
-- Look for: how many resources/commands, what auth methods, output formats, any unique features
+For each competitor found, note repo URL, star count, language.
 
-### Step 1.3: Check demand signals
+### Step 1.3: Deep competitor analysis (TOP 2 competitors)
 
-**WebSearch**: `"<API name>" "need a CLI" OR "command line" OR "CLI tool" site:reddit.com OR site:news.ycombinator.com`
+For the top 2 competitors by stars, do ALL of the following:
 
-Note any posts asking for a CLI for this API. This tells us there's demand.
+1. **WebFetch** their README - count commands, note features, assess quality
+2. **WebFetch** their GitHub repo main page - check:
+   - Last commit date (is it maintained?)
+   - Open issue count
+   - Number of contributors
+3. **WebSearch**: `site:github.com/<org>/<repo>/issues` - look for:
+   - User complaints about missing features
+   - Requests for specific functionality
+   - Pain points users report
+4. Record at least 2 specific user quotes or pain points.
 
-### Step 1.4: Write the research artifact
+### Step 1.4: Check demand signals
+
+**WebSearch**: `"<API name>" "need a CLI" OR "command line" site:reddit.com OR site:news.ycombinator.com`
+
+### Step 1.5: Strategic justification
+
+Answer this question explicitly: **"Why should this CLI exist when [best competitor] already has [N] stars?"**
+
+The answer must be SPECIFIC. Not just "agent-native." Examples:
+- "[Competitor] hasn't been updated since [date] and doesn't support the latest API version"
+- "No existing CLI supports --json + --select + --dry-run for agent workflows"
+- "Users on [platform] are asking for [specific feature] which no CLI provides"
+- "[Competitor] has [N] open issues about [problem] we can solve"
+
+### Step 1.6: Write the research artifact
 
 **Write** to `~/cli-printing-press/docs/plans/<today>-feat-<api>-cli-research.md`:
 
@@ -113,36 +132,55 @@ date: <today>
 
 ## Spec Discovery
 - Official OpenAPI spec: <url or "none found - will write from docs">
-- Source: <where found - registry, GitHub search, etc.>
+- Source: <where found>
 - Format: <OpenAPI 3.x / Swagger 2.0 / internal YAML>
+- Endpoint count: <N>
 
-## Competitors
-| Name | Stars | Language | Commands | Notable Features |
-|------|-------|----------|----------|-----------------|
-| <name> | <stars> | <lang> | <count> | <features> |
+## Competitors (Deep Analysis)
+
+### <Competitor 1> (<stars> stars)
+- Repo: <url>
+- Language: <lang>
+- Commands: <count>
+- Last commit: <date>
+- Open issues: <count>
+- Maintained: <yes/no>
+- Notable features: <list>
+- Weaknesses: <what users complain about>
+
+### <Competitor 2> (<stars> stars)
+- [same structure]
+
+## User Pain Points
+> "<quote from GitHub issue or Reddit>" - <source>
+> "<quote>" - <source>
 
 ## Auth Method
 - Type: <api_key / oauth2 / bearer_token>
-- Header: <name>
-- Env var convention: <what competitors use, e.g. NOTION_API_KEY>
+- Env var convention: <what competitors use>
 
 ## Demand Signals
-- <Reddit/HN posts, or "none found">
+- <specific posts with URLs, or "none found">
 
-## Recommendation
-- Spec source: <OpenAPI URL / write from docs>
-- Target command count: <N - match or beat best competitor>
-- Key differentiator: agent-native (--json, --select, --dry-run, --stdin, typed exit codes)
+## Strategic Justification
+**Why this CLI should exist:** <specific answer, not just "agent-native">
+
+## Target
+- Command count: <N - match or beat best competitor>
+- Key differentiator: <specific features we'll have that competitors don't>
+- Quality bar: Steinberger Grade A (65+/80)
 ```
 
 ### PHASE GATE 1
 
-**STOP.** Before proceeding to Phase 2, verify:
-1. The research artifact file exists at `docs/plans/<today>-feat-<api>-cli-research.md`
-2. It has a Spec Discovery section with a URL or "write from docs" decision
-3. It has at least one competitor listed (or explicitly "no competitors found")
+**STOP.** Verify ALL of these before proceeding:
+1. Research artifact exists with Spec Discovery section
+2. At least 2 competitors analyzed with maintenance status
+3. At least 2 user quotes or pain points documented
+4. Strategic justification answers "why should this exist?"
+5. Target command count is set
 
-Tell the user: "Phase 1 complete: Found [spec/no spec], [N] competitors. Best competitor: [name] with [N] commands. Proceeding to generation."
+Tell the user: "Phase 1 complete: Found [spec/no spec], [N] competitors. Best: [name] ([stars] stars, [commands] commands, last commit [date]). Strategic angle: [1-sentence justification]. Proceeding to generation."
 
 ---
 
@@ -150,28 +188,24 @@ Tell the user: "Phase 1 complete: Found [spec/no spec], [N] competitors. Best co
 
 ## THIS PHASE IS MANDATORY. DO NOT SKIP IT.
 
-Generate the CLI using the printing-press binary.
-
 ### Step 2.1: Get the spec ready
 
-**If OpenAPI spec was found:**
+**If OpenAPI spec found:**
 ```bash
 curl -sL -o /tmp/printing-press-spec-<api>.json "<spec-url>" && head -c 200 /tmp/printing-press-spec-<api>.json
 ```
 
 **If no spec (write from docs):**
-1. **WebFetch** the API documentation URL
+1. **WebFetch** the API docs
 2. **Read** `~/cli-printing-press/skills/printing-press/references/spec-format.md`
-3. Write a YAML spec to `/tmp/<api>-spec.yaml` following the format exactly
-4. Include ALL endpoints found in the docs - resources, methods, paths, params, body fields, auth
+3. Write YAML spec to `/tmp/<api>-spec.yaml` with ALL endpoints
+4. Include auth config matching research findings
 
-### Step 2.2: Check for existing output directory
+### Step 2.2: Check for existing output, remove if exists
 
 ```bash
-cd ~/cli-printing-press && ls -la <api>-cli 2>/dev/null && echo "EXISTS" || echo "CLEAN"
+cd ~/cli-printing-press && rm -rf <api>-cli 2>/dev/null; echo "CLEAN"
 ```
-
-If EXISTS: remove it first (`rm -rf <api>-cli`).
 
 ### Step 2.3: Run the generator
 
@@ -182,305 +216,307 @@ cd ~/cli-printing-press && ./printing-press generate \
   --force --lenient --validate 2>&1
 ```
 
-If the binary doesn't exist:
+### Step 2.4: Note skipped complex body fields
+
+**IMPORTANT:** When the generator outputs "warning: skipping body field X: complex type not supported", note EVERY skipped field. You will handle these in Phase 4.
+
+Run:
 ```bash
-cd ~/cli-printing-press && go build -o ./printing-press ./cmd/printing-press
+cd ~/cli-printing-press && ./printing-press generate --spec /tmp/printing-press-spec-<api>.json --output ./<api>-cli --force --lenient --validate 2>&1 | grep "skipping body field"
 ```
 
-### Step 2.4: Handle quality gate failures
+Save the list of skipped fields. These are NOT acceptable limitations - they are work items for Phase 4.
 
-If gates fail: read the error output carefully. Common fixes:
-- Spec description issues: clean the spec, retry
-- Module errors: `cd <api>-cli && go mod tidy`
-- Template errors: check if the spec has unusual types
+### Step 2.5: Handle quality gate failures
 
-Max 3 retries. If still failing, present the error to the user.
+Max 3 retries. Read errors carefully and fix spec issues.
 
 ### PHASE GATE 2
 
-**STOP.** Before proceeding to Phase 3, verify:
-1. The directory `~/cli-printing-press/<api>-cli/` exists
-2. `cd ~/cli-printing-press/<api>-cli && go build ./...` succeeds
-3. All 7 quality gates passed (or you know which warnings are acceptable)
+**STOP.** Verify:
+1. CLI directory exists
+2. `go build ./...` succeeds
+3. List of skipped complex body fields is saved for Phase 3
 
-Tell the user: "Phase 2 complete: Generated <api>-cli with [N] resources, [M] endpoints. All quality gates passed. Proceeding to audit."
+Tell the user: "Phase 2 complete: Generated <api>-cli with [N] resources, [M] endpoints. [K] complex body fields noted for Phase 4. Proceeding to Steinberger audit."
 
 ---
 
-# PHASE 3: AUDIT
+# PHASE 3: STEINBERGER AUDIT
 
 ## THIS PHASE IS MANDATORY. DO NOT SKIP IT.
 
-Code-review the generated CLI against the research findings. This is where you find problems.
+This phase has TWO parts: (A) code review for tactical fixes, and (B) Steinberger analysis for strategic assessment. Both are required.
+
+## Part A: Code Review
 
 ### Step 3.1: Read the generated code
 
-You MUST actually read these files (not just check they exist):
+You MUST **Read** these files (not just check they exist):
 
-```
-Read ~/cli-printing-press/<api>-cli/internal/cli/root.go
-Read ~/cli-printing-press/<api>-cli/README.md
-```
+- `<api>-cli/internal/cli/root.go`
+- `<api>-cli/README.md`
+- At least 3 resource command files
 
-Also read at least 2 resource command files:
-```
-Read ~/cli-printing-press/<api>-cli/internal/cli/<resource1>.go
-Read ~/cli-printing-press/<api>-cli/internal/cli/<resource2>.go
-```
+### Step 3.2: Count commands and compare to target
 
-### Step 3.2: Count commands and compare
-
-Run:
 ```bash
 cd ~/cli-printing-press/<api>-cli && grep -r "Use:" internal/cli/*.go | grep -v "root.go" | wc -l
 ```
 
-Compare this count against the best competitor from Phase 1 research.
+Compare against target from Phase 1 research.
 
 ### Step 3.3: Check help text quality
 
-Read the command files and check:
-- Are descriptions developer-friendly or raw OpenAPI spec jargon?
-- Do examples use realistic values or placeholder garbage like "string", "0", "example"?
-- Does the root command description explain what the API does?
+- Descriptions: developer-friendly or raw spec jargon?
+- Examples: realistic values or placeholder garbage ("string", "0", "abc123")?
+- Root command: does it explain what the API does?
 
 ### Step 3.4: Check for missing endpoints
 
-Compare the API's actual endpoints (from spec or docs) against what was generated. Look for:
-- Major resources that are missing entirely
-- Important CRUD operations that were skipped
-- Pagination endpoints that were missed
+Compare spec endpoints against generated commands. Note any gaps.
 
 ### Step 3.5: Check agent-native features
 
-Verify these are present in root.go:
-- `--json` flag
-- `--select` flag
-- `--dry-run` flag
-- `--stdin` flag
-- `--yes` flag
-- `--no-cache` flag
-- `doctor` subcommand
+Verify in root.go: --json, --select, --dry-run, --stdin, --yes, --no-cache, doctor.
 
-### Step 3.6: Review README quality
+### Step 3.6: Check complex body fields
 
-Read the generated README.md. Check:
-- Does it explain how to install?
-- Does it have realistic examples?
-- Does it mention auth setup?
-- Does it document output formats?
-- Would you actually use this CLI based on the README?
+For each field skipped by the generator (from Phase 2 Step 2.4):
+1. Is this field critical for the endpoint's purpose?
+2. Can the user work around it with `--stdin`?
+3. What example JSON would a user pipe in?
 
-### Step 3.7: Write the audit artifact
+## Part B: First Steinberger Analysis
+
+### Step 3.7: Score against the Steinberger bar
+
+Score each dimension 0-10. For EACH dimension, provide THREE things:
+1. **Current score** with justification
+2. **What 10/10 looks like** (reference gogcli or best-in-class)
+3. **What specific changes would raise the score** (actionable items)
+
+```markdown
+## First Steinberger Analysis (Baseline)
+
+| Dimension | Score | What 10 Looks Like | How to Get There |
+|-----------|-------|-------------------|-----------------|
+| Output modes | X/10 | gogcli: --json, --yaml, --csv, --table, --select, --quiet, --template | Add --yaml output, add --template for custom formats |
+| Auth | X/10 | gogcli: OAuth browser flow, token storage, multiple profiles, doctor validates | Add OAuth flow, add profile switching |
+| Error handling | X/10 | gogcli: typed exits, retry with backoff, helpful suggestions, link to docs | Add "did you mean?" suggestions |
+| Terminal UX | X/10 | gogcli: progress spinners, color themes, pager for long output | Add progress spinners for pagination |
+| README | X/10 | gogcli: install, quickstart, every command with example, cookbook, FAQ | Add cookbook section, add FAQ |
+| Doctor | X/10 | gogcli: validates auth, API version, rate limits, config file health | Add API version check, config health |
+| Agent-native | X/10 | gogcli: --json, --select, --dry-run, --stdin, idempotent, typed exits, no TTY | Already strong if all flags present |
+| Breadth | X/10 | gogcli: 100+ commands covering every API endpoint + convenience wrappers | Add missing commands, add convenience wrappers |
+
+**Baseline Total: X/80 (Grade X)**
+```
+
+### Step 3.8: Write the GOAT improvement plan
+
+Based on the Steinberger analysis, identify:
+
+1. **Top 5 highest-impact improvements** (will raise the score the most)
+2. **Commands to ADD** (not just rename - new functionality)
+3. **Complex body field examples** to add (top 3 endpoints where --stdin matters most)
+4. **What's achievable in Phase 4** vs what's future work
+
+### Step 3.9: Write the audit artifact
 
 **Write** to `~/cli-printing-press/docs/plans/<today>-fix-<api>-cli-audit.md`:
 
-```markdown
----
-title: "Audit: <API> CLI"
-type: fix
-status: active
-date: <today>
----
-
-# Audit: <API> CLI
-
-## Command Comparison
-- Our CLI: <N> commands across <M> resources
-- Best competitor: <name> with <N> commands
-- Gap: <what we're missing, or "we match/beat them">
-
-## Help Text Quality
-- [ ] Descriptions are developer-friendly: <PASS/FAIL + details>
-- [ ] Examples use realistic values: <PASS/FAIL + details>
-- [ ] Resource descriptions explain what the resource is: <PASS/FAIL + details>
-
-## Agent-Native Checklist
-- [x/] --json flag present
-- [x/] --select flag present
-- [x/] --dry-run flag present
-- [x/] --stdin flag present
-- [x/] Typed exit codes
-- [x/] doctor command
-
-## README Quality
-- <honest assessment>
-
-## Specific Fixes Needed
-1. File: `internal/cli/<file>.go` - Change: <what to fix and why>
-2. File: `README.md` - Change: <what to fix and why>
-...
-
-## Fixes NOT Needed (Regeneration Required)
-- <anything that can't be fixed with Edit and requires re-running the generator>
-```
+Include ALL of:
+- Command comparison
+- Help text quality assessment
+- Agent-native checklist
+- Specific fixes needed (file paths + what to change)
+- First Steinberger Analysis table (full)
+- GOAT improvement plan (top 5 + commands to add)
+- Complex body field plan
 
 ### PHASE GATE 3
 
-**STOP.** Before proceeding to Phase 4, verify:
-1. The audit artifact exists at `docs/plans/<today>-fix-<api>-cli-audit.md`
-2. It has specific fixes listed (file paths + what to change)
-3. You actually Read the generated code files (not just ran commands)
+**STOP.** Verify ALL of these:
+1. Audit artifact exists with Steinberger analysis table
+2. Each Steinberger dimension has: score, "what 10 looks like", and "how to get there"
+3. GOAT plan has at least 5 specific improvements
+4. Complex body fields have a plan (not just "limitation")
+5. Baseline total score is recorded
 
-Tell the user: "Phase 3 complete: Found [N] issues to fix. [summary of top issues]. Proceeding to fixes."
-
-If the audit found ZERO issues (rare but possible): still write the artifact noting "No fixes needed - generated output meets quality bar." Then proceed to Phase 5 (skip Phase 4).
+Tell the user: "Phase 3 complete: Baseline Steinberger Score: [X]/80 (Grade [X]). Found [N] tactical fixes + [M] GOAT improvements. Top improvement: [description]. Proceeding to fixes."
 
 ---
 
-# PHASE 4: FIX
+# PHASE 4: GOAT FIX
 
-## THIS PHASE IS MANDATORY (unless audit found zero issues).
+## THIS PHASE IS MANDATORY.
 
-Execute the specific fixes identified in Phase 3's audit.
+Execute fixes in priority order: (1) GOAT improvements that raise the Steinberger score, (2) tactical fixes from the audit, (3) complex body field examples.
 
-### Step 4.1: Fix each issue from the audit
+### Step 4.1: Apply GOAT improvements (from Step 3.8)
 
-For each fix listed in the audit artifact:
+For each of the top 5 improvements:
+1. **Read** the relevant file
+2. **Edit** with surgical changes
+3. Focus on changes that RAISE THE STEINBERGER SCORE
 
-1. **Read** the file that needs fixing
-2. **Edit** the specific lines (use the Edit tool, not Write - surgical changes)
-3. Verify the edit is correct
+### Step 4.2: Apply tactical fixes (from Step 3.9)
 
-Common fixes:
-- **Help text jargon**: Edit `Short` and `Long` descriptions in command files to be developer-friendly
-- **Bad examples**: Edit `Example` fields with realistic API values
-- **Missing resource description**: Edit the resource command's `Short` field
-- **README weak**: Edit sections of README.md to be more useful
-- **Missing endpoints**: Add new command entries (this may require more extensive edits)
+For each fix in the audit:
+1. Fix help text jargon -> developer-friendly descriptions
+2. Fix examples -> realistic values (real UUIDs, real API objects, not "abc123")
+3. Fix command names -> clean, intuitive names (get/list/create/update/delete)
+4. Fix README -> compelling, useful documentation
 
-### Step 4.2: Verify compilation after ALL fixes
+### Step 4.3: Add complex body field examples
 
-```bash
-cd ~/cli-printing-press/<api>-cli && go build ./... && go vet ./... && echo "FIXES VERIFIED"
+For the top 3 endpoints with complex body fields (identified in Phase 3 Step 3.6):
+
+1. **Read** the command file
+2. **Edit** the Example field to include a `--stdin` example with realistic JSON:
+
+```go
+Example: `  # Get a page
+  <api>-cli pages get d9824bdc-8445-4327-be8b-5b47f462e1b0
+
+  # Create a page with complex properties (pipe JSON via stdin)
+  echo '{"parent":{"database_id":"..."},"properties":{"Name":{"title":[{"text":{"content":"My Page"}}]}}}' | <api>-cli pages create --stdin`,
 ```
 
-If compilation fails after edits: read the error, fix it, retry.
+### Step 4.4: Verify compilation
+
+```bash
+cd ~/cli-printing-press/<api>-cli && go build ./... && go vet ./... && echo "ALL FIXES VERIFIED"
+```
 
 ### PHASE GATE 4
 
-**STOP.** Before proceeding to Phase 5, verify:
-1. All fixes from the audit have been applied
-2. `go build ./...` passes in the CLI directory
-3. `go vet ./...` passes
+**STOP.** Verify:
+1. All GOAT improvements applied
+2. All tactical fixes applied
+3. Complex body field examples added for at least 2 endpoints
+4. `go build ./...` and `go vet ./...` pass
+5. Count changed files: `cd <api>-cli && git diff --stat 2>/dev/null | tail -1` (if git tracked) or `find . -newer /tmp/printing-press-spec-<api>.json -name "*.go" | wc -l`
 
-Tell the user: "Phase 4 complete: Applied [N] fixes. Compilation verified. Proceeding to scoring."
+Tell the user: "Phase 4 complete: Applied [N] improvements, [M] tactical fixes, [K] complex body field examples. Compilation verified. Proceeding to final Steinberger scoring."
 
 ---
 
-# PHASE 5: SCORE + REPORT
+# PHASE 5: FINAL STEINBERGER + REPORT
 
 ## THIS PHASE IS MANDATORY. DO NOT SKIP IT.
 
-### Step 5.1: Quality assessment
+### Step 5.1: Second Steinberger Analysis (Post-Fix)
 
-Score the CLI against these 8 dimensions (0-10 each):
+Re-score ALL 8 dimensions. Show the DELTA from the baseline:
 
-| Dimension | What to check | Score |
-|-----------|---------------|-------|
-| Output modes | --json, --select, --plain, --human-friendly all present? | /10 |
-| Auth | Correct auth type, doctor validates credentials, env var convention? | /10 |
-| Error handling | Typed exit codes (0,2,3,4,5,7,10), helpful error messages? | /10 |
-| Terminal UX | Color support, pagination, progress indicators? | /10 |
-| README | Install instructions, examples, troubleshooting, sells the tool? | /10 |
-| Doctor | Health check validates auth, API reachability? | /10 |
-| Agent-native | Non-interactive, pipeable, cacheable, idempotent creates/deletes? | /10 |
-| Breadth | Command count vs competitors, missing major endpoints? | /10 |
+```markdown
+## Final Steinberger Analysis (Post-Fix)
 
-Total: /80. Grade: 65+ = A, 50-64 = B, <50 = needs work.
+| Dimension | Before | After | Delta | What Changed |
+|-----------|--------|-------|-------|-------------|
+| Output modes | X/10 | Y/10 | +Z | [specific change] |
+| Auth | X/10 | Y/10 | +Z | [specific change] |
+| Error handling | X/10 | Y/10 | +Z | [specific change] |
+| Terminal UX | X/10 | Y/10 | +Z | [specific change] |
+| README | X/10 | Y/10 | +Z | [specific change] |
+| Doctor | X/10 | Y/10 | +Z | [specific change] |
+| Agent-native | X/10 | Y/10 | +Z | [specific change] |
+| Breadth | X/10 | Y/10 | +Z | [specific change] |
 
-Optionally, also try running the Go scorecard:
-```bash
-cd ~/cli-printing-press && SCORECARD_CLI_DIR=./<api>-cli SCORECARD_PIPELINE_DIR=/tmp/<api>-score \
-  go test ./internal/pipeline/ -run TestScorecardOnRealCLI -v -timeout 60s 2>&1 | tail -30
+**Before: X/80 -> After: Y/80 (+Z points)**
+**Grade: [A/B/C]**
 ```
 
-### Step 5.2: Present the final report
+### Step 5.2: Remaining gaps
 
-Show ALL of these sections to the user:
+For each dimension still < 8/10:
+- What would it take to reach 8+?
+- Is this a generator limitation or achievable with more fix time?
+- Tag as "future work" with a specific next step
 
-**1. Summary table:**
+### Step 5.3: Present the final report
+
+Show ALL of these sections:
+
+**1. Summary:**
 ```
-Generated <api>-cli with <N> resources and <M> endpoints.
-
+Generated <api>-cli with <N> resources and <M> commands.
 Resources: <comma-separated list>
 ```
 
-**2. Quality score:**
+**2. Steinberger Score (Before/After):**
 ```
-Steinberger Score: <total>/80 (Grade <A/B/C>)
+Steinberger Score: Before X/80 -> After Y/80 (+Z points) - Grade [A/B/C]
 
-| Dimension | Score | Notes |
-|-----------|-------|-------|
-| Output modes | X/10 | ... |
-| Auth | X/10 | ... |
-...
+[Full before/after table from Step 5.1]
 ```
 
-**3. Competitor comparison:**
+**3. Competitor Comparison:**
 ```
 Found <N> competing CLIs.
 Best competitor: <name> (<stars> stars, <commands> commands)
-We beat them on: <what we do better>
-We're missing: <what they have that we don't, or "nothing - we match or beat">
+Strategic advantage: <why ours is better - from Phase 1 research>
+We beat them on: <specific features>
+Remaining gap: <what they have that we don't, or "none">
 ```
 
-**4. Example commands:**
+**4. Example Commands (with complex body examples):**
 ```bash
 cd ~/cli-printing-press/<api>-cli
 go install ./cmd/<api>-cli
 
 export <AUTH_ENV_VAR>="..."
 
+# Basic usage
 <api>-cli --help
-<api>-cli <resource> list
-<api>-cli <resource> get --<id_param> <realistic_value>
 <api>-cli doctor
+<api>-cli <resource> list --json
+<api>-cli <resource> get <realistic-id>
+
+# Complex body fields (pipe JSON via stdin)
+echo '<realistic-json>' | <api>-cli <resource> create --stdin
+
+# Agent workflow
+<api>-cli <resource> list --json --select id,name | jq -r '.[].id'
 ```
 
-**5. Spec source:**
-```
-Spec: <source description and URL>
-```
+**5. Spec source and limitations**
 
-**6. Limitations (if any):**
-- Complex body fields skipped as CLI flags
-- Any endpoints that couldn't be represented
-- GraphQL APIs wrapped in YAML spec
+**6. Future work** (from remaining gaps)
 
 ---
 
 ## Writing Specs from Docs
 
-When no OpenAPI spec exists and you need to write one:
+When no OpenAPI spec exists:
 
-1. **WebFetch** the API documentation URL
+1. **WebFetch** the API docs
 2. **Read** `~/cli-printing-press/skills/printing-press/references/spec-format.md`
-3. Read the docs and identify EVERY endpoint: method, path, description, params, body fields, auth
-4. Write YAML spec to `/tmp/<api>-spec.yaml` following the format exactly
+3. Read the docs and identify EVERY endpoint
+4. Write YAML spec to `/tmp/<api>-spec.yaml`
 5. Generate from it
 
-This is where you ARE the brain. No shelling out to an LLM. Read the docs yourself and write the spec.
+You ARE the brain. Read the docs yourself and write the spec.
 
 ## Submit to Catalog
 
-`/printing-press submit <name>`
-
-1. Gather metadata (name, description, category, spec_url, tier)
-2. Write `catalog/<name>.yaml`
-3. `git checkout -b catalog/<name> && git add catalog/<name>.yaml && git commit && gh pr create`
+`/printing-press submit <name>` - gather metadata, write `catalog/<name>.yaml`, create PR.
 
 ## Safety Gates
 
-- **Preview before generating**: Show API name, base URL, estimated resource count before running
-- **Output directory conflict**: Check before overwriting
-- **Untrusted specs**: Note if not from known-specs registry
-- **Max 3 retries** on quality gate failure
+- Preview before generating
+- Output directory conflict: check before overwriting
+- Untrusted specs: note if not from known-specs registry
+- Max 3 retries on quality gate failure
 
-## Limitations
+## Anti-Shortcut Rules
 
-- Go CLIs only (no Bash, Python, etc.)
-- OpenAPI 3.0+ and Swagger 2.0 supported
-- 50 resources / 50 endpoints per resource limit
-- No native GraphQL support (but can wrap GraphQL in YAML spec)
-- Complex body fields (nested objects, arrays) skipped as CLI flags
+These phrases indicate a phase was shortcut. If you catch yourself writing them, STOP and re-do the phase:
+
+- "This is a limitation of the generator" (fix it, don't accept it)
+- "Complex types not supported" (add --stdin examples)
+- "We'll skip this for now" (no skipping - do it or explain why it's impossible)
+- "The quality is good enough" (score it against Steinberger, prove it's good enough with numbers)
+- "Let's wrap up" (are all 5 phases complete with artifacts?)
