@@ -22,6 +22,10 @@ type Generator struct {
 }
 
 func New(s *spec.APISpec, outputDir string) *Generator {
+	// Default Owner to "USER" for backward compatibility
+	if s.Owner == "" {
+		s.Owner = "USER"
+	}
 	g := &Generator{Spec: s, OutputDir: outputDir}
 	g.funcs = template.FuncMap{
 		"title":             strings.Title,

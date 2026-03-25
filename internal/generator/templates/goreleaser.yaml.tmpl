@@ -9,7 +9,7 @@ builds:
     env:
       - CGO_ENABLED=0
     ldflags:
-      - -s -w -X github.com/USER/{{.Name}}-cli/internal/cli.version={{"{{"}} .Version {{"}}"}}
+      - -s -w -X github.com/{{.Owner}}/{{.Name}}-cli/internal/cli.version={{"{{"}} .Version {{"}}"}}
     targets:
       - darwin_amd64
       - darwin_arm64
@@ -28,9 +28,9 @@ checksum:
 brews:
   - name: {{.Name}}-cli
     repository:
-      owner: USER
+      owner: {{.Owner}}
       name: homebrew-tap
-    homepage: "https://github.com/USER/{{.Name}}-cli"
+    homepage: "https://github.com/{{.Owner}}/{{.Name}}-cli"
     description: "{{.Description}}"
     install: |
       bin.install "{{.Name}}-cli"
