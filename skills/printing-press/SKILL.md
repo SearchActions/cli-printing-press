@@ -1,7 +1,7 @@
 ---
 name: printing-press
-description: Generate production Go CLIs from any API. Claude Code is the brain - it researches, writes specs, generates, polishes, and scores. Say an API name and get a complete CLI.
-version: 0.5.0
+description: Generate production Go CLIs from any API. Uses ce:plan for deep research before generating, then ce:plan again to audit the output, then ce:work to fix it. Plan-execute-plan-execute loop.
+version: 0.6.0
 allowed-tools:
   - Bash
   - Read
@@ -21,16 +21,9 @@ allowed-tools:
 
 # /printing-press
 
-Generate a production Go CLI from any API. Claude Code does the thinking. The Go binary does the template rendering.
+Generate a production Go CLI from any API. Claude Code is the brain. The Go binary is the template engine.
 
-## Architecture
-
-```
-Claude Code (brain)  ->  printing-press binary (template engine)  ->  Claude Code (polish)
-  researches API           renders Go templates                       improves help text
-  writes YAML spec         runs quality gates                         rewrites README
-  analyzes competitors     deterministic, fast                        scores output
-```
+**The loop:** ce:plan (research) -> ce:work (generate) -> ce:plan (audit) -> ce:work (fix) -> report
 
 ## Quick Start
 
@@ -38,258 +31,235 @@ Claude Code (brain)  ->  printing-press binary (template engine)  ->  Claude Cod
 /printing-press Notion
 /printing-press Plaid payments API
 /printing-press --spec ./openapi.yaml
-/printing-press --docs https://developers.notion.com/reference --name notion
 ```
 
 ## Prerequisites
 
 - Go 1.21+ installed
 - The printing-press repo at `~/cli-printing-press`
-- printing-press binary built: `cd ~/cli-printing-press && go build -o ./printing-press ./cmd/printing-press`
+- Build: `cd ~/cli-printing-press && go build -o ./printing-press ./cmd/printing-press`
 
-## Workflows
+## Workflow 0: Natural Language (Primary)
 
-### Workflow 0: Natural Language (Primary)
+When the user provides an API name:
 
-When the user provides an API name or description:
+### Phase 1: RESEARCH (ce:plan does this)
 
-**Step 1: Parse intent and find the spec**
+Write a research plan file, then let ce:plan expand it with deep research.
 
-Extract the API name. Then search for an OpenAPI spec:
+**Step 1: Write the research plan seed**
 
-1. Check KnownSpecs in `~/cli-printing-press/internal/pipeline/discover.go`
-2. Check catalog: `ls ~/cli-printing-press/catalog/<name>.yaml`
-3. WebSearch: `"<api-name>" openapi spec site:github.com`
-4. Try common URLs: `https://raw.githubusercontent.com/<org>/openapi/main/openapi.yaml`
-
-**Step 1.5: Research competitors (ALWAYS runs, regardless of spec source)**
-
-This runs EVERY time, even when an OpenAPI spec was found. Claude Code IS the brain.
-
-a. **Search for competing CLIs:**
-```
-WebSearch: "<api-name> cli" site:github.com
-```
-For each competitor found, note: name, stars, language, last updated, URL.
-
-b. **Analyze top competitors (if any found):**
-For the top 1-3 competitors by stars, WebFetch their README and note:
-- What commands they have
-- What auth methods they support
-- What features they highlight
-- What issues/complaints users have (check their GitHub issues if notable)
-
-c. **Report findings before generating:**
-Tell the user: "Found N competing CLIs. Best: X (Y stars, Z commands). Generating a CLI that matches or beats them."
-
-If OpenAPI spec found: go to Step 3 (generate from spec).
-If no spec found: go to Step 2 (research and write spec from docs).
-
-**Step 2: Write a spec from API docs (only when no OpenAPI spec exists)**
-
-This is where Claude Code IS the brain. No regex. No shelling out to another LLM.
-
-a. **Fetch the API docs:**
-```
-WebFetch the API documentation URL (e.g., developers.notion.com/reference)
-```
-
-b. **Read the docs and identify EVERY endpoint:**
-Read the fetched docs content. List every API endpoint you find:
-- HTTP method (GET, POST, PUT, PATCH, DELETE)
-- Path (/v1/databases, /v1/pages/{id})
-- Description
-- Parameters (path params, query params, body fields)
-- Auth method (Bearer, API key, OAuth)
-- Base URL
-
-d. **Write the YAML spec:**
-Read the spec format reference: `cat ~/cli-printing-press/skills/printing-press/references/spec-format.md`
-
-Write a complete YAML spec to `/tmp/<name>-spec.yaml` with ALL endpoints found. Include:
-- name (kebab-case)
-- description
-- base_url
-- auth (type, header, env_vars)
-- resources (group endpoints by resource)
-- endpoints (method, path, params, body)
-
-e. **Generate:**
 ```bash
-cd ~/cli-printing-press && ./printing-press generate \
-  --spec /tmp/<name>-spec.yaml \
-  --output ./<name>-cli \
-  --force
+mkdir -p ~/cli-printing-press/docs/plans
 ```
 
-f. **If quality gates fail:** Read the error. Fix the YAML spec. Regenerate. Max 3 retries.
+Write to `docs/plans/<date>-feat-<api>-cli-research-plan.md`:
+```markdown
+---
+title: "Research for <API> CLI generation"
+type: feat
+status: active
+date: <today>
+---
 
-g. Go to Step 4 (polish).
+# Research for <API> CLI
 
-**Step 3: Generate from OpenAPI spec**
+## What to Find
+1. OpenAPI spec (search GitHub, apis-guru, common URLs)
+2. Competing CLIs (GitHub search: "<api> cli", note stars, language, commands)
+3. API documentation URL
+4. Auth method
+5. Community demand signals (Reddit, HN mentions of needing a CLI)
 
+## What to Produce
+- Spec URL (or determination that we need to write one from docs)
+- List of competitors with command counts
+- Recommendation: use OpenAPI spec vs write from docs
+```
+
+**Step 2: Run ce:plan to expand the research**
+
+```
+Skill("compound-engineering:ce:plan", "docs/plans/<date>-feat-<api>-cli-research-plan.md")
+```
+
+ce:plan will WebSearch, WebFetch competitor READMEs, analyze the landscape, and produce a comprehensive research plan with findings.
+
+**Step 3: Execute the research (manual - read ce:plan output)**
+
+Read the expanded plan. Extract:
+- The spec URL (OpenAPI or docs)
+- Competitor list with command counts
+- Auth method and base URL
+
+### Phase 2: GENERATE (ce:work does this)
+
+**Step 4: Generate the CLI**
+
+If OpenAPI spec was found:
 ```bash
 cd ~/cli-printing-press && ./printing-press generate \
   --spec "<spec-url>" \
-  --output ./<name>-cli \
+  --output ./<api>-cli \
   --force --lenient
 ```
 
-Use `--lenient` for specs with broken $refs (PagerDuty, Intercom).
+If no spec (docs only): Claude Code reads the docs (WebFetch), writes a YAML spec, and generates from it. See "Writing Specs from Docs" section below.
 
-If all 7 quality gates pass: go to Step 4 (polish).
-If gates fail: read error, fix, retry (max 3).
+If quality gates fail: read error, fix spec, retry (max 3).
 
-**Step 4: Polish (ALWAYS runs - Claude Code does this)**
+### Phase 3: AUDIT (ce:plan does this)
 
-After generating, Claude Code improves the output directly. This is NOT optional.
+After the CLI is generated, write an audit plan and run ce:plan to expand it into a full code review.
 
-a. **Check the generated CLI:**
-```bash
-cd <output> && go build -o <name>-cli ./cmd/*/ && ./<name>-cli --help
+**Step 5: Write the audit plan seed**
+
+Write to `docs/plans/<date>-fix-<api>-cli-audit-plan.md`:
+```markdown
+---
+title: "Audit <API> CLI against competitors and quality bar"
+type: fix
+status: active
+date: <today>
+---
+
+# Audit <API> CLI
+
+## Generated CLI Location
+<output-dir>
+
+## Competitors Found
+<list from Phase 1 research>
+
+## Audit Checklist
+1. Command count: do we match or beat competitors?
+2. Help descriptions: are they developer-friendly or spec jargon?
+3. Examples: are they realistic or placeholder values?
+4. README: does it sell the tool or just describe it?
+5. Agent-native: --json, --select, --dry-run, --stdin, --yes all present?
+6. Missing endpoints: any important API operations we missed?
+7. Auth: does doctor validate credentials correctly?
+
+## What to Produce
+- List of specific fixes needed (file path + what to change)
+- Honest assessment: is this CLI better than the competitors?
 ```
-Count commands and resources. Compare against competitors found in Step 1.5.
 
-b. **Improve help descriptions:**
-Read each command file in `<output>/internal/cli/*.go`. Find `Short:` strings. If any are jargon-heavy spec descriptions, use Edit to rewrite them to be developer-friendly (under 80 chars, starts with a verb).
+**Step 6: Run ce:plan to do the audit**
 
-c. **Improve examples:**
-Read each command's `Example:` string. If it uses generic values like "value" or "<id>", use Edit to replace with realistic values (e.g., "usr_abc123", "2026-01-01", "user@example.com").
-
-d. **Improve README:**
-Read `<output>/README.md`. Rewrite it:
-- Add a one-line hook that makes developers want to install it
-- Add "Why This Exists" section (mention that no official CLI exists, if true)
-- If competitors exist, note: "Inspired by X, with Y improvements"
-- Ensure Quick Start has a real 3-command workflow with realistic values
-
-e. **Verify polish didn't break anything:**
-```bash
-cd <output> && go build ./... && go vet ./...
+```
+Skill("compound-engineering:ce:plan", "docs/plans/<date>-fix-<api>-cli-audit-plan.md")
 ```
 
-**Step 5: Score (ALWAYS runs)**
+ce:plan will read the generated code, compare against competitors, check every item on the audit checklist, and write specific fix instructions.
 
-Run the Steinberger scorecard:
+### Phase 4: FIX (ce:work does this)
+
+**Step 7: Execute the fixes**
+
+```
+Skill("compound-engineering:ce:work", "docs/plans/<date>-fix-<api>-cli-audit-plan.md")
+```
+
+ce:work will:
+- Edit help descriptions to be developer-friendly
+- Add realistic examples
+- Rewrite README to sell the tool
+- Add any missing endpoints noted in the audit
+- Verify fixes compile: `cd <output> && go build ./... && go vet ./...`
+
+### Phase 5: SCORE + REPORT
+
+**Step 8: Run the scorecard**
+
 ```bash
-cd ~/cli-printing-press && SCORECARD_CLI_DIR=./<name>-cli SCORECARD_PIPELINE_DIR=/tmp/<name>-pipeline \
+cd ~/cli-printing-press && SCORECARD_CLI_DIR=./<api>-cli SCORECARD_PIPELINE_DIR=/tmp/<api>-score \
   go test ./internal/pipeline/ -run TestScorecardOnRealCLI -v 2>&1 | tail -20
 ```
 
-Report the score to the user.
-
-**Step 6: Present result**
+**Step 9: Present the final result**
 
 Show ALL of these:
-1. What was generated (directory, resources, commands, endpoint count)
-2. Steinberger score and grade (ALWAYS - from Step 5)
-3. Competitor comparison (ALWAYS - from Step 1.5):
-   - How many competitors found
-   - Our command count vs best competitor
-   - What we beat them on
-   - What we're missing (if anything)
-4. Example commands to try (use realistic values, not placeholders)
-5. How to install: `cd <name>-cli && go install ./cmd/<name>-cli`
-6. Spec source (OpenAPI URL vs hand-written from docs)
-7. Any limitations (skipped complex body fields, truncated endpoints)
+1. Resources and commands (table)
+2. Steinberger score and grade
+3. Competitor comparison:
+   - "Found N competing CLIs"
+   - "Best competitor: X (Y stars, Z commands)"
+   - "We beat them on: ..."
+   - "We're missing: ..."
+4. Example commands with realistic values
+5. How to install
+6. Spec source
+7. Any limitations (skipped complex body fields, etc.)
 
-### Workflow 1: From Spec File
+## Workflow 1: From Spec File
 
-When `--spec <local-path>`:
-1. Verify file exists
-2. `cd ~/cli-printing-press && ./printing-press generate --spec <path> [--output <dir>] --lenient`
-3. Optional: polish (Step 4 above)
-4. Present result
+`/printing-press --spec <path>`
 
-### Workflow 2: From Docs URL
+Skip Phase 1 research (spec is provided). Run Phases 2-5.
 
-When `--docs <url>`:
-1. WebFetch the docs URL
-2. Claude Code reads the docs and writes a YAML spec (Step 2 above)
-3. Generate from the spec
-4. Polish
-5. Present result
+## Workflow 2: From URL
 
-### Workflow 3: Submit to Catalog
+`/printing-press --spec <url>`
 
-When `submit <name>`:
-1. Gather metadata (ask user for display name, description, category, homepage)
-2. Write `~/cli-printing-press/catalog/<name>.yaml`
-3. `git checkout -b catalog/<name> && git add catalog/<name>.yaml && git commit && git push && gh pr create`
-4. Present PR URL
+Skip Phase 1 research. Run Phases 2-5.
 
-### Workflow 4: Autonomous Pipeline
+## Workflow 3: Submit to Catalog
 
-When `print <api-name>`:
+`/printing-press submit <name>`
 
-Uses the multi-phase pipeline with ce:plan -> ce:work loops:
+1. Gather metadata
+2. Write `catalog/<name>.yaml`
+3. `git checkout -b catalog/<name> && git add && git commit && gh pr create`
 
-| Phase | What Claude Code Does |
-|-------|----------------------|
-| Preflight | Verify Go, download spec, cache conventions |
-| Research | WebSearch competitors, WebFetch their READMEs, analyze |
-| Scaffold | Write spec (if needed), run `printing-press generate` |
-| Enrich | Read generated output, identify missing endpoints, improve spec |
-| Regenerate | Re-run generator with enriched spec |
-| Review | Run scorecard, dogfood Tier 1, polish output |
-| Comparative | Score vs competitors |
-| Ship | Git init, write report |
+## Workflow 4: Autonomous Pipeline
 
-Each phase: read the plan seed -> expand with ce:plan -> execute with ce:work -> write next phase's plan -> chain to next session.
+`/printing-press print <api-name>`
 
-**Step 1: Initialize**
-```bash
-cd ~/cli-printing-press && go build -o ./printing-press ./cmd/printing-press
-./printing-press print <api-name> [--output <dir>] [--force]
-```
+Full 8-phase pipeline with session chaining:
+preflight -> research -> scaffold -> enrich -> regenerate -> review -> comparative -> ship
 
-**Step 2: Phase execution loop**
-For each phase where `plan_status` is not "completed":
-a. Read plan file
-b. If `status: seed`: run `Skill("compound-engineering:ce:plan", plan_path)` to expand
-c. If `status: active`: run `Skill("compound-engineering:ce:work", plan_path)` to execute
-d. Update state.json
-e. Chain to next session via CronCreate (30s)
+Each phase: read seed plan -> ce:plan expands it -> ce:work executes -> chain to next session.
 
-Budget gate: stop after 3 hours. Write morning report.
+Budget gate: 3 hours max. Morning report on completion.
 
-### Workflow 5: Resume Pipeline
+See state.json and pipeline directory for phase tracking.
 
-When `resume <api-name>`:
-1. Load state.json
-2. Budget gate first
-3. Continue from next incomplete phase
+## Writing Specs from Docs
 
-### Workflow 6: Scorecard
+When no OpenAPI spec exists and Claude Code needs to write one:
 
-When `score <dir>`:
-```bash
-cd ~/cli-printing-press && SCORECARD_CLI_DIR=<dir> SCORECARD_PIPELINE_DIR=/tmp/score-pipeline \
-  go test ./internal/pipeline/ -run TestScorecardOnRealCLI -v
-```
+1. WebFetch the API documentation URL
+2. Read `~/cli-printing-press/skills/printing-press/references/spec-format.md`
+3. Claude Code reads the docs and identifies EVERY endpoint:
+   - Method, path, description, params, body fields, auth
+4. Write YAML spec to `/tmp/<api>-spec.yaml`
+5. Generate from it
 
-### Workflow 7: Full Test Run
-
-When `test` or `fullrun`:
-```bash
-cd ~/cli-printing-press && FULL_RUN=1 go test ./internal/pipeline/ -run TestFullRun -v -timeout 10m
-```
+This is where Claude Code IS the brain. No regex. No shelling out.
 
 ## Key Principle
 
-**Claude Code IS the LLM brain.** The printing-press Go binary is a template engine. When the skill says "read the API docs and write a spec," that means YOU (Claude Code) use WebFetch to read the docs and Write to create the spec file. You don't shell out to another LLM. You ARE the LLM.
+**Plan-execute-plan-execute.** Never just generate and present. Always:
+1. Plan (research the API and competitors)
+2. Execute (generate the CLI)
+3. Plan again (audit the output, find problems)
+4. Execute again (fix the problems)
+5. Score and report
 
-The Go binary's `internal/llm/` and `internal/llmpolish/` packages exist as a fallback for when someone runs `printing-press generate --polish` from their terminal without Claude Code. But inside this skill, YOU do the thinking.
+This is what makes the press smart, not just fast.
 
 ## Safety Gates
 
-- Preview before generating: show API name, base URL, estimated resources
-- Output directory conflict: ask before overwriting
-- Untrusted specs: note if spec is from a URL not in known-specs registry
+- Preview before generating
+- Output directory conflict: ask before overwrite
+- Untrusted specs: note if not in known-specs registry
+- Max 3 retries on quality gate failure
 
 ## Limitations
 
-- Only generates Go CLIs
-- OpenAPI 3.0+ and Swagger 2.0 supported
-- Large APIs truncated to 50 resources / 50 endpoints per resource
-- No GraphQL support (but Claude Code can write a YAML spec that wraps GraphQL, as we did for Linear)
+- Go CLIs only
+- OpenAPI 3.0+ and Swagger 2.0
+- 50 resources / 50 endpoints per resource limit
+- No GraphQL (but can wrap GraphQL in YAML spec, like Linear)
+- ce:plan and ce:work require Compound Engineering plugin
