@@ -3,6 +3,8 @@
 package client
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -10,6 +12,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -22,6 +25,8 @@ type Client struct {
 	Config     *config.Config
 	HTTPClient *http.Client
 	DryRun     bool
+	NoCache    bool
+	cacheDir   string
 }
 
 // APIError carries HTTP status information for structured exit codes.
@@ -37,15 +42,56 @@ func (e *APIError) Error() string {
 }
 
 func New(cfg *config.Config, timeout time.Duration) *Client {
+	homeDir, _ := os.UserHomeDir()
+	cacheDir := filepath.Join(homeDir, ".cache", "{{.Name}}-cli")
 	return &Client{
 		BaseURL:    strings.TrimRight(cfg.BaseURL, "/"),
 		Config:     cfg,
 		HTTPClient: &http.Client{Timeout: timeout},
+		cacheDir:   cacheDir,
 	}
 }
 
 func (c *Client) Get(path string, params map[string]string) (json.RawMessage, error) {
-	return c.do("GET", path, params, nil)
+	// Check cache for GET requests
+	if !c.NoCache && c.cacheDir != "" {
+		if cached, ok := c.readCache(path, params); ok {
+			return cached, nil
+		}
+	}
+	result, err := c.do("GET", path, params, nil)
+	if err == nil && !c.NoCache && c.cacheDir != "" {
+		c.writeCache(path, params, result)
+	}
+	return result, err
+}
+
+func (c *Client) cacheKey(path string, params map[string]string) string {
+	key := path
+	for k, v := range params {
+		key += k + "=" + v
+	}
+	h := sha256.Sum256([]byte(key))
+	return hex.EncodeToString(h[:8])
+}
+
+func (c *Client) readCache(path string, params map[string]string) (json.RawMessage, bool) {
+	cacheFile := filepath.Join(c.cacheDir, c.cacheKey(path, params)+".json")
+	info, err := os.Stat(cacheFile)
+	if err != nil || time.Since(info.ModTime()) > 5*time.Minute {
+		return nil, false
+	}
+	data, err := os.ReadFile(cacheFile)
+	if err != nil {
+		return nil, false
+	}
+	return json.RawMessage(data), true
+}
+
+func (c *Client) writeCache(path string, params map[string]string, data json.RawMessage) {
+	os.MkdirAll(c.cacheDir, 0o755)
+	cacheFile := filepath.Join(c.cacheDir, c.cacheKey(path, params)+".json")
+	os.WriteFile(cacheFile, []byte(data), 0o644)
 }
 
 func (c *Client) Post(path string, body any) (json.RawMessage, error) {

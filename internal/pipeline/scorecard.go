@@ -187,8 +187,14 @@ func scoreREADME(dir string) int {
 
 func scoreDoctor(dir string) int {
 	content := readFileContent(filepath.Join(dir, "internal", "cli", "doctor.go"))
-	// Count health check patterns
-	healthChecks := strings.Count(content, "http.Get") + strings.Count(content, "http.Head") + strings.Count(content, "http.NewRequest") + strings.Count(content, "http.Client")
+	// Count health check patterns (both stdlib and variable-based calls)
+	healthChecks := strings.Count(content, "http.Get") +
+		strings.Count(content, "http.Head") +
+		strings.Count(content, "http.NewRequest") +
+		strings.Count(content, "http.Client") +
+		strings.Count(content, "httpClient.Get") +
+		strings.Count(content, "httpClient.Head") +
+		strings.Count(content, "httpClient.Do")
 	score := healthChecks * 2
 	if score > 10 {
 		score = 10
@@ -221,14 +227,26 @@ func scoreAgentNative(dir string) int {
 }
 
 func scoreLocalCache(dir string) int {
-	// Check for sqlite or cache-related imports across all Go files
-	for _, name := range []string{"internal/cache.go", "internal/store.go", "cmd/root.go"} {
+	score := 0
+	// Check client for cache-related code
+	clientContent := readFileContent(filepath.Join(dir, "internal", "client", "client.go"))
+	if strings.Contains(clientContent, "cacheDir") || strings.Contains(clientContent, "readCache") || strings.Contains(clientContent, "writeCache") {
+		score += 5
+	}
+	if strings.Contains(clientContent, "no-cache") || strings.Contains(clientContent, "NoCache") {
+		score += 2
+	}
+	// Check for sqlite or advanced caching
+	for _, name := range []string{"internal/cache/cache.go", "internal/store/store.go"} {
 		content := readFileContent(filepath.Join(dir, name))
 		if strings.Contains(content, "sqlite") || strings.Contains(content, "bolt") || strings.Contains(content, "badger") {
-			return 5
+			score += 3
 		}
 	}
-	return 0
+	if score > 10 {
+		score = 10
+	}
+	return score
 }
 
 func readFileContent(path string) string {

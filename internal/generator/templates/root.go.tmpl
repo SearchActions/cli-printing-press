@@ -16,13 +16,14 @@ import (
 var version = "{{.Version}}"
 
 type rootFlags struct {
-	asJSON     bool
-	plain      bool
-	quiet      bool
-	dryRun     bool
+	asJSON       bool
+	plain        bool
+	quiet        bool
+	dryRun       bool
+	noCache      bool
 	selectFields string
-	configPath string
-	timeout    time.Duration
+	configPath   string
+	timeout      time.Duration
 }
 
 func Execute() error {
@@ -43,6 +44,7 @@ func Execute() error {
 	rootCmd.PersistentFlags().StringVar(&flags.configPath, "config", "", "Config file path")
 	rootCmd.PersistentFlags().DurationVar(&flags.timeout, "timeout", 30*time.Second, "Request timeout")
 	rootCmd.PersistentFlags().BoolVar(&flags.dryRun, "dry-run", false, "Show request without sending")
+	rootCmd.PersistentFlags().BoolVar(&flags.noCache, "no-cache", false, "Bypass response cache")
 	rootCmd.PersistentFlags().StringVar(&flags.selectFields, "select", "", "Comma-separated fields to include in output (e.g. --select id,name,status)")
 	rootCmd.PersistentFlags().BoolVar(&noColor, "no-color", false, "Disable colored output")
 
@@ -73,6 +75,7 @@ func (f *rootFlags) newClient() (*client.Client, error) {
 	}
 	c := client.New(cfg, f.timeout)
 	c.DryRun = f.dryRun
+	c.NoCache = f.noCache
 	return c, nil
 }
 

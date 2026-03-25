@@ -5,6 +5,9 @@ package cli
 import (
 	"fmt"
 	"net/http"
+{{- if .Auth.EnvVars}}
+	"os"
+{{- end}}
 	"strings"
 	"time"
 
@@ -40,42 +43,62 @@ func newDoctorCmd(flags *rootFlags) *cobra.Command {
 				}
 			}
 
+			// Check auth environment variables
+			{{- if .Auth.EnvVars}}
+			authEnvChecked := 0
+			authEnvSet := 0
+			{{- range .Auth.EnvVars}}
+			authEnvChecked++
+			if os.Getenv("{{.}}") != "" {
+				authEnvSet++
+			}
+			{{- end}}
+			if authEnvSet == 0 {
+				report["env_vars"] = fmt.Sprintf("none set (checked %d)", authEnvChecked)
+			} else {
+				report["env_vars"] = fmt.Sprintf("%d/%d set", authEnvSet, authEnvChecked)
+			}
+			{{- end}}
+
 			// Check API connectivity
 			if cfg != nil && cfg.BaseURL != "" {
 				httpClient := &http.Client{Timeout: 5 * time.Second}
-				
-				// Try common health-check paths in order
-				paths := []string{
-					"",
-					"/health",
-					"/healthz",
-					"/status",
-					"/ping",
+
+				// Health check: HEAD request to base URL
+				headReq, _ := http.NewRequest("HEAD", cfg.BaseURL, nil)
+				headResp, headErr := httpClient.Do(headReq)
+				if headErr != nil {
+					report["api_head"] = fmt.Sprintf("unreachable: %s", headErr)
+				} else {
+					headResp.Body.Close()
+					report["api_head"] = fmt.Sprintf("HTTP %d", headResp.StatusCode)
 				}
 
+				// Health check: try common health endpoints
+				healthPaths := []string{"/health", "/healthz", "/status", "/ping", ""}
 				reached := false
-				for _, p := range paths {
-					url := strings.TrimRight(cfg.BaseURL, "/") + p
-					resp, err := httpClient.Get(url)
-					if err != nil {
+				for _, p := range healthPaths {
+					healthURL := strings.TrimRight(cfg.BaseURL, "/") + p
+					healthResp, healthErr := httpClient.Get(healthURL)
+					if healthErr != nil {
 						continue
 					}
-					resp.Body.Close()
-					if resp.StatusCode >= 200 && resp.StatusCode < 400 {
-						report["api"] = fmt.Sprintf("reachable (HTTP %d)", resp.StatusCode)
+					healthResp.Body.Close()
+					if healthResp.StatusCode >= 200 && healthResp.StatusCode < 400 {
+						report["api"] = fmt.Sprintf("reachable (HTTP %d at %s)", healthResp.StatusCode, p)
 						reached = true
 						break
 					}
 				}
 
 				if !reached {
-					// Fall back to reporting the base URL status
-					resp, err := httpClient.Get(cfg.BaseURL)
-					if err != nil {
-						report["api"] = fmt.Sprintf("unreachable: %s", err)
+					// Fall back to GET on base URL
+					fallbackResp, fallbackErr := httpClient.Get(cfg.BaseURL)
+					if fallbackErr != nil {
+						report["api"] = fmt.Sprintf("unreachable: %s", fallbackErr)
 					} else {
-						resp.Body.Close()
-						report["api"] = fmt.Sprintf("degraded (HTTP %d)", resp.StatusCode)
+						fallbackResp.Body.Close()
+						report["api"] = fmt.Sprintf("degraded (HTTP %d)", fallbackResp.StatusCode)
 					}
 				}
 			} else if cfg != nil && cfg.BaseURL == "" {
