@@ -1,65 +1,78 @@
 # CLI Printing Press
 
-Give it an API. It researches the competition, understands the docs, generates a Go CLI, polishes it with an LLM, scores it against Steinberger, and tells you if it's good enough to ship. One command.
+Give it an API name. Get back the best CLI that has ever existed for it.
 
 ```bash
-printing-press generate --spec https://raw.githubusercontent.com/plaid/plaid-openapi/master/2020-09-14.yml --polish
+/printing-press Discord
+/printing-press Stripe
+/printing-press Linear
 ```
 
-```
-Using LLM to understand API docs...
-PASS go mod tidy
-PASS go vet ./...
-PASS go build ./...
-PASS build runnable binary
-PASS plaid-cli --help
-PASS plaid-cli version
-PASS plaid-cli doctor
-Polish: 12 help texts improved, 8 examples added, README rewritten
-Generated plaid-cli at ./plaid-cli
-```
+One command. 8 phases. ~1 hour. Produces a production-ready Go CLI binary + 7 deep analysis documents. REST or GraphQL - it figures it out.
 
-No official Plaid CLI exists. Now one does. 51 resources. Agent-native. Grade A on the Steinberger bar.
+## Why CLIs Matter Now
+
+CLIs are the native interface for AI agents. When an agent needs to interact with an API, it has two choices: import an SDK and write 15 lines of code (~500 tokens), or run a CLI command (~50 tokens). The CLI wins on every dimension that matters - deterministic, structured JSON output, composable with pipes, zero dependency management.
+
+Every API that gets a CLI becomes instantly accessible to every agent framework - Claude Code, Codex, Gemini CLI, open source agents. No SDK integration. No code generation. Just `--json --select` and pipe.
+
+The printing press is an agent-infrastructure factory. One hour per API, and every agent in the world can use it.
 
 ## How It Works
 
-The press has three brains:
+The press runs 8 mandatory phases. Each phase writes a comprehensive plan document. The artifacts are the product - the CLI is a side effect.
 
 ```
-LLM BEFORE ($0.30)           TEMPLATE ($0)              LLM AFTER ($0.25)
-  reads API docs          ->   Go templates render   ->   improves help text
-  understands competitors       deterministic code          adds real examples
-  writes complete spec          error handling              rewrites README
-  plans what to build           agent-native flags          sells the tool
+Phase 0    Visionary Research       (3-5 min)    Who uses this API? What do they build?
+Phase 0.5  Power User Workflows     (2-3 min)    What compound commands would power users want?
+Phase 0.7  Prediction Engine        (15-25 min)  What local data layer would make this a 500-star tool?
+Phase 1    Deep Research            (5-8 min)    What competitors exist? Why should this CLI exist?
+Phase 2    Generate                 (1-2 min)    Produce the Go CLI from the API spec
+Phase 3    Steinberger Audit        (5-8 min)    Score against the quality bar, plan improvements
+Phase 4    GOAT Build               (5-10 min)   Build data layer + workflow commands + fixes
+Phase 4.5  Dogfood Emulation        (10-20 min)  Test every command against spec-derived mocks
+Phase 5    Final Steinberger        (2-3 min)    Before/after scoring delta + final report
 ```
 
-**Pass 1 - LLM understands the API.** Reads the docs or OpenAPI spec. Analyzes competing CLIs on GitHub (issues, README, PRs). Decides what commands to generate.
+### Phase 0: Visionary Research
 
-**Pass 2 - Templates generate correct code.** 14 Go templates produce a complete CLI project: auth, pagination, retries, color, doctor, --json, --select, --dry-run, --stdin, caching.
+Before generating anything, the press understands the API's domain, users, and ecosystem. It searches GitHub, Reddit, Hacker News, and Stack Overflow for usage patterns, pain points, and existing tools. It classifies every tool it finds - API wrappers, data tools, workflow tools, environment tools - and identifies what's missing.
 
-**Pass 3 - LLM polishes the output.** Rewrites help descriptions from spec jargon to developer-friendly. Generates realistic examples. Writes a README that sells the tool.
+### Phase 0.5: Power User Workflows
 
-Without an LLM, the press still works - it falls back to regex-based doc parsing and template-only generation. The LLM makes it smart, not functional.
+Predicts what compound commands a power user would want - the features that make a tool worth starring. "Find stale channels." "Audit who banned whom." "Preview a member prune without executing." These workflow commands combine 2+ API calls into single operations.
 
-## Quick Start
+### Phase 0.7: Prediction Engine
 
-```bash
-git clone https://github.com/mvanhorn/cli-printing-press.git
-cd cli-printing-press
-go build -o ./printing-press ./cmd/printing-press
+This is the differentiator. The press predicts what a developer would build on TOP of the API - without looking at competitors. It classifies every entity (accumulating, reference, append-only, ephemeral), scores them on data gravity (volume, query frequency, join demand, search need, temporal value), and produces a concrete data layer specification: domain-specific SQLite schema, incremental sync strategy with validated cursors, FTS5 full-text search with domain filters, and compound queries.
 
-# From an OpenAPI spec (fast, free)
-./printing-press generate --spec https://petstore3.swagger.io/api/v3/openapi.json
+This is how you build discrawl (12 commands, 540 stars) without knowing discrawl exists.
 
-# From API docs when no spec exists (uses LLM)
-./printing-press generate --docs "https://developers.notion.com/reference" --name notion
+### Phase 1: Deep Research
 
-# With LLM polish pass (better help text, examples, README)
-./printing-press generate --spec <url> --polish
+Finds the OpenAPI or GraphQL spec, analyzes the top 2 competitors in depth (READMEs, star counts, open issues, user complaints), and answers: "Why should this CLI exist when [competitor] already has [N] stars?"
 
-# With lenient parsing for messy specs (PagerDuty, Intercom)
-./printing-press generate --spec <url> --lenient
-```
+### Phase 2: Generate
+
+Runs the Go generator against the spec. Produces hundreds of commands with full agent-native features. For GraphQL APIs, produces scaffolding + a GraphQL client wrapper - commands get hand-written in Phase 4.
+
+### Phase 3: Steinberger Audit
+
+Scores the generated CLI against the Steinberger bar (11 dimensions, 110 max). Peter Steinberger's gogcli is the 10/10 reference. Each dimension gets: current score, what 10/10 looks like, and specific changes to get there.
+
+### Phase 4: GOAT Build
+
+Builds the product. Priority 0 is the data layer (domain SQLite tables, sync, search, sql command). Priority 1 is workflow commands powered by the local database. Priority 2 is scorecard gap fixes. Priority 3 is polish.
+
+### Phase 4.5: Dogfood Emulation
+
+Tests every command against spec-derived mock responses - no API keys needed. Scores each command on 5 dimensions (request construction, response parsing, schema fidelity, example quality, workflow integrity). Auto-fixes issues, re-scores, and writes a report: "Here's what I learned. Here's what to fix. Here's what to make."
+
+Inspired by [Vercel's emulate](https://github.com/vercel-labs/emulate) - production-fidelity API simulation, zero config.
+
+### Phase 5: Final Steinberger
+
+Before/after scoring delta. The proof of work.
 
 ## What Gets Generated
 
@@ -74,95 +87,118 @@ Every CLI ships with:
 | Response cache | `--no-cache` | GET responses cached 5 min, bypass with flag |
 | Skip confirmation | `--yes` | For agents and scripts on destructive actions |
 | Plain output | `--plain` | Tab-separated for awk/cut |
+| CSV output | `--csv` | For spreadsheets and data tools |
+| Quiet mode | `--quiet` | Bare output, one value per line |
 | Color control | `--no-color` | Respects NO_COLOR, TERM=dumb |
 
-Plus: doctor health check, shell completions, TOML config, OAuth2 browser flow, retry with backoff, rate limit detection, typed exit codes with actionable hints, idempotent creates/deletes.
+Plus: doctor health check, TOML config, OAuth2 browser flow, retry with backoff, rate limit detection (exit code 7), typed exit codes with actionable hints, idempotent creates/deletes, progress events as NDJSON to stderr.
 
-## Agent-Native by Default
+**Data layer** (when prediction engine identifies high-gravity entities):
+- Domain-specific SQLite tables with proper columns (not JSON blobs)
+- FTS5 full-text search with domain filters (`--channel`, `--author`, `--team`)
+- Incremental sync with validated cursors
+- `sql` command for raw read-only queries
+- `sync`, `search`, `tail`, `export`, `analytics` commands
 
-Every generated CLI is designed for AI agents:
+**Exit codes:** `0` success, `2` usage error, `3` not found, `4` auth error, `5` API error, `7` rate limited, `10` config error.
 
-- **Non-interactive** - never prompts, every input is a flag
-- **Pipeable** - stdout is data, stderr is errors
-- **Filterable** - `--select id,name` returns only fields you need
-- **Previewable** - `--dry-run` shows the request without sending
-- **Retryable** - creates return "already exists" on retry, deletes return "already deleted"
-- **Piped input** - `echo '{"key":"value"}' | mycli create --stdin`
-- **Cacheable** - GET responses cached, bypass with `--no-cache`
+## 7 Plan Artifacts Per Run
 
-Exit codes: `0` success, `2` usage, `3` not found, `4` auth, `5` API error, `7` rate limited, `10` config error.
+Every run produces 7 comprehensive analysis documents in `docs/plans/`:
 
-## Scorecard
+```
+Phase 0   -> <api>-cli-visionary-research.md      API identity, usage patterns, tool landscape
+Phase 0.5 -> <api>-cli-power-user-workflows.md    Workflow ideas, scoring, top 7 selected
+Phase 0.7 -> <api>-cli-data-layer-spec.md         SQLite schema, sync strategy, search filters
+Phase 1   -> <api>-cli-research.md                Competitors, strategic justification
+Phase 3   -> <api>-cli-audit.md                   Steinberger scores, improvement plan
+Phase 4   -> <api>-cli-goat-build-log.md          What was built, what was fixed
+Phase 4.5 -> <api>-cli-dogfood-report.md          Per-command scores, hallucination detection
+```
 
-The press scores every generated CLI against the Steinberger bar (Peter Steinberger's gogcli at 6.5K stars is the 10/10 benchmark):
+Each artifact chains into the next. The prediction engine's data layer spec informs Phase 4's implementation. The dogfood report's fix recommendations feed back into the code.
+
+## Works With Any API
+
+**REST APIs** (OpenAPI/Swagger): Full pipeline - generator produces commands, prediction engine adds data layer, dogfood validates everything.
+
+**GraphQL APIs** (Linear, Shopify, GitHub GraphQL): Warns about generator limitations, produces scaffolding + GraphQL client wrapper, hand-writes commands in Phase 4. All research, prediction, data layer, and dogfood phases run normally.
+
+**No spec available**: Reads the API docs, writes a spec, generates from it.
+
+The press dynamically detects API type from the spec content - not a hardcoded list.
+
+## The Steinberger Bar
+
+11 dimensions, 110 points max. Grade A = 80%+.
+
+| Dimension | What 10/10 Looks Like |
+|-----------|----------------------|
+| Output Modes | --json, --csv, --plain, --select, --quiet, --template |
+| Auth | OAuth browser flow, token storage, multiple profiles, doctor validates |
+| Error Handling | Typed exits, retry with backoff, "did you mean?" suggestions |
+| Terminal UX | Progress spinners, color themes, pager for long output |
+| README | Install, quickstart, every command with example, cookbook, FAQ |
+| Doctor | Validates auth, API version, rate limits, config health |
+| Agent-Native | --json, --select, --dry-run, --stdin, idempotent, typed exits |
+| Local Cache | SQLite + FTS5, --no-cache bypass, cache clear |
+| Breadth | Every API endpoint covered + convenience wrappers |
+| Vision | Sync + search + tail + export + domain workflows |
+| Workflows | Compound commands combining 2+ API calls |
+
+## Quick Start
 
 ```bash
-FULL_RUN=1 go test ./internal/pipeline/ -run TestFullRun -v -timeout 10m
+git clone https://github.com/mvanhorn/cli-printing-press.git
+cd cli-printing-press
+go build -o ./printing-press ./cmd/printing-press
 ```
 
+Then use it as a Claude Code skill:
+
+```bash
+# In Claude Code
+/printing-press Discord
+/printing-press Stripe
+/printing-press --spec ./openapi.yaml
 ```
-Metric                   | petstore (EASY)   | plaid (MEDIUM)    | notion (HARD)
--------------------------|-------------------|-------------------|------------------
-Quality Gates            | 7/7 PASS          | 7/7 PASS          | 7/7 PASS
-Commands                 | 8                 | 51                | 6
-Steinberger Total        | 67/80 (83%)       | 69/80 (86%)       | 67/80 (83%)
-Grade                    | A                 | A                 | A
+
+Or run the generator directly:
+
+```bash
+# Generate from an OpenAPI spec
+./printing-press generate --spec https://petstore3.swagger.io/api/v3/openapi.json --output ./petstore-cli --force --lenient --validate
+
+# Score a generated CLI
+./printing-press scorecard --dir ./petstore-cli
 ```
-
-8 dimensions scored: output modes, auth, error handling, terminal UX, README, doctor, agent-native, local cache. The scorecard auto-generates fix plans for any dimension below 5/10.
-
-## Intelligence Engine
-
-The press doesn't just generate - it thinks:
-
-- **Research phase** - discovers competing CLIs, analyzes their GitHub repos (issues, README, PRs), identifies what they're missing
-- **Competitor intelligence** - reads competitor READMEs to extract command lists, feature requests, pain points
-- **Doc-to-spec** - when no OpenAPI spec exists, reads API docs and generates a YAML spec (regex fallback if no LLM)
-- **Dynamic planning** - each pipeline phase writes the next phase's plan using what it learned
-- **Learning system** - remembers issues from past runs, auto-suggests fixes for future runs
-- **Self-improvement** - scorecard gaps auto-generate fix plans for the press templates
-
-## Catalog
-
-18 APIs pre-registered with verified spec URLs:
-
-| API | Category | Known Competitors |
-|-----|----------|------------------|
-| Plaid | Payments | plaid-cli (57 stars, abandoned) |
-| Pipedrive | CRM | None |
-| Stripe | Payments | stripe-cli (official) |
-| GitHub | Developer Tools | gh (official) |
-| Telegram | Communication | telegram-bot-api |
-| Square | Payments | square-cli (3 stars) |
-| Sentry | Developer Tools | sentry-cli (official) |
-| LaunchDarkly | Developer Tools | ldcli (official) |
-| + 10 more | Various | See catalog/ |
 
 ## Project Structure
 
 ```
-cmd/printing-press/     CLI entry point
+cmd/printing-press/         CLI entry point
 internal/
-  catalog/              Catalog schema validator
-  cli/                  CLI commands (generate, print, version)
-  docspec/              Doc-to-spec generator (regex + LLM)
-  generator/            Template engine + quality gates (14 templates)
-  llm/                  Shared LLM runner (claude/codex CLI)
-  llmpolish/            LLM polish pass (help, examples, README)
-  openapi/              OpenAPI 3.0 parser (strict + lenient modes)
-  pipeline/             Intelligence engine (research, scorecard, dogfood,
-                        comparative, learnings, planner, self-improve)
-  spec/                 Internal YAML spec parser
-catalog/                18 API catalog entries
-skills/                 Claude Code skill definitions
+  catalog/                  Catalog schema validator
+  cli/                      CLI commands (generate, scorecard, version)
+  docspec/                  Doc-to-spec generator
+  generator/                Template engine + quality gates
+    templates/              14 Go templates (root, command, store, sync, search, etc.)
+  llm/                      LLM runner (claude/codex CLI)
+  llmpolish/                LLM polish pass (help, examples, README)
+  openapi/                  OpenAPI 3.0+ parser (strict + lenient modes)
+  pipeline/                 Intelligence engine (research, scorecard, dogfood, planner)
+  profiler/                 API shape analysis (volume, search need, realtime, etc.)
+  spec/                     Internal YAML spec parser
+catalog/                    Known API specs with verified URLs
+skills/printing-press/      Claude Code skill definition (8-phase pipeline)
+docs/plans/                 Generated plan artifacts
 ```
 
 ## Development
 
 ```bash
 go build -o ./printing-press ./cmd/printing-press
-go test ./...                    # 107 tests across 9 packages
-FULL_RUN=1 go test ./internal/pipeline/ -run TestFullRun -v -timeout 10m  # full scorecard
+go test ./...
 ```
 
 ## License
