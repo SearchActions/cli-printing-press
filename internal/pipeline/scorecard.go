@@ -30,7 +30,8 @@ type SteinerScore struct {
 	Breadth       int `json:"breadth"`        // 0-10: how many commands (penalizes empty CLIs)
 	Vision        int `json:"vision"`         // 0-10
 	Workflows     int `json:"workflows"`      // 0-10
-	Total         int `json:"total"`          // 0-110
+	Insight       int `json:"insight"`        // 0-10
+	Total         int `json:"total"`          // 0-120
 	Percentage    int `json:"percentage"`     // 0-100
 }
 
@@ -61,6 +62,7 @@ func RunScorecard(outputDir, pipelineDir string) (*Scorecard, error) {
 	sc.Steinberger.Breadth = scoreBreadth(outputDir)
 	sc.Steinberger.Vision = scoreVision(outputDir)
 	sc.Steinberger.Workflows = scoreWorkflows(outputDir)
+	sc.Steinberger.Insight = scoreInsight(outputDir)
 
 	sc.Steinberger.Total = sc.Steinberger.OutputModes +
 		sc.Steinberger.Auth +
@@ -72,10 +74,11 @@ func RunScorecard(outputDir, pipelineDir string) (*Scorecard, error) {
 		sc.Steinberger.LocalCache +
 		sc.Steinberger.Breadth +
 		sc.Steinberger.Vision +
-		sc.Steinberger.Workflows
+		sc.Steinberger.Workflows +
+		sc.Steinberger.Insight
 
 	if sc.Steinberger.Total > 0 {
-		sc.Steinberger.Percentage = (sc.Steinberger.Total * 100) / 110
+		sc.Steinberger.Percentage = (sc.Steinberger.Total * 100) / 120
 	}
 
 	// Grade
@@ -608,9 +611,26 @@ func scoreWorkflows(dir string) int {
 		return 0
 	}
 
+	workflowPrefixes := []string{"stale", "orphan", "triage", "load", "overdue", "standup", "deps", "workflow"}
+
 	compoundCommands := 0
 	for _, e := range entries {
 		if e.IsDir() || !strings.HasSuffix(e.Name(), ".go") {
+			continue
+		}
+
+		name := strings.ToLower(e.Name())
+
+		// Detect workflow commands by filename pattern
+		isWorkflowFile := false
+		for _, prefix := range workflowPrefixes {
+			if strings.HasPrefix(name, prefix) {
+				isWorkflowFile = true
+				break
+			}
+		}
+		if isWorkflowFile {
+			compoundCommands++
 			continue
 		}
 
@@ -649,6 +669,46 @@ func scoreWorkflows(dir string) int {
 	case compoundCommands >= 2:
 		return 4
 	case compoundCommands >= 1:
+		return 2
+	default:
+		return 0
+	}
+}
+
+func scoreInsight(dir string) int {
+	cliDir := filepath.Join(dir, "internal", "cli")
+	entries, err := os.ReadDir(cliDir)
+	if err != nil {
+		return 0
+	}
+
+	insightPrefixes := []string{"health", "similar", "bottleneck", "trends", "patterns", "forecast"}
+	found := 0
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".go") {
+			continue
+		}
+		name := strings.ToLower(e.Name())
+		for _, prefix := range insightPrefixes {
+			if strings.HasPrefix(name, prefix) {
+				found++
+				break
+			}
+		}
+	}
+
+	switch {
+	case found >= 6:
+		return 10
+	case found >= 5:
+		return 9
+	case found >= 4:
+		return 8
+	case found >= 3:
+		return 6
+	case found >= 2:
+		return 4
+	case found >= 1:
 		return 2
 	default:
 		return 0
@@ -786,6 +846,7 @@ func buildGapReport(s SteinerScore) []string {
 		{"breadth", s.Breadth},
 		{"vision", s.Vision},
 		{"workflows", s.Workflows},
+		{"insight", s.Insight},
 	}
 	for _, d := range dimensions {
 		if d.score < 5 {
@@ -863,12 +924,13 @@ func writeScorecardMD(sc *Scorecard, pipelineDir string) error {
 		{"Breadth", s.Breadth},
 		{"Vision", s.Vision},
 		{"Workflows", s.Workflows},
+		{"Insight", s.Insight},
 	}
 	for _, d := range dimensions {
 		bar := strings.Repeat("#", d.score) + strings.Repeat(".", 10-d.score)
 		b.WriteString(fmt.Sprintf("| %s | %d/10 %s |\n", d.name, d.score, bar))
 	}
-	b.WriteString(fmt.Sprintf("| **Total** | **%d/110** |\n\n", s.Total))
+	b.WriteString(fmt.Sprintf("| **Total** | **%d/120** |\n\n", s.Total))
 
 	// Competitor comparison
 	if len(sc.CompetitorScores) > 0 {

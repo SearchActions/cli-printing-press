@@ -203,6 +203,12 @@ func (s *Store) GetSyncState(resourceType string) (cursor string, lastSynced tim
 	return
 }
 
+// Query executes a raw SQL query and returns the rows.
+// Used by workflow commands that need custom queries against the local store.
+func (s *Store) Query(query string, args ...any) (*sql.Rows, error) {
+	return s.db.Query(query, args...)
+}
+
 func (s *Store) Count(resourceType string) (int, error) {
 	var count int
 	err := s.db.QueryRow(
