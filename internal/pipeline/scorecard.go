@@ -93,21 +93,35 @@ func RunScorecard(outputDir, pipelineDir string) (*Scorecard, error) {
 }
 
 func scoreOutputModes(dir string) int {
-	content := readFileContent(filepath.Join(dir, "internal", "cli", "root.go"))
+	rootContent := readFileContent(filepath.Join(dir, "internal", "cli", "root.go"))
+	helpersContent := readFileContent(filepath.Join(dir, "internal", "cli", "helpers.go"))
 	score := 0
-	if strings.Contains(content, "json") {
+	// Presence tier (max 5)
+	if strings.Contains(rootContent, `"json"`) {
+		score += 1
+	}
+	if strings.Contains(rootContent, `"plain"`) {
+		score += 1
+	}
+	if strings.Contains(rootContent, `"select"`) {
+		score += 1
+	}
+	if strings.Contains(rootContent, `"csv"`) {
+		score += 1
+	}
+	if strings.Contains(rootContent, `"quiet"`) {
+		score += 1
+	}
+	// Quality tier: field-aware select (real JSON parsing, not string ops)
+	if strings.Contains(helpersContent, "filterFields") && strings.Contains(helpersContent, "json.Unmarshal") {
 		score += 2
 	}
-	if strings.Contains(content, "plain") {
-		score += 2
+	// Quality tier: pagination progress events
+	if strings.Contains(helpersContent, "page_fetch") || strings.Contains(helpersContent, "ndjson") {
+		score += 1
 	}
-	if strings.Contains(content, "select") {
-		score += 2
-	}
-	if strings.Contains(content, "table") {
-		score += 2
-	}
-	if strings.Contains(content, "csv") {
+	// Quality tier: tabwriter for aligned output
+	if strings.Contains(helpersContent, "tabwriter") {
 		score += 2
 	}
 	if score > 10 {
@@ -117,16 +131,42 @@ func scoreOutputModes(dir string) int {
 }
 
 func scoreAuth(dir string) int {
-	score := 0
 	configContent := readFileContent(filepath.Join(dir, "internal", "config", "config.go"))
-	envCount := strings.Count(configContent, "os.Getenv")
-	if envCount >= 2 {
-		score += 8
-	} else if envCount >= 1 {
-		score += 5
-	}
-	if fileExists(filepath.Join(dir, "internal", "cli", "auth.go")) {
+	authContent := readFileContent(filepath.Join(dir, "internal", "cli", "auth.go"))
+	clientContent := readFileContent(filepath.Join(dir, "internal", "client", "client.go"))
+	score := 0
+	// Presence: at least one env var
+	if strings.Count(configContent, "os.Getenv") >= 1 {
 		score += 2
+	}
+	// Presence: auth file exists
+	if authContent != "" {
+		score += 1
+	}
+	// Quality: secure config file permissions (0o600 or 0600)
+	if strings.Contains(configContent, "0o600") || strings.Contains(configContent, "0600") || strings.Contains(configContent, "0o700") || strings.Contains(configContent, "0700") {
+		score += 2
+	}
+	// Quality: token masking in output (showing partial token)
+	if strings.Contains(clientContent, "mask") || strings.Contains(clientContent, "***") || strings.Contains(clientContent, "last 4") || (strings.Contains(clientContent, "Authorization") && strings.Contains(clientContent, "[:")) {
+		score += 2
+	}
+	// Quality: multiple auth methods (env var + config + flag)
+	authSources := 0
+	if strings.Contains(configContent, "os.Getenv") {
+		authSources++
+	}
+	if strings.Contains(configContent, "ReadFile") || strings.Contains(configContent, "Load") {
+		authSources++
+	}
+	if authSources >= 2 {
+		score += 1
+	}
+	// Excellence: OAuth2 browser flow with refresh
+	if strings.Contains(authContent, "oauth2") || strings.Contains(authContent, "OAuth2") {
+		if strings.Contains(authContent, "refresh") || strings.Contains(authContent, "Refresh") {
+			score += 2
+		}
 	}
 	if score > 10 {
 		score = 10
@@ -135,17 +175,36 @@ func scoreAuth(dir string) int {
 }
 
 func scoreErrorHandling(dir string) int {
-	content := readFileContent(filepath.Join(dir, "internal", "cli", "helpers.go"))
+	helpersContent := readFileContent(filepath.Join(dir, "internal", "cli", "helpers.go"))
+	clientContent := readFileContent(filepath.Join(dir, "internal", "client", "client.go"))
 	score := 0
-	if strings.Contains(content, "hint:") || strings.Contains(content, "Hint:") {
-		score += 5
+	// Presence: error hints
+	if strings.Contains(helpersContent, "hint:") || strings.Contains(helpersContent, "Hint:") {
+		score += 1
 	}
-	// Count typed exit codes (cliError with code:)
-	exitCount := strings.Count(content, "code:")
-	if exitCount > 5 {
-		exitCount = 5
+	// Presence: at least 3 distinct exit codes
+	exitCount := strings.Count(helpersContent, "code:")
+	if exitCount >= 3 {
+		score += 2
+	} else if exitCount >= 1 {
+		score += 1
 	}
-	score += exitCount
+	// Quality: rate limit handling (429 + retry)
+	if strings.Contains(clientContent, "429") && (strings.Contains(clientContent, "Retry-After") || strings.Contains(clientContent, "backoff") || strings.Contains(clientContent, "retry")) {
+		score += 2
+	}
+	// Quality: idempotency (409 = already exists = success)
+	if strings.Contains(helpersContent, "409") && strings.Contains(helpersContent, "already exists") {
+		score += 2
+	}
+	// Quality: 404 with specific exit code
+	if strings.Contains(helpersContent, "404") {
+		score += 1
+	}
+	// Excellence: actionable suggestions in errors (not just codes)
+	if (strings.Contains(helpersContent, "Run") || strings.Contains(helpersContent, "try")) && strings.Contains(helpersContent, "doctor") {
+		score += 2
+	}
 	if score > 10 {
 		score = 10
 	}
@@ -153,16 +212,49 @@ func scoreErrorHandling(dir string) int {
 }
 
 func scoreTerminalUX(dir string) int {
-	content := readFileContent(filepath.Join(dir, "internal", "cli", "helpers.go"))
+	helpersContent := readFileContent(filepath.Join(dir, "internal", "cli", "helpers.go"))
+	rootContent := readFileContent(filepath.Join(dir, "internal", "cli", "root.go"))
 	score := 0
-	if strings.Contains(content, "colorEnabled") {
-		score += 5
+	// Presence: NO_COLOR support
+	if strings.Contains(helpersContent, "NO_COLOR") {
+		score += 1
 	}
-	if strings.Contains(content, "NO_COLOR") {
-		score += 3
+	// Presence: TTY detection
+	if strings.Contains(helpersContent, "isatty") {
+		score += 1
 	}
-	if strings.Contains(content, "isatty") {
+	// Presence: no-color flag
+	if strings.Contains(rootContent, "no-color") {
+		score += 1
+	}
+	// Quality: tabwriter for aligned columns
+	if strings.Contains(helpersContent, "tabwriter") {
 		score += 2
+	}
+	// Quality: help text descriptions are meaningful (not just verb names)
+	cmdFiles := sampleCommandFiles(dir, 5)
+	goodDescs := 0
+	for _, content := range cmdFiles {
+		if hasQualityDescription(content) {
+			goodDescs++
+		}
+	}
+	if goodDescs >= 4 {
+		score += 2
+	} else if goodDescs >= 2 {
+		score += 1
+	}
+	// Quality: example values are realistic (not abc123 or bare "value")
+	goodExamples := 0
+	for _, content := range cmdFiles {
+		if !hasPlaceholderValues(content) {
+			goodExamples++
+		}
+	}
+	if goodExamples >= 4 {
+		score += 3
+	} else if goodExamples >= 2 {
+		score += 1
 	}
 	if score > 10 {
 		score = 10
@@ -173,16 +265,35 @@ func scoreTerminalUX(dir string) int {
 func scoreREADME(dir string) int {
 	content := readFileContent(filepath.Join(dir, "README.md"))
 	score := 0
-	sections := map[string]int{
-		"Quick Start":     2,
-		"Output Formats":  2,
-		"Agent Usage":     2,
-		"Troubleshooting": 2,
-		"Doctor":          2,
-	}
-	for section, pts := range sections {
+	// Presence: key sections exist (1pt each, max 4)
+	for _, section := range []string{"Quick Start", "Agent Usage", "Doctor", "Troubleshooting"} {
 		if strings.Contains(content, section) {
-			score += pts
+			score++
+		}
+	}
+	// Quality: Quick Start has no placeholder values
+	qsIdx := strings.Index(content, "Quick Start")
+	if qsIdx >= 0 {
+		qsSection := content[qsIdx:min(qsIdx+500, len(content))]
+		if !strings.Contains(qsSection, "your-key-here") && !strings.Contains(qsSection, "USER/tap") && !strings.Contains(qsSection, "abc123") {
+			score += 2
+		}
+	}
+	// Quality: has Cookbook or Recipes with 3+ code blocks
+	if strings.Contains(content, "Cookbook") || strings.Contains(content, "Recipes") {
+		codeBlocks := strings.Count(content, "```")
+		if codeBlocks >= 6 { // 3+ examples = 6+ backtick pairs
+			score += 2
+		} else {
+			score += 1
+		}
+	}
+	// Quality: README describes the API in human terms (not raw spec text)
+	lines := strings.SplitN(content, "\n", 5)
+	if len(lines) >= 3 {
+		header := strings.Join(lines[:3], " ")
+		if !strings.Contains(header, "Preview of") && !strings.Contains(header, "specification") && len(header) > 20 {
+			score += 2
 		}
 	}
 	if score > 10 {
@@ -193,15 +304,30 @@ func scoreREADME(dir string) int {
 
 func scoreDoctor(dir string) int {
 	content := readFileContent(filepath.Join(dir, "internal", "cli", "doctor.go"))
-	// Count health check patterns (both stdlib and variable-based calls)
-	healthChecks := strings.Count(content, "http.Get") +
-		strings.Count(content, "http.Head") +
-		strings.Count(content, "http.NewRequest") +
-		strings.Count(content, "http.Client") +
-		strings.Count(content, "httpClient.Get") +
-		strings.Count(content, "httpClient.Head") +
-		strings.Count(content, "httpClient.Do")
-	score := healthChecks * 2
+	if content == "" {
+		return 0
+	}
+	score := 0
+	// Presence: doctor command exists
+	score += 2
+	// Quality: checks auth/token validity
+	if strings.Contains(content, "auth") || strings.Contains(content, "token") || strings.Contains(content, "Token") {
+		score += 2
+	}
+	// Quality: checks API connectivity (makes an HTTP request)
+	hasHTTP := strings.Contains(content, "http.Get") || strings.Contains(content, "http.Head") ||
+		strings.Contains(content, "http.NewRequest") || strings.Contains(content, "httpClient")
+	if hasHTTP {
+		score += 2
+	}
+	// Quality: checks config file
+	if strings.Contains(content, "config") || strings.Contains(content, "Config") {
+		score += 2
+	}
+	// Excellence: checks version or API compatibility
+	if strings.Contains(content, "version") || strings.Contains(content, "Version") {
+		score += 2
+	}
 	if score > 10 {
 		score = 10
 	}
@@ -211,36 +337,60 @@ func scoreDoctor(dir string) int {
 func scoreAgentNative(dir string) int {
 	rootContent := readFileContent(filepath.Join(dir, "internal", "cli", "root.go"))
 	helpersContent := readFileContent(filepath.Join(dir, "internal", "cli", "helpers.go"))
-	combined := rootContent + helpersContent
-
 	score := 0
-	if strings.Contains(combined, "json") {
+	// Presence: core agent flags (1pt each, max 5)
+	if strings.Contains(rootContent, `"json"`) {
+		score++
+	}
+	if strings.Contains(rootContent, `"select"`) {
+		score++
+	}
+	if strings.Contains(rootContent, "dry-run") {
+		score++
+	}
+	if strings.Contains(rootContent, "stdin") {
+		score++
+	}
+	if strings.Contains(rootContent, `"yes"`) {
+		score++
+	}
+	// Quality: non-interactive (no prompts in command files)
+	cmdFiles := sampleCommandFiles(dir, 5)
+	hasPrompts := false
+	for _, content := range cmdFiles {
+		if strings.Contains(content, "bufio.NewScanner(os.Stdin)") || strings.Contains(content, "Prompt") || strings.Contains(content, "ReadLine") {
+			hasPrompts = true
+			break
+		}
+	}
+	if !hasPrompts && len(cmdFiles) > 0 {
+		score++
+	}
+	// Quality: typed exit codes (5+ distinct)
+	exitCount := strings.Count(helpersContent, "code:")
+	if exitCount >= 5 {
 		score += 2
+	} else if exitCount >= 3 {
+		score++
 	}
-	if strings.Contains(combined, "select") {
+	// Excellence: --stdin examples in command files (at least 3 commands show stdin usage)
+	stdinExamples := 0
+	for _, content := range cmdFiles {
+		if strings.Contains(content, "--stdin") && strings.Contains(content, "Example") {
+			stdinExamples++
+		}
+	}
+	// Also check all command files for stdin examples, not just sample
+	allCmdFiles := sampleCommandFiles(dir, 0) // 0 = all
+	for _, content := range allCmdFiles {
+		if strings.Contains(content, "--stdin") && strings.Contains(content, "echo") {
+			stdinExamples++
+		}
+	}
+	if stdinExamples >= 3 {
 		score += 2
-	}
-	if strings.Contains(combined, "dry-run") || strings.Contains(combined, "dryRun") || strings.Contains(combined, "dry_run") {
-		score += 2
-	}
-	if strings.Contains(combined, "non-interactive") || strings.Contains(combined, "nonInteractive") {
-		score += 1
-	}
-	// Check for --stdin support
-	if strings.Contains(combined, "stdin") {
-		score += 1
-	}
-	// Check for --yes flag
-	if strings.Contains(combined, `"yes"`) {
-		score += 1
-	}
-	// Check for idempotency handling (409 or "already exists")
-	if strings.Contains(helpersContent, "409") || strings.Contains(helpersContent, "already exists") {
-		score += 1
-	}
-	// Check for --human-friendly flag (agent-safe-by-default coloring)
-	if strings.Contains(combined, "human-friendly") || strings.Contains(combined, "humanFriendly") {
-		score += 1
+	} else if stdinExamples >= 1 {
+		score++
 	}
 	if score > 10 {
 		score = 10
@@ -249,20 +399,30 @@ func scoreAgentNative(dir string) int {
 }
 
 func scoreLocalCache(dir string) int {
-	score := 0
-	// Check client for cache-related code
 	clientContent := readFileContent(filepath.Join(dir, "internal", "client", "client.go"))
-	if strings.Contains(clientContent, "cacheDir") || strings.Contains(clientContent, "readCache") || strings.Contains(clientContent, "writeCache") {
-		score += 5
-	}
-	if strings.Contains(clientContent, "no-cache") || strings.Contains(clientContent, "NoCache") {
+	score := 0
+	// Presence: GET response caching
+	if strings.Contains(clientContent, "readCache") || strings.Contains(clientContent, "writeCache") || strings.Contains(clientContent, "cacheDir") {
 		score += 2
 	}
-	// Check for sqlite or advanced caching
+	// Presence: --no-cache bypass
+	if strings.Contains(clientContent, "no-cache") || strings.Contains(clientContent, "NoCache") {
+		score += 1
+	}
+	// Quality: cache has TTL (time-based expiry)
+	if strings.Contains(clientContent, "time.Duration") || strings.Contains(clientContent, "ModTime") || strings.Contains(clientContent, "TTL") || strings.Contains(clientContent, "ttl") {
+		score += 2
+	}
+	// Quality: XDG or standard cache directory
+	if strings.Contains(clientContent, ".cache") || strings.Contains(clientContent, "XDG_CACHE_HOME") || strings.Contains(clientContent, "UserCacheDir") {
+		score += 2
+	}
+	// Excellence: SQLite or embedded DB
 	for _, name := range []string{"internal/cache/cache.go", "internal/store/store.go"} {
 		content := readFileContent(filepath.Join(dir, name))
 		if strings.Contains(content, "sqlite") || strings.Contains(content, "bolt") || strings.Contains(content, "badger") {
 			score += 3
+			break
 		}
 	}
 	if score > 10 {
@@ -272,7 +432,6 @@ func scoreLocalCache(dir string) int {
 }
 
 func scoreBreadth(dir string) int {
-	// Count command files in internal/cli/ (exclude infrastructure files)
 	cliDir := filepath.Join(dir, "internal", "cli")
 	entries, err := os.ReadDir(cliDir)
 	if err != nil {
@@ -280,8 +439,11 @@ func scoreBreadth(dir string) int {
 	}
 	infra := map[string]bool{
 		"helpers.go": true, "root.go": true, "doctor.go": true, "auth.go": true,
+		"export.go": true, "import.go": true, "search.go": true, "sync.go": true,
+		"tail.go": true, "analytics.go": true,
 	}
 	commandFiles := 0
+	lazyDescs := 0
 	for _, e := range entries {
 		if e.IsDir() || !strings.HasSuffix(e.Name(), ".go") {
 			continue
@@ -290,22 +452,43 @@ func scoreBreadth(dir string) int {
 			continue
 		}
 		commandFiles++
+		// Check for lazy 1-word descriptions
+		content := readFileContent(filepath.Join(cliDir, e.Name()))
+		if hasLazyDescription(content) {
+			lazyDescs++
+		}
 	}
 
+	var score int
 	switch {
 	case commandFiles >= 60:
-		return 10
+		score = 8
 	case commandFiles >= 41:
-		return 9
+		score = 7
 	case commandFiles >= 21:
-		return 7
+		score = 5
 	case commandFiles >= 11:
-		return 5
+		score = 4
 	case commandFiles >= 5:
-		return 3
+		score = 2
 	default:
-		return 0 // < 5 commands = basically empty
+		return 0
 	}
+	// Penalty: if more than 50% of commands have lazy 1-word descriptions
+	if commandFiles > 0 && lazyDescs*2 > commandFiles {
+		score -= 2
+	}
+	// Bonus: if descriptions are mostly quality (< 20% lazy)
+	if commandFiles > 0 && lazyDescs*5 < commandFiles {
+		score += 2
+	}
+	if score > 10 {
+		score = 10
+	}
+	if score < 0 {
+		score = 0
+	}
+	return score
 }
 
 func scoreVision(dir string) int {
@@ -346,6 +529,92 @@ func scoreVision(dir string) int {
 		score = 10
 	}
 	return score
+}
+
+// sampleCommandFiles reads up to n command files from internal/cli/.
+// If n <= 0, reads all command files.
+func sampleCommandFiles(dir string, n int) []string {
+	cliDir := filepath.Join(dir, "internal", "cli")
+	entries, err := os.ReadDir(cliDir)
+	if err != nil {
+		return nil
+	}
+	infra := map[string]bool{
+		"helpers.go": true, "root.go": true, "doctor.go": true, "auth.go": true,
+		"export.go": true, "import.go": true, "search.go": true, "sync.go": true,
+		"tail.go": true, "analytics.go": true,
+	}
+	var files []string
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".go") {
+			continue
+		}
+		if infra[e.Name()] {
+			continue
+		}
+		content := readFileContent(filepath.Join(cliDir, e.Name()))
+		if content != "" {
+			files = append(files, content)
+		}
+		if n > 0 && len(files) >= n {
+			break
+		}
+	}
+	return files
+}
+
+// hasPlaceholderValues checks if file content contains common placeholder values
+// that indicate unpolished examples.
+func hasPlaceholderValues(content string) bool {
+	placeholders := []string{"abc123", `"value"`, "my-resource", "your-key-here", "USER/tap"}
+	for _, p := range placeholders {
+		if strings.Contains(content, p) {
+			return true
+		}
+	}
+	return false
+}
+
+// hasQualityDescription checks if a command file has a meaningful Short description.
+// Returns true if the description is multi-word and doesn't just repeat the verb.
+func hasQualityDescription(content string) bool {
+	idx := strings.Index(content, "Short:")
+	if idx < 0 {
+		return false
+	}
+	// Extract the Short value (between quotes)
+	rest := content[idx:]
+	q1 := strings.Index(rest, `"`)
+	if q1 < 0 {
+		return false
+	}
+	q2 := strings.Index(rest[q1+1:], `"`)
+	if q2 < 0 {
+		return false
+	}
+	desc := rest[q1+1 : q1+1+q2]
+	// Quality: must be > 10 chars and contain a space (multi-word)
+	return len(desc) > 10 && strings.Contains(desc, " ")
+}
+
+// hasLazyDescription checks if a command has a 1-word or very short description.
+func hasLazyDescription(content string) bool {
+	idx := strings.Index(content, "Short:")
+	if idx < 0 {
+		return false
+	}
+	rest := content[idx:]
+	q1 := strings.Index(rest, `"`)
+	if q1 < 0 {
+		return false
+	}
+	q2 := strings.Index(rest[q1+1:], `"`)
+	if q2 < 0 {
+		return false
+	}
+	desc := rest[q1+1 : q1+1+q2]
+	words := strings.Fields(desc)
+	return len(words) <= 2
 }
 
 func readFileContent(path string) string {
