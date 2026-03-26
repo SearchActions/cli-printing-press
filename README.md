@@ -1,6 +1,6 @@
 # CLI Printing Press
 
-Give it an API name. Get back a CLI that sees what the API's own creators missed.
+An agent infrastructure factory. Give it an API name. Get back the CLI that your agents need.
 
 ```bash
 /printing-press Discord
@@ -9,6 +9,31 @@ Give it an API name. Get back a CLI that sees what the API's own creators missed
 ```
 
 One command. 8 phases. ~1 hour. Produces a production-ready Go CLI binary + 7 deep analysis documents. REST or GraphQL - it figures it out.
+
+## Why Every API Needs a CLI
+
+In 2026, most code isn't written by humans - it's written by agents under human direction. Agents need to interact with APIs. They have two choices: import an SDK and write 15 lines of code, or run a single CLI command. The CLI wins on every dimension that matters.
+
+**Token economics.** A single MCP server exposes ~93 tools costing [~55,000 tokens](https://manveerc.substack.com/p/mcp-vs-cli-ai-agents) just to load tool definitions. At scale (10,000 sessions/day), that's $1,600/day on definitions alone. A CLI command with `--help` costs ~200 tokens. Full execution cycle: <500 tokens. That's a [100x reduction](https://manveerc.substack.com/p/mcp-vs-cli-ai-agents).
+
+**Training data.** LLMs were trained on enormous volumes of shell interactions. Unix pipe chains are deeply embedded in model weights. [MCP composition patterns have zero training data and zero production hardening](https://manveerc.substack.com/p/mcp-vs-cli-ai-agents). When an agent sees `mycli list --json | jq '.[] | select(.status == "active")'`, it doesn't need to learn anything - it already knows.
+
+**Delegation, not suggestion.** [IDE agents are designed for suggestion. CLI agents are designed for delegation.](https://www.firecrawl.dev/blog/why-clis-are-better-for-agents) Terminal agents run for hours without supervision, coordinate changes across dozens of files, and self-heal on failure. Exit code 1 means "try again." Exit code 0 means "done." No screenshots, no clicking, no fragile UI automation.
+
+**Composability.** `mycli issues list --json --select id,title | jq -r '.[].id' | xargs -I{} mycli issues close {}` - one line, three tools, zero SDK imports. [CLI is the universal interface for both humans and AI agents](https://github.com/HKUDS/CLI-Anything) because text commands match LLM output format and chain into complex workflows.
+
+Every API that gets a CLI becomes instantly accessible to every agent framework - Claude Code, Codex, Gemini CLI, open source agents. No SDK integration. No dependency management. The printing press is the factory that manufactures this interface layer, one API at a time.
+
+### The Human + Agent Model
+
+```
+Power User (architect)  -->  Agent (operator)  -->  CLI (interface)  -->  API
+  "Find stale issues"      runs the command       linear-cli stale      GraphQL
+  "Who's overloaded?"      parses JSON output     linear-cli load       queries
+  "Fix the auth bug"       chains 5 commands      linear-cli issue...   mutations
+```
+
+The human sets direction. The agent executes. The CLI is the reliable, structured, token-efficient bridge between them. The printing press builds that bridge for any API.
 
 ## The Non-Obvious Insight
 
