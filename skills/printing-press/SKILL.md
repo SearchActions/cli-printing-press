@@ -33,14 +33,29 @@ Generate the best CLI that has ever existed for any API. Five mandatory phases. 
 
 ## How This Works
 
-Every run produces the GOAT CLI through 6 mandatory phases:
+Every run produces the GOAT CLI through 7 mandatory phases + 6 comprehensive plan documents:
 
 ```
-PHASE 0: VISIONARY RESEARCH  ->  PHASE 0.5: POWER USER WORKFLOWS  ->  PHASE 1: DEEP RESEARCH  ->  PHASE 2: GENERATE  ->  PHASE 3: STEINBERGER AUDIT  ->  PHASE 4: GOAT BUILD  ->  PHASE 5: FINAL STEINBERGER
-        (3-5 min)                        (2-3 min)                        (5-8 min)                  (1-2 min)               (5-8 min)                     (5-10 min)                (2-3 min)
+PHASE 0: VISIONARY RESEARCH  ->  PHASE 0.5: POWER USER WORKFLOWS  ->  PHASE 0.7: PREDICTION ENGINE  ->  PHASE 1: DEEP RESEARCH  ->  PHASE 2: GENERATE  ->  PHASE 3: STEINBERGER AUDIT  ->  PHASE 4: GOAT BUILD  ->  PHASE 5: FINAL STEINBERGER
+        (3-5 min)                        (2-3 min)                          (15-25 min)                      (5-8 min)                  (1-2 min)               (5-8 min)                     (5-10 min)                (2-3 min)
 ```
 
-Total expected time: 20-40 minutes. Phase 4 is longer now because it builds real workflow commands, not just polishes READMEs.
+Total expected time: 35-65 minutes. Phase 0.7 adds 15-25 minutes for the prediction engine. Phase 4 is longer because it builds data layer + workflow commands.
+
+**6 Plan Artifacts Per Run:**
+
+Every phase gate produces a comprehensive plan document in `~/cli-printing-press/docs/plans/`:
+
+```
+Phase 0   -> <today>-feat-<api>-cli-visionary-research.md
+Phase 0.5 -> <today>-feat-<api>-cli-power-user-workflows.md
+Phase 0.7 -> <today>-feat-<api>-cli-data-layer-spec.md
+Phase 1   -> <today>-feat-<api>-cli-research.md
+Phase 3   -> <today>-fix-<api>-cli-audit.md
+Phase 4   -> <today>-fix-<api>-cli-goat-build-log.md
+```
+
+Each artifact chains into the next. **Read the previous phase's artifact before starting the next phase.**
 
 **The Steinberger bar:** Peter Steinberger's gogcli is the 10/10 reference. Every generated CLI is scored against it TWICE - once during audit to find gaps, once after fixes to prove improvement. The delta is the proof of work.
 
@@ -48,6 +63,70 @@ Total expected time: 20-40 minutes. Phase 4 is longer now because it builds real
 - **Grade A:** 80+/100 (80%)
 - **Grade B:** 65-79/100 (65-79%)
 - **Grade C:** 50-64/100 (50-64%)
+
+---
+
+## Artifact Writing: Plan Generation at Each Phase Gate
+
+At the end of each phase, write a comprehensive plan document. This is NOT optional - the artifacts ARE the product.
+
+**Option A: /ce:plan is available (compound-engineering plugin installed)**
+
+Try to invoke the `compound-engineering:ce:plan` skill. If it exists, use it:
+
+```
+Skill tool: compound-engineering:ce:plan
+Args: "<phase description with all research gathered so far>"
+```
+
+The /ce:plan skill produces a full plan document with frontmatter, analysis, acceptance criteria, and sources. Pass it all the research from this phase as the feature description.
+
+**Option B: Built-in plan writer (fallback when compound-engineering is NOT installed)**
+
+If /ce:plan is not available, write the artifact yourself with this structure:
+
+```markdown
+---
+title: "<Phase Name>: <API> CLI"
+type: feat
+status: active
+date: <today>
+phase: "<phase number>"
+api: "<api name>"
+---
+
+# <Phase Name>: <API> CLI
+
+## Overview
+[2-3 paragraph executive summary of what this phase discovered/decided]
+
+## Analysis
+[Full analysis with tables, scores, evidence URLs, and reasoning]
+[Every claim backed by evidence - WebSearch URLs, star counts, API docs]
+[Scoring breakdowns showing how each number was computed]
+
+## Decisions
+[What was decided and WHY - rationale for each decision]
+[What was rejected and WHY]
+
+## Concrete Outputs
+[SQL schemas, command definitions, sync strategies - real code, not pseudocode]
+[Every output validated against the actual API]
+
+## Acceptance Criteria
+- [ ] [Measurable criteria for this phase's outputs]
+
+## Sources
+- [URLs, file paths, competitor repos with star counts]
+```
+
+**CRITICAL:** The built-in writer must match /ce:plan depth:
+- Full analysis, not bullet summaries
+- Evidence with source URLs, not assertions
+- Scoring breakdowns, not just final numbers
+- Concrete SQL/code examples, not pseudocode
+- Validation proof ("I verified the API supports ?after= filtering"), not assumptions
+- 200+ lines minimum per artifact
 
 ---
 
@@ -240,7 +319,9 @@ Score < 8: **Won't-have.** Skip or future work.
 5. Architecture decisions match data profile
 6. Top 5 features scored and ranked
 
-Tell the user: "Phase 0 complete: Domain: [category]. Data profile: [volume]/[realtime]/[search]. Found [N] non-wrapper tools. Top feature: [name] (score [X]/16). Architecture: [key decision]. Proceeding to deep research."
+**Write Phase 0 Artifact:** Run the Artifact Writing plan generator (see top of skill) with all Phase 0 research as input. Write to `~/cli-printing-press/docs/plans/<today>-feat-<api>-cli-visionary-research.md`. Include: API identity, data profile, usage patterns with evidence, tool landscape, architecture decisions, top 5 features with full scoring.
+
+Tell the user: "Phase 0 complete: Domain: [category]. Data profile: [volume]/[realtime]/[search]. Found [N] non-wrapper tools. Top feature: [name] (score [X]/16). Architecture: [key decision]. Proceeding to power user workflows."
 
 ---
 
@@ -305,6 +386,147 @@ These become **mandatory Phase 4 work items**. They are NOT optional polish. The
 1. [name] - [one-line description] (score [X]/12)
 2. ...
 These will be built as real commands in Phase 4, alongside the API wrapper."
+
+**Write Phase 0.5 Artifact:** Run the Artifact Writing plan generator (see top of skill) with all Phase 0.5 analysis as input. Write to `~/cli-printing-press/docs/plans/<today>-feat-<api>-cli-power-user-workflows.md`. Include: API archetype, all 10-15 workflow ideas, validation results, full scoring table, top 7 with implementation notes.
+
+---
+
+# PHASE 0.7: POWER USER PREDICTION ENGINE
+
+## THIS PHASE IS MANDATORY. DO NOT SKIP IT.
+
+The generator produces API wrappers. Power users want a local data layer - domain-specific SQLite tables, incremental sync, full-text search with domain filters, raw SQL access, and trend detection. This phase predicts that data layer from the API surface + social signals, WITHOUT looking at competitors (that's Phase 1's job).
+
+**Read the Phase 0 and Phase 0.5 artifacts before starting this phase.**
+
+### Step 0.7a: Entity Classification
+
+Map every API resource into one of four types by reading the OpenAPI spec or Phase 0's entity list:
+
+| Type | Signal | Example | Persistence Need |
+|---|---|---|---|
+| **Accumulating** | Grows over time, has timestamps, paginated lists | Messages, Issues, Audit Logs, Commits | SQLite table + incremental sync |
+| **Reference** | Changes rarely, small cardinality, referenced by other entities | Users, Teams, Roles, Labels, Channels | SQLite table + periodic refresh |
+| **Append-only** | Never edited, only created | Events, Webhooks, Notifications | SQLite table + tail command |
+| **Ephemeral** | Short-lived, not worth persisting | OAuth tokens, Rate limit status, Gateway info | API-only, no persistence |
+
+**Heuristics:**
+- Has `created_at`/`timestamp` + paginated list endpoint -> Accumulating
+- Referenced by 3+ other entities via `_id` fields -> Reference
+- Has no UPDATE/PATCH endpoint -> Append-only
+- No list endpoint or < 100 expected records -> Ephemeral
+- Has `updated_at` or `modified_at` -> needs incremental sync cursor
+
+**Output:** Entity classification table with type, estimated volume, update frequency, and key temporal field for ALL API resources.
+
+### Step 0.7b: Social Signal Mining for Data Patterns
+
+Find evidence of what data power users actually store locally. Run 7 parallel WebSearches:
+
+1. **WebSearch**: `"<API name>" export OR backup OR archive site:github.com`
+2. **WebSearch**: `"<API name>" SQLite OR database OR local site:github.com`
+3. **WebSearch**: `"<API name>" analytics OR dashboard OR metrics site:github.com`
+4. **WebSearch**: `"<API name>" "I wish" OR "would be nice" OR "feature request" data`
+5. **WebSearch**: `"<API name>" offline OR search OR "full text" site:reddit.com OR site:news.ycombinator.com`
+6. **WebSearch**: `"<API name>" trend OR pattern OR anomaly detection`
+7. **WebSearch**: `"<API name>" graph OR visualization OR dependency`
+
+**For each finding, extract:**
+- What entities they store locally
+- What queries they run (joins, aggregations, time filters)
+- What temporal patterns they track (trends, anomalies, velocity)
+- What cross-entity relationships they need
+
+**Score using Phase 0 evidence framework.** Anything with score >= 6 informs the data layer.
+
+### Step 0.7c: Data Gravity Scoring
+
+Rank entities by how much value they'd have in a local SQLite database.
+
+**Formula:** `DataGravity = Volume(0-3) + QueryFrequency(0-3) + JoinDemand(0-2) + SearchNeed(0-2) + TemporalValue(0-2)`
+
+| Factor | 0 | 1 | 2 | 3 |
+|---|---|---|---|---|
+| **Volume** | < 100 records | 100-10k | 10k-1M | > 1M |
+| **QueryFrequency** | Rarely queried | Monthly | Weekly | Daily |
+| **JoinDemand** | No references | 1-2 entities reference it | 3-4 | 5+ |
+| **SearchNeed** | No text fields | 1 text field | 2-3 text fields | Primary text content |
+| **TemporalValue** | No time dimension | Created date only | Updated + trends | Core to time-series analysis |
+
+**Thresholds:**
+- Score >= 8: **Primary entity** - gets its own SQLite table with proper columns, FTS5 if text-heavy
+- Score 5-7: **Support entity** - gets a simpler table
+- Score < 5: **API-only** - no local persistence
+
+Score EVERY entity from Step 0.7a. Show the full breakdown.
+
+### Step 0.7d: Schema + Sync + Search Specification
+
+For each Primary entity (score >= 8), produce:
+
+**1. SQLite Schema:**
+- Extract columns from the API's response schema (NOT just id + JSON blob)
+- Include foreign key columns for joins (e.g., `channel_id`, `author_id`)
+- Include the temporal field for sync cursors
+- Add indexes on foreign keys and temporal fields
+- Create FTS5 virtual table on text fields (title, description, content, body, name)
+- Keep a `data JSON NOT NULL` column for the full API response
+
+**2. Sync Strategy:**
+- Identify the incremental sync cursor (timestamp field, snowflake ID, cursor pagination)
+- **VALIDATE:** Check that the API supports filtering by this cursor - look for `since`, `after`, `updated_after`, `before` query params in the spec
+- Determine batch size from API's max `limit` parameter
+- Check if API has WebSocket/SSE/Gateway - note for tail command
+- If the API doesn't support cursor filtering, fall back to full sync + local dedup
+
+**3. Search Specification:**
+- List which text fields to extract into FTS5
+- Define domain-specific search filters as SQL WHERE clauses
+- Map CLI flags to SQL: `--channel` -> `WHERE channel_id = ?`, `--author` -> `WHERE author_id = ?`
+- **VALIDATE:** Confirm these fields actually appear in API list/get responses
+
+**4. Compound Queries:**
+- Define 3-5 cross-entity queries (e.g., "messages by author in channel in last N days")
+- Validate join columns exist in both tables
+- These become Phase 4 workflow commands that use local DB instead of live API
+
+**5. Tail Strategy:**
+
+| Method | When to Use |
+|---|---|
+| WebSocket/Gateway | API has it (Discord Gateway, Slack RTM) |
+| SSE | API has it (GitHub, Linear webhooks) |
+| REST Polling | Fallback - GET with ?since= cursor |
+
+Decide which method this API supports. If WebSocket/SSE, the tail command should use it instead of REST polling.
+
+### Step 0.7e: Write the Data Layer Specification Artifact
+
+**Run the Artifact Writing plan generator** (see top of skill) with all Phase 0.7 analysis as input. Write to `~/cli-printing-press/docs/plans/<today>-feat-<api>-cli-data-layer-spec.md`.
+
+The artifact MUST include:
+- Entity classification table for every API resource
+- Data gravity scores with full breakdown per entity
+- Complete SQLite schema (CREATE TABLE + CREATE INDEX + FTS5)
+- Sync strategy with cursor validation proof
+- Domain-specific search filters mapped to SQL WHERE clauses
+- 3-5 compound cross-entity queries
+- Tail strategy decision with justification
+- Commands to build in Phase 4 Priority 0
+
+### PHASE GATE 0.7
+
+**STOP.** Verify ALL of these before proceeding:
+1. Entity classification table with type and volume estimates for every API resource
+2. At least 3 social signals with evidence scores >= 6
+3. Data gravity scores computed, with >= 1 primary entity (score >= 8)
+4. SQLite schema with proper columns (NOT generic JSON blobs) for each primary entity
+5. FTS5 virtual tables for entities with text fields
+6. Sync strategy with cursor fields validated against actual API filter params
+7. Domain-specific search filters mapped to SQL WHERE clauses
+8. At least 3 compound queries validated (joins work, columns exist)
+
+Tell the user: "Phase 0.7 complete: [N] primary entities for SQLite ([list]), [M] compound queries validated. Sync via [cursor type]. FTS5 on [fields]. Key prediction: [most valuable data-layer feature]. Proceeding to deep research."
 
 ---
 
@@ -427,6 +649,8 @@ date: <today>
 3. At least 2 user quotes or pain points documented
 4. Strategic justification answers "why should this exist?"
 5. Target command count is set
+
+**Write Phase 1 Artifact:** Run the Artifact Writing plan generator with all Phase 1 research as input. Write to `~/cli-printing-press/docs/plans/<today>-feat-<api>-cli-research.md`. Include: spec discovery, deep competitor analysis with quotes, demand signals, strategic justification, target command count.
 
 Tell the user: "Phase 1 complete: Found [spec/no spec], [N] competitors. Best: [name] ([stars] stars, [commands] commands, last commit [date]). Strategic angle: [1-sentence justification]. Proceeding to generation."
 
@@ -619,7 +843,9 @@ Include ALL of:
 4. Complex body fields have a plan (not just "limitation")
 5. Baseline total score is recorded
 
-Tell the user: "Phase 3 complete: Baseline Steinberger Score: [X]/100 (Grade [X]). Found [N] tactical fixes + [M] GOAT improvements. Top improvement: [description]. Proceeding to fixes."
+**Write Phase 3 Artifact:** Run the Artifact Writing plan generator with all Phase 3 analysis as input. Write to `~/cli-printing-press/docs/plans/<today>-fix-<api>-cli-audit.md`. Include: scorecard baseline, full 11-dimension hand-scored table, GOAT improvement plan, complex body field plan, data layer integration notes from Phase 0.7.
+
+Tell the user: "Phase 3 complete: Baseline Steinberger Score: [X]/100 (Grade [X]). Found [N] tactical fixes + [M] GOAT improvements. Top improvement: [description]. Proceeding to GOAT build."
 
 ---
 
@@ -627,13 +853,59 @@ Tell the user: "Phase 3 complete: Baseline Steinberger Score: [X]/100 (Grade [X]
 
 ## THIS PHASE IS MANDATORY.
 
-**The generator output is scaffolding, not the product. The workflows are the product.**
+**The generator output is scaffolding, not the product. The data layer + workflows are the product.**
 
-Execute in this priority order. Do NOT skip Priority 1 to polish the README.
+**Read the Phase 0.7 Data Layer Specification and Phase 3 Audit artifacts before starting.**
 
-### Priority 1: Power User Workflows (from Phase 0.5)
+Execute in this priority order. Do NOT skip Priority 0 to go straight to workflows.
 
-This is the most important work in the entire pipeline. Implement the top 5-7 workflows identified in Phase 0.5 as real, hand-written Go commands.
+### Priority 0: Data Layer Foundation (from Phase 0.7)
+
+**This is the most important work in the entire pipeline.** Replace the generic store with domain-specific tables.
+
+1. **Replace `internal/store/store.go`** with domain-specific schema from Phase 0.7 spec:
+   - CREATE TABLE with proper columns for each Primary entity (not JSON blobs)
+   - CREATE INDEX on foreign keys and temporal fields
+   - CREATE VIRTUAL TABLE ... USING fts5() on text fields
+   - UpsertMessage/UpsertMember/etc methods that extract fields from JSON
+
+2. **Rewrite `sync` command** with domain-aware sync:
+   - Use the cursor field identified in Phase 0.7 (e.g., snowflake ID, updatedAt)
+   - Add `--guild`/`--team`/`--project` scoping flags (domain-specific)
+   - Add `--since` time filter
+   - Paginate with the validated cursor params
+
+3. **Add domain-specific search filters:**
+   - Map Phase 0.7's filter table into search command flags
+   - `--channel`, `--author`, `--team`, etc -> SQL WHERE clauses
+   - FTS5 on extracted text content, not raw JSON
+
+4. **Add `sql` command** for raw read-only queries:
+   ```go
+   func newSqlCmd(flags *rootFlags) *cobra.Command {
+       cmd := &cobra.Command{
+           Use:   "sql <query>",
+           Short: "Run read-only SQL queries against the local database",
+           RunE: func(cmd *cobra.Command, args []string) error {
+               // Open DB, execute query, print results as table or JSON
+           },
+       }
+   }
+   ```
+
+5. **Add entity-specific list commands** (e.g., `messages`, `members`):
+   - Query local SQLite, not the API
+   - Support `--channel`, `--author`, `--days`, `--hours`, `--since` filters
+   - Support `--sync` flag to trigger on-demand sync before querying
+
+6. **Update tail command** based on Phase 0.7's tail strategy:
+   - If WebSocket/Gateway: implement real-time connection
+   - If SSE: implement EventSource reader
+   - If REST polling: keep current implementation but use domain-aware cursors
+
+### Priority 1: Power User Workflows (from Phase 0.5) - NOW powered by local DB
+
+Implement the top 5-7 workflows identified in Phase 0.5 as real, hand-written Go commands. **Where possible, query the local SQLite database instead of making live API calls.** This makes workflows instant and avoids rate limits.
 
 For each workflow:
 1. **Create a dedicated command file** (e.g., `internal/cli/stale.go`, `internal/cli/velocity.go`)
@@ -695,13 +967,19 @@ cd ~/cli-printing-press/<api>-cli && go build ./... && go vet ./... && echo "ALL
 ### PHASE GATE 4
 
 **STOP.** Verify:
-1. At least 3 workflow commands implemented (from Phase 0.5)
-2. Workflow commands combine 2+ API calls each
-3. Scorecard gaps addressed
-4. `go build ./...` and `go vet ./...` pass
-5. README cookbook includes workflow examples
+1. Data layer implemented: domain-specific SQLite tables (NOT generic JSON blobs)
+2. Sync command uses domain-aware cursors (validated in Phase 0.7)
+3. Search supports domain-specific filters (--channel, --author, --team, etc.)
+4. `sql` command exists for raw read-only queries
+5. At least 3 workflow commands implemented (from Phase 0.5)
+6. Workflow commands use local DB where possible (not just live API calls)
+7. Scorecard gaps addressed
+8. `go build ./...` and `go vet ./...` pass
+9. README cookbook includes data layer + workflow examples
 
-Tell the user: "Phase 4 complete: Built [N] workflow commands, applied [M] scorecard fixes. Top workflow: [name]. Compilation verified. Proceeding to final scoring."
+**Write Phase 4 Artifact:** Run the Artifact Writing plan generator with all Phase 4 work as input. Write to `~/cli-printing-press/docs/plans/<today>-fix-<api>-cli-goat-build-log.md`. Include: data layer implementation details, workflow commands built, scorecard fixes, what was skipped, before/after scorecard comparison.
+
+Tell the user: "Phase 4 complete: Built [N] data layer tables + [M] workflow commands, applied [K] scorecard fixes. Data layer: [list tables]. Top workflow: [name]. Compilation verified. Proceeding to final scoring."
 
 ---
 
@@ -836,3 +1114,9 @@ These phrases indicate a phase was shortcut. If you catch yourself writing them,
 - "I'll polish the README instead of building workflows" (Phase 4 Priority 1 is workflows. README is Priority 3. Do not skip ahead.)
 - "The Phase 0.5 workflows are future work" (They are the product. Build them now or the CLI is just an API wrapper.)
 - "316 commands is better than 12" (discrawl has 12 commands and 539 stars. Depth beats breadth. Build the workflows.)
+- "The API doesn't need local persistence" (Check data gravity scores from Phase 0.7. If any entity scores >= 8, it needs SQLite with proper columns.)
+- "FTS5 is overkill for this API" (If any entity has 2+ text fields AND data gravity >= 8, it needs FTS5. That's how search works.)
+- "REST polling is fine for tail" (Check if the API has WebSocket/SSE/Gateway. If yes, use it. REST polling misses events and wastes rate limit budget.)
+- "The generic store is good enough" (Domain-native tables ALWAYS beat JSON blob tables. A `messages` table with `channel_id`, `author_id`, `content` columns enables joins and filters that JSON blobs can't. Write the schema.)
+- "I'll build the data layer later" (Phase 0.7 runs BEFORE generation. The data layer spec informs Phase 4 Priority 0. Build it first, then workflows use it.)
+- "The artifact is just documentation" (The 6 plan artifacts ARE the product. They capture reasoning, evidence, and decisions. The generated CLI is a side effect.)
