@@ -147,7 +147,14 @@ func (c *Client) do(method, path string, params map[string]string, body any) (js
 			return nil, err
 		}
 		if authHeader != "" {
-			req.Header.Set("Authorization", authHeader)
+{{- if and .Auth .Auth.In (eq .Auth.In "query")}}
+			// API key goes in query parameter
+			q := req.URL.Query()
+			q.Set("{{if .Auth.Header}}{{.Auth.Header}}{{else}}api_key{{end}}", authHeader)
+			req.URL.RawQuery = q.Encode()
+{{- else}}
+			req.Header.Set("{{if .Auth.Header}}{{.Auth.Header}}{{else}}Authorization{{end}}", authHeader)
+{{- end}}
 		}
 		if bodyBytes != nil {
 			req.Header.Set("Content-Type", "application/json")

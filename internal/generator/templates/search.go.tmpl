@@ -9,7 +9,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/USER/{{.Name}}-cli/internal/store"
+	"github.com/{{.Owner}}/{{.Name}}-cli/internal/store"
 	"github.com/spf13/cobra"
 )
 
@@ -47,7 +47,17 @@ Data must be synced first with the sync command. Searches are instant
 			}
 			defer db.Close()
 
-			results, err := db.Search(query, limit)
+			var results []json.RawMessage
+			switch resourceType {
+{{- range .Tables}}
+{{- if .FTS5}}
+			case "{{.Name}}":
+				results, err = db.Search{{pascal .Name}}(query, limit)
+{{- end}}
+{{- end}}
+			default:
+				results, err = db.Search(query, limit)
+			}
 			if err != nil {
 				return fmt.Errorf("search failed: %w", err)
 			}

@@ -1,231 +1,522 @@
 package pipeline
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
+	"regexp"
+	"sort"
 	"strings"
-	"time"
 )
 
-// DogfoodResults holds the output of the dogfood phase.
-type DogfoodResults struct {
-	Tier           int             `json:"tier"`
-	TotalCommands  int             `json:"total_commands"`
-	PassedCommands int             `json:"passed_commands"`
-	FailedCommands int             `json:"failed_commands"`
-	Commands       []CommandResult `json:"commands"`
-	Score          int             `json:"score"` // 0-50
+type DogfoodReport struct {
+	Dir           string          `json:"dir"`
+	SpecPath      string          `json:"spec_path,omitempty"`
+	Verdict       string          `json:"verdict"`
+	PathCheck     PathCheckResult `json:"path_check"`
+	AuthCheck     AuthCheckResult `json:"auth_check"`
+	DeadFlags     DeadCodeResult  `json:"dead_flags"`
+	DeadFuncs     DeadCodeResult  `json:"dead_functions"`
+	PipelineCheck PipelineResult  `json:"pipeline_check"`
+	Issues        []string        `json:"issues"`
 }
 
-// CommandResult records a single dogfood command execution.
-type CommandResult struct {
-	Tier       int    `json:"tier"`
-	Command    string `json:"command"`
-	ExitCode   int    `json:"exit_code"`
-	StdoutFile string `json:"stdout_file"`
-	Stderr     string `json:"stderr"`
-	DurationMs int    `json:"duration_ms"`
-	Pass       bool   `json:"pass"`
+type PathCheckResult struct {
+	Tested  int      `json:"tested"`
+	Valid   int      `json:"valid"`
+	Invalid []string `json:"invalid,omitempty"`
+	Pct     int      `json:"valid_pct"`
 }
 
-// DogfoodConfig controls what tiers to run.
-type DogfoodConfig struct {
-	BinaryPath    string
-	PipelineDir   string
-	MaxTier       int           // 1, 2, or 3
-	SandboxSafe   bool          // from KnownSpecs
-	CmdTimeout    time.Duration // per-command timeout
-	Resources     []string      // resource names from the generated CLI
-	AuthEnvVars   []string      // env vars that indicate credentials are available
+type AuthCheckResult struct {
+	SpecScheme   string `json:"spec_scheme"`
+	GeneratedFmt string `json:"generated_format"`
+	Match        bool   `json:"match"`
+	Detail       string `json:"detail"`
 }
 
-// RunDogfood executes tiered dogfood testing against a generated CLI binary.
-func RunDogfood(cfg DogfoodConfig) (*DogfoodResults, error) {
-	if cfg.CmdTimeout == 0 {
-		cfg.CmdTimeout = 15 * time.Second
-	}
-	if cfg.MaxTier == 0 {
-		cfg.MaxTier = 1
+type DeadCodeResult struct {
+	Total int      `json:"total"`
+	Dead  int      `json:"dead"`
+	Items []string `json:"items,omitempty"`
+}
+
+type PipelineResult struct {
+	SyncCallsDomain   bool   `json:"sync_calls_domain"`
+	SearchCallsDomain bool   `json:"search_calls_domain"`
+	DomainTables      int    `json:"domain_tables"`
+	Detail            string `json:"detail"`
+}
+
+type openAPISpec struct {
+	Paths      map[string]json.RawMessage `json:"paths"`
+	Components struct {
+		SecuritySchemes map[string]struct {
+			Type   string `json:"type"`
+			Scheme string `json:"scheme"`
+		} `json:"securitySchemes"`
+	} `json:"components"`
+}
+
+func RunDogfood(dir, specPath string) (*DogfoodReport, error) {
+	report := &DogfoodReport{
+		Dir:      dir,
+		SpecPath: specPath,
+		Verdict:  "PASS",
 	}
 
-	evidenceDir := filepath.Join(cfg.PipelineDir, "dogfood-evidence")
-	if err := os.MkdirAll(evidenceDir, 0o755); err != nil {
-		return nil, fmt.Errorf("creating evidence dir: %w", err)
-	}
-
-	results := &DogfoodResults{Tier: 1}
-
-	// Tier 1: No auth required - always runs
-	tier1Commands := buildTier1Commands(cfg.BinaryPath, cfg.Resources)
-	for _, cmd := range tier1Commands {
-		cr := runCommand(cfg.BinaryPath, cmd, 1, cfg.CmdTimeout, evidenceDir)
-		results.Commands = append(results.Commands, cr)
-	}
-
-	// Tier 2: Read-only with auth - if credentials available and tier >= 2
-	if cfg.MaxTier >= 2 && hasCredentials(cfg.AuthEnvVars) {
-		results.Tier = 2
-		tier2Dir := filepath.Join(evidenceDir, "tier2-reads")
-		os.MkdirAll(tier2Dir, 0o755)
-		tier2Commands := buildTier2Commands(cfg.BinaryPath, cfg.Resources)
-		for _, cmd := range tier2Commands {
-			cr := runCommand(cfg.BinaryPath, cmd, 2, cfg.CmdTimeout, tier2Dir)
-			results.Commands = append(results.Commands, cr)
+	var spec *openAPISpec
+	if specPath != "" {
+		loaded, err := loadDogfoodOpenAPISpec(specPath)
+		if err != nil {
+			return nil, err
 		}
-	}
+		spec = loaded
 
-	// Tier 3: Sandbox write ops - only if sandbox safe and tier >= 3
-	if cfg.MaxTier >= 3 && cfg.SandboxSafe {
-		results.Tier = 3
-		tier3Dir := filepath.Join(evidenceDir, "tier3-writes")
-		os.MkdirAll(tier3Dir, 0o755)
-		// Tier 3 is API-specific and would need per-API test plans.
-		// For now, just record that tier 3 was available.
-		fmt.Fprintf(os.Stderr, "info: Tier 3 sandbox testing available but no test plan defined\n")
-	}
-
-	// Compute results
-	for _, cr := range results.Commands {
-		results.TotalCommands++
-		if cr.Pass {
-			results.PassedCommands++
-		} else {
-			results.FailedCommands++
-		}
-	}
-
-	results.Score = computeDogfoodScore(results)
-
-	// Write results
-	if err := writeDogfoodResults(results, cfg.PipelineDir); err != nil {
-		return results, fmt.Errorf("writing results: %w", err)
-	}
-
-	return results, nil
-}
-
-// LoadDogfoodResults reads dogfood-results.json from a pipeline directory.
-func LoadDogfoodResults(pipelineDir string) (*DogfoodResults, error) {
-	data, err := os.ReadFile(filepath.Join(pipelineDir, "dogfood-results.json"))
-	if err != nil {
-		return nil, err
-	}
-	var r DogfoodResults
-	if err := json.Unmarshal(data, &r); err != nil {
-		return nil, err
-	}
-	return &r, nil
-}
-
-func buildTier1Commands(binary string, resources []string) []dogfoodCmd {
-	cmds := []dogfoodCmd{
-		{args: []string{"--help"}, evidenceFile: "tier1-help.txt"},
-		{args: []string{"version"}, evidenceFile: "tier1-version.txt"},
-		{args: []string{"doctor"}, evidenceFile: "tier1-doctor.txt"},
-	}
-	// Add per-resource help commands
-	resDir := "tier1-resources"
-	for _, r := range resources {
-		cmds = append(cmds, dogfoodCmd{
-			args:         []string{r, "--help"},
-			evidenceFile: filepath.Join(resDir, r+"-help.txt"),
-		})
-	}
-	return cmds
-}
-
-func buildTier2Commands(binary string, resources []string) []dogfoodCmd {
-	var cmds []dogfoodCmd
-	for _, r := range resources {
-		cmds = append(cmds, dogfoodCmd{
-			args:         []string{r, "list", "--json"},
-			evidenceFile: r + "-list.txt",
-		})
-	}
-	return cmds
-}
-
-type dogfoodCmd struct {
-	args         []string
-	evidenceFile string
-}
-
-func runCommand(binaryPath string, dc dogfoodCmd, tier int, timeout time.Duration, evidenceDir string) CommandResult {
-	cr := CommandResult{
-		Tier:    tier,
-		Command: strings.Join(dc.args, " "),
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
-	defer cancel()
-
-	start := time.Now()
-	cmd := exec.CommandContext(ctx, binaryPath, dc.args...)
-	stdout, err := cmd.CombinedOutput()
-	cr.DurationMs = int(time.Since(start).Milliseconds())
-
-	if err != nil {
-		if exitErr, ok := err.(*exec.ExitError); ok {
-			cr.ExitCode = exitErr.ExitCode()
-		} else {
-			cr.ExitCode = -1
-		}
-		cr.Stderr = err.Error()
-		cr.Pass = false
+		report.PathCheck = checkPaths(dir, spec.Paths)
+		report.AuthCheck = checkAuth(dir, spec.Components.SecuritySchemes)
 	} else {
-		cr.ExitCode = 0
-		cr.Pass = true
+		report.AuthCheck = AuthCheckResult{
+			Match:  true,
+			Detail: "spec not provided; auth protocol check skipped",
+		}
 	}
 
-	// Write evidence file
-	evidencePath := filepath.Join(evidenceDir, dc.evidenceFile)
-	os.MkdirAll(filepath.Dir(evidencePath), 0o755)
-	os.WriteFile(evidencePath, stdout, 0o644)
-	cr.StdoutFile = evidencePath
+	report.DeadFlags = checkDeadFlags(dir)
+	report.DeadFuncs = checkDeadFunctions(dir)
+	report.PipelineCheck = checkPipelineIntegrity(dir)
+	report.Issues = collectDogfoodIssues(report, spec != nil)
+	report.Verdict = deriveDogfoodVerdict(report, spec != nil)
 
-	return cr
+	if err := writeDogfoodResults(report, dir); err != nil {
+		return nil, err
+	}
+
+	return report, nil
 }
 
-func hasCredentials(envVars []string) bool {
-	for _, v := range envVars {
-		if os.Getenv(v) != "" {
+func LoadDogfoodResults(dir string) (*DogfoodReport, error) {
+	data, err := os.ReadFile(filepath.Join(dir, "dogfood-results.json"))
+	if err != nil {
+		return nil, err
+	}
+
+	var report DogfoodReport
+	if err := json.Unmarshal(data, &report); err != nil {
+		return nil, err
+	}
+	return &report, nil
+}
+
+func writeDogfoodResults(report *DogfoodReport, dir string) error {
+	data, err := json.MarshalIndent(report, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(dir, "dogfood-results.json"), data, 0o644)
+}
+
+func loadDogfoodOpenAPISpec(specPath string) (*openAPISpec, error) {
+	data, err := os.ReadFile(specPath)
+	if err != nil {
+		return nil, fmt.Errorf("reading spec: %w", err)
+	}
+
+	var spec openAPISpec
+	if err := json.Unmarshal(data, &spec); err != nil {
+		return nil, fmt.Errorf("parsing spec JSON: %w", err)
+	}
+	return &spec, nil
+}
+
+func checkPaths(dir string, paths map[string]json.RawMessage) PathCheckResult {
+	result := PathCheckResult{}
+	if len(paths) == 0 {
+		return result
+	}
+
+	cliDir := filepath.Join(dir, "internal", "cli")
+	files := listGoFiles(cliDir)
+	var commandFiles []string
+	for _, file := range files {
+		base := filepath.Base(file)
+		switch base {
+		case "root.go", "helpers.go", "doctor.go", "auth.go", "dogfood.go", "scorecard.go", "vision.go":
+			continue
+		default:
+			commandFiles = append(commandFiles, file)
+		}
+	}
+	sort.Strings(commandFiles)
+	if len(commandFiles) > 10 {
+		commandFiles = commandFiles[:10]
+	}
+
+	specPatterns := compileSpecPathPatterns(paths)
+	pathAssignmentRe := regexp.MustCompile(`(?m)\bpath\s*(?::=|=)\s*"([^"]+)"`)
+
+	for _, file := range commandFiles {
+		content, err := os.ReadFile(file)
+		if err != nil {
+			continue
+		}
+
+		matches := pathAssignmentRe.FindAllStringSubmatch(string(content), -1)
+		for _, match := range matches {
+			path := match[1]
+			result.Tested++
+			if pathMatchesSpec(path, specPatterns) {
+				result.Valid++
+				continue
+			}
+			result.Invalid = append(result.Invalid, path)
+		}
+	}
+
+	if result.Tested > 0 {
+		result.Pct = (result.Valid * 100) / result.Tested
+	}
+	result.Invalid = uniqueSorted(result.Invalid)
+	return result
+}
+
+func checkAuth(dir string, schemes map[string]struct {
+	Type   string `json:"type"`
+	Scheme string `json:"scheme"`
+}) AuthCheckResult {
+	result := AuthCheckResult{
+		Match:  true,
+		Detail: "no recognized auth scheme in spec",
+	}
+
+	expectedPrefix := ""
+	for name, scheme := range schemes {
+		if strings.Contains(strings.ToLower(name), "bot") {
+			result.SpecScheme = name + ` scheme (expects "Bot " prefix)`
+			expectedPrefix = "Bot "
+			break
+		}
+		if strings.EqualFold(scheme.Type, "http") && strings.EqualFold(scheme.Scheme, "bearer") {
+			result.SpecScheme = `http bearer scheme (expects "Bearer " prefix)`
+			expectedPrefix = "Bearer "
+		}
+	}
+
+	clientData, err := os.ReadFile(filepath.Join(dir, "internal", "client", "client.go"))
+	if err != nil {
+		result.Match = false
+		result.Detail = fmt.Sprintf("failed to read client.go: %v", err)
+		return result
+	}
+
+	clientSource := string(clientData)
+	switch {
+	case strings.Contains(clientSource, `"Bot "`):
+		result.GeneratedFmt = "Bot "
+	case strings.Contains(clientSource, `"Bearer "`):
+		result.GeneratedFmt = "Bearer "
+	default:
+		result.GeneratedFmt = "unknown"
+	}
+
+	if expectedPrefix == "" {
+		result.Detail = "spec not provided or no bot/bearer scheme detected"
+		return result
+	}
+
+	result.Match = result.GeneratedFmt == expectedPrefix
+	if result.Match {
+		result.Detail = fmt.Sprintf(`spec and generated client both use %q`, strings.TrimSpace(expectedPrefix))
+	} else {
+		result.Detail = fmt.Sprintf(`spec expects %q but generated client uses %q`, strings.TrimSpace(expectedPrefix), strings.TrimSpace(result.GeneratedFmt))
+	}
+	return result
+}
+
+func checkDeadFlags(dir string) DeadCodeResult {
+	rootData, err := os.ReadFile(filepath.Join(dir, "internal", "cli", "root.go"))
+	if err != nil {
+		return DeadCodeResult{}
+	}
+
+	fieldRe := regexp.MustCompile(`&flags\.(\w+)`)
+	matches := fieldRe.FindAllStringSubmatch(string(rootData), -1)
+	if len(matches) == 0 {
+		return DeadCodeResult{}
+	}
+
+	fields := make(map[string]struct{})
+	for _, match := range matches {
+		fields[match[1]] = struct{}{}
+	}
+
+	files := listGoFiles(filepath.Join(dir, "internal", "cli"))
+	var otherSources []string
+	for _, file := range files {
+		if filepath.Base(file) == "root.go" {
+			continue
+		}
+		data, err := os.ReadFile(file)
+		if err != nil {
+			continue
+		}
+		otherSources = append(otherSources, string(data))
+	}
+
+	result := DeadCodeResult{Total: len(fields)}
+	for _, field := range sortedKeys(fields) {
+		needle := "flags." + field
+		if containsAny(otherSources, needle) {
+			continue
+		}
+		result.Dead++
+		result.Items = append(result.Items, field)
+	}
+	return result
+}
+
+func checkDeadFunctions(dir string) DeadCodeResult {
+	helpersPath := filepath.Join(dir, "internal", "cli", "helpers.go")
+	data, err := os.ReadFile(helpersPath)
+	if err != nil {
+		return DeadCodeResult{}
+	}
+
+	funcRe := regexp.MustCompile(`(?m)^func\s+([A-Za-z_]\w*)\s*\(`)
+	matches := funcRe.FindAllStringSubmatch(string(data), -1)
+	if len(matches) == 0 {
+		return DeadCodeResult{}
+	}
+
+	names := make(map[string]struct{})
+	for _, match := range matches {
+		names[match[1]] = struct{}{}
+	}
+
+	files := listGoFiles(filepath.Join(dir, "internal", "cli"))
+	var otherSources []string
+	for _, file := range files {
+		if filepath.Base(file) == "helpers.go" {
+			continue
+		}
+		content, err := os.ReadFile(file)
+		if err != nil {
+			continue
+		}
+		otherSources = append(otherSources, string(content))
+	}
+
+	result := DeadCodeResult{Total: len(names)}
+	for _, name := range sortedKeys(names) {
+		callRe := regexp.MustCompile(`\b` + regexp.QuoteMeta(name) + `\s*\(`)
+		used := false
+		for _, source := range otherSources {
+			if callRe.MatchString(source) {
+				used = true
+				break
+			}
+		}
+		if used {
+			continue
+		}
+		result.Dead++
+		result.Items = append(result.Items, name)
+	}
+	return result
+}
+
+func checkPipelineIntegrity(dir string) PipelineResult {
+	result := PipelineResult{
+		Detail: "sync/search/store files not found",
+	}
+
+	syncData, _ := os.ReadFile(filepath.Join(dir, "internal", "cli", "sync.go"))
+	searchData, _ := os.ReadFile(filepath.Join(dir, "internal", "cli", "search.go"))
+	storeData, _ := os.ReadFile(filepath.Join(dir, "internal", "store", "store.go"))
+
+	syncSource := string(syncData)
+	searchSource := string(searchData)
+	storeSource := string(storeData)
+
+	domainUpsertRe := regexp.MustCompile(`\.Upsert[A-Z]\w*\s*\(`)
+	domainSearchRe := regexp.MustCompile(`\.Search[A-Z]\w*\s*\(`)
+
+	result.SyncCallsDomain = domainUpsertRe.MatchString(syncSource)
+	result.SearchCallsDomain = domainSearchRe.MatchString(searchSource)
+	result.DomainTables = countDomainTables(storeSource)
+
+	var parts []string
+	switch {
+	case result.SyncCallsDomain:
+		parts = append(parts, "sync uses domain-specific Upsert methods")
+	case strings.Contains(syncSource, ".Upsert("):
+		parts = append(parts, "sync uses generic Upsert only")
+	default:
+		parts = append(parts, "sync Upsert calls not found")
+	}
+
+	switch {
+	case result.SearchCallsDomain:
+		parts = append(parts, "search uses domain-specific Search methods")
+	case strings.Contains(searchSource, ".Search("):
+		parts = append(parts, "search uses generic Search only")
+	default:
+		parts = append(parts, "search methods not found")
+	}
+
+	if storeSource != "" {
+		parts = append(parts, fmt.Sprintf("%d domain tables found", result.DomainTables))
+	}
+
+	result.Detail = strings.Join(parts, "; ")
+	return result
+}
+
+func deriveDogfoodVerdict(report *DogfoodReport, hasSpec bool) string {
+	if hasSpec && report.PathCheck.Tested > 0 && report.PathCheck.Pct < 70 {
+		return "FAIL"
+	}
+	if hasSpec && !report.AuthCheck.Match {
+		return "FAIL"
+	}
+	if report.DeadFlags.Dead >= 3 {
+		return "FAIL"
+	}
+	if report.DeadFlags.Dead >= 1 && report.DeadFlags.Dead <= 2 {
+		return "WARN"
+	}
+	if report.DeadFuncs.Dead >= 1 {
+		return "WARN"
+	}
+	if !report.PipelineCheck.SyncCallsDomain {
+		return "WARN"
+	}
+	return "PASS"
+}
+
+func collectDogfoodIssues(report *DogfoodReport, hasSpec bool) []string {
+	var issues []string
+	if hasSpec && report.PathCheck.Tested > 0 && report.PathCheck.Pct < 70 {
+		issues = append(issues, fmt.Sprintf("%d%% path validity against spec", report.PathCheck.Pct))
+	}
+	if hasSpec && !report.AuthCheck.Match {
+		issues = append(issues, "auth protocol mismatch")
+	}
+	if report.DeadFlags.Dead >= 3 {
+		issues = append(issues, fmt.Sprintf("%d dead flags found", report.DeadFlags.Dead))
+	} else if report.DeadFlags.Dead > 0 {
+		issues = append(issues, fmt.Sprintf("%d dead flags found", report.DeadFlags.Dead))
+	}
+	if report.DeadFuncs.Dead > 0 {
+		issues = append(issues, fmt.Sprintf("%d dead helper functions found", report.DeadFuncs.Dead))
+	}
+	if !report.PipelineCheck.SyncCallsDomain {
+		issues = append(issues, "sync uses generic Upsert only")
+	}
+	return issues
+}
+
+func compileSpecPathPatterns(paths map[string]json.RawMessage) []*regexp.Regexp {
+	keys := make([]string, 0, len(paths))
+	for path := range paths {
+		keys = append(keys, path)
+	}
+	sort.Strings(keys)
+
+	paramRe := regexp.MustCompile(`\\\{[^/]+\\\}`)
+	var patterns []*regexp.Regexp
+	for _, path := range keys {
+		quoted := regexp.QuoteMeta(path)
+		regex := "^" + paramRe.ReplaceAllString(quoted, `[^/]+`) + "$"
+		patterns = append(patterns, regexp.MustCompile(regex))
+	}
+	return patterns
+}
+
+func pathMatchesSpec(path string, patterns []*regexp.Regexp) bool {
+	for _, pattern := range patterns {
+		if pattern.MatchString(path) {
 			return true
 		}
 	}
 	return false
 }
 
-func computeDogfoodScore(results *DogfoodResults) int {
-	if results.TotalCommands == 0 {
+func listGoFiles(dir string) []string {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil
+	}
+
+	var files []string
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		name := entry.Name()
+		if !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		files = append(files, filepath.Join(dir, name))
+	}
+	sort.Strings(files)
+	return files
+}
+
+func countDomainTables(storeSource string) int {
+	if storeSource == "" {
 		return 0
 	}
 
-	// Base score: percentage of passed commands, scaled to 0-40
-	passRate := float64(results.PassedCommands) / float64(results.TotalCommands)
-	score := int(passRate * 40)
-
-	// Bonus for higher tiers
-	switch results.Tier {
-	case 2:
-		score += 5
-	case 3:
-		score += 10
+	tableRe := regexp.MustCompile(`(?is)CREATE TABLE IF NOT EXISTS\s+\w+\s*\((.*?)\);`)
+	matches := tableRe.FindAllStringSubmatch(storeSource, -1)
+	count := 0
+	for _, match := range matches {
+		columns := 0
+		for _, line := range strings.Split(match[1], "\n") {
+			line = strings.TrimSpace(strings.TrimSuffix(line, ","))
+			if line == "" {
+				continue
+			}
+			upper := strings.ToUpper(line)
+			if strings.HasPrefix(upper, "PRIMARY KEY") || strings.HasPrefix(upper, "FOREIGN KEY") || strings.HasPrefix(upper, "UNIQUE") || strings.HasPrefix(upper, "CONSTRAINT") || strings.HasPrefix(upper, "CHECK") {
+				continue
+			}
+			columns++
+		}
+		if columns > 3 {
+			count++
+		}
 	}
-
-	if score > 50 {
-		score = 50
-	}
-	return score
+	return count
 }
 
-func writeDogfoodResults(results *DogfoodResults, pipelineDir string) error {
-	data, err := json.MarshalIndent(results, "", "  ")
-	if err != nil {
-		return err
+func uniqueSorted(items []string) []string {
+	if len(items) == 0 {
+		return nil
 	}
-	return os.WriteFile(filepath.Join(pipelineDir, "dogfood-results.json"), data, 0o644)
+	set := make(map[string]struct{}, len(items))
+	for _, item := range items {
+		set[item] = struct{}{}
+	}
+	return sortedKeys(set)
+}
+
+func sortedKeys(set map[string]struct{}) []string {
+	keys := make([]string, 0, len(set))
+	for key := range set {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+func containsAny(sources []string, needle string) bool {
+	for _, source := range sources {
+		if strings.Contains(source, needle) {
+			return true
+		}
+	}
+	return false
 }

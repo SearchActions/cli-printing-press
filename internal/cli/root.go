@@ -13,6 +13,7 @@ import (
 
 	"github.com/mvanhorn/cli-printing-press/internal/docspec"
 	"github.com/mvanhorn/cli-printing-press/internal/generator"
+	"github.com/mvanhorn/cli-printing-press/internal/graphql"
 	"github.com/mvanhorn/cli-printing-press/internal/llm"
 	"github.com/mvanhorn/cli-printing-press/internal/llmpolish"
 	"github.com/mvanhorn/cli-printing-press/internal/openapi"
@@ -36,6 +37,7 @@ func Execute() error {
 
 	rootCmd.AddCommand(newGenerateCmd())
 	rootCmd.AddCommand(newScorecardCmd())
+	rootCmd.AddCommand(newDogfoodCmd())
 	rootCmd.AddCommand(newVisionCmd())
 	rootCmd.AddCommand(newVersionCmd())
 	rootCmd.AddCommand(newPrintCmd())
@@ -145,7 +147,9 @@ func newGenerateCmd() *cobra.Command {
 				}
 
 				var apiSpec *spec.APISpec
-				if openapi.IsOpenAPI(data) {
+				if graphql.IsGraphQLSDL(data) {
+					apiSpec, err = graphql.ParseSDLBytes(specFile, data)
+				} else if openapi.IsOpenAPI(data) {
 					if lenient {
 						apiSpec, err = openapi.ParseLenient(data)
 					} else {

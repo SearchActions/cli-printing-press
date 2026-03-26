@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -67,12 +68,42 @@ func (s *Store) migrate() error {
 		`CREATE VIRTUAL TABLE IF NOT EXISTS resources_fts USING fts5(
 			id, resource_type, content, tokenize='porter unicode61'
 		)`,
-{{- range .SyncableResources}}
-		`CREATE TABLE IF NOT EXISTS {{snake .}} (
-			id TEXT PRIMARY KEY,
-			data JSON NOT NULL,
-			synced_at DATETIME DEFAULT CURRENT_TIMESTAMP
+{{- range .Tables}}
+{{- if ne .Name "sync_state"}}
+		`CREATE TABLE IF NOT EXISTS {{.Name}} (
+{{- range $i, $col := .Columns}}
+{{- if $i}},{{end}}
+			{{$col.Name}} {{$col.Type}}{{if $col.PrimaryKey}} PRIMARY KEY{{end}}{{if $col.NotNull}} NOT NULL{{end}}
+{{- end}}
 		)`,
+{{- range .Indexes}}
+		`CREATE {{if .Unique}}UNIQUE {{end}}INDEX IF NOT EXISTS {{.Name}} ON {{.TableName}}({{.Columns}})`,
+{{- end}}
+{{- if .FTS5}}
+		`CREATE VIRTUAL TABLE IF NOT EXISTS {{.Name}}_fts USING fts5(
+{{- range $i, $field := .FTS5Fields}}
+{{- if $i}},{{end}}
+			{{$field}}
+{{- end}},
+			content='{{.Name}}',
+			content_rowid='rowid'
+		)`,
+		`CREATE TRIGGER IF NOT EXISTS {{.Name}}_ai AFTER INSERT ON {{.Name}} BEGIN
+			INSERT INTO {{.Name}}_fts(rowid, {{join .FTS5Fields ", "}})
+			VALUES (new.rowid, {{- range $i, $field := .FTS5Fields}}{{if $i}}, {{end}}new.{{$field}}{{- end}});
+		END`,
+		`CREATE TRIGGER IF NOT EXISTS {{.Name}}_ad AFTER DELETE ON {{.Name}} BEGIN
+			INSERT INTO {{.Name}}_fts({{.Name}}_fts, rowid, {{join .FTS5Fields ", "}})
+			VALUES ('delete', old.rowid, {{- range $i, $field := .FTS5Fields}}{{if $i}}, {{end}}old.{{$field}}{{- end}});
+		END`,
+		`CREATE TRIGGER IF NOT EXISTS {{.Name}}_au AFTER UPDATE ON {{.Name}} BEGIN
+			INSERT INTO {{.Name}}_fts({{.Name}}_fts, rowid, {{join .FTS5Fields ", "}})
+			VALUES ('delete', old.rowid, {{- range $i, $field := .FTS5Fields}}{{if $i}}, {{end}}old.{{$field}}{{- end}});
+			INSERT INTO {{.Name}}_fts(rowid, {{join .FTS5Fields ", "}})
+			VALUES (new.rowid, {{- range $i, $field := .FTS5Fields}}{{if $i}}, {{end}}new.{{$field}}{{- end}});
+		END`,
+{{- end}}
+{{- end}}
 {{- end}}
 	}
 
@@ -84,14 +115,8 @@ func (s *Store) migrate() error {
 	return nil
 }
 
-func (s *Store) Upsert(resourceType, id string, data json.RawMessage) error {
-	tx, err := s.db.Begin()
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-
-	_, err = tx.Exec(
+func (s *Store) upsertGenericResourceTx(tx *sql.Tx, resourceType, id string, data json.RawMessage) error {
+	_, err := tx.Exec(
 		`INSERT INTO resources (id, resource_type, data, synced_at, updated_at)
 		 VALUES (?, ?, ?, ?, ?)
 		 ON CONFLICT(id) DO UPDATE SET data = excluded.data, synced_at = excluded.synced_at, updated_at = excluded.updated_at`,
@@ -101,15 +126,33 @@ func (s *Store) Upsert(resourceType, id string, data json.RawMessage) error {
 		return err
 	}
 
+	_, err = tx.Exec(`DELETE FROM resources_fts WHERE id = ?`, id)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "warning: FTS index cleanup failed: %v\n", err)
+	}
+
 	_, err = tx.Exec(
 		`INSERT INTO resources_fts (id, resource_type, content)
-		 VALUES (?, ?, ?)
-		 ON CONFLICT DO NOTHING`,
+		 VALUES (?, ?, ?)`,
 		id, resourceType, string(data),
 	)
 	if err != nil {
 		// FTS insert failure is non-fatal
 		fmt.Fprintf(os.Stderr, "warning: FTS index update failed: %v\n", err)
+	}
+
+	return nil
+}
+
+func (s *Store) Upsert(resourceType, id string, data json.RawMessage) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	if err := s.upsertGenericResourceTx(tx, resourceType, id, data); err != nil {
+		return err
 	}
 
 	return tx.Commit()
@@ -181,6 +224,112 @@ func (s *Store) Search(query string, limit int) ([]json.RawMessage, error) {
 	}
 	return results, rows.Err()
 }
+
+func extractObjectID(obj map[string]any) string {
+	for _, key := range []string{"id", "ID", "uuid", "slug", "name"} {
+		if v, ok := obj[key]; ok {
+			return fmt.Sprintf("%v", v)
+		}
+	}
+	return ""
+}
+
+func lookupFieldValue(obj map[string]any, snakeKey string) any {
+	if v, ok := obj[snakeKey]; ok {
+		return v
+	}
+	parts := strings.Split(snakeKey, "_")
+	for i := 1; i < len(parts); i++ {
+		if parts[i] == "" {
+			continue
+		}
+		parts[i] = strings.ToUpper(parts[i][:1]) + parts[i][1:]
+	}
+	if v, ok := obj[strings.Join(parts, "")]; ok {
+		return v
+	}
+	return nil
+}
+
+{{- range .Tables}}
+{{- if and (gt (len .Columns) 3) (ne .Name "sync_state")}}
+// Upsert{{pascal .Name}} inserts or updates a {{.Name}} record with domain-specific columns.
+func (s *Store) Upsert{{pascal .Name}}(data json.RawMessage) error {
+	var obj map[string]any
+	if err := json.Unmarshal(data, &obj); err != nil {
+		return fmt.Errorf("unmarshaling {{.Name}}: %w", err)
+	}
+
+	id := extractObjectID(obj)
+	if id == "" {
+		return fmt.Errorf("missing id for {{.Name}}")
+	}
+
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	if err := s.upsertGenericResourceTx(tx, "{{.Name}}", id, data); err != nil {
+		return err
+	}
+
+	_, err = tx.Exec(
+		`INSERT INTO {{.Name}} ({{columnNames .Columns}})
+		 VALUES ({{columnPlaceholders .Columns}})
+		 ON CONFLICT(id) DO UPDATE SET {{updateSet .Columns}}`,
+		id,
+		string(data),
+		time.Now(),
+{{- range .Columns}}
+{{- if and (ne .Name "id") (ne .Name "data") (ne .Name "synced_at")}}
+		lookupFieldValue(obj, "{{.Name}}"),
+{{- end}}
+{{- end}}
+	)
+	if err != nil {
+		return err
+	}
+
+	return tx.Commit()
+}
+
+{{- end}}
+{{- end}}
+
+{{- range .Tables}}
+{{- if .FTS5}}
+// Search{{pascal .Name}} searches the {{.Name}}_fts index with optional filters.
+func (s *Store) Search{{pascal .Name}}(query string, limit int) ([]json.RawMessage, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	rows, err := s.db.Query(
+		`SELECT t.data FROM {{.Name}} t
+		 JOIN {{.Name}}_fts ON {{.Name}}_fts.rowid = t.rowid
+		 WHERE {{.Name}}_fts MATCH ?
+		 ORDER BY rank LIMIT ?`,
+		query, limit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var results []json.RawMessage
+	for rows.Next() {
+		var data string
+		if err := rows.Scan(&data); err != nil {
+			return nil, err
+		}
+		results = append(results, json.RawMessage(data))
+	}
+	return results, rows.Err()
+}
+
+{{- end}}
+{{- end}}
 
 func (s *Store) SaveSyncState(resourceType, cursor string, count int) error {
 	_, err := s.db.Exec(

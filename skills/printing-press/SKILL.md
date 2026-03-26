@@ -1011,6 +1011,11 @@ cd ~/cli-printing-press/<api>-cli && go build ./... && go vet ./... && echo "ALL
 7. Scorecard gaps addressed
 8. `go build ./...` and `go vet ./...` pass
 9. README cookbook includes data layer + workflow examples
+10. **Data Pipeline Trace (MANDATORY):** For each Primary entity from Phase 0.7, verify:
+    - WRITE path exists: sync.go calls `db.UpsertX()` for this entity (file:line)
+    - READ path exists: at least one command queries this entity's table (file:line)
+    - SEARCH path exists (if FTS5): at least one command calls `db.SearchX()` (file:line)
+    - If ANY Primary entity has no WRITE path, the data layer is broken. Fix before proceeding.
 
 **Write Phase 4 Artifact:** Run the Artifact Writing plan generator with all Phase 4 work as input. Write to `~/cli-printing-press/docs/plans/<today>-fix-<api>-cli-goat-build-log.md`. Include: data layer implementation details, workflow commands built, scorecard fixes, what was skipped, before/after scorecard comparison.
 
@@ -1202,7 +1207,59 @@ After implementing quick wins, re-run `go build` and the dogfood on affected com
 8. `go build ./...` and `go vet ./...` pass
 9. Final verdict: PASS or WARN (FAIL = stop and report, do NOT proceed)
 
-Tell the user: "Phase 4.5 complete: Dogfood score [X]/50 avg across [N] commands (was [X0] before fixes, +[D] improvement). Pass rate: [Y]% (was [Y0]%). Critical failures: [Z] (was [Z0]). Auto-fixed [K] issues. Implemented [J] quick-win recommendations. [PASS/WARN/FAIL]. Proceeding to final Steinberger."
+Tell the user: "Phase 4.5 complete: Dogfood score [X]/50 avg across [N] commands (was [X0] before fixes, +[D] improvement). Pass rate: [Y]% (was [Y0]%). Critical failures: [Z] (was [Z0]). Auto-fixed [K] issues. Implemented [J] quick-win recommendations. [PASS/WARN/FAIL]. Proceeding to hallucination audit."
+
+---
+
+# PHASE 4.6: HALLUCINATION & DEAD CODE AUDIT
+
+## THIS PHASE IS MANDATORY. DO NOT SKIP IT.
+
+The scorecard tests syntax. This phase tests semantics. Every flag, function, and table must be wired to real code paths. Dead code that exists only to trigger scorecard string matches is worse than missing code.
+
+### Step 4.6a: Dead Flag Audit
+
+For every flag registered in root.go's persistent flags (--json, --csv, --stdin, --quiet, --yes, etc.):
+1. Grep all RunE functions across internal/cli/*.go for `flags.<fieldName>`
+2. If a flag is declared but never checked in any RunE: it's a **dead flag**
+3. **FIX:** Either wire the flag into at least one command's RunE logic, OR remove the flag from root.go
+
+### Step 4.6b: Dead Function Audit
+
+For every function defined in helpers.go:
+1. Grep all other .go files in internal/cli/ for that function name
+2. If a function is defined but never called: it's a **dead function**
+3. **FIX:** Either call the function from a real command's code path, OR delete the function
+
+**WARNING:** Do NOT fix dead functions by adding calls that don't do anything useful. `_ = filterFields(nil)` in an init() block is gaming. The function must be called in a real output or error path.
+
+### Step 4.6c: Ghost Table Audit
+
+For every CREATE TABLE in store.go's migration:
+1. Grep sync.go for an INSERT or Upsert call targeting this table
+2. Grep all command files for a SELECT targeting this table
+3. If a table has no INSERT path: it's a **ghost table** - created but never populated
+4. **FIX:** Wire sync to populate the table via the domain-specific Upsert method, OR remove the table
+
+### Step 4.6d: Data Pipeline Trace
+
+For each Primary entity from Phase 0.7, trace the complete data flow:
+
+| Entity | WRITE path (sync -> UpsertX) | READ path (command -> SELECT) | SEARCH path (command -> SearchX) |
+|--------|------------------------------|-------------------------------|----------------------------------|
+
+Every Primary entity MUST have a WRITE path. If any Primary entity has no write path, the data layer is broken. Fix before proceeding.
+
+### PHASE GATE 4.6
+
+**STOP.** Verify:
+1. Dead flags: 0
+2. Dead functions: 0
+3. Ghost tables: 0
+4. Every Primary entity has WRITE + READ paths
+5. Present the data pipeline trace table to the user
+
+Tell the user: "Phase 4.6 complete: [N] dead flags fixed, [M] dead functions removed, [K] ghost tables wired. Data pipeline verified for [X] primary entities."
 
 ---
 
@@ -1346,3 +1403,27 @@ These phrases indicate a phase was shortcut. If you catch yourself writing them,
 - "The CLI compiles so it works" (Compilation proves syntax, not semantics. A command that builds can still 400 on every real call. Run the dogfood.)
 - "We can't test without API keys" (The OpenAPI spec defines response schemas. Generate mocks from the spec. Test against them. Zero keys needed.)
 - "The dry-run looks right" (Dry-run validates request construction. You also need to feed synthetic responses to validate output parsing, --select, and table rendering.)
+- "I'll add a helpers.go with the patterns the scorecard checks for" (STOP. Every function in helpers.go MUST be called by at least one command. Dead code is worse than missing code. Phase 4.6 will catch this.)
+- "The error handling score is low, let me add error types" (STOP. Error types must be used in actual error paths. Adding newAuthError() that nobody calls is gaming, not engineering.)
+- "I'll add --csv and --quiet flags to root.go" (STOP. Every registered flag must be checked in at least one RunE function. Flags nobody reads are dead flags. Phase 4.6 catches this.)
+- "I'll add insight command files to match the scorecard prefixes" (STOP. Insight commands must query tables that are actually populated. A health command querying an empty database is theater.)
+
+**Module path rule:**
+- The go.mod module path MUST be a valid Go import path with a real org name (e.g., `github.com/mvanhorn/discord-cli`). The literal string `USER` is never acceptable. The generator auto-derives from git config.
+
+**Time Budget Guidance:**
+- Phase 0-1 (Research + Prediction): 25% of total time
+- Phase 2 (Generate): 5%
+- Phase 3 (Audit): 5%
+- **Phase 4 (GOAT Build): 35%** - THIS IS WHERE THE PRODUCT IS BUILT. Do not rush.
+- Phase 4.5 (Dogfood): 10%
+- Phase 4.6 (Hallucination Audit): 5%
+- Phase 5 (Final Report): 5%
+
+**Scorecard uses two tiers (100-point scale):**
+- Tier 1: Infrastructure (string-matching, 50 max) - does the skeleton have the right patterns?
+- Tier 2: Domain Correctness (semantic, 50 max) - does the code actually work?
+- Use `--spec` flag on scorecard command to enable Tier 2 validation against the OpenAPI spec.
+
+**Discrawl benchmark for communication APIs:**
+- After Phase 4, ask: "Would a discrawl user switch to this CLI?" If the answer is "no because [feature X]", that's your remaining Phase 4 work.

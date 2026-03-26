@@ -1,0 +1,138 @@
+package cli
+
+import (
+	"encoding/json"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+
+	"github.com/mvanhorn/cli-printing-press/internal/pipeline"
+	"github.com/spf13/cobra"
+)
+
+func newDogfoodCmd() *cobra.Command {
+	var dir string
+	var specPath string
+	var asJSON bool
+
+	cmd := &cobra.Command{
+		Use:   "dogfood",
+		Short: "Validate a generated CLI against its source spec",
+		Long:  "Mechanically verify that a generated CLI's commands hit valid API paths, auth matches the spec protocol, no dead flags/functions exist, and the data pipeline is wired correctly.",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			report, err := pipeline.RunDogfood(dir, specPath)
+			if err != nil {
+				return fmt.Errorf("running dogfood: %w", err)
+			}
+
+			if asJSON {
+				enc := json.NewEncoder(os.Stdout)
+				enc.SetIndent("", "  ")
+				return enc.Encode(report)
+			}
+
+			printDogfoodReport(report)
+			return nil
+		},
+	}
+
+	cmd.Flags().StringVar(&dir, "dir", "", "Path to the generated CLI directory (required)")
+	cmd.Flags().StringVar(&specPath, "spec", "", "Path to the OpenAPI spec file")
+	cmd.Flags().BoolVar(&asJSON, "json", false, "Output as JSON")
+	_ = cmd.MarkFlagRequired("dir")
+	return cmd
+}
+
+func printDogfoodReport(report *pipeline.DogfoodReport) {
+	name := filepath.Base(report.Dir)
+
+	fmt.Printf("Dogfood Report: %s\n", name)
+	fmt.Println("================================")
+	fmt.Println()
+
+	pathStatus := "SKIP"
+	if report.SpecPath != "" {
+		pathStatus = "PASS"
+		if report.PathCheck.Pct < 70 {
+			pathStatus = "FAIL"
+		}
+	}
+	fmt.Printf("Path Validity:     %d/%d valid (%s)\n", report.PathCheck.Valid, report.PathCheck.Tested, pathStatus)
+	for _, path := range report.PathCheck.Invalid {
+		fmt.Printf("  - %s: not in spec\n", path)
+	}
+	fmt.Println()
+
+	authStatus := "SKIP"
+	if report.SpecPath != "" {
+		authStatus = "MATCH"
+		if !report.AuthCheck.Match {
+			authStatus = "MISMATCH"
+		}
+	}
+	fmt.Printf("Auth Protocol:     %s\n", authStatus)
+	if report.AuthCheck.SpecScheme != "" {
+		fmt.Printf("  Spec: %s\n", report.AuthCheck.SpecScheme)
+	}
+	if report.AuthCheck.GeneratedFmt != "" {
+		fmt.Printf("  Generated: Uses %q prefix\n", trimSpaceOrUnknown(report.AuthCheck.GeneratedFmt))
+	}
+	if report.AuthCheck.Detail != "" {
+		fmt.Printf("  Detail: %s\n", report.AuthCheck.Detail)
+	}
+	fmt.Println()
+
+	flagsStatus := "PASS"
+	if report.DeadFlags.Dead >= 3 {
+		flagsStatus = "FAIL"
+	} else if report.DeadFlags.Dead > 0 {
+		flagsStatus = "WARN"
+	}
+	fmt.Printf("Dead Flags:        %d dead (%s)\n", report.DeadFlags.Dead, flagsStatus)
+	for _, item := range report.DeadFlags.Items {
+		fmt.Printf("  - %s (declared, never read)\n", item)
+	}
+	fmt.Println()
+
+	funcsStatus := "PASS"
+	if report.DeadFuncs.Dead > 0 {
+		funcsStatus = "WARN"
+	}
+	fmt.Printf("Dead Functions:    %d dead (%s)\n", report.DeadFuncs.Dead, funcsStatus)
+	for _, item := range report.DeadFuncs.Items {
+		fmt.Printf("  - %s (defined, never called)\n", item)
+	}
+	fmt.Println()
+
+	pipelineStatus := "GOOD"
+	if !report.PipelineCheck.SyncCallsDomain || !report.PipelineCheck.SearchCallsDomain || report.PipelineCheck.DomainTables == 0 {
+		pipelineStatus = "PARTIAL"
+	}
+	fmt.Printf("Data Pipeline:     %s\n", pipelineStatus)
+	if report.PipelineCheck.SyncCallsDomain {
+		fmt.Println("  Sync: calls domain-specific Upsert methods (GOOD)")
+	} else {
+		fmt.Println("  Sync: uses generic Upsert only")
+	}
+	if report.PipelineCheck.SearchCallsDomain {
+		fmt.Println("  Search: calls domain-specific Search methods (GOOD)")
+	} else {
+		fmt.Println("  Search: uses generic Search only or direct SQL")
+	}
+	fmt.Printf("  Domain tables: %d\n", report.PipelineCheck.DomainTables)
+	fmt.Println()
+
+	fmt.Printf("Verdict: %s\n", report.Verdict)
+	for _, issue := range report.Issues {
+		fmt.Printf("  - %s\n", issue)
+	}
+}
+
+func trimSpaceOrUnknown(s string) string {
+	trimmed := strings.TrimSpace(s)
+	if trimmed == "" {
+		return "unknown"
+	}
+	return trimmed
+}

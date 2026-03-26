@@ -13,20 +13,20 @@ import (
 
 // FullRunResult holds everything the press produced for one API.
 type FullRunResult struct {
-	APIName       string
-	Level         string // "EASY", "MEDIUM", "HARD"
+	APIName string
+	Level   string // "EASY", "MEDIUM", "HARD"
 
 	// Step 1: Research
 	Research      *ResearchResult
 	ResearchError string
 
 	// Step 2: Generate
-	OutputDir       string
-	GatesPassed     int
-	GatesFailed     int
-	GatesOutput     string
-	CommandCount    int
-	ResourceCount   int
+	OutputDir     string
+	GatesPassed   int
+	GatesFailed   int
+	GatesOutput   string
+	CommandCount  int
+	ResourceCount int
 
 	// Step 3: Coverage
 	SpecEndpoints   int
@@ -36,7 +36,7 @@ type FullRunResult struct {
 	PolishResult *llmpolish.PolishResult
 
 	// Step 4: Dogfood
-	Dogfood      *DogfoodResults
+	Dogfood      *DogfoodReport
 	DogfoodError string
 
 	// Step 5: Scorecard
@@ -132,23 +132,18 @@ func MakeBestCLI(apiName, level, specFlag, specURL, outputDir, pressBinary strin
 		result.DogfoodError = fmt.Sprintf("build failed: %v", buildErr)
 		result.Errors = append(result.Errors, fmt.Sprintf("dogfood build: %v", buildErr))
 	} else {
-		cfg := DogfoodConfig{
-			BinaryPath:  cliBinaryPath,
-			PipelineDir: pipelineDir,
-			MaxTier:     1,
-			CmdTimeout:  15 * time.Second,
-			Resources:   resources,
-		}
-		dogfood, dogErr := RunDogfood(cfg)
+		dogfood, dogErr := RunDogfood(outputDir, "")
 		if dogErr != nil {
 			result.DogfoodError = dogErr.Error()
 			result.Errors = append(result.Errors, fmt.Sprintf("dogfood: %v", dogErr))
+		} else if err := writeDogfoodResults(dogfood, pipelineDir); err != nil {
+			result.Errors = append(result.Errors, fmt.Sprintf("dogfood write: %v", err))
 		}
 		result.Dogfood = dogfood
 	}
 
 	// Step 6: Scorecard
-	scorecard, scErr := RunScorecard(outputDir, pipelineDir)
+	scorecard, scErr := RunScorecard(outputDir, pipelineDir, "")
 	if scErr != nil {
 		result.ScorecardError = scErr.Error()
 		result.Errors = append(result.Errors, fmt.Sprintf("scorecard: %v", scErr))
@@ -326,16 +321,15 @@ func PrintComparisonTable(results []*FullRunResult) string {
 		return fmt.Sprintf("%d/%d", wins, len(r.Scorecard.CompetitorScores))
 	})
 
-	// Dogfood pass rate
-	writeRow(&b, "Dogfood Pass Rate", results, func(r *FullRunResult) string {
+	// Dogfood result
+	writeRow(&b, "Dogfood", results, func(r *FullRunResult) string {
 		if r.Dogfood == nil {
 			return "n/a"
 		}
-		if r.Dogfood.TotalCommands == 0 {
-			return "0/0"
+		if r.Dogfood.PathCheck.Tested > 0 {
+			return fmt.Sprintf("%s %d%%", r.Dogfood.Verdict, r.Dogfood.PathCheck.Pct)
 		}
-		pct := (r.Dogfood.PassedCommands * 100) / r.Dogfood.TotalCommands
-		return fmt.Sprintf("%d/%d (%d%%)", r.Dogfood.PassedCommands, r.Dogfood.TotalCommands, pct)
+		return r.Dogfood.Verdict
 	})
 
 	// LLM Polish
@@ -500,12 +494,12 @@ func GenerateLearningsPlan(results []*FullRunResult, outputPath string) error {
 	b.WriteString("## Dogfood Summary\n\n")
 	for _, r := range results {
 		if r.Dogfood != nil {
-			pct := 0
-			if r.Dogfood.TotalCommands > 0 {
-				pct = (r.Dogfood.PassedCommands * 100) / r.Dogfood.TotalCommands
+			if r.Dogfood.PathCheck.Tested > 0 {
+				b.WriteString(fmt.Sprintf("- **%s** - %s, path validity %d/%d (%d%%)\n",
+					r.APIName, r.Dogfood.Verdict, r.Dogfood.PathCheck.Valid, r.Dogfood.PathCheck.Tested, r.Dogfood.PathCheck.Pct))
+			} else {
+				b.WriteString(fmt.Sprintf("- **%s** - %s\n", r.APIName, r.Dogfood.Verdict))
 			}
-			b.WriteString(fmt.Sprintf("- **%s** - %d/%d passed (%d%%)\n",
-				r.APIName, r.Dogfood.PassedCommands, r.Dogfood.TotalCommands, pct))
 		} else {
 			b.WriteString(fmt.Sprintf("- **%s** - dogfood not run (%s)\n", r.APIName, r.DogfoodError))
 		}

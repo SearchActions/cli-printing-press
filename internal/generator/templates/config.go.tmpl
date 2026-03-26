@@ -74,33 +74,69 @@ func (c *Config) AuthHeader() string {
 		return c.AuthHeaderVal
 	}
 {{- if eq .Auth.Type "api_key"}}
+	{{- if gt (len .Auth.EnvVars) 0}}
+	token := c.{{envVarField (index .Auth.EnvVars 0)}}
+	if token == "" {
+		return ""
+	}
+	{{- end}}
 {{- range .Auth.EnvVars}}
 	if c.{{envVarField .}} == "" {
 		return ""
 	}
 {{- end}}
-	format := "{{.Auth.Format}}"
-{{- range .Auth.EnvVars}}
-	format = strings.ReplaceAll(format, "{ {{- envVarPlaceholder . -}} }", c.{{envVarField .}})
-{{- end}}
-	if strings.Contains(format, "{") {
-		return "" // not all vars resolved
+	{{- if .Auth.Format}}
+	replacements := map[string]string{
+	{{- range .Auth.EnvVars}}
+		"{{envVarPlaceholder .}}": c.{{envVarField .}},
+		"{{.}}": c.{{envVarField .}},
+	{{- end}}
 	}
-	return format
+	return applyAuthFormat("{{.Auth.Format}}", replacements)
+	{{- else if gt (len .Auth.EnvVars) 0}}
+	return token
+	{{- else}}
+	return ""
+	{{- end}}
 {{- else if eq .Auth.Type "bearer_token"}}
 	if c.AccessToken != "" {
 		c.AuthSource = "oauth2"
+		{{- if .Auth.Format}}
+		return applyAuthFormat("{{.Auth.Format}}", map[string]string{"access_token": c.AccessToken, "token": c.AccessToken})
+		{{- else}}
 		return "Bearer " + c.AccessToken
+		{{- end}}
 	}
 	{{- if gt (len .Auth.EnvVars) 0}}
 	if c.{{envVarField (index .Auth.EnvVars 0)}} != "" {
+		{{- if .Auth.Format}}
+		return applyAuthFormat("{{.Auth.Format}}", map[string]string{
+			"{{envVarPlaceholder (index .Auth.EnvVars 0)}}": c.{{envVarField (index .Auth.EnvVars 0)}},
+			"{{index .Auth.EnvVars 0}}": c.{{envVarField (index .Auth.EnvVars 0)}},
+			"token": c.{{envVarField (index .Auth.EnvVars 0)}},
+		})
+		{{- else}}
 		return "Bearer " + c.{{envVarField (index .Auth.EnvVars 0)}}
+		{{- end}}
 	}
 	{{- end}}
 	return ""
 {{- else}}
 	return ""
 {{- end}}
+}
+
+func applyAuthFormat(format string, replacements map[string]string) string {
+	if format == "" {
+		return ""
+	}
+	for key, value := range replacements {
+		format = strings.ReplaceAll(format, "{"+key+"}", value)
+	}
+	if strings.Contains(format, "{") {
+		return ""
+	}
+	return format
 }
 
 func (c *Config) SaveTokens(clientID, clientSecret, accessToken, refreshToken string, expiry time.Time) error {

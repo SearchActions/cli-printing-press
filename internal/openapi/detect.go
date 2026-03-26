@@ -1,6 +1,10 @@
 package openapi
 
-import "bytes"
+import (
+	"bytes"
+
+	"github.com/mvanhorn/cli-printing-press/internal/graphql"
+)
 
 func IsOpenAPI(data []byte) bool {
 	if len(data) == 0 {
@@ -20,4 +24,8 @@ func IsOpenAPI(data []byte) bool {
 	}
 
 	return false
+}
+
+func IsGraphQLSDL(data []byte) bool {
+	return graphql.IsGraphQLSDL(data)
 }
