@@ -243,6 +243,22 @@ func (g *Generator) Generate() error {
 		}
 	}
 
+	// Render workflow template when store is enabled (root.go registers it conditionally on VisionSet.Store)
+	if g.VisionSet.Store {
+		workflowData := struct {
+			*spec.APISpec
+			SyncableResources []string
+			SearchableFields  map[string][]string
+		}{
+			APISpec:           g.Spec,
+			SyncableResources: g.profile.SyncableResources,
+			SearchableFields:  g.profile.SearchableFields,
+		}
+		if err := g.renderTemplate("channel_workflow.go.tmpl", filepath.Join("internal", "cli", "channel_workflow.go"), workflowData); err != nil {
+			return fmt.Errorf("rendering workflow: %w", err)
+		}
+	}
+
 	rootData := struct {
 		*spec.APISpec
 		VisionSet VisionTemplateSet
