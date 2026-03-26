@@ -36,6 +36,7 @@ func Execute() error {
 
 	rootCmd.AddCommand(newGenerateCmd())
 	rootCmd.AddCommand(newScorecardCmd())
+	rootCmd.AddCommand(newDogfoodCmd())
 	rootCmd.AddCommand(newVisionCmd())
 	rootCmd.AddCommand(newVersionCmd())
 	rootCmd.AddCommand(newPrintCmd())

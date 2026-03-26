@@ -8,11 +8,11 @@ import (
 
 // PlanContext aggregates outputs from completed phases for dynamic plan generation.
 type PlanContext struct {
-	SeedData   SeedData
-	Research   *ResearchResult
-	Dogfood    *DogfoodResults
-	Scorecard  *Scorecard
-	Learnings  *LearningsDB
+	SeedData  SeedData
+	Research  *ResearchResult
+	Dogfood   *DogfoodReport
+	Scorecard *Scorecard
+	Learnings *LearningsDB
 }
 
 // GenerateNextPlan writes a dynamic plan for the next phase, informed by
