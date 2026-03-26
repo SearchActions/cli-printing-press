@@ -5,8 +5,10 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"text/template"
+	"time"
 	"unicode"
 
 	"github.com/mvanhorn/cli-printing-press/internal/profiler"
@@ -49,6 +51,7 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 		"flagName":          flagName,
 		"safeTypeName":      safeTypeName,
 		"exampleLine":       g.exampleLine,
+		"currentYear":       func() string { return strconv.Itoa(time.Now().Year()) },
 	}
 	return g
 }
@@ -82,6 +85,8 @@ func (g *Generator) Generate() error {
 		"golangci.yml.tmpl":    ".golangci.yml",
 		"makefile.tmpl":        "Makefile",
 		"readme.md.tmpl":       "README.md",
+		"LICENSE.tmpl":         "LICENSE",
+		"NOTICE.tmpl":          "NOTICE",
 	}
 
 	for tmplName, outPath := range singleFiles {
