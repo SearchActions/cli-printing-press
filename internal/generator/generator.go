@@ -259,6 +259,24 @@ func (g *Generator) Generate() error {
 		}
 	}
 
+	// Render domain-specific workflow templates
+	for _, tmpl := range g.VisionSet.Workflows {
+		outName := strings.TrimSuffix(filepath.Base(tmpl), ".tmpl")
+		outPath := filepath.Join("internal", "cli", outName)
+		if err := g.renderTemplate(tmpl, outPath, g.Spec); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: skipping workflow template %s: %v\n", tmpl, err)
+		}
+	}
+
+	// Render insight templates
+	for _, tmpl := range g.VisionSet.Insights {
+		outName := strings.TrimSuffix(filepath.Base(tmpl), ".tmpl")
+		outPath := filepath.Join("internal", "cli", outName)
+		if err := g.renderTemplate(tmpl, outPath, g.Spec); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: skipping insight template %s: %v\n", tmpl, err)
+		}
+	}
+
 	rootData := struct {
 		*spec.APISpec
 		VisionSet VisionTemplateSet

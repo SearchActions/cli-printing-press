@@ -113,7 +113,10 @@ func SelectVisionTemplates(plan *vision.VisionaryPlan) VisionTemplateSet {
 	}
 
 	if plan.Insight.HasInsight() {
-		set.Insights = []string{"insight_report.go.tmpl"}
+		set.Insights = []string{
+			"insights/health_score.go.tmpl",
+			"insights/similar.go.tmpl",
+		}
 	}
 
 	return set
