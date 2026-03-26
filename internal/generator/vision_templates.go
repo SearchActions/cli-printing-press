@@ -13,6 +13,14 @@ type VisionTemplateSet struct {
 	Sync      bool
 	Tail      bool
 	Analytics bool
+	Workflows []string
+	Insights  []string
+}
+
+func (s VisionTemplateSet) IsZero() bool {
+	return !s.Export && !s.Import && !s.Store && !s.Search &&
+		!s.Sync && !s.Tail && !s.Analytics &&
+		len(s.Workflows) == 0 && len(s.Insights) == 0
 }
 
 // SelectVisionTemplates determines which domain-aware templates to include
@@ -91,7 +99,32 @@ func SelectVisionTemplates(plan *vision.VisionaryPlan) VisionTemplateSet {
 		}
 	}
 
+	switch plan.Domain.Archetype {
+	case "project-management":
+		set.Workflows = []string{
+			"workflows/pm_stale.go.tmpl",
+			"workflows/pm_orphans.go.tmpl",
+			"workflows/pm_load.go.tmpl",
+		}
+	case "communication":
+		set.Workflows = []string{
+			"workflows/comm_health.go.tmpl",
+		}
+	}
+
+	if plan.Insight.HasInsight() {
+		set.Insights = []string{"insight_report.go.tmpl"}
+	}
+
 	return set
+}
+
+func (s VisionTemplateSet) HasWorkflows() bool {
+	return len(s.Workflows) > 0
+}
+
+func (s VisionTemplateSet) HasInsights() bool {
+	return len(s.Insights) > 0
 }
 
 // TemplateNames returns the list of template filenames to render.
@@ -118,5 +151,7 @@ func (s VisionTemplateSet) TemplateNames() []string {
 	if s.Analytics {
 		names = append(names, "analytics.go.tmpl")
 	}
+	names = append(names, s.Workflows...)
+	names = append(names, s.Insights...)
 	return names
 }

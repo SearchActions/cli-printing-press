@@ -79,9 +79,21 @@ func (f *FeatureIdea) ComputeScore() int {
 		f.CompetitiveMoat
 }
 
+type DomainInfo struct {
+	Archetype    string
+	HasAssignees bool
+	HasDueDates  bool
+	HasPriority  bool
+	HasTeams     bool
+	HasLabels    bool
+	HasEstimates bool
+}
+
 type VisionaryPlan struct {
 	APIName       string
 	Identity      APIIdentity
+	Insight       NonObviousInsight
+	Domain        DomainInfo
 	UsagePatterns []UsagePattern
 	ToolLandscape []ToolClassification
 	Workflows     []Workflow

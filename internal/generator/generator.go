@@ -191,7 +191,7 @@ func (g *Generator) Generate() error {
 	}
 
 	// Vision features: profile the API and render selected templates
-	if g.VisionSet == (VisionTemplateSet{}) {
+	if g.VisionSet.IsZero() {
 		// Auto-profile if no explicit vision set provided
 		g.profile = profiler.Profile(g.Spec)
 		plan := g.profile.ToVisionaryPlan(g.Spec.Name)

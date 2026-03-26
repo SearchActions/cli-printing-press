@@ -8,6 +8,33 @@ import (
 	"github.com/mvanhorn/cli-printing-press/internal/vision"
 )
 
+type DomainArchetype string
+
+const (
+	ArchetypeCommunication     DomainArchetype = "communication"
+	ArchetypeProjectMgmt       DomainArchetype = "project-management"
+	ArchetypePayments          DomainArchetype = "payments"
+	ArchetypeInfrastructure    DomainArchetype = "infrastructure"
+	ArchetypeContent           DomainArchetype = "content"
+	ArchetypeCRM               DomainArchetype = "crm"
+	ArchetypeDeveloperPlatform DomainArchetype = "developer-platform"
+	ArchetypeGeneric           DomainArchetype = "generic"
+)
+
+type DomainSignals struct {
+	Archetype        DomainArchetype
+	HasAssignees     bool
+	HasDueDates      bool
+	HasPriority      bool
+	HasThreading     bool
+	HasTransactions  bool
+	HasSubscriptions bool
+	HasMedia         bool
+	HasTeams         bool
+	HasLabels        bool
+	HasEstimates     bool
+}
+
 // APIProfile describes the shape of an API and what power-user features it warrants.
 type APIProfile struct {
 	HighVolume       bool
@@ -26,6 +53,8 @@ type APIProfile struct {
 
 	SyncableResources []string
 	SearchableFields  map[string][]string
+
+	Domain DomainSignals
 }
 
 func Profile(s *spec.APISpec) *APIProfile {
@@ -153,6 +182,8 @@ func Profile(s *spec.APISpec) *APIProfile {
 		p.SearchableFields[resource] = sortedKeys(fields)
 	}
 
+	p.Domain = detectDomainSignals(s)
+
 	return p
 }
 
@@ -171,6 +202,16 @@ func (p *APIProfile) ToVisionaryPlan(apiName string) *vision.VisionaryPlan {
 				Realtime:   p.HasRealtime,
 			},
 		},
+	}
+
+	plan.Domain = vision.DomainInfo{
+		Archetype:    string(p.Domain.Archetype),
+		HasAssignees: p.Domain.HasAssignees,
+		HasDueDates:  p.Domain.HasDueDates,
+		HasPriority:  p.Domain.HasPriority,
+		HasTeams:     p.Domain.HasTeams,
+		HasLabels:    p.Domain.HasLabels,
+		HasEstimates: p.Domain.HasEstimates,
 	}
 
 	plan.Architecture = append(plan.Architecture,
@@ -503,4 +544,111 @@ func sortedKeys[V any](m map[string]V) []string {
 	}
 	sort.Strings(keys)
 	return keys
+}
+
+func detectDomainSignals(s *spec.APISpec) DomainSignals {
+	if s == nil {
+		return DomainSignals{Archetype: ArchetypeGeneric}
+	}
+
+	scores := map[DomainArchetype]int{
+		ArchetypeCommunication:     0,
+		ArchetypeProjectMgmt:       0,
+		ArchetypePayments:          0,
+		ArchetypeInfrastructure:    0,
+		ArchetypeContent:           0,
+		ArchetypeCRM:               0,
+		ArchetypeDeveloperPlatform: 0,
+	}
+
+	resourceKeywords := map[DomainArchetype][]string{
+		ArchetypeCommunication:     {"message", "channel", "chat", "thread", "conversation", "dm", "reaction"},
+		ArchetypeProjectMgmt:       {"issue", "task", "ticket", "project", "sprint", "milestone", "board", "epic", "backlog"},
+		ArchetypePayments:          {"charge", "payment", "invoice", "subscription", "refund", "payout", "transaction", "balance", "transfer"},
+		ArchetypeInfrastructure:    {"server", "instance", "cluster", "deployment", "container", "node", "pod", "volume", "network"},
+		ArchetypeContent:           {"article", "post", "page", "blog", "content", "document", "media", "asset", "collection"},
+		ArchetypeCRM:               {"contact", "deal", "lead", "opportunity", "account", "pipeline", "company", "person"},
+		ArchetypeDeveloperPlatform: {"repository", "commit", "branch", "pull_request", "merge_request", "pipeline", "build", "release", "package"},
+	}
+
+	ds := DomainSignals{}
+
+	var walkResources func(name string, r spec.Resource)
+	walkResources = func(name string, r spec.Resource) {
+		nameLower := strings.ToLower(name)
+		for archetype, keywords := range resourceKeywords {
+			for _, kw := range keywords {
+				if strings.Contains(nameLower, kw) {
+					scores[archetype] += 2
+				}
+			}
+		}
+
+		for _, endpoint := range r.Endpoints {
+			scanFieldSignals(endpoint.Params, &ds)
+			scanFieldSignals(endpoint.Body, &ds)
+		}
+
+		for subName, sub := range r.SubResources {
+			walkResources(subName, sub)
+		}
+	}
+
+	for name, resource := range s.Resources {
+		walkResources(name, resource)
+	}
+
+	// Pick the archetype with the highest score
+	bestArchetype := ArchetypeGeneric
+	bestScore := 0
+	for archetype, score := range scores {
+		if score > bestScore {
+			bestScore = score
+			bestArchetype = archetype
+		}
+	}
+	ds.Archetype = bestArchetype
+
+	return ds
+}
+
+func scanFieldSignals(params []spec.Param, ds *DomainSignals) {
+	for _, param := range params {
+		name := strings.ToLower(param.Name)
+
+		if strings.Contains(name, "assignee") || name == "assignee_id" || name == "assigned_to" {
+			ds.HasAssignees = true
+		}
+		if strings.Contains(name, "priority") {
+			ds.HasPriority = true
+		}
+		if strings.Contains(name, "due_date") || strings.Contains(name, "due_at") || strings.Contains(name, "deadline") {
+			ds.HasDueDates = true
+		}
+		if strings.Contains(name, "team") || name == "team_id" {
+			ds.HasTeams = true
+		}
+		if strings.Contains(name, "label") || strings.Contains(name, "tag") {
+			ds.HasLabels = true
+		}
+		if strings.Contains(name, "estimate") || strings.Contains(name, "story_points") || strings.Contains(name, "points") {
+			ds.HasEstimates = true
+		}
+		if strings.Contains(name, "thread") || strings.Contains(name, "reply_to") || strings.Contains(name, "parent_id") {
+			ds.HasThreading = true
+		}
+		if strings.Contains(name, "amount") || strings.Contains(name, "currency") || strings.Contains(name, "price") {
+			ds.HasTransactions = true
+		}
+		if strings.Contains(name, "subscription") || strings.Contains(name, "recurring") || strings.Contains(name, "interval") {
+			ds.HasSubscriptions = true
+		}
+		if strings.Contains(name, "media") || strings.Contains(name, "attachment") || strings.Contains(name, "image") || strings.Contains(name, "file") {
+			ds.HasMedia = true
+		}
+
+		if len(param.Fields) > 0 {
+			scanFieldSignals(param.Fields, ds)
+		}
+	}
 }
