@@ -33,16 +33,21 @@ Generate the best CLI that has ever existed for any API. Five mandatory phases. 
 
 ## How This Works
 
-Every run produces the GOAT CLI through 5 mandatory phases:
+Every run produces the GOAT CLI through 6 mandatory phases:
 
 ```
-PHASE 1: DEEP RESEARCH  ->  PHASE 2: GENERATE  ->  PHASE 3: STEINBERGER AUDIT  ->  PHASE 4: GOAT FIX  ->  PHASE 5: FINAL STEINBERGER
-     (5-8 min)                  (1-2 min)               (5-8 min)                     (3-5 min)                (2-3 min)
+PHASE 0: VISIONARY RESEARCH  ->  PHASE 1: DEEP RESEARCH  ->  PHASE 2: GENERATE  ->  PHASE 3: STEINBERGER AUDIT  ->  PHASE 4: GOAT FIX  ->  PHASE 5: FINAL STEINBERGER
+        (3-5 min)                      (5-8 min)                  (1-2 min)               (5-8 min)                     (3-5 min)                (2-3 min)
 ```
 
-Total expected time: 15-25 minutes. If a run completes in under 10 minutes, phases were shortcut.
+Total expected time: 18-30 minutes. If a run completes in under 12 minutes, phases were shortcut.
 
 **The Steinberger bar:** Peter Steinberger's gogcli is the 10/10 reference. Every generated CLI is scored against it TWICE - once during audit to find gaps, once after fixes to prove improvement. The delta is the proof of work.
+
+**Grade thresholds (10 dimensions, 100 max):**
+- **Grade A:** 80+/100 (80%)
+- **Grade B:** 65-79/100 (65-79%)
+- **Grade C:** 50-64/100 (50-64%)
 
 ---
 
@@ -60,6 +65,182 @@ Extract the API name. Check `~/cli-printing-press/skills/printing-press/referenc
 
 If found in registry: note the URL for Phase 2, but STILL run full Phase 1 research.
 If not found: Phase 1 searches for spec too.
+
+---
+
+# PHASE 0: VISIONARY RESEARCH
+
+## THIS PHASE IS MANDATORY. DO NOT SKIP IT.
+
+Before generating any CLI, understand what a thoughtful developer would build - not just what the OpenAPI spec says.
+
+### Step 0a: API Identity & Domain Understanding
+
+Understand what this API IS:
+
+1. **WebFetch** the API's developer docs landing page
+2. **WebSearch**: `"<API name>" developer documentation overview`
+3. Extract:
+   - **Domain category:** messaging, payments, productivity, infrastructure, analytics
+   - **Primary users:** Who uses this API? (e.g., "bot developers", "server admins")
+   - **Core entities:** What are the main objects? (e.g., "guilds", "channels", "messages")
+   - **Data profile:**
+     - Write pattern: append-only, mutable, or event-sourced?
+     - Volume: high (millions of records), medium, or low?
+     - Real-time: does the API have webhooks/websockets/SSE?
+     - Search need: high (users need to find things) or low?
+
+### Step 0b: Usage Pattern Discovery
+
+Discover what people ACTUALLY DO with this API:
+
+**Community Research (run these in parallel):**
+1. **WebSearch**: `"<API name>" CLI workflow site:reddit.com`
+2. **WebSearch**: `"<API name>" automation script site:github.com`
+3. **WebSearch**: `"<API name>" "I built" OR "I made" OR "my tool" site:reddit.com OR site:news.ycombinator.com`
+4. **WebSearch**: `"<API name>" tutorial automation workflow 2025 2026`
+
+**Pain Point Research:**
+5. **WebSearch**: `"<API name>" API "pain point" OR "limitation" OR "workaround"`
+6. **WebSearch**: `site:stackoverflow.com "<API name>" API rate limit OR pagination OR bulk`
+
+From all research, identify the **top 5 usage patterns** ranked by evidence score:
+
+| Source | Weight |
+|---|---|
+| Existing tool with 100+ stars | 3 points |
+| Existing tool with 10-99 stars | 2 points |
+| Reddit/HN post with 50+ upvotes | 2 points |
+| Reddit/HN post with 10-49 upvotes | 1 point |
+| Stack Overflow question with 10+ votes | 1 point |
+| Blog post / tutorial | 1 point |
+| GitHub issue on competitor | 1 point |
+| Cross-platform appearance (same need on 2+ platforms) | +2 bonus |
+
+Score >= 6: Strong evidence. Include in CLI.
+Score 3-5: Moderate evidence. Consider as optional.
+Score < 3: Weak evidence. Skip.
+
+### Step 0c: Tool Landscape Discovery (The Discrawl Finder)
+
+Find ALL tools for this API, not just API wrappers:
+
+**Tier 1: Direct CLI Search** (existing Phase 1 does this too)
+1. **WebSearch**: `"<API name>" CLI tool github`
+
+**Tier 2: Non-Wrapper Tool Search** (CRITICAL - finds discrawl-class tools)
+2. **WebSearch**: `"<API name>" sync OR archive OR mirror site:github.com`
+3. **WebSearch**: `"<API name>" search engine OR analytics OR dashboard site:github.com`
+4. **WebSearch**: `"<API name>" backup OR export OR migration site:github.com`
+5. **WebSearch**: `"<API name>" monitor OR watcher OR alerting site:github.com`
+
+**Tier 3: Ecosystem Search**
+6. **WebSearch**: `awesome "<API name>" site:github.com`
+
+For each tool found, classify it:
+
+| Type | Description | Example |
+|---|---|---|
+| **API Wrapper** | Translates HTTP to CLI flags | discli |
+| **Data Tool** | Adds local persistence/search | discrawl |
+| **Workflow Tool** | Orchestrates multi-step sequences | Stripe fixtures |
+| **Environment Tool** | Runs local simulation | Supabase CLI |
+| **Integration Tool** | Bridges to other systems | Zapier integration |
+
+**The press should generate CLIs that compete with Data Tools and Workflow Tools, not just API Wrappers.**
+
+### Step 0d: Workflow Analysis
+
+From usage patterns (0b) and tool landscape (0c), identify multi-step workflows:
+
+For each workflow, document:
+- **Steps:** The sequence of API calls
+- **Frequency:** How often users perform this
+- **Pain point:** What makes this hard with the raw API
+- **Proposed CLI feature:** What compound command would solve it
+
+### Step 0e: Architecture Planning
+
+Based on data profile and workflows, decide what the CLI needs:
+
+| Data Profile | Architecture |
+|---|---|
+| High volume + search need | SQLite + FTS5 (Discord, Slack) |
+| Transaction data + reconciliation | Local ledger with diff tracking (Stripe, Plaid) |
+| Document data + offline editing | Local Markdown/JSON sync (Notion, Confluence) |
+| Low volume + simple CRUD | Standard API wrapper is fine (most APIs) |
+
+For each decision area (persistence, real-time, search, bulk, caching), document:
+- **Need level:** High / Medium / Low
+- **Decision:** What to use
+- **Rationale:** Why
+
+### Step 0f: Feature Ideation - "Next 5 Features for the World"
+
+Score each feature idea on 8 dimensions (16-point max):
+
+| Dimension | Weight | Scoring |
+|---|---|---|
+| **Evidence strength** | 3 | 3=existing tool 100+ stars, 2=Reddit/SO demand, 1=weak, 0=speculation |
+| **User impact** | 3 | 3=most users feel this pain, 2=niche, 1=nice-to-have, 0=nobody asked |
+| **Implementation feasibility** | 2 | 2=can generate template, 1=needs custom code, 0=major infrastructure |
+| **Uniqueness** | 2 | 2=no existing tool, 1=improves on existing, 0=already well-served |
+| **Composability** | 2 | 2=great with pipes/agents, 1=somewhat, 0=interactive-only |
+| **Data profile fit** | 2 | 2=perfect fit, 1=possible, 0=wrong shape |
+| **Maintainability** | 1 | 1=generated code supports it, 0=needs human maintenance |
+| **Competitive moat** | 1 | 1=hard to replicate, 0=trivial |
+
+Score >= 12: **Must-have.** Build it.
+Score 8-11: **Should-have.** Include as optional.
+Score < 8: **Won't-have.** Skip or future work.
+
+### Step 0g: Write the Visionary Research Artifact
+
+**Write** to `~/cli-printing-press/docs/plans/<today>-feat-<api>-cli-visionary-research.md`:
+
+```markdown
+## Visionary Research: <API> CLI
+
+### API Identity
+- Domain: <category>
+- Primary users: <who>
+- Data profile: <write pattern>, <volume>, <realtime>, <search need>
+
+### Usage Patterns (Top 5 by Evidence)
+1. <pattern> (Evidence: X/10) - <what it needs>
+2. ...
+
+### Tool Landscape (Beyond API Wrappers)
+- <tool> (<stars> stars): <what it does>
+- ...
+
+### Workflows
+1. <name>: <steps> -> Proposed: `<api>-cli <command>`
+2. ...
+
+### Architecture Decisions
+- Persistence: <decision> because <rationale>
+- Real-time: <decision> because <rationale>
+- Search: <decision> because <rationale>
+- Bulk: <decision> because <rationale>
+- Cache: <decision> because <rationale>
+
+### Top 5 Features for the World
+1. <feature> (Score: X/16) - <1-line description>
+2. ...
+```
+
+### PHASE GATE 0
+
+**STOP.** Verify ALL of these before proceeding:
+1. API Identity documented with data profile
+2. At least 3 usage patterns with evidence scores
+3. Tool landscape includes non-wrapper tools (Tier 2 search done)
+4. At least 2 workflows with proposed CLI features
+5. Architecture decisions match data profile
+6. Top 5 features scored and ranked
+
+Tell the user: "Phase 0 complete: Domain: [category]. Data profile: [volume]/[realtime]/[search]. Found [N] non-wrapper tools. Top feature: [name] (score [X]/16). Architecture: [key decision]. Proceeding to deep research."
 
 ---
 
@@ -84,6 +265,9 @@ If no spec found: plan to write one from docs in Phase 2.
 
 **WebSearch**: `"<API name>" CLI tool github`
 **WebSearch**: `"<API name>" command line client`
+
+Also search for non-wrapper tools discovered in Phase 0:
+**WebSearch**: `"<API name>" sync OR archive OR export site:github.com`
 
 For each competitor found, note repo URL, star count, language.
 
@@ -168,7 +352,7 @@ date: <today>
 ## Target
 - Command count: <N - match or beat best competitor>
 - Key differentiator: <specific features we'll have that competitors don't>
-- Quality bar: Steinberger Grade A (65+/80)
+- Quality bar: Steinberger Grade A (80+/100)
 ```
 
 ### PHASE GATE 1
@@ -289,6 +473,16 @@ For each field skipped by the generator (from Phase 2 Step 2.4):
 
 ## Part B: First Steinberger Analysis
 
+### Step 3.0: Run automated scorecard
+
+Before hand-scoring, run the automated scorecard to get objective baseline numbers:
+
+```bash
+cd ~/cli-printing-press && ./printing-press scorecard --dir ./<api>-cli
+```
+
+Use these numbers as the baseline. The hand-scoring in Step 3.7 should explain WHY each dimension got its score, not re-guess the number.
+
 ### Step 3.7: Score against the Steinberger bar
 
 Score each dimension 0-10. For EACH dimension, provide THREE things:
@@ -308,9 +502,11 @@ Score each dimension 0-10. For EACH dimension, provide THREE things:
 | README | X/10 | gogcli: install, quickstart, every command with example, cookbook, FAQ | Add cookbook section, add FAQ |
 | Doctor | X/10 | gogcli: validates auth, API version, rate limits, config file health | Add API version check, config health |
 | Agent-native | X/10 | gogcli: --json, --select, --dry-run, --stdin, idempotent, typed exits, no TTY | Already strong if all flags present |
+| Local Cache | X/10 | gogcli: file cache + optional embedded DB (bolt/badger), --no-cache bypass, cache clear | [what changes would raise score] |
 | Breadth | X/10 | gogcli: 100+ commands covering every API endpoint + convenience wrappers | Add missing commands, add convenience wrappers |
+| Vision | X/10 | discrawl: SQLite + FTS5 + sync + search + tail + domain workflows | Add export, search, sync commands based on Phase 0 research |
 
-**Baseline Total: X/80 (Grade X)**
+**Baseline Total: X/100 (Grade X)**
 ```
 
 ### Step 3.8: Write the GOAT improvement plan
@@ -344,7 +540,7 @@ Include ALL of:
 4. Complex body fields have a plan (not just "limitation")
 5. Baseline total score is recorded
 
-Tell the user: "Phase 3 complete: Baseline Steinberger Score: [X]/80 (Grade [X]). Found [N] tactical fixes + [M] GOAT improvements. Top improvement: [description]. Proceeding to fixes."
+Tell the user: "Phase 3 complete: Baseline Steinberger Score: [X]/100 (Grade [X]). Found [N] tactical fixes + [M] GOAT improvements. Top improvement: [description]. Proceeding to fixes."
 
 ---
 
@@ -352,24 +548,29 @@ Tell the user: "Phase 3 complete: Baseline Steinberger Score: [X]/80 (Grade [X])
 
 ## THIS PHASE IS MANDATORY.
 
-Execute fixes in priority order: (1) GOAT improvements that raise the Steinberger score, (2) tactical fixes from the audit, (3) complex body field examples.
+Execute fixes in priority order:
 
-### Step 4.1: Apply GOAT improvements (from Step 3.8)
+1. **Scorecard-gap fixes** - run scorecard, identify dimensions below 10/10, fix patterns the scorecard measures
+2. **Complex body field --stdin examples** (useful for agents, visible in help text)
+3. **Command name cleanup** (UX quality, not scored by automated scorecard)
+4. **Description/README polish** (UX quality, not scored)
 
-For each of the top 5 improvements:
+Scorecard-measured improvements first. UX polish second. If the scorecard says 10/10 for a dimension, do not spend time improving it further.
+
+### Step 4.1: Apply scorecard-gap fixes
+
+Run the scorecard and fix dimensions below 10/10:
+
+```bash
+cd ~/cli-printing-press && ./printing-press scorecard --dir ./<api>-cli
+```
+
+For each dimension below 10/10:
 1. **Read** the relevant file
 2. **Edit** with surgical changes
-3. Focus on changes that RAISE THE STEINBERGER SCORE
+3. Focus on changes that RAISE THE SCORECARD NUMBER
 
-### Step 4.2: Apply tactical fixes (from Step 3.9)
-
-For each fix in the audit:
-1. Fix help text jargon -> developer-friendly descriptions
-2. Fix examples -> realistic values (real UUIDs, real API objects, not "abc123")
-3. Fix command names -> clean, intuitive names (get/list/create/update/delete)
-4. Fix README -> compelling, useful documentation
-
-### Step 4.3: Add complex body field examples
+### Step 4.2: Add complex body field examples
 
 For the top 3 endpoints with complex body fields (identified in Phase 3 Step 3.6):
 
@@ -383,6 +584,14 @@ Example: `  # Get a page
   # Create a page with complex properties (pipe JSON via stdin)
   echo '{"parent":{"database_id":"..."},"properties":{"Name":{"title":[{"text":{"content":"My Page"}}]}}}' | <api>-cli pages create --stdin`,
 ```
+
+### Step 4.3: Command name cleanup and description/README polish
+
+Only if time remains after scorecard-gap fixes:
+1. Fix command names -> clean, intuitive names (get/list/create/update/delete)
+2. Fix help text jargon -> developer-friendly descriptions
+3. Fix examples -> realistic values (real UUIDs, real API objects, not "abc123")
+4. Fix README -> compelling, useful documentation
 
 ### Step 4.4: Verify compilation
 
@@ -409,7 +618,13 @@ Tell the user: "Phase 4 complete: Applied [N] improvements, [M] tactical fixes, 
 
 ### Step 5.1: Second Steinberger Analysis (Post-Fix)
 
-Re-score ALL 8 dimensions. Show the DELTA from the baseline:
+Run the automated scorecard again to measure improvement:
+
+```bash
+cd ~/cli-printing-press && ./printing-press scorecard --dir ./<api>-cli
+```
+
+Re-score ALL 10 dimensions. Show the DELTA from the baseline:
 
 ```markdown
 ## Final Steinberger Analysis (Post-Fix)
@@ -423,9 +638,11 @@ Re-score ALL 8 dimensions. Show the DELTA from the baseline:
 | README | X/10 | Y/10 | +Z | [specific change] |
 | Doctor | X/10 | Y/10 | +Z | [specific change] |
 | Agent-native | X/10 | Y/10 | +Z | [specific change] |
+| Local Cache | X/10 | Y/10 | +Z | [specific change] |
 | Breadth | X/10 | Y/10 | +Z | [specific change] |
+| Vision | X/10 | Y/10 | +Z | [specific change] |
 
-**Before: X/80 -> After: Y/80 (+Z points)**
+**Before: X/100 -> After: Y/100 (+Z points)**
 **Grade: [A/B/C]**
 ```
 
@@ -448,7 +665,7 @@ Resources: <comma-separated list>
 
 **2. Steinberger Score (Before/After):**
 ```
-Steinberger Score: Before X/80 -> After Y/80 (+Z points) - Grade [A/B/C]
+Steinberger Score: Before X/100 -> After Y/100 (+Z points) - Grade [A/B/C]
 
 [Full before/after table from Step 5.1]
 ```
@@ -520,3 +737,5 @@ These phrases indicate a phase was shortcut. If you catch yourself writing them,
 - "We'll skip this for now" (no skipping - do it or explain why it's impossible)
 - "The quality is good enough" (score it against Steinberger, prove it's good enough with numbers)
 - "Let's wrap up" (are all 5 phases complete with artifacts?)
+- "This API doesn't need local persistence" (Did you run Phase 0? Check the data profile. If search need is high, it needs persistence.)
+- "This is just an API wrapper" (Run Phase 0 again. What would a thoughtful developer build?)

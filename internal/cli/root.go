@@ -35,6 +35,8 @@ func Execute() error {
 	rootCmd.SetVersionTemplate("printing-press {{.Version}}\n")
 
 	rootCmd.AddCommand(newGenerateCmd())
+	rootCmd.AddCommand(newScorecardCmd())
+	rootCmd.AddCommand(newVisionCmd())
 	rootCmd.AddCommand(newVersionCmd())
 	rootCmd.AddCommand(newPrintCmd())
 

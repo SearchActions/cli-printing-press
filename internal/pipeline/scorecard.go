@@ -17,7 +17,7 @@ type Scorecard struct {
 	GapReport        []string     `json:"gap_report"`
 }
 
-// SteinerScore breaks down the Steinberger bar into 9 dimensions, each 0-10.
+// SteinerScore breaks down the Steinberger bar into 10 dimensions, each 0-10.
 type SteinerScore struct {
 	OutputModes   int `json:"output_modes"`    // 0-10
 	Auth          int `json:"auth"`            // 0-10
@@ -28,7 +28,8 @@ type SteinerScore struct {
 	AgentNative   int `json:"agent_native"`    // 0-10
 	LocalCache    int `json:"local_cache"`     // 0-10
 	Breadth       int `json:"breadth"`         // 0-10: how many commands (penalizes empty CLIs)
-	Total         int `json:"total"`           // 0-90
+	Vision        int `json:"vision"`          // 0-10
+	Total         int `json:"total"`           // 0-100
 	Percentage    int `json:"percentage"`      // 0-100
 }
 
@@ -57,6 +58,7 @@ func RunScorecard(outputDir, pipelineDir string) (*Scorecard, error) {
 	sc.Steinberger.AgentNative = scoreAgentNative(outputDir)
 	sc.Steinberger.LocalCache = scoreLocalCache(outputDir)
 	sc.Steinberger.Breadth = scoreBreadth(outputDir)
+	sc.Steinberger.Vision = scoreVision(outputDir)
 
 	sc.Steinberger.Total = sc.Steinberger.OutputModes +
 		sc.Steinberger.Auth +
@@ -66,10 +68,11 @@ func RunScorecard(outputDir, pipelineDir string) (*Scorecard, error) {
 		sc.Steinberger.Doctor +
 		sc.Steinberger.AgentNative +
 		sc.Steinberger.LocalCache +
-		sc.Steinberger.Breadth
+		sc.Steinberger.Breadth +
+		sc.Steinberger.Vision
 
 	if sc.Steinberger.Total > 0 {
-		sc.Steinberger.Percentage = (sc.Steinberger.Total * 100) / 90
+		sc.Steinberger.Percentage = (sc.Steinberger.Total * 100) / 100
 	}
 
 	// Grade
@@ -305,6 +308,46 @@ func scoreBreadth(dir string) int {
 	}
 }
 
+func scoreVision(dir string) int {
+	score := 0
+	cliDir := filepath.Join(dir, "internal", "cli")
+	if fileExists(filepath.Join(cliDir, "export.go")) {
+		score += 2
+	}
+	if fileExists(filepath.Join(cliDir, "import.go")) {
+		score += 1
+	}
+	if fileExists(filepath.Join(dir, "internal", "store", "store.go")) {
+		score += 2
+	}
+	if fileExists(filepath.Join(cliDir, "search.go")) {
+		score += 2
+	}
+	if fileExists(filepath.Join(cliDir, "sync.go")) {
+		score += 1
+	}
+	if fileExists(filepath.Join(cliDir, "tail.go")) {
+		score += 1
+	}
+	// Check for workflow or compound command files
+	entries, err := os.ReadDir(cliDir)
+	if err == nil {
+		for _, e := range entries {
+			name := e.Name()
+			if strings.Contains(name, "_workflow") || strings.Contains(name, "_compound") {
+				if strings.HasSuffix(name, ".go") {
+					score++
+					break
+				}
+			}
+		}
+	}
+	if score > 10 {
+		score = 10
+	}
+	return score
+}
+
 func readFileContent(path string) string {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -348,6 +391,7 @@ func buildGapReport(s SteinerScore) []string {
 		{"agent_native", s.AgentNative},
 		{"local_cache", s.LocalCache},
 		{"breadth", s.Breadth},
+		{"vision", s.Vision},
 	}
 	for _, d := range dimensions {
 		if d.score < 5 {
@@ -423,12 +467,13 @@ func writeScorecardMD(sc *Scorecard, pipelineDir string) error {
 		{"Agent Native", s.AgentNative},
 		{"Local Cache", s.LocalCache},
 		{"Breadth", s.Breadth},
+		{"Vision", s.Vision},
 	}
 	for _, d := range dimensions {
 		bar := strings.Repeat("#", d.score) + strings.Repeat(".", 10-d.score)
 		b.WriteString(fmt.Sprintf("| %s | %d/10 %s |\n", d.name, d.score, bar))
 	}
-	b.WriteString(fmt.Sprintf("| **Total** | **%d/90** |\n\n", s.Total))
+	b.WriteString(fmt.Sprintf("| **Total** | **%d/100** |\n\n", s.Total))
 
 	// Competitor comparison
 	if len(sc.CompetitorScores) > 0 {
