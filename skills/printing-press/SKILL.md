@@ -144,10 +144,12 @@ When the user provides an API name, run ALL five phases.
 
 ### Step 0: Parse intent and check known specs
 
-Extract the API name. Check `~/cli-printing-press/skills/printing-press/references/known-specs.md`.
+Extract the API name. Optionally check `~/cli-printing-press/skills/printing-press/references/known-specs.md` for a cached spec URL.
 
-If found in registry: note the URL for Phase 2, but STILL run full Phase 1 research.
-If not found: Phase 1 searches for spec too.
+If found in registry: note the URL as a hint for Phase 1, but STILL run full research.
+If not found: Phase 1 searches for the spec. This is the normal path - most APIs won't be in the registry.
+
+**The registry is a speed shortcut, not a gate.** Never refuse to run because an API isn't in the registry. Never hard-block because the registry says "GraphQL" or "Skipped." Phase 1 discovers the spec type dynamically.
 
 ---
 
@@ -542,22 +544,23 @@ Research the API landscape deeply. You need to understand the competitive terrai
 
 ### Step 1.1: Search for the API spec
 
-If not in known-specs registry:
+Search for BOTH REST and GraphQL specs. Don't assume the API type - discover it.
 
-**For REST APIs:**
 1. **WebSearch**: `"<API name>" openapi spec site:github.com`
 2. **WebSearch**: `"<API name>" openapi.yaml OR openapi.json specification`
-3. Try common URL patterns
-4. If found, **WebFetch** first 500 bytes to verify
+3. **WebSearch**: `"<API name>" graphql schema site:github.com`
+4. **WebSearch**: `"<API name>" API documentation developer reference`
+5. Try common URL patterns for the API docs landing page
+6. If a spec URL is found, **WebFetch** first 500 bytes to determine type:
+   - Starts with `{"openapi":` or `openapi:` -> OpenAPI/REST
+   - Contains `type Query {` or `schema {` -> GraphQL SDL
+   - Contains `"__schema"` -> GraphQL introspection result
 
-**For GraphQL APIs:**
-1. **WebSearch**: `"<API name>" graphql schema site:github.com`
-2. **WebSearch**: `"<API name>" graphql introspection schema SDL`
-3. Try fetching the schema: `curl -sL <api-url>/graphql/schema` or introspection query
-4. **WebFetch** the API's developer docs for entity/type reference
-5. Note: The GraphQL schema serves the same role as an OpenAPI spec - it defines entities, fields, types, and relationships. Phase 0.7 uses it for entity classification and data gravity scoring.
+**Record the API type** (REST, GraphQL, or hybrid) for Phase 2's type check.
 
-If no spec found: plan to write one from docs in Phase 2.
+If no spec found: plan to write one from docs in Phase 2. For GraphQL APIs, the developer docs or a schema URL fetched via introspection serves the same role as an OpenAPI spec - it defines entities, fields, types, and relationships.
+
+**Never refuse to proceed because you can't find a spec.** Write one from docs, or use GraphQL mode.
 
 ### Step 1.2: Search for competing CLIs
 

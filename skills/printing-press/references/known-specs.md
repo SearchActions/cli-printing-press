@@ -24,7 +24,7 @@ APIs with verified, publicly accessible OpenAPI specifications. The printing-pre
 | Asana | https://raw.githubusercontent.com/Asana/openapi/main/defs/asana_oas.yaml | YAML | 3.0.x | Yes |
 | Square | https://raw.githubusercontent.com/square/square-openapi/master/openapi.json | JSON | 3.0.x | Yes |
 | Notion | Skipped (official public OpenAPI spec URL not confirmed) | N/A | N/A | No |
-| Linear | GraphQL-only. Schema: https://raw.githubusercontent.com/linear/linear/master/packages/sdk/src/schema.graphql | GraphQL SDL | N/A | Yes (GraphQL mode) |
+| Linear | https://raw.githubusercontent.com/linear/linear/master/packages/sdk/src/schema.graphql | GraphQL SDL | N/A | Yes |
 | HubSpot | https://raw.githubusercontent.com/HubSpot/HubSpot-public-api-spec-collection/main/PublicApiSpecs/CRM/Contacts/Rollouts/424/v3/contacts.json | JSON | 3.0.x | Yes |
 | Front | https://raw.githubusercontent.com/frontapp/front-api-specs/main/core-api/core-api.json | JSON | 3.0.x | Yes |
 
