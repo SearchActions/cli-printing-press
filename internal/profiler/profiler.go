@@ -137,9 +137,16 @@ func Profile(s *spec.APISpec) *APIProfile {
 		p.OfflineValuable = p.ReadRatio > 0.6
 	}
 	if listCapableGETs > 0 {
-		p.HighVolume = float64(p.ListEndpoints)/float64(listCapableGETs) > 0.5
+		paginationRatio := float64(p.ListEndpoints) / float64(listCapableGETs)
+		// HighVolume: either >50% of list endpoints are paginated, or 5+ paginated endpoints exist
+		p.HighVolume = paginationRatio > 0.5 || p.ListEndpoints >= 5
 	}
-	p.NeedsSearch = len(listResources) >= 3 && !hasSearchEndpoint
+	// NeedsSearch: 3+ list resources exist and fewer than half have dedicated search endpoints
+	searchEndpointCount := 0
+	if hasSearchEndpoint {
+		searchEndpointCount = 1 // conservative: count as 1 even if multiple search endpoints exist
+	}
+	p.NeedsSearch = len(listResources) >= 3 && float64(searchEndpointCount)/float64(len(listResources)) < 0.5
 
 	p.SyncableResources = sortedKeys(syncable)
 	for resource, fields := range searchable {
