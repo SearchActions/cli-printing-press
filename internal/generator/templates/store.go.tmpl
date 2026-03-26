@@ -66,6 +66,13 @@ func (s *Store) migrate() error {
 		`CREATE VIRTUAL TABLE IF NOT EXISTS resources_fts USING fts5(
 			id, resource_type, content, tokenize='porter unicode61'
 		)`,
+{{- range .SyncableResources}}
+		`CREATE TABLE IF NOT EXISTS {{snake .}} (
+			id TEXT PRIMARY KEY,
+			data JSON NOT NULL,
+			synced_at DATETIME DEFAULT CURRENT_TIMESTAMP
+		)`,
+{{- end}}
 	}
 
 	for _, m := range migrations {

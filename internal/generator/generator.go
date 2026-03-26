@@ -20,6 +20,7 @@ type Generator struct {
 	Spec      *spec.APISpec
 	OutputDir string
 	VisionSet VisionTemplateSet
+	profile   *profiler.APIProfile
 	funcs     template.FuncMap
 }
 
@@ -192,9 +193,12 @@ func (g *Generator) Generate() error {
 	// Vision features: profile the API and render selected templates
 	if g.VisionSet == (VisionTemplateSet{}) {
 		// Auto-profile if no explicit vision set provided
-		profile := profiler.Profile(g.Spec)
-		plan := profile.ToVisionaryPlan(g.Spec.Name)
+		g.profile = profiler.Profile(g.Spec)
+		plan := g.profile.ToVisionaryPlan(g.Spec.Name)
 		g.VisionSet = SelectVisionTemplates(plan)
+	}
+	if g.profile == nil {
+		g.profile = profiler.Profile(g.Spec)
 	}
 
 	// Create store directory if needed
@@ -202,7 +206,16 @@ func (g *Generator) Generate() error {
 		if err := os.MkdirAll(filepath.Join(g.OutputDir, "internal", "store"), 0755); err != nil {
 			return fmt.Errorf("creating store dir: %w", err)
 		}
-		if err := g.renderTemplate("store.go.tmpl", filepath.Join("internal", "store", "store.go"), g.Spec); err != nil {
+		storeData := struct {
+			*spec.APISpec
+			SyncableResources []string
+			SearchableFields  map[string][]string
+		}{
+			APISpec:           g.Spec,
+			SyncableResources: g.profile.SyncableResources,
+			SearchableFields:  g.profile.SearchableFields,
+		}
+		if err := g.renderTemplate("store.go.tmpl", filepath.Join("internal", "store", "store.go"), storeData); err != nil {
 			return fmt.Errorf("rendering store: %w", err)
 		}
 	}
