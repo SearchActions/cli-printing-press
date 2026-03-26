@@ -1096,11 +1096,36 @@ Validate every example in --help and README:
 
 **Sampling for large CLIs (100+ commands):** Test ALL workflow commands + ALL commands with --stdin examples + random sample of 30 generated commands. Report sample size.
 
-### Step 4.5d: Auto-Fix Issues Found
+### Step 4.5d: Write the Dogfood Report ("Here's what I learned")
 
-For each fixable issue:
+**Run the Artifact Writing plan generator** with all dogfood scoring results as input. Write to `~/cli-printing-press/docs/plans/<today>-fix-<api>-cli-dogfood-report.md`.
 
-| Issue Type | Auto-Fix Action |
+The report MUST include three sections:
+
+**Section 1: "Here's what I learned"**
+- Per-command score table (sampled commands, all 5 dimensions)
+- Top 5 failures with root cause analysis
+- Hallucination list (flags/fields not in spec with evidence)
+- Pattern analysis: what categories of issues keep appearing?
+- Comparison: workflow commands vs generated commands - which score better?
+
+**Section 2: "Here's what I think we should fix"**
+- Prioritized fix list, ordered by impact (critical failures first)
+- For each fix: what's wrong, which file, what the fix is, expected score improvement
+- Mark each as AUTO-FIXABLE or NEEDS-MANUAL-FIX
+- Estimate: "fixing these [N] issues would raise pass rate from [X]% to [Y]%"
+
+**Section 3: "Here's what I think we should make"**
+- Features or commands that the dogfood revealed are missing
+- Endpoints that exist in the spec but have no generated command
+- Schema fields that should be in the data layer but aren't
+- Workflow ideas that emerged from understanding the API responses better
+
+### Step 4.5e: Fix Everything Fixable
+
+Now execute the fixes from the report. For each AUTO-FIXABLE issue:
+
+| Issue Type | Fix Action |
 |---|---|
 | Placeholder values ("abc123", "string") | Replace with realistic domain values from spec |
 | Missing required flags in examples | Add required flags with domain-realistic values |
@@ -1108,24 +1133,30 @@ For each fixable issue:
 | Lazy 1-word Short descriptions | Pull description from spec's endpoint summary |
 | Hallucinated flag (not in spec) | Remove the flag and its binding |
 | Wrong flag type (string instead of int) | Fix the cobra flag type |
+| Path param not substituted in example | Fix the example with a realistic ID |
+| Workflow hits nonexistent endpoint | Fix the path or remove the workflow |
 
-After auto-fixes:
+**After ALL fixes:**
 1. Run `go build ./...` and `go vet ./...` to verify fixes compile
-2. Re-run the dogfood scoring
-3. Report before/after scores
+2. Re-run the FULL dogfood scoring (Steps 4.5b + 4.5c) on the same sample
+3. Compute the delta: before/after per-dimension and aggregate scores
+4. **Update the dogfood report artifact** with a new section:
 
-### Step 4.5e: Write the Dogfood Report Artifact
+**Section 4: "Here's what we fixed" (appended after Step 4.5e)**
+- List of every fix applied with file path and description
+- Before/after scores per command that was fixed
+- Aggregate improvement: pass rate delta, critical failure delta, avg score delta
+- Remaining unfixed issues (NEEDS-MANUAL-FIX items) with reasons
 
-**Run the Artifact Writing plan generator** with all dogfood results as input. Write to `~/cli-printing-press/docs/plans/<today>-fix-<api>-cli-dogfood-report.md`.
+### Step 4.5f: Implement "Should Make" Recommendations (if time permits)
 
-The artifact MUST include:
-- Per-command score table (sampled commands, all 5 dimensions)
-- Top 5 failures with root cause analysis
-- Hallucination list (flags/fields not in spec)
-- Auto-fixes applied with before/after diff
-- Recommendations for remaining manual fixes
-- Overall dogfood score, pass rate, critical failure count
-- PASS/WARN/FAIL verdict
+Review the "Here's what I think we should make" section from the report. For each recommendation:
+
+1. Is this a quick win (< 10 min to implement)? -> Do it now
+2. Is this a significant feature (> 10 min)? -> Add to the dogfood report as "Future Work"
+3. Does this improve the Steinberger score? -> Prioritize it
+
+After implementing quick wins, re-run `go build` and the dogfood on affected commands.
 
 ### PHASE GATE 4.5
 
@@ -1134,12 +1165,13 @@ The artifact MUST include:
 2. Sample of generated commands scored (30+ or all if < 100)
 3. Synthetic responses generated from spec (not invented)
 4. Per-command score table computed
-5. Auto-fixes applied and compilation verified
-6. Re-score after fixes shows improvement
-7. Dogfood report artifact written
-8. Final verdict: PASS or WARN (FAIL = stop and report)
+5. Dogfood report written with all 4 sections (learned, should fix, should make, fixed)
+6. All AUTO-FIXABLE issues resolved
+7. Re-score after fixes shows measurable improvement
+8. `go build ./...` and `go vet ./...` pass
+9. Final verdict: PASS or WARN (FAIL = stop and report, do NOT proceed)
 
-Tell the user: "Phase 4.5 complete: Dogfood score [X]/50 avg across [N] commands. Pass rate: [Y]%. Critical failures: [Z]. Auto-fixed [K] issues (+[D] point improvement). [PASS/WARN/FAIL]. Proceeding to final Steinberger."
+Tell the user: "Phase 4.5 complete: Dogfood score [X]/50 avg across [N] commands (was [X0] before fixes, +[D] improvement). Pass rate: [Y]% (was [Y0]%). Critical failures: [Z] (was [Z0]). Auto-fixed [K] issues. Implemented [J] quick-win recommendations. [PASS/WARN/FAIL]. Proceeding to final Steinberger."
 
 ---
 
