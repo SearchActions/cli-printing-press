@@ -69,9 +69,26 @@ Once synced, use the 'search' command for instant full-text search.`,
 				var items []json.RawMessage
 				if err := json.Unmarshal(data, &items); err != nil {
 					// Single object response - store as-is
-					if err := db.Upsert(resource, resource, data); err != nil {
-						fmt.Fprintf(os.Stderr, "warning: failed to store %s: %v\n", resource, err)
-					} else {
+					stored := false
+					switch resource {
+{{- range .Tables}}
+{{- if and (gt (len .Columns) 3) (ne .Name "sync_state")}}
+					case "{{.Name}}":
+						if err := db.Upsert{{pascal .Name}}(data); err != nil {
+							fmt.Fprintf(os.Stderr, "warning: failed to store %s: %v\n", resource, err)
+						} else {
+							stored = true
+						}
+{{- end}}
+{{- end}}
+					default:
+						if err := db.Upsert(resource, resource, data); err != nil {
+							fmt.Fprintf(os.Stderr, "warning: failed to store %s: %v\n", resource, err)
+						} else {
+							stored = true
+						}
+					}
+					if stored {
 						totalSynced++
 					}
 					continue
@@ -87,9 +104,21 @@ Once synced, use the 'search' command for instant full-text search.`,
 					if id == "" {
 						id = fmt.Sprintf("%s-%d", resource, count)
 					}
-					if err := db.Upsert(resource, id, item); err != nil {
-						fmt.Fprintf(os.Stderr, "warning: failed to store %s/%s: %v\n", resource, id, err)
-						continue
+					switch resource {
+{{- range .Tables}}
+{{- if and (gt (len .Columns) 3) (ne .Name "sync_state")}}
+					case "{{.Name}}":
+						if err := db.Upsert{{pascal .Name}}(item); err != nil {
+							fmt.Fprintf(os.Stderr, "warning: failed to store %s/%s: %v\n", resource, id, err)
+							continue
+						}
+{{- end}}
+{{- end}}
+					default:
+						if err := db.Upsert(resource, id, item); err != nil {
+							fmt.Fprintf(os.Stderr, "warning: failed to store %s/%s: %v\n", resource, id, err)
+							continue
+						}
 					}
 					count++
 				}
@@ -115,8 +144,11 @@ Once synced, use the 'search' command for instant full-text search.`,
 }
 
 func defaultSyncResources() []string {
-	// Override this in the generated CLI to list the API's top-level list endpoints
-	return []string{}
+	return []string{
+{{- range .SyncableResources}}
+		"{{.}}",
+{{- end}}
+	}
 }
 
 func extractID(obj map[string]any) string {

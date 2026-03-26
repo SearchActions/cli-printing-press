@@ -33,25 +33,32 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 	}
 	g := &Generator{Spec: s, OutputDir: outputDir}
 	g.funcs = template.FuncMap{
-		"title":             strings.Title,
-		"lower":             strings.ToLower,
-		"upper":             strings.ToUpper,
-		"camel":             toCamel,
-		"snake":             toSnake,
-		"goType":            goType,
-		"cobraFlagFunc":     cobraFlagFunc,
-		"defaultVal":        defaultVal,
-		"zeroVal":           zeroVal,
-		"positionalArgs":    positionalArgs,
-		"configTag":         configTag,
-		"envVarField":       envVarField,
-		"envVarPlaceholder": envVarPlaceholder,
-		"add":               func(a, b int) int { return a + b },
-		"oneline":           oneline,
-		"flagName":          flagName,
-		"safeTypeName":      safeTypeName,
-		"exampleLine":       g.exampleLine,
-		"currentYear":       func() string { return strconv.Itoa(time.Now().Year()) },
+		"title":              strings.Title,
+		"lower":              strings.ToLower,
+		"upper":              strings.ToUpper,
+		"join":               strings.Join,
+		"camel":              toCamel,
+		"snake":              toSnake,
+		"pascal":             toPascal,
+		"goType":             goType,
+		"goStoreType":        goStoreType,
+		"cobraFlagFunc":      cobraFlagFunc,
+		"defaultVal":         defaultVal,
+		"zeroVal":            zeroVal,
+		"positionalArgs":     positionalArgs,
+		"configTag":          configTag,
+		"camelToJSON":        camelToJSON,
+		"columnNames":        columnNames,
+		"columnPlaceholders": columnPlaceholders,
+		"updateSet":          updateSet,
+		"envVarField":        envVarField,
+		"envVarPlaceholder":  envVarPlaceholder,
+		"add":                func(a, b int) int { return a + b },
+		"oneline":            oneline,
+		"flagName":           flagName,
+		"safeTypeName":       safeTypeName,
+		"exampleLine":        g.exampleLine,
+		"currentYear":        func() string { return strconv.Itoa(time.Now().Year()) },
 	}
 	return g
 }
@@ -205,6 +212,7 @@ func (g *Generator) Generate() error {
 	if g.profile == nil {
 		g.profile = profiler.Profile(g.Spec)
 	}
+	schema := BuildSchema(g.Spec)
 
 	// Create store directory if needed
 	if g.VisionSet.Store {
@@ -215,10 +223,12 @@ func (g *Generator) Generate() error {
 			*spec.APISpec
 			SyncableResources []string
 			SearchableFields  map[string][]string
+			Tables            []TableDef
 		}{
 			APISpec:           g.Spec,
 			SyncableResources: g.profile.SyncableResources,
 			SearchableFields:  g.profile.SearchableFields,
+			Tables:            schema,
 		}
 		if err := g.renderTemplate("store.go.tmpl", filepath.Join("internal", "store", "store.go"), storeData); err != nil {
 			return fmt.Errorf("rendering store: %w", err)
@@ -235,6 +245,18 @@ func (g *Generator) Generate() error {
 		"analytics.go.tmpl": filepath.Join("internal", "cli", "analytics.go"),
 	}
 
+	visionData := struct {
+		*spec.APISpec
+		SyncableResources []string
+		SearchableFields  map[string][]string
+		Tables            []TableDef
+	}{
+		APISpec:           g.Spec,
+		SyncableResources: g.profile.SyncableResources,
+		SearchableFields:  g.profile.SearchableFields,
+		Tables:            schema,
+	}
+
 	for _, tmplName := range g.VisionSet.TemplateNames() {
 		if tmplName == "store.go.tmpl" {
 			continue // already rendered above
@@ -243,7 +265,11 @@ func (g *Generator) Generate() error {
 		if !ok {
 			continue
 		}
-		if err := g.renderTemplate(tmplName, outPath, g.Spec); err != nil {
+		var tmplData any = g.Spec
+		if tmplName == "sync.go.tmpl" || tmplName == "search.go.tmpl" {
+			tmplData = visionData
+		}
+		if err := g.renderTemplate(tmplName, outPath, tmplData); err != nil {
 			return fmt.Errorf("rendering vision %s: %w", tmplName, err)
 		}
 	}
@@ -353,6 +379,20 @@ func toSnake(s string) string {
 	return result.String()
 }
 
+func toPascal(s string) string {
+	parts := strings.FieldsFunc(s, func(r rune) bool {
+		return r == '_' || r == '-' || !unicode.IsLetter(r) && !unicode.IsDigit(r)
+	})
+	for i, part := range parts {
+		if part == "" {
+			continue
+		}
+		lower := strings.ToLower(part)
+		parts[i] = strings.ToUpper(lower[:1]) + lower[1:]
+	}
+	return strings.Join(parts, "")
+}
+
 func goType(t string) string {
 	switch t {
 	case "string":
@@ -366,6 +406,66 @@ func goType(t string) string {
 	default:
 		return "string"
 	}
+}
+
+func goStoreType(sqlType string) string {
+	upper := strings.ToUpper(sqlType)
+	switch {
+	case strings.HasPrefix(upper, "INTEGER"):
+		return "int"
+	case strings.HasPrefix(upper, "REAL"):
+		return "float64"
+	case strings.HasPrefix(upper, "JSON"):
+		return "json.RawMessage"
+	case strings.HasPrefix(upper, "DATETIME"):
+		return "string"
+	default:
+		return "string"
+	}
+}
+
+func camelToJSON(s string) string {
+	parts := strings.Split(strings.ToLower(s), "_")
+	if len(parts) == 0 {
+		return s
+	}
+	for i := 1; i < len(parts); i++ {
+		if parts[i] == "" {
+			continue
+		}
+		parts[i] = strings.ToUpper(parts[i][:1]) + parts[i][1:]
+	}
+	return strings.Join(parts, "")
+}
+
+func columnNames(cols []ColumnDef) string {
+	names := make([]string, 0, len(cols))
+	for _, col := range cols {
+		names = append(names, col.Name)
+	}
+	return strings.Join(names, ", ")
+}
+
+func columnPlaceholders(cols []ColumnDef) string {
+	if len(cols) == 0 {
+		return ""
+	}
+	placeholders := make([]string, len(cols))
+	for i := range cols {
+		placeholders[i] = "?"
+	}
+	return strings.Join(placeholders, ", ")
+}
+
+func updateSet(cols []ColumnDef) string {
+	var updates []string
+	for _, col := range cols {
+		if col.PrimaryKey {
+			continue
+		}
+		updates = append(updates, fmt.Sprintf("%s = excluded.%s", col.Name, col.Name))
+	}
+	return strings.Join(updates, ", ")
 }
 
 func cobraFlagFunc(t string) string {

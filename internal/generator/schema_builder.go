@@ -93,6 +93,17 @@ func BuildSchema(s *spec.APISpec) []TableDef {
 		}
 	}
 
+	// Deduplicate tables by name (sub-resources from different parents can collide)
+	seen := make(map[string]bool)
+	var deduped []TableDef
+	for _, t := range tables {
+		if !seen[t.Name] {
+			seen[t.Name] = true
+			deduped = append(deduped, t)
+		}
+	}
+	tables = deduped
+
 	tables = append(tables, TableDef{
 		Name: "sync_state",
 		Columns: []ColumnDef{
