@@ -5,6 +5,9 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
+	"slices"
+	"strconv"
 	"strings"
 )
 
@@ -31,8 +34,15 @@ type SteinerScore struct {
 	Vision        int `json:"vision"`         // 0-10
 	Workflows     int `json:"workflows"`      // 0-10
 	Insight       int `json:"insight"`        // 0-10
-	Total         int `json:"total"`          // 0-120
-	Percentage    int `json:"percentage"`     // 0-100
+	// Tier 2: Domain Correctness (semantic checks)
+	PathValidity          int `json:"path_validity"`           // 0-10
+	AuthProtocol          int `json:"auth_protocol"`           // 0-10
+	DataPipelineIntegrity int `json:"data_pipeline_integrity"` // 0-10
+	SyncCorrectness       int `json:"sync_correctness"`        // 0-10
+	TypeFidelity          int `json:"type_fidelity"`           // 0-5
+	DeadCode              int `json:"dead_code"`               // 0-5
+	Total                 int `json:"total"`                   // 0-100 (weighted: 50% infrastructure + 50% domain)
+	Percentage            int `json:"percentage"`              // 0-100
 }
 
 // CompScore compares our score against a competitor on a single dimension.
@@ -44,7 +54,7 @@ type CompScore struct {
 }
 
 // RunScorecard evaluates generated CLI files and produces a scorecard.
-func RunScorecard(outputDir, pipelineDir string) (*Scorecard, error) {
+func RunScorecard(outputDir, pipelineDir, specPath string) (*Scorecard, error) {
 	sc := &Scorecard{}
 
 	// Infer API name from outputDir basename
@@ -63,8 +73,15 @@ func RunScorecard(outputDir, pipelineDir string) (*Scorecard, error) {
 	sc.Steinberger.Vision = scoreVision(outputDir)
 	sc.Steinberger.Workflows = scoreWorkflows(outputDir)
 	sc.Steinberger.Insight = scoreInsight(outputDir)
+	sc.Steinberger.PathValidity = scorePathValidity(outputDir, specPath)
+	sc.Steinberger.AuthProtocol = scoreAuthProtocol(outputDir, specPath)
+	sc.Steinberger.DataPipelineIntegrity = scoreDataPipelineIntegrity(outputDir)
+	sc.Steinberger.SyncCorrectness = scoreSyncCorrectness(outputDir)
+	sc.Steinberger.TypeFidelity = scoreTypeFidelity(outputDir)
+	sc.Steinberger.DeadCode = scoreDeadCode(outputDir)
 
-	sc.Steinberger.Total = sc.Steinberger.OutputModes +
+	// Tier 1: Infrastructure (string-matching, 120 max)
+	tier1Raw := sc.Steinberger.OutputModes +
 		sc.Steinberger.Auth +
 		sc.Steinberger.ErrorHandling +
 		sc.Steinberger.TerminalUX +
@@ -77,8 +94,21 @@ func RunScorecard(outputDir, pipelineDir string) (*Scorecard, error) {
 		sc.Steinberger.Workflows +
 		sc.Steinberger.Insight
 
+	// Tier 2: Domain Correctness (semantic, 50 max)
+	tier2Raw := sc.Steinberger.PathValidity +
+		sc.Steinberger.AuthProtocol +
+		sc.Steinberger.DataPipelineIntegrity +
+		sc.Steinberger.SyncCorrectness +
+		sc.Steinberger.TypeFidelity +
+		sc.Steinberger.DeadCode
+
+	// Weighted composite: Tier 1 = 50%, Tier 2 = 50% of final 100-point scale
+	tier1Normalized := (tier1Raw * 50) / 120 // scale 0-120 to 0-50
+	tier2Normalized := (tier2Raw * 50) / 50  // scale 0-50 to 0-50
+	sc.Steinberger.Total = tier1Normalized + tier2Normalized
+
 	if sc.Steinberger.Total > 0 {
-		sc.Steinberger.Percentage = (sc.Steinberger.Total * 100) / 120
+		sc.Steinberger.Percentage = sc.Steinberger.Total // Total IS the percentage (0-100)
 	}
 
 	// Grade
@@ -715,6 +745,324 @@ func scoreInsight(dir string) int {
 	}
 }
 
+type openAPISecurityScheme struct {
+	Name string
+	Type string
+	In   string
+}
+
+type openAPISpecInfo struct {
+	Paths           []string
+	SecuritySchemes []openAPISecurityScheme
+}
+
+func loadOpenAPISpec(specPath string) *openAPISpecInfo {
+	if specPath == "" {
+		return nil
+	}
+
+	data, err := os.ReadFile(specPath)
+	if err != nil {
+		return nil
+	}
+
+	var raw map[string]any
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return nil
+	}
+
+	info := &openAPISpecInfo{}
+
+	if paths, ok := raw["paths"].(map[string]any); ok {
+		for path := range paths {
+			info.Paths = append(info.Paths, path)
+		}
+		slices.Sort(info.Paths)
+	}
+
+	if components, ok := raw["components"].(map[string]any); ok {
+		if securitySchemes, ok := components["securitySchemes"].(map[string]any); ok {
+			for schemeName, value := range securitySchemes {
+				scheme := openAPISecurityScheme{Name: schemeName}
+				if fields, ok := value.(map[string]any); ok {
+					scheme.Type = strings.ToLower(asString(fields["scheme"]))
+					if scheme.Type == "" {
+						scheme.Type = strings.ToLower(asString(fields["type"]))
+					}
+					scheme.In = strings.ToLower(asString(fields["in"]))
+				}
+				info.SecuritySchemes = append(info.SecuritySchemes, scheme)
+			}
+		}
+	}
+
+	return info
+}
+
+func scorePathValidity(dir, specPath string) int {
+	if specPath == "" {
+		return 5
+	}
+
+	spec := loadOpenAPISpec(specPath)
+	if spec == nil || len(spec.Paths) == 0 {
+		return 5
+	}
+
+	pathRe := regexp.MustCompile(`\bpath\s*[:=]\s*"([^"]+)"`)
+	cmdFiles := sampleCommandFiles(dir, 10)
+	if len(cmdFiles) == 0 {
+		return 0
+	}
+
+	total := 0
+	matches := 0
+	for _, content := range cmdFiles {
+		match := pathRe.FindStringSubmatch(content)
+		if len(match) < 2 {
+			continue
+		}
+		total++
+		if specPathExists(spec.Paths, match[1]) {
+			matches++
+		}
+	}
+
+	if total == 0 {
+		return 0
+	}
+	return (matches * 10) / total
+}
+
+func scoreAuthProtocol(dir, specPath string) int {
+	if specPath == "" {
+		return 5
+	}
+
+	spec := loadOpenAPISpec(specPath)
+	if spec == nil || len(spec.SecuritySchemes) == 0 {
+		return 5
+	}
+
+	clientContent := readFileContent(filepath.Join(dir, "internal", "client", "client.go"))
+	configContent := readFileContent(filepath.Join(dir, "internal", "config", "config.go"))
+	if clientContent == "" {
+		return 0
+	}
+
+	score := 0
+	authHeaderMatched := false
+	headerNameMatched := false
+	queryMatched := false
+	envMatched := false
+
+	for _, scheme := range spec.SecuritySchemes {
+		nameLower := strings.ToLower(scheme.Name)
+		switch {
+		case strings.Contains(nameLower, "bot"):
+			if strings.Contains(clientContent, `"Bot "`) || strings.Contains(clientContent, "`Bot `") {
+				authHeaderMatched = true
+			}
+		case strings.Contains(nameLower, "bearer") || scheme.Type == "bearer" || scheme.Type == "http":
+			if strings.Contains(clientContent, `"Bearer "`) || strings.Contains(clientContent, "`Bearer `") {
+				authHeaderMatched = true
+			}
+		case strings.Contains(nameLower, "basic") || scheme.Type == "basic":
+			if strings.Contains(clientContent, `"Basic "`) || strings.Contains(clientContent, "`Basic `") {
+				authHeaderMatched = true
+			}
+		}
+
+		headerName := "Authorization"
+		if strings.Contains(nameLower, "bot") {
+			headerName = "Authorization"
+		}
+		if strings.Contains(clientContent, `Header.Set("`+headerName+`"`) ||
+			strings.Contains(clientContent, `Header.Add("`+headerName+`"`) {
+			headerNameMatched = true
+		}
+
+		if scheme.In == "query" && (strings.Contains(clientContent, ".Query()") || strings.Contains(clientContent, "url.Values") || strings.Contains(clientContent, "RawQuery")) {
+			queryMatched = true
+		}
+
+		envNeedle := sanitizeEnvName(scheme.Name)
+		if envNeedle != "" && strings.Contains(strings.ToUpper(configContent), envNeedle) {
+			envMatched = true
+		}
+	}
+
+	if authHeaderMatched {
+		score += 3
+	}
+	if headerNameMatched {
+		score += 3
+	}
+	if queryMatched {
+		score += 2
+	}
+	if envMatched {
+		score += 2
+	}
+	if score > 10 {
+		score = 10
+	}
+	return score
+}
+
+func scoreDataPipelineIntegrity(dir string) int {
+	score := 0
+	syncContent := readFileContent(filepath.Join(dir, "internal", "cli", "sync.go"))
+	searchContent := readFileContent(filepath.Join(dir, "internal", "cli", "search.go"))
+	storeContent := readFileContent(filepath.Join(dir, "internal", "store", "store.go"))
+
+	if syncContent != "" && (strings.Contains(syncContent, "/store") || strings.Contains(syncContent, "store.")) {
+		score++
+	}
+
+	domainUpsertRe := regexp.MustCompile(`\.Upsert[A-Z]\w*\(`)
+	genericUpsertRe := regexp.MustCompile(`\.Upsert\(`)
+	if domainUpsertRe.MatchString(syncContent) {
+		score += 3
+	} else if genericUpsertRe.MatchString(syncContent) {
+		score += 0
+	}
+
+	domainSearchRe := regexp.MustCompile(`\.Search[A-Z]\w*\(`)
+	genericSearchRe := regexp.MustCompile(`\.Search\(`)
+	if domainSearchRe.MatchString(searchContent) {
+		score += 3
+	} else if genericSearchRe.MatchString(searchContent) {
+		score += 0
+	}
+
+	score += scoreDomainTables(storeContent)
+	if score > 10 {
+		score = 10
+	}
+	return score
+}
+
+func scoreSyncCorrectness(dir string) int {
+	content := readFileContent(filepath.Join(dir, "internal", "cli", "sync.go"))
+	if content == "" {
+		return 0
+	}
+
+	score := 0
+	if hasNonEmptySyncResources(content) {
+		score += 2
+	}
+	if strings.Contains(content, "{") {
+		score += 3
+	}
+	if strings.Contains(content, "GetSyncState") || strings.Contains(content, "sync_state") {
+		score += 2
+	}
+	if strings.Contains(content, "SaveSyncState") {
+		score++
+	}
+	if strings.Contains(content, "paginatedGet") || strings.Contains(content, "hasNextPage") || strings.Contains(content, "endCursor") || strings.Contains(content, "cursor") {
+		score += 2
+	}
+	if score > 10 {
+		score = 10
+	}
+	return score
+}
+
+func scoreTypeFidelity(dir string) int {
+	score := 0
+	cmdFiles := sampleCommandFiles(dir, 10)
+	if len(cmdFiles) == 0 {
+		return 0
+	}
+
+	flagDeclRe := regexp.MustCompile(`Flags\(\)\.(StringVar|IntVar|StringVarP|IntVarP)\(&[^,]+,\s*"([^"]+)"(?:,\s*[^,]+){1,2},\s*"([^"]*)"`)
+	requiredRe := regexp.MustCompile(`MarkFlagRequired\("([^"]+)"\)`)
+
+	totalIDFlags := 0
+	stringIDFlags := 0
+	requiredCount := 0
+	descWordCount := 0
+	descCount := 0
+
+	for _, content := range cmdFiles {
+		for _, match := range flagDeclRe.FindAllStringSubmatch(content, -1) {
+			name := strings.ToLower(match[2])
+			if strings.Contains(name, "id") {
+				totalIDFlags++
+				if strings.HasPrefix(match[1], "StringVar") {
+					stringIDFlags++
+				}
+			}
+			descWordCount += len(strings.Fields(match[3]))
+			descCount++
+		}
+		requiredCount += len(requiredRe.FindAllStringSubmatch(content, -1))
+	}
+
+	if totalIDFlags == 0 || stringIDFlags == totalIDFlags {
+		score += 2
+	}
+	if requiredCount >= 3 {
+		score++
+	}
+	if descCount > 0 && descWordCount/descCount > 5 {
+		score++
+	}
+
+	allCLI := ""
+	for _, content := range sampleCommandFiles(dir, 0) {
+		allCLI += content
+	}
+	allCLI += readFileContent(filepath.Join(dir, "internal", "cli", "helpers.go"))
+	allCLI += readFileContent(filepath.Join(dir, "internal", "cli", "root.go"))
+	if !strings.Contains(allCLI, "var _ = strings.ReplaceAll") && !strings.Contains(allCLI, "var _ = fmt.Sprintf") {
+		score++
+	}
+
+	if score > 5 {
+		score = 5
+	}
+	return score
+}
+
+func scoreDeadCode(dir string) int {
+	deadFlags := 0
+	deadFunctions := 0
+	cliDir := filepath.Join(dir, "internal", "cli")
+	rootContent := readFileContent(filepath.Join(cliDir, "root.go"))
+	helpersContent := readFileContent(filepath.Join(cliDir, "helpers.go"))
+	if rootContent == "" && helpersContent == "" {
+		return 0
+	}
+
+	flagRe := regexp.MustCompile(`&flags\.(\w+)`)
+	flagNames := uniqueMatches(flagRe, rootContent)
+	otherCLI := readOtherGoFiles(cliDir, map[string]bool{"root.go": true})
+	for _, name := range flagNames {
+		if !strings.Contains(otherCLI, "flags."+name) {
+			deadFlags++
+		}
+	}
+
+	funcRe := regexp.MustCompile(`(?m)^func\s+([A-Za-z_]\w*)\s*\(`)
+	funcNames := uniqueMatches(funcRe, helpersContent)
+	otherHelpers := readOtherGoFiles(cliDir, map[string]bool{"helpers.go": true})
+	for _, name := range funcNames {
+		if !strings.Contains(otherHelpers, name+"(") {
+			deadFunctions++
+		}
+	}
+
+	score := 5 - (deadFlags + deadFunctions)
+	if score < 0 {
+		return 0
+	}
+	return score
+}
+
 // sampleCommandFiles reads up to n command files from internal/cli/.
 // If n <= 0, reads all command files.
 func sampleCommandFiles(dir string, n int) []string {
@@ -745,6 +1093,148 @@ func sampleCommandFiles(dir string, n int) []string {
 		}
 	}
 	return files
+}
+
+func specPathExists(specPaths []string, actual string) bool {
+	for _, candidate := range specPaths {
+		if matchSpecPath(candidate, actual) || matchSpecPath(actual, candidate) {
+			return true
+		}
+	}
+	return false
+}
+
+func matchSpecPath(pattern, actual string) bool {
+	patternParts := splitPath(pattern)
+	actualParts := splitPath(actual)
+	if len(patternParts) != len(actualParts) {
+		return false
+	}
+	for i := range patternParts {
+		part := patternParts[i]
+		if strings.HasPrefix(part, "{") && strings.HasSuffix(part, "}") {
+			continue
+		}
+		if part != actualParts[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func splitPath(path string) []string {
+	trimmed := strings.Trim(path, "/")
+	if trimmed == "" {
+		return nil
+	}
+	return strings.Split(trimmed, "/")
+}
+
+func sanitizeEnvName(name string) string {
+	name = strings.ToUpper(name)
+	var b strings.Builder
+	lastUnderscore := false
+	for _, r := range name {
+		if (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') {
+			b.WriteRune(r)
+			lastUnderscore = false
+			continue
+		}
+		if !lastUnderscore {
+			b.WriteByte('_')
+			lastUnderscore = true
+		}
+	}
+	return strings.Trim(b.String(), "_")
+}
+
+func scoreDomainTables(storeContent string) int {
+	if storeContent == "" {
+		return 0
+	}
+	createTableRe := regexp.MustCompile(`(?is)CREATE TABLE[^()]*\((.*?)\)`)
+	columnTables := 0
+	for _, match := range createTableRe.FindAllStringSubmatch(storeContent, -1) {
+		columnCount := 0
+		for _, line := range strings.Split(match[1], "\n") {
+			line = strings.TrimSpace(line)
+			if line == "" || strings.HasPrefix(line, "--") {
+				continue
+			}
+			upper := strings.ToUpper(line)
+			if strings.HasPrefix(upper, "PRIMARY KEY") || strings.HasPrefix(upper, "FOREIGN KEY") || strings.HasPrefix(upper, "UNIQUE") || strings.HasPrefix(upper, "CONSTRAINT") {
+				continue
+			}
+			columnCount++
+		}
+		if columnCount >= 5 {
+			columnTables++
+		}
+	}
+	if columnTables > 0 {
+		return 3
+	}
+	return 0
+}
+
+func hasNonEmptySyncResources(content string) bool {
+	if strings.Contains(content, "[]string{}") || strings.Contains(content, "return nil") {
+		return false
+	}
+	if strings.Contains(content, "defaultSyncResources()") || strings.Contains(content, "syncResources") {
+		listRe := regexp.MustCompile(`\[\]string\{([^}]*)\}`)
+		for _, match := range listRe.FindAllStringSubmatch(content, -1) {
+			if strings.TrimSpace(match[1]) != "" {
+				return true
+			}
+		}
+		if strings.Contains(content, "defaultSyncResources") {
+			return true
+		}
+	}
+	return false
+}
+
+func uniqueMatches(re *regexp.Regexp, content string) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, match := range re.FindAllStringSubmatch(content, -1) {
+		if len(match) < 2 || seen[match[1]] {
+			continue
+		}
+		seen[match[1]] = true
+		out = append(out, match[1])
+	}
+	return out
+}
+
+func readOtherGoFiles(dir string, skip map[string]bool) string {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return ""
+	}
+	var b strings.Builder
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".go") || skip[entry.Name()] {
+			continue
+		}
+		b.WriteString(readFileContent(filepath.Join(dir, entry.Name())))
+		b.WriteByte('\n')
+	}
+	return b.String()
+}
+
+func asString(v any) string {
+	switch value := v.(type) {
+	case string:
+		return value
+	case fmt.Stringer:
+		return value.String()
+	case float64:
+		return strconv.FormatFloat(value, 'f', -1, 64)
+	default:
+		return ""
+	}
 }
 
 // hasPlaceholderValues checks if file content contains common placeholder values
@@ -847,10 +1337,20 @@ func buildGapReport(s SteinerScore) []string {
 		{"vision", s.Vision},
 		{"workflows", s.Workflows},
 		{"insight", s.Insight},
+		{"path_validity", s.PathValidity},
+		{"auth_protocol", s.AuthProtocol},
+		{"data_pipeline_integrity", s.DataPipelineIntegrity},
+		{"sync_correctness", s.SyncCorrectness},
+		{"type_fidelity", s.TypeFidelity},
+		{"dead_code", s.DeadCode},
 	}
 	for _, d := range dimensions {
-		if d.score < 5 {
-			gaps = append(gaps, fmt.Sprintf("%s scored %d/10 - needs improvement", d.name, d.score))
+		max := 10
+		if d.name == "type_fidelity" || d.name == "dead_code" {
+			max = 5
+		}
+		if d.score < max/2 {
+			gaps = append(gaps, fmt.Sprintf("%s scored %d/%d - needs improvement", d.name, d.score, max))
 		}
 	}
 	return gaps
@@ -906,8 +1406,8 @@ func writeScorecardMD(sc *Scorecard, pipelineDir string) error {
 
 	// Steinberger dimensions table
 	b.WriteString("## Steinberger Bar\n\n")
-	b.WriteString("| Dimension | Score | Max |\n")
-	b.WriteString("|-----------|-------|-----|\n")
+	b.WriteString("| Dimension | Score |\n")
+	b.WriteString("|-----------|-------|\n")
 	s := sc.Steinberger
 	dimensions := []struct {
 		name  string
@@ -925,12 +1425,27 @@ func writeScorecardMD(sc *Scorecard, pipelineDir string) error {
 		{"Vision", s.Vision},
 		{"Workflows", s.Workflows},
 		{"Insight", s.Insight},
+		{"Path Validity", s.PathValidity},
+		{"Auth Protocol", s.AuthProtocol},
+		{"Data Pipeline Integrity", s.DataPipelineIntegrity},
+		{"Sync Correctness", s.SyncCorrectness},
 	}
 	for _, d := range dimensions {
 		bar := strings.Repeat("#", d.score) + strings.Repeat(".", 10-d.score)
 		b.WriteString(fmt.Sprintf("| %s | %d/10 %s |\n", d.name, d.score, bar))
 	}
-	b.WriteString(fmt.Sprintf("| **Total** | **%d/120** |\n\n", s.Total))
+	typeDimensions := []struct {
+		name  string
+		score int
+	}{
+		{"Type Fidelity", s.TypeFidelity},
+		{"Dead Code", s.DeadCode},
+	}
+	for _, d := range typeDimensions {
+		bar := strings.Repeat("#", d.score) + strings.Repeat(".", 5-d.score)
+		b.WriteString(fmt.Sprintf("| %s | %d/5 %s |\n", d.name, d.score, bar))
+	}
+	b.WriteString(fmt.Sprintf("| **Total** | **%d/100** |\n\n", s.Total))
 
 	// Competitor comparison
 	if len(sc.CompetitorScores) > 0 {

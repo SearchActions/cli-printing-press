@@ -16,7 +16,7 @@ func TestScorecardOnRealCLI(t *testing.T) {
 		pipelineDir = t.TempDir()
 	}
 
-	sc, err := RunScorecard(outputDir, pipelineDir)
+	sc, err := RunScorecard(outputDir, pipelineDir, "")
 	if err != nil {
 		t.Fatalf("RunScorecard: %v", err)
 	}

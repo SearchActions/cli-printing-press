@@ -13,20 +13,20 @@ import (
 
 // FullRunResult holds everything the press produced for one API.
 type FullRunResult struct {
-	APIName       string
-	Level         string // "EASY", "MEDIUM", "HARD"
+	APIName string
+	Level   string // "EASY", "MEDIUM", "HARD"
 
 	// Step 1: Research
 	Research      *ResearchResult
 	ResearchError string
 
 	// Step 2: Generate
-	OutputDir       string
-	GatesPassed     int
-	GatesFailed     int
-	GatesOutput     string
-	CommandCount    int
-	ResourceCount   int
+	OutputDir     string
+	GatesPassed   int
+	GatesFailed   int
+	GatesOutput   string
+	CommandCount  int
+	ResourceCount int
 
 	// Step 3: Coverage
 	SpecEndpoints   int
@@ -148,7 +148,7 @@ func MakeBestCLI(apiName, level, specFlag, specURL, outputDir, pressBinary strin
 	}
 
 	// Step 6: Scorecard
-	scorecard, scErr := RunScorecard(outputDir, pipelineDir)
+	scorecard, scErr := RunScorecard(outputDir, pipelineDir, "")
 	if scErr != nil {
 		result.ScorecardError = scErr.Error()
 		result.Errors = append(result.Errors, fmt.Sprintf("scorecard: %v", scErr))

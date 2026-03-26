@@ -11,11 +11,12 @@ import (
 
 func newScorecardCmd() *cobra.Command {
 	var dir string
+	var specPath string
 	var asJSON bool
 
 	cmd := &cobra.Command{
 		Use:   "scorecard",
-		Short: "Score a generated CLI against the Steinberger bar (10 dimensions, max 100)",
+		Short: "Score a generated CLI against the Steinberger bar",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if dir == "" {
 				return fmt.Errorf("--dir is required")
@@ -28,7 +29,7 @@ func newScorecardCmd() *cobra.Command {
 			}
 			defer os.RemoveAll(pipelineDir)
 
-			sc, err := pipeline.RunScorecard(dir, pipelineDir)
+			sc, err := pipeline.RunScorecard(dir, pipelineDir, specPath)
 			if err != nil {
 				return fmt.Errorf("running scorecard: %w", err)
 			}
@@ -53,7 +54,15 @@ func newScorecardCmd() *cobra.Command {
 			fmt.Printf("  Breadth        %d/10\n", s.Breadth)
 			fmt.Printf("  Vision         %d/10\n", s.Vision)
 			fmt.Printf("  Workflows      %d/10\n", s.Workflows)
-			fmt.Printf("\n  Total: %d/110 (%d%%) - Grade %s\n", s.Total, s.Percentage, sc.OverallGrade)
+			fmt.Printf("  Insight        %d/10\n", s.Insight)
+			fmt.Printf("\n  Domain Correctness\n")
+			fmt.Printf("  Path Validity          %d/10\n", s.PathValidity)
+			fmt.Printf("  Auth Protocol          %d/10\n", s.AuthProtocol)
+			fmt.Printf("  Data Pipeline Integrity %d/10\n", s.DataPipelineIntegrity)
+			fmt.Printf("  Sync Correctness       %d/10\n", s.SyncCorrectness)
+			fmt.Printf("  Type Fidelity          %d/5\n", s.TypeFidelity)
+			fmt.Printf("  Dead Code              %d/5\n", s.DeadCode)
+			fmt.Printf("\n  Total: %d/100 - Grade %s\n", s.Total, sc.OverallGrade)
 
 			if len(sc.GapReport) > 0 {
 				fmt.Printf("\nGaps:\n")
@@ -67,6 +76,7 @@ func newScorecardCmd() *cobra.Command {
 	}
 
 	cmd.Flags().StringVar(&dir, "dir", "", "Path to generated CLI directory")
+	cmd.Flags().StringVar(&specPath, "spec", "", "Path to OpenAPI spec JSON for semantic validation")
 	cmd.Flags().BoolVar(&asJSON, "json", false, "Output as JSON")
 
 	return cmd
