@@ -52,7 +52,8 @@ func newScorecardCmd() *cobra.Command {
 			fmt.Printf("  Local Cache    %d/10\n", s.LocalCache)
 			fmt.Printf("  Breadth        %d/10\n", s.Breadth)
 			fmt.Printf("  Vision         %d/10\n", s.Vision)
-			fmt.Printf("\n  Total: %d/100 (%d%%) - Grade %s\n", s.Total, s.Percentage, sc.OverallGrade)
+			fmt.Printf("  Workflows      %d/10\n", s.Workflows)
+			fmt.Printf("\n  Total: %d/110 (%d%%) - Grade %s\n", s.Total, s.Percentage, sc.OverallGrade)
 
 			if len(sc.GapReport) > 0 {
 				fmt.Printf("\nGaps:\n")

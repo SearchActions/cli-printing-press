@@ -17,20 +17,21 @@ type Scorecard struct {
 	GapReport        []string     `json:"gap_report"`
 }
 
-// SteinerScore breaks down the Steinberger bar into 10 dimensions, each 0-10.
+// SteinerScore breaks down the Steinberger bar into 11 dimensions, each 0-10.
 type SteinerScore struct {
-	OutputModes   int `json:"output_modes"`    // 0-10
-	Auth          int `json:"auth"`            // 0-10
-	ErrorHandling int `json:"error_handling"`  // 0-10
-	TerminalUX    int `json:"terminal_ux"`     // 0-10
-	README        int `json:"readme"`          // 0-10
-	Doctor        int `json:"doctor"`          // 0-10
-	AgentNative   int `json:"agent_native"`    // 0-10
-	LocalCache    int `json:"local_cache"`     // 0-10
-	Breadth       int `json:"breadth"`         // 0-10: how many commands (penalizes empty CLIs)
-	Vision        int `json:"vision"`          // 0-10
-	Total         int `json:"total"`           // 0-100
-	Percentage    int `json:"percentage"`      // 0-100
+	OutputModes   int `json:"output_modes"`   // 0-10
+	Auth          int `json:"auth"`           // 0-10
+	ErrorHandling int `json:"error_handling"` // 0-10
+	TerminalUX    int `json:"terminal_ux"`    // 0-10
+	README        int `json:"readme"`         // 0-10
+	Doctor        int `json:"doctor"`         // 0-10
+	AgentNative   int `json:"agent_native"`   // 0-10
+	LocalCache    int `json:"local_cache"`    // 0-10
+	Breadth       int `json:"breadth"`        // 0-10: how many commands (penalizes empty CLIs)
+	Vision        int `json:"vision"`         // 0-10
+	Workflows     int `json:"workflows"`      // 0-10
+	Total         int `json:"total"`          // 0-110
+	Percentage    int `json:"percentage"`     // 0-100
 }
 
 // CompScore compares our score against a competitor on a single dimension.
@@ -59,6 +60,7 @@ func RunScorecard(outputDir, pipelineDir string) (*Scorecard, error) {
 	sc.Steinberger.LocalCache = scoreLocalCache(outputDir)
 	sc.Steinberger.Breadth = scoreBreadth(outputDir)
 	sc.Steinberger.Vision = scoreVision(outputDir)
+	sc.Steinberger.Workflows = scoreWorkflows(outputDir)
 
 	sc.Steinberger.Total = sc.Steinberger.OutputModes +
 		sc.Steinberger.Auth +
@@ -69,10 +71,11 @@ func RunScorecard(outputDir, pipelineDir string) (*Scorecard, error) {
 		sc.Steinberger.AgentNative +
 		sc.Steinberger.LocalCache +
 		sc.Steinberger.Breadth +
-		sc.Steinberger.Vision
+		sc.Steinberger.Vision +
+		sc.Steinberger.Workflows
 
 	if sc.Steinberger.Total > 0 {
-		sc.Steinberger.Percentage = (sc.Steinberger.Total * 100) / 100
+		sc.Steinberger.Percentage = (sc.Steinberger.Total * 100) / 110
 	}
 
 	// Grade
@@ -598,6 +601,60 @@ func scoreVision(dir string) int {
 	return score
 }
 
+func scoreWorkflows(dir string) int {
+	cliDir := filepath.Join(dir, "internal", "cli")
+	entries, err := os.ReadDir(cliDir)
+	if err != nil {
+		return 0
+	}
+
+	compoundCommands := 0
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".go") {
+			continue
+		}
+
+		content := readFileContent(filepath.Join(cliDir, e.Name()))
+
+		// Count files that make 2+ different API calls in a single RunE.
+		apiCalls := 0
+		if strings.Contains(content, "c.Get(") || strings.Contains(content, "c.Get (") {
+			apiCalls++
+		}
+		if strings.Contains(content, "c.Post(") || strings.Contains(content, "c.Post (") {
+			apiCalls++
+		}
+		if strings.Contains(content, "c.Put(") || strings.Contains(content, "c.Put (") {
+			apiCalls++
+		}
+		if strings.Contains(content, "c.Delete(") || strings.Contains(content, "c.Delete (") {
+			apiCalls++
+		}
+		// Also count store operations as compound behavior.
+		if strings.Contains(content, "store.") || strings.Contains(content, "/store") {
+			apiCalls++
+		}
+		if apiCalls >= 2 {
+			compoundCommands++
+		}
+	}
+
+	switch {
+	case compoundCommands >= 7:
+		return 10
+	case compoundCommands >= 5:
+		return 8
+	case compoundCommands >= 3:
+		return 6
+	case compoundCommands >= 2:
+		return 4
+	case compoundCommands >= 1:
+		return 2
+	default:
+		return 0
+	}
+}
+
 // sampleCommandFiles reads up to n command files from internal/cli/.
 // If n <= 0, reads all command files.
 func sampleCommandFiles(dir string, n int) []string {
@@ -728,6 +785,7 @@ func buildGapReport(s SteinerScore) []string {
 		{"local_cache", s.LocalCache},
 		{"breadth", s.Breadth},
 		{"vision", s.Vision},
+		{"workflows", s.Workflows},
 	}
 	for _, d := range dimensions {
 		if d.score < 5 {
@@ -804,12 +862,13 @@ func writeScorecardMD(sc *Scorecard, pipelineDir string) error {
 		{"Local Cache", s.LocalCache},
 		{"Breadth", s.Breadth},
 		{"Vision", s.Vision},
+		{"Workflows", s.Workflows},
 	}
 	for _, d := range dimensions {
 		bar := strings.Repeat("#", d.score) + strings.Repeat(".", 10-d.score)
 		b.WriteString(fmt.Sprintf("| %s | %d/10 %s |\n", d.name, d.score, bar))
 	}
-	b.WriteString(fmt.Sprintf("| **Total** | **%d/100** |\n\n", s.Total))
+	b.WriteString(fmt.Sprintf("| **Total** | **%d/110** |\n\n", s.Total))
 
 	// Competitor comparison
 	if len(sc.CompetitorScores) > 0 {

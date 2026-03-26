@@ -36,11 +36,11 @@ Generate the best CLI that has ever existed for any API. Five mandatory phases. 
 Every run produces the GOAT CLI through 6 mandatory phases:
 
 ```
-PHASE 0: VISIONARY RESEARCH  ->  PHASE 1: DEEP RESEARCH  ->  PHASE 2: GENERATE  ->  PHASE 3: STEINBERGER AUDIT  ->  PHASE 4: GOAT FIX  ->  PHASE 5: FINAL STEINBERGER
-        (3-5 min)                      (5-8 min)                  (1-2 min)               (5-8 min)                     (3-5 min)                (2-3 min)
+PHASE 0: VISIONARY RESEARCH  ->  PHASE 0.5: POWER USER WORKFLOWS  ->  PHASE 1: DEEP RESEARCH  ->  PHASE 2: GENERATE  ->  PHASE 3: STEINBERGER AUDIT  ->  PHASE 4: GOAT BUILD  ->  PHASE 5: FINAL STEINBERGER
+        (3-5 min)                        (2-3 min)                        (5-8 min)                  (1-2 min)               (5-8 min)                     (5-10 min)                (2-3 min)
 ```
 
-Total expected time: 18-30 minutes. If a run completes in under 12 minutes, phases were shortcut.
+Total expected time: 20-40 minutes. Phase 4 is longer now because it builds real workflow commands, not just polishes READMEs.
 
 **The Steinberger bar:** Peter Steinberger's gogcli is the 10/10 reference. Every generated CLI is scored against it TWICE - once during audit to find gaps, once after fixes to prove improvement. The delta is the proof of work.
 
@@ -244,6 +244,70 @@ Tell the user: "Phase 0 complete: Domain: [category]. Data profile: [volume]/[re
 
 ---
 
+# PHASE 0.5: POWER USER WORKFLOWS
+
+## THIS PHASE IS MANDATORY. DO NOT SKIP IT.
+
+The generator produces API wrappers. Power users want workflow tools. This phase predicts what compound commands would make the CLI genuinely useful - the kind of features that make discrawl (12 commands) more valuable than a 316-command API wrapper.
+
+### Step 0.5a: Classify the API Archetype
+
+Based on Phase 0 research, classify the API:
+
+| Archetype | Signal | Example Workflows |
+|---|---|---|
+| **Communication** | Messages, channels, threads | Archive, offline search, monitor keywords, export conversations |
+| **Project Management** | Issues, tasks, sprints, states | Stale issues, orphan detection, velocity, burndown, standup, triage |
+| **Payments** | Charges, subscriptions, invoices | Reconciliation, webhook replay, fixture flows, revenue reports |
+| **Infrastructure** | Servers, deployments, logs | State sync, log tailing, deploy orchestration, health dashboards |
+| **Content** | Documents, pages, blocks, media | Backup to local files, diff, template management, publish workflows |
+| **CRM** | Contacts, deals, pipelines | Pipeline reports, stale deal alerts, activity timelines, bulk updates |
+| **Developer Platform** | Repos, PRs, CI runs | PR triage, CI monitoring, release management, dependency audit |
+
+### Step 0.5b: Generate 10-15 Workflow Ideas
+
+For the identified archetype, brainstorm compound workflows. Ask:
+- "What does a power user of this API wish they could do in one command?"
+- "What multi-step task do people automate with scripts today?"
+- "What reporting/hygiene/monitoring task requires manual effort?"
+- "What would make an engineering manager's life easier?"
+
+Each workflow should:
+- Combine 2+ API calls into one operation
+- Solve a real recurring problem
+- Be expressible as a single CLI command with flags
+
+### Step 0.5c: Validate Against API Capabilities
+
+For each workflow idea, check:
+1. Does the API have the required endpoints/fields?
+2. Can the required data be queried/filtered?
+3. Are write operations available (for mutation workflows)?
+4. For GraphQL APIs: does the schema have the required types?
+
+Drop workflows the API can't support.
+
+### Step 0.5d: Rank by Impact
+
+Score each workflow on:
+- **Frequency**: How often would users run this? (daily=3, weekly=2, monthly=1)
+- **Pain**: How painful is the manual alternative? (high=3, medium=2, low=1)
+- **Feasibility**: How hard to implement? (easy=3, medium=2, hard=1)
+- **Uniqueness**: Does any existing tool do this? (no=3, partial=2, yes=0)
+
+### Step 0.5e: Select Top 5-7 for Implementation
+
+These become **mandatory Phase 4 work items**. They are NOT optional polish. They are the PRODUCT.
+
+### PHASE GATE 0.5
+
+**STOP.** Tell the user: "Identified [N] power-user workflows for [API name]. Top 5:
+1. [name] - [one-line description] (score [X]/12)
+2. ...
+These will be built as real commands in Phase 4, alongside the API wrapper."
+
+---
+
 # PHASE 1: DEEP RESEARCH
 
 ## THIS PHASE IS MANDATORY. DO NOT SKIP IT.
@@ -371,6 +435,21 @@ Tell the user: "Phase 1 complete: Found [spec/no spec], [N] competitors. Best: [
 # PHASE 2: GENERATE
 
 ## THIS PHASE IS MANDATORY. DO NOT SKIP IT.
+
+### Step 2.0: API Type Check
+
+Before generating, verify the spec matches the API:
+
+1. **If spec is OpenAPI/Swagger** -> proceed to REST generation (Step 2.1)
+2. **If spec is a GraphQL schema** -> STOP. Tell the user:
+   "This API is GraphQL-only. The printing press generates REST CLIs. Options:
+   a) I'll build the Phase 0.5 workflow commands directly using a GraphQL client (recommended)
+   b) Pick a different REST API for generation"
+3. **If no spec and API is GraphQL-only** -> same as #2
+4. **If the spec describes REST endpoints but the API base URL contains `/graphql`** -> STOP.
+   "The spec describes REST endpoints but the API is GraphQL. Generating would produce commands that can't make successful API calls."
+
+**NEVER generate a CLI that can't make a single successful API call.**
 
 ### Step 2.1: Get the spec ready
 
@@ -544,20 +623,45 @@ Tell the user: "Phase 3 complete: Baseline Steinberger Score: [X]/100 (Grade [X]
 
 ---
 
-# PHASE 4: GOAT FIX
+# PHASE 4: GOAT BUILD
 
 ## THIS PHASE IS MANDATORY.
 
-Execute fixes in priority order:
+**The generator output is scaffolding, not the product. The workflows are the product.**
 
-1. **Scorecard-gap fixes** - run scorecard, identify dimensions below 10/10, fix patterns the scorecard measures
-2. **Complex body field --stdin examples** (useful for agents, visible in help text)
-3. **Command name cleanup** (UX quality, not scored by automated scorecard)
-4. **Description/README polish** (UX quality, not scored)
+Execute in this priority order. Do NOT skip Priority 1 to polish the README.
 
-Scorecard-measured improvements first. UX polish second. If the scorecard says 10/10 for a dimension, do not spend time improving it further.
+### Priority 1: Power User Workflows (from Phase 0.5)
 
-### Step 4.1: Apply scorecard-gap fixes
+This is the most important work in the entire pipeline. Implement the top 5-7 workflows identified in Phase 0.5 as real, hand-written Go commands.
+
+For each workflow:
+1. **Create a dedicated command file** (e.g., `internal/cli/stale.go`, `internal/cli/velocity.go`)
+2. **Use the generated client** to make real API calls
+3. **Combine 2+ API calls** into one user-facing operation
+4. **Add realistic examples** in --help that show the actual workflow
+5. **Support --json output** for agent consumption
+6. **Register in root.go** alongside the generated commands
+
+Example for a "stale issues" workflow on a project management API:
+```go
+func newStaleCmd(flags *rootFlags) *cobra.Command {
+    var days int
+    var team string
+    cmd := &cobra.Command{
+        Use:   "stale",
+        Short: "Find issues with no updates in N days",
+        Example: `  linear-cli stale --days 30 --team ENG
+  linear-cli stale --days 14 --json --select identifier,title,updatedAt`,
+        RunE: func(cmd *cobra.Command, args []string) error {
+            c, err := flags.newClient()
+            // ... fetch issues, filter by updatedAt, group by team
+        },
+    }
+}
+```
+
+### Priority 2: Scorecard-Gap Fixes
 
 Run the scorecard and fix dimensions below 10/10:
 
@@ -570,28 +674,17 @@ For each dimension below 10/10:
 2. **Edit** with surgical changes
 3. Focus on changes that RAISE THE SCORECARD NUMBER
 
-### Step 4.2: Add complex body field examples
+Also fix:
+- Complex body field --stdin examples for top 3 endpoints
+- Lazy descriptions (1-2 word Short fields)
+- Placeholder examples ("abc123" -> realistic domain values)
 
-For the top 3 endpoints with complex body fields (identified in Phase 3 Step 3.6):
+### Priority 3: Polish
 
-1. **Read** the command file
-2. **Edit** the Example field to include a `--stdin` example with realistic JSON:
-
-```go
-Example: `  # Get a page
-  <api>-cli pages get d9824bdc-8445-4327-be8b-5b47f462e1b0
-
-  # Create a page with complex properties (pipe JSON via stdin)
-  echo '{"parent":{"database_id":"..."},"properties":{"Name":{"title":[{"text":{"content":"My Page"}}]}}}' | <api>-cli pages create --stdin`,
-```
-
-### Step 4.3: Command name cleanup and description/README polish
-
-Only if time remains after scorecard-gap fixes:
-1. Fix command names -> clean, intuitive names (get/list/create/update/delete)
-2. Fix help text jargon -> developer-friendly descriptions
-3. Fix examples -> realistic values (real UUIDs, real API objects, not "abc123")
-4. Fix README -> compelling, useful documentation
+Only after Priority 1 and 2 are complete:
+1. README cookbook section **showcasing workflow commands** (not just API calls)
+2. Command name cleanup
+3. FAQ section with domain-specific questions
 
 ### Step 4.4: Verify compilation
 
@@ -602,13 +695,13 @@ cd ~/cli-printing-press/<api>-cli && go build ./... && go vet ./... && echo "ALL
 ### PHASE GATE 4
 
 **STOP.** Verify:
-1. All GOAT improvements applied
-2. All tactical fixes applied
-3. Complex body field examples added for at least 2 endpoints
+1. At least 3 workflow commands implemented (from Phase 0.5)
+2. Workflow commands combine 2+ API calls each
+3. Scorecard gaps addressed
 4. `go build ./...` and `go vet ./...` pass
-5. Count changed files: `cd <api>-cli && git diff --stat 2>/dev/null | tail -1` (if git tracked) or `find . -newer /tmp/printing-press-spec-<api>.json -name "*.go" | wc -l`
+5. README cookbook includes workflow examples
 
-Tell the user: "Phase 4 complete: Applied [N] improvements, [M] tactical fixes, [K] complex body field examples. Compilation verified. Proceeding to final Steinberger scoring."
+Tell the user: "Phase 4 complete: Built [N] workflow commands, applied [M] scorecard fixes. Top workflow: [name]. Compilation verified. Proceeding to final scoring."
 
 ---
 
@@ -739,3 +832,7 @@ These phrases indicate a phase was shortcut. If you catch yourself writing them,
 - "Let's wrap up" (are all 5 phases complete with artifacts?)
 - "This API doesn't need local persistence" (Did you run Phase 0? Check the data profile. If search need is high, it needs persistence.)
 - "This is just an API wrapper" (Run Phase 0 again. What would a thoughtful developer build?)
+- "The API is GraphQL-only but I'll write a REST spec anyway" (STOP. This produces garbage. Use Phase 0.5 workflows or build a GraphQL client.)
+- "I'll polish the README instead of building workflows" (Phase 4 Priority 1 is workflows. README is Priority 3. Do not skip ahead.)
+- "The Phase 0.5 workflows are future work" (They are the product. Build them now or the CLI is just an API wrapper.)
+- "316 commands is better than 12" (discrawl has 12 commands and 539 stars. Depth beats breadth. Build the workflows.)
