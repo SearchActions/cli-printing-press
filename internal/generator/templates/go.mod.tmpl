@@ -9,3 +9,7 @@ require (
 	github.com/pelletier/go-toml/v2 v2.2.4
 {{- end}}
 )
+
+{{- if .VisionSet.Store}}
+require modernc.org/sqlite v1.37.0
+{{- end}}

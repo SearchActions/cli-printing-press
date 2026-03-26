@@ -21,9 +21,9 @@ func TestGenerateProjectsCompile(t *testing.T) {
 		specPath      string
 		expectedFiles int
 	}{
-		{name: "stytch", specPath: filepath.Join("..", "..", "testdata", "stytch.yaml"), expectedFiles: 14},
-		{name: "clerk", specPath: filepath.Join("..", "..", "testdata", "clerk.yaml"), expectedFiles: 15},
-		{name: "loops", specPath: filepath.Join("..", "..", "testdata", "loops.yaml"), expectedFiles: 15},
+		{name: "stytch", specPath: filepath.Join("..", "..", "testdata", "stytch.yaml"), expectedFiles: 25},
+		{name: "clerk", specPath: filepath.Join("..", "..", "testdata", "clerk.yaml"), expectedFiles: 30},
+		{name: "loops", specPath: filepath.Join("..", "..", "testdata", "loops.yaml"), expectedFiles: 28},
 	}
 
 	for _, tt := range tests {
@@ -69,7 +69,7 @@ func TestGenerateOAuth2AuthTemplateConditionally(t *testing.T) {
 		require.NoError(t, err)
 	})
 
-	t.Run("non-oauth2 spec omits auth command", func(t *testing.T) {
+	t.Run("non-oauth2 spec generates simple auth command", func(t *testing.T) {
 		apiSpec, err := spec.Parse(filepath.Join("..", "..", "testdata", "stytch.yaml"))
 		require.NoError(t, err)
 
@@ -77,8 +77,9 @@ func TestGenerateOAuth2AuthTemplateConditionally(t *testing.T) {
 		gen := New(apiSpec, outputDir)
 		require.NoError(t, gen.Generate())
 
+		// auth.go is always generated (simple token management for non-OAuth specs)
 		_, err = os.Stat(filepath.Join(outputDir, "internal", "cli", "auth.go"))
-		require.True(t, os.IsNotExist(err))
+		require.NoError(t, err)
 	})
 }
 

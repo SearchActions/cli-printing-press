@@ -17,6 +17,7 @@ var version = "{{.Version}}"
 
 type rootFlags struct {
 	asJSON       bool
+	csv          bool
 	plain        bool
 	quiet        bool
 	dryRun       bool
@@ -27,6 +28,7 @@ type rootFlags struct {
 	timeout      time.Duration
 }
 
+// Execute runs the CLI in non-interactive mode: never prompts, all values via flags or stdin.
 func Execute() error {
 	var flags rootFlags
 
@@ -40,6 +42,7 @@ func Execute() error {
 	rootCmd.SetVersionTemplate("{{.Name}}-cli {{"{{"}} .Version {{"}}"}}\n")
 
 	rootCmd.PersistentFlags().BoolVar(&flags.asJSON, "json", false, "Output as JSON")
+	rootCmd.PersistentFlags().BoolVar(&flags.csv, "csv", false, "Output as CSV (table and array responses)")
 	rootCmd.PersistentFlags().BoolVar(&flags.plain, "plain", false, "Output as plain tab-separated text")
 	rootCmd.PersistentFlags().BoolVar(&flags.quiet, "quiet", false, "Bare output, one value per line")
 	rootCmd.PersistentFlags().StringVar(&flags.configPath, "config", "", "Config file path")
@@ -55,8 +58,24 @@ func Execute() error {
 	rootCmd.AddCommand(new{{camel $name}}Cmd(&flags)) {{/* FuncPrefix matches resource name for top-level */}}
 {{- end}}
 	rootCmd.AddCommand(newDoctorCmd(&flags))
-{{- if .Auth.AuthorizationURL}}
 	rootCmd.AddCommand(newAuthCmd(&flags))
+{{- if .VisionSet.Export}}
+	rootCmd.AddCommand(newExportCmd(&flags))
+{{- end}}
+{{- if .VisionSet.Import}}
+	rootCmd.AddCommand(newImportCmd(&flags))
+{{- end}}
+{{- if .VisionSet.Search}}
+	rootCmd.AddCommand(newSearchCmd(&flags))
+{{- end}}
+{{- if .VisionSet.Sync}}
+	rootCmd.AddCommand(newSyncCmd(&flags))
+{{- end}}
+{{- if .VisionSet.Tail}}
+	rootCmd.AddCommand(newTailCmd(&flags))
+{{- end}}
+{{- if .VisionSet.Analytics}}
+	rootCmd.AddCommand(newAnalyticsCmd(&flags))
 {{- end}}
 	rootCmd.AddCommand(newVersionCliCmd())
 

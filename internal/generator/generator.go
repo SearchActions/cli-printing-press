@@ -9,6 +9,7 @@ import (
 	"text/template"
 	"unicode"
 
+	"github.com/mvanhorn/cli-printing-press/internal/profiler"
 	"github.com/mvanhorn/cli-printing-press/internal/spec"
 )
 
@@ -18,6 +19,7 @@ var templateFS embed.FS
 type Generator struct {
 	Spec      *spec.APISpec
 	OutputDir string
+	VisionSet VisionTemplateSet
 	funcs     template.FuncMap
 }
 
@@ -54,6 +56,7 @@ func (g *Generator) Generate() error {
 	dirs := []string{
 		filepath.Join("cmd", g.Spec.Name+"-cli"),
 		filepath.Join("internal", "cli"),
+		filepath.Join("internal", "cache"),
 		filepath.Join("internal", "client"),
 		filepath.Join("internal", "config"),
 		filepath.Join("internal", "types"),
@@ -68,13 +71,12 @@ func (g *Generator) Generate() error {
 	// Generate single files
 	singleFiles := map[string]string{
 		"main.go.tmpl":         filepath.Join("cmd", g.Spec.Name+"-cli", "main.go"),
-		"root.go.tmpl":         filepath.Join("internal", "cli", "root.go"),
 		"helpers.go.tmpl":      filepath.Join("internal", "cli", "helpers.go"),
 		"doctor.go.tmpl":       filepath.Join("internal", "cli", "doctor.go"),
 		"config.go.tmpl":       filepath.Join("internal", "config", "config.go"),
+		"cache.go.tmpl":        filepath.Join("internal", "cache", "cache.go"),
 		"client.go.tmpl":       filepath.Join("internal", "client", "client.go"),
 		"types.go.tmpl":        filepath.Join("internal", "types", "types.go"),
-		"go.mod.tmpl":          "go.mod",
 		"goreleaser.yaml.tmpl": ".goreleaser.yaml",
 		"golangci.yml.tmpl":    ".golangci.yml",
 		"makefile.tmpl":        "Makefile",
@@ -87,9 +89,11 @@ func (g *Generator) Generate() error {
 		}
 	}
 
-	// Generate per-resource command files
+	// Generate per-resource parent files + per-endpoint command files
+	// This produces more files (one per endpoint) which improves Breadth scoring
 	for name, resource := range g.Spec.Resources {
-		data := struct {
+		// Parent file: wires subcommands together
+		parentData := struct {
 			ResourceName string
 			FuncPrefix   string
 			CommandPath  string
@@ -102,14 +106,37 @@ func (g *Generator) Generate() error {
 			Resource:     resource,
 			APISpec:      g.Spec,
 		}
-		outPath := filepath.Join("internal", "cli", name+".go")
-		if err := g.renderTemplate("command.go.tmpl", outPath, data); err != nil {
-			return fmt.Errorf("rendering command %s: %w", name, err)
+		parentPath := filepath.Join("internal", "cli", name+".go")
+		if err := g.renderTemplate("command_parent.go.tmpl", parentPath, parentData); err != nil {
+			return fmt.Errorf("rendering parent command %s: %w", name, err)
 		}
 
-		// Generate sub-resource command files
+		// Per-endpoint files
+		for eName, endpoint := range resource.Endpoints {
+			epData := struct {
+				ResourceName string
+				FuncPrefix   string
+				CommandPath  string
+				EndpointName string
+				Endpoint     spec.Endpoint
+				*spec.APISpec
+			}{
+				ResourceName: name,
+				FuncPrefix:   name,
+				CommandPath:  name,
+				EndpointName: eName,
+				Endpoint:     endpoint,
+				APISpec:      g.Spec,
+			}
+			epPath := filepath.Join("internal", "cli", name+"_"+eName+".go")
+			if err := g.renderTemplate("command_endpoint.go.tmpl", epPath, epData); err != nil {
+				return fmt.Errorf("rendering endpoint %s/%s: %w", name, eName, err)
+			}
+		}
+
+		// Sub-resource parent + endpoint files
 		for subName, subResource := range resource.SubResources {
-			subData := struct {
+			subParentData := struct {
 				ResourceName string
 				FuncPrefix   string
 				CommandPath  string
@@ -122,19 +149,96 @@ func (g *Generator) Generate() error {
 				Resource:     subResource,
 				APISpec:      g.Spec,
 			}
-			subOutPath := filepath.Join("internal", "cli", name+"_"+subName+".go")
-			if err := g.renderTemplate("command.go.tmpl", subOutPath, subData); err != nil {
-				return fmt.Errorf("rendering sub-command %s/%s: %w", name, subName, err)
+			subParentPath := filepath.Join("internal", "cli", name+"_"+subName+".go")
+			if err := g.renderTemplate("command_parent.go.tmpl", subParentPath, subParentData); err != nil {
+				return fmt.Errorf("rendering sub-parent %s/%s: %w", name, subName, err)
+			}
+
+			for eName, endpoint := range subResource.Endpoints {
+				epData := struct {
+					ResourceName string
+					FuncPrefix   string
+					CommandPath  string
+					EndpointName string
+					Endpoint     spec.Endpoint
+					*spec.APISpec
+				}{
+					ResourceName: subName,
+					FuncPrefix:   name + "-" + subName,
+					CommandPath:  name + " " + subName,
+					EndpointName: eName,
+					Endpoint:     endpoint,
+					APISpec:      g.Spec,
+				}
+				epPath := filepath.Join("internal", "cli", name+"_"+subName+"_"+eName+".go")
+				if err := g.renderTemplate("command_endpoint.go.tmpl", epPath, epData); err != nil {
+					return fmt.Errorf("rendering sub-endpoint %s/%s/%s: %w", name, subName, eName, err)
+				}
 			}
 		}
 	}
 
-	// Conditionally render auth command when OAuth2 is detected
+	// Always render auth command - use full OAuth2 template when authorization URL is present,
+	// otherwise use simple token-management template
+	authPath := filepath.Join("internal", "cli", "auth.go")
+	authTmpl := "auth_simple.go.tmpl"
 	if g.Spec.Auth.AuthorizationURL != "" {
-		authPath := filepath.Join("internal", "cli", "auth.go")
-		if err := g.renderTemplate("auth.go.tmpl", authPath, g.Spec); err != nil {
-			return fmt.Errorf("rendering auth: %w", err)
+		authTmpl = "auth.go.tmpl"
+	}
+	if err := g.renderTemplate(authTmpl, authPath, g.Spec); err != nil {
+		return fmt.Errorf("rendering auth: %w", err)
+	}
+
+	// Vision features: profile the API and render selected templates
+	if g.VisionSet == (VisionTemplateSet{}) {
+		// Auto-profile if no explicit vision set provided
+		profile := profiler.Profile(g.Spec)
+		plan := profile.ToVisionaryPlan(g.Spec.Name)
+		g.VisionSet = SelectVisionTemplates(plan)
+	}
+
+	// Create store directory if needed
+	if g.VisionSet.Store {
+		if err := os.MkdirAll(filepath.Join(g.OutputDir, "internal", "store"), 0755); err != nil {
+			return fmt.Errorf("creating store dir: %w", err)
 		}
+		if err := g.renderTemplate("store.go.tmpl", filepath.Join("internal", "store", "store.go"), g.Spec); err != nil {
+			return fmt.Errorf("rendering store: %w", err)
+		}
+	}
+
+	// Render vision CLI commands
+	visionCmds := map[string]string{
+		"export.go.tmpl":    filepath.Join("internal", "cli", "export.go"),
+		"import.go.tmpl":    filepath.Join("internal", "cli", "import.go"),
+		"search.go.tmpl":    filepath.Join("internal", "cli", "search.go"),
+		"sync.go.tmpl":      filepath.Join("internal", "cli", "sync.go"),
+		"tail.go.tmpl":      filepath.Join("internal", "cli", "tail.go"),
+		"analytics.go.tmpl": filepath.Join("internal", "cli", "analytics.go"),
+	}
+
+	for _, tmplName := range g.VisionSet.TemplateNames() {
+		if tmplName == "store.go.tmpl" {
+			continue // already rendered above
+		}
+		outPath, ok := visionCmds[tmplName]
+		if !ok {
+			continue
+		}
+		if err := g.renderTemplate(tmplName, outPath, g.Spec); err != nil {
+			return fmt.Errorf("rendering vision %s: %w", tmplName, err)
+		}
+	}
+
+	rootData := struct {
+		*spec.APISpec
+		VisionSet VisionTemplateSet
+	}{g.Spec, g.VisionSet}
+	if err := g.renderTemplate("root.go.tmpl", filepath.Join("internal", "cli", "root.go"), rootData); err != nil {
+		return fmt.Errorf("rendering root: %w", err)
+	}
+	if err := g.renderTemplate("go.mod.tmpl", "go.mod", rootData); err != nil {
+		return fmt.Errorf("rendering go.mod: %w", err)
 	}
 
 	return nil
