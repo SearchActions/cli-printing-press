@@ -540,14 +540,22 @@ Tell the user: "Phase 0.7 complete: [N] primary entities for SQLite ([list]), [M
 
 Research the API landscape deeply. You need to understand the competitive terrain, user pain points, and strategic opportunity before generating anything.
 
-### Step 1.1: Search for the OpenAPI spec
+### Step 1.1: Search for the API spec
 
 If not in known-specs registry:
 
+**For REST APIs:**
 1. **WebSearch**: `"<API name>" openapi spec site:github.com`
 2. **WebSearch**: `"<API name>" openapi.yaml OR openapi.json specification`
 3. Try common URL patterns
 4. If found, **WebFetch** first 500 bytes to verify
+
+**For GraphQL APIs:**
+1. **WebSearch**: `"<API name>" graphql schema site:github.com`
+2. **WebSearch**: `"<API name>" graphql introspection schema SDL`
+3. Try fetching the schema: `curl -sL <api-url>/graphql/schema` or introspection query
+4. **WebFetch** the API's developer docs for entity/type reference
+5. Note: The GraphQL schema serves the same role as an OpenAPI spec - it defines entities, fields, types, and relationships. Phase 0.7 uses it for entity classification and data gravity scoring.
 
 If no spec found: plan to write one from docs in Phase 2.
 
@@ -669,15 +677,33 @@ Tell the user: "Phase 1 complete: Found [spec/no spec], [N] competitors. Best: [
 Before generating, verify the spec matches the API:
 
 1. **If spec is OpenAPI/Swagger** -> proceed to REST generation (Step 2.1)
-2. **If spec is a GraphQL schema** -> STOP. Tell the user:
-   "This API is GraphQL-only. The printing press generates REST CLIs. Options:
-   a) I'll build the Phase 0.5 workflow commands directly using a GraphQL client (recommended)
-   b) Pick a different REST API for generation"
-3. **If no spec and API is GraphQL-only** -> same as #2
-4. **If the spec describes REST endpoints but the API base URL contains `/graphql`** -> STOP.
-   "The spec describes REST endpoints but the API is GraphQL. Generating would produce commands that can't make successful API calls."
 
-**NEVER generate a CLI that can't make a single successful API call.**
+2. **If spec is a GraphQL schema or the API is GraphQL-only** -> GRAPHQL MODE:
+
+   Tell the user: "This API is GraphQL-only. The generator produces REST scaffolding, so Phase 2 will create the project structure (go.mod, client, config, helpers) but skip endpoint generation. All commands will be hand-written in Phase 4 using a GraphQL client. Phases 0, 0.5, 0.7, 1, 3, 4, 4.5, and 5 run normally - the research, prediction engine, data layer, workflows, dogfood, and scoring are all API-type-agnostic."
+
+   **For GraphQL APIs, Phase 2 produces scaffolding only:**
+   - Create the project directory structure (`cmd/`, `internal/cli/`, `internal/client/`, `internal/config/`, `internal/store/`)
+   - Generate `go.mod` with cobra + SQLite dependencies + a GraphQL client (`github.com/hasura/go-graphql-client` or `github.com/machinebox/graphql`)
+   - Generate `root.go` with global flags (--json, --select, --dry-run, --stdin, --yes, --no-cache)
+   - Generate `config.go` with auth handling (API key via env var)
+   - Generate `client.go` with a GraphQL client wrapper (POST to the single endpoint with query/variables)
+   - Generate `helpers.go`, `doctor.go`, `auth.go`, `store.go` from templates
+   - Generate `main.go`
+   - DO NOT generate per-endpoint command files (there are no REST endpoints)
+
+   **The GraphQL client wrapper should look like:**
+   ```go
+   func (c *Client) Query(query string, variables map[string]any) (json.RawMessage, error) {
+       body := map[string]any{"query": query, "variables": variables}
+       return c.do("POST", "/graphql", nil, body)
+   }
+   ```
+
+   **Then proceed to Phase 2 Gate.** Phase 4 will build all commands by hand using the GraphQL schema.
+
+3. **If the spec describes REST endpoints but the API base URL contains `/graphql`** ->
+   Warn: "The spec describes REST endpoints but the API appears to be GraphQL. Double-check which is authoritative. If the REST spec is valid, proceed with REST generation. If GraphQL is the real API, switch to GraphQL mode."
 
 ### Step 2.1: Get the spec ready
 
@@ -860,6 +886,8 @@ Tell the user: "Phase 3 complete: Baseline Steinberger Score: [X]/100 (Grade [X]
 **The generator output is scaffolding, not the product. The data layer + workflows are the product.**
 
 **Read the Phase 0.7 Data Layer Specification and Phase 3 Audit artifacts before starting.**
+
+**GraphQL APIs:** For GraphQL APIs, Phase 2 only produced scaffolding (no generated commands). Phase 4 is where ALL commands get written by hand. Use the GraphQL schema + Phase 0.5 workflows + Phase 0.7 data layer spec to determine which queries/mutations to wrap as CLI commands. Each command sends a GraphQL query via the client wrapper. Prioritize workflow commands over CRUD wrappers - a `linear-cli stale --days 30 --team ENG` is more valuable than `linear-cli issues list`.
 
 Execute in this priority order. Do NOT skip Priority 0 to go straight to workflows.
 
@@ -1302,7 +1330,7 @@ These phrases indicate a phase was shortcut. If you catch yourself writing them,
 - "Let's wrap up" (are all 5 phases complete with artifacts?)
 - "This API doesn't need local persistence" (Did you run Phase 0? Check the data profile. If search need is high, it needs persistence.)
 - "This is just an API wrapper" (Run Phase 0 again. What would a thoughtful developer build?)
-- "The API is GraphQL-only but I'll write a REST spec anyway" (STOP. This produces garbage. Use Phase 0.5 workflows or build a GraphQL client.)
+- "The API is GraphQL-only so we can't use printing-press" (Wrong. Skip the REST generator, hand-write commands with a GraphQL client in Phase 4. Every other phase runs normally.)
 - "I'll polish the README instead of building workflows" (Phase 4 Priority 1 is workflows. README is Priority 3. Do not skip ahead.)
 - "The Phase 0.5 workflows are future work" (They are the product. Build them now or the CLI is just an API wrapper.)
 - "316 commands is better than 12" (discrawl has 12 commands and 539 stars. Depth beats breadth. Build the workflows.)
