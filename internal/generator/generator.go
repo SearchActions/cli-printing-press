@@ -4,6 +4,7 @@ import (
 	"embed"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -27,10 +28,24 @@ type Generator struct {
 }
 
 func New(s *spec.APISpec, outputDir string) *Generator {
-	// Default Owner to "USER" for backward compatibility
 	if s.Owner == "" {
-		s.Owner = "USER"
+		if out, err := exec.Command("git", "config", "github.user").Output(); err == nil && len(out) > 0 {
+			s.Owner = strings.TrimSpace(string(out))
+		} else if out, err := exec.Command("git", "config", "user.name").Output(); err == nil && len(out) > 0 {
+			s.Owner = strings.TrimSpace(string(out))
+		} else {
+			s.Owner = "USER"
+		}
 	}
+	// Sanitize owner for Go module path: lowercase, no spaces/special chars
+	s.Owner = strings.ToLower(s.Owner)
+	s.Owner = strings.ReplaceAll(s.Owner, " ", "-")
+	s.Owner = strings.Map(func(r rune) rune {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '-' || r == '_' {
+			return r
+		}
+		return -1
+	}, s.Owner)
 	g := &Generator{Spec: s, OutputDir: outputDir}
 	g.funcs = template.FuncMap{
 		"title":              strings.Title,
@@ -592,32 +607,42 @@ func oneline(s string) string {
 	return s
 }
 
-func exampleValue(paramName, paramType string) string {
-	name := strings.ToLower(paramName)
-	switch {
-	case strings.HasSuffix(name, "_id") || strings.HasSuffix(name, "id") || name == "id":
-		return "abc123"
-	case strings.Contains(name, "email"):
-		return "user@example.com"
-	case strings.Contains(name, "name"):
-		return "my-resource"
-	case strings.Contains(name, "date") || strings.HasSuffix(name, "_at"):
-		return "2026-01-01"
-	case strings.Contains(name, "url") || strings.Contains(name, "link"):
-		return "https://example.com"
-	case strings.Contains(name, "status"):
-		return "active"
-	case strings.Contains(name, "limit") || strings.Contains(name, "count"):
-		return "25"
-	case strings.Contains(name, "page"):
-		return "1"
-	case paramType == "integer" || paramType == "int":
-		return "42"
-	case paramType == "boolean" || paramType == "bool":
-		return ""
-	default:
-		return "value"
+func exampleValue(p spec.Param) string {
+	nameLower := strings.ToLower(p.Name)
+
+	if strings.HasSuffix(nameLower, "_id") || nameLower == "id" {
+		return "550e8400-e29b-41d4-a716-446655440000"
 	}
+	if strings.Contains(nameLower, "email") {
+		return "user@example.com"
+	}
+	if strings.Contains(nameLower, "url") || strings.Contains(nameLower, "link") {
+		return "https://example.com/resource"
+	}
+	if strings.Contains(nameLower, "name") || strings.Contains(nameLower, "title") {
+		return "example-resource"
+	}
+	if strings.Contains(nameLower, "date") || p.Format == "date" {
+		return "2026-01-15"
+	}
+	if strings.Contains(nameLower, "time") || p.Format == "date-time" {
+		return "2026-01-15T09:00:00Z"
+	}
+	if strings.Contains(nameLower, "token") || strings.Contains(nameLower, "key") {
+		return "your-token-here"
+	}
+	if strings.Contains(nameLower, "limit") || strings.Contains(nameLower, "count") || strings.Contains(nameLower, "size") {
+		if p.Type == "integer" || p.Type == "int" {
+			return "50"
+		}
+	}
+	if p.Type == "boolean" || p.Type == "bool" {
+		return "true"
+	}
+	if p.Type == "integer" || p.Type == "int" || p.Type == "number" || p.Type == "float" {
+		return "42"
+	}
+	return "example-value"
 }
 
 func (g *Generator) exampleLine(commandPath, endpointName string, endpoint spec.Endpoint) string {
@@ -629,7 +654,7 @@ func (g *Generator) exampleLine(commandPath, endpointName string, endpoint spec.
 	// Add positional arg placeholders with realistic values
 	for _, p := range endpoint.Params {
 		if p.Positional {
-			val := exampleValue(p.Name, p.Type)
+			val := exampleValue(p)
 			if val == "" {
 				val = "<" + p.Name + ">"
 			}
@@ -642,7 +667,7 @@ func (g *Generator) exampleLine(commandPath, endpointName string, endpoint spec.
 	case "POST", "PUT", "PATCH":
 		for _, p := range endpoint.Body {
 			if p.Required && p.Type == "string" {
-				val := exampleValue(p.Name, p.Type)
+				val := exampleValue(p)
 				if val == "" {
 					val = "value"
 				}
