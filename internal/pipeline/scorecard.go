@@ -492,39 +492,106 @@ func scoreBreadth(dir string) int {
 }
 
 func scoreVision(dir string) int {
-	score := 0
 	cliDir := filepath.Join(dir, "internal", "cli")
+
+	// Tier 1: Feature Presence (0-5 points)
+	tier1 := 0.0
 	if fileExists(filepath.Join(cliDir, "export.go")) {
-		score += 2
-	}
-	if fileExists(filepath.Join(cliDir, "import.go")) {
-		score += 1
+		tier1 += 1.0
 	}
 	if fileExists(filepath.Join(dir, "internal", "store", "store.go")) {
-		score += 2
+		tier1 += 1.0
 	}
 	if fileExists(filepath.Join(cliDir, "search.go")) {
-		score += 2
+		tier1 += 1.0
 	}
 	if fileExists(filepath.Join(cliDir, "sync.go")) {
-		score += 1
+		tier1 += 0.5
 	}
 	if fileExists(filepath.Join(cliDir, "tail.go")) {
-		score += 1
+		tier1 += 0.5
 	}
-	// Check for workflow or compound command files
+	if fileExists(filepath.Join(cliDir, "import.go")) {
+		tier1 += 0.5
+	}
+	// Workflow or compound command files
 	entries, err := os.ReadDir(cliDir)
 	if err == nil {
 		for _, e := range entries {
 			name := e.Name()
 			if strings.Contains(name, "_workflow") || strings.Contains(name, "_compound") {
 				if strings.HasSuffix(name, ".go") {
-					score++
+					tier1 += 0.5
 					break
 				}
 			}
 		}
 	}
+	if tier1 > 5 {
+		tier1 = 5
+	}
+
+	// Tier 2: Feature Intelligence (0-5 points)
+	tier2 := 0.0
+
+	// Schema depth (0-1.5): check if store.go has domain-specific tables
+	storePath := filepath.Join(dir, "internal", "store", "store.go")
+	if fileExists(storePath) {
+		storeContent := readFileContent(storePath)
+		tableCount := strings.Count(storeContent, "CREATE TABLE")
+		syncStateCount := strings.Count(storeContent, "sync_state")
+		domainTables := tableCount
+		if syncStateCount > 0 {
+			domainTables-- // Don't count sync_state as a domain table
+		}
+		if domainTables >= 3 {
+			tier2 += 1.5
+		} else if domainTables >= 2 {
+			tier2 += 1.0
+		} else if domainTables >= 1 {
+			tier2 += 0.5
+		}
+	}
+
+	// Wiring check (0-1.5): are vision commands registered in root.go?
+	rootPath := filepath.Join(cliDir, "root.go")
+	if fileExists(rootPath) {
+		rootContent := readFileContent(rootPath)
+		visionFuncs := []string{"newSyncCmd", "newSearchCmd", "newExportCmd", "newTailCmd", "newImportCmd", "newAnalyticsCmd"}
+		wired := 0
+		for _, fn := range visionFuncs {
+			if strings.Contains(rootContent, fn) {
+				wired++
+			}
+		}
+		tier2 += float64(wired) * 0.25
+		if tier2 > 3.0 { // cap wiring contribution
+			tier2 = 3.0
+		}
+	}
+
+	// FTS5 check (0-1.0): does the store have full-text search?
+	if fileExists(storePath) {
+		storeContent := readFileContent(storePath)
+		if strings.Contains(storeContent, "fts5") || strings.Contains(storeContent, "FTS5") {
+			tier2 += 1.0
+		}
+	}
+
+	// Search uses store (0-0.5): does search.go reference the store package?
+	searchPath := filepath.Join(cliDir, "search.go")
+	if fileExists(searchPath) {
+		searchContent := readFileContent(searchPath)
+		if strings.Contains(searchContent, "store.") || strings.Contains(searchContent, "/store") {
+			tier2 += 0.5
+		}
+	}
+
+	if tier2 > 5 {
+		tier2 = 5
+	}
+
+	score := int(tier1 + tier2)
 	if score > 10 {
 		score = 10
 	}
