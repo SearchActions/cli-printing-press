@@ -33,16 +33,19 @@ Generate the best CLI that has ever existed for any API. Five mandatory phases. 
 
 ## How This Works
 
-Every run produces the GOAT CLI through 7 mandatory phases + 6 comprehensive plan documents:
+Every run produces the GOAT CLI through 8 mandatory phases + 7 comprehensive plan documents:
 
 ```
-PHASE 0: VISIONARY RESEARCH  ->  PHASE 0.5: POWER USER WORKFLOWS  ->  PHASE 0.7: PREDICTION ENGINE  ->  PHASE 1: DEEP RESEARCH  ->  PHASE 2: GENERATE  ->  PHASE 3: STEINBERGER AUDIT  ->  PHASE 4: GOAT BUILD  ->  PHASE 5: FINAL STEINBERGER
-        (3-5 min)                        (2-3 min)                          (15-25 min)                      (5-8 min)                  (1-2 min)               (5-8 min)                     (5-10 min)                (2-3 min)
+PHASE 0 -> PHASE 0.5 -> PHASE 0.7 -> PHASE 1 -> PHASE 2 -> PHASE 3 -> PHASE 4 -> PHASE 4.5 -> PHASE 5
+(3-5m)     (2-3m)       (15-25m)     (5-8m)     (1-2m)     (5-8m)     (5-10m)    (10-20m)      (2-3m)
+Visionary  Workflows    Prediction   Research   Generate   Audit      Build      Dogfood       Final
+Research   (commands)   Engine       (specs)    (code)     (review)   (fixes)    Emulation     Steinberger
+                        (data layer)                                             (spec-test)
 ```
 
-Total expected time: 35-65 minutes. Phase 0.7 adds 15-25 minutes for the prediction engine. Phase 4 is longer because it builds data layer + workflow commands.
+Total expected time: 45-85 minutes. Phase 4.5 tests every command against spec-derived mocks.
 
-**6 Plan Artifacts Per Run:**
+**7 Plan Artifacts Per Run:**
 
 Every phase gate produces a comprehensive plan document in `~/cli-printing-press/docs/plans/`:
 
@@ -53,6 +56,7 @@ Phase 0.7 -> <today>-feat-<api>-cli-data-layer-spec.md
 Phase 1   -> <today>-feat-<api>-cli-research.md
 Phase 3   -> <today>-fix-<api>-cli-audit.md
 Phase 4   -> <today>-fix-<api>-cli-goat-build-log.md
+Phase 4.5 -> <today>-fix-<api>-cli-dogfood-report.md
 ```
 
 Each artifact chains into the next. **Read the previous phase's artifact before starting the next phase.**
@@ -979,7 +983,163 @@ cd ~/cli-printing-press/<api>-cli && go build ./... && go vet ./... && echo "ALL
 
 **Write Phase 4 Artifact:** Run the Artifact Writing plan generator with all Phase 4 work as input. Write to `~/cli-printing-press/docs/plans/<today>-fix-<api>-cli-goat-build-log.md`. Include: data layer implementation details, workflow commands built, scorecard fixes, what was skipped, before/after scorecard comparison.
 
-Tell the user: "Phase 4 complete: Built [N] data layer tables + [M] workflow commands, applied [K] scorecard fixes. Data layer: [list tables]. Top workflow: [name]. Compilation verified. Proceeding to final scoring."
+Tell the user: "Phase 4 complete: Built [N] data layer tables + [M] workflow commands, applied [K] scorecard fixes. Data layer: [list tables]. Top workflow: [name]. Compilation verified. Proceeding to dogfood emulation."
+
+---
+
+# PHASE 4.5: DOGFOOD EMULATION
+
+## THIS PHASE IS MANDATORY. DO NOT SKIP IT.
+
+You don't have real API keys. But the OpenAPI spec already defines every request shape, response schema, error format, and pagination pattern. Test every generated command against spec-derived mock responses. Inspired by [Vercel's emulate](https://github.com/vercel-labs/emulate) - production-fidelity API simulation, zero config.
+
+**Read the OpenAPI spec (from Phase 2) and the Phase 4 GOAT Build Log artifact before starting.**
+
+### Step 4.5a: Generate Synthetic Responses from Spec
+
+For each endpoint in the spec, generate a realistic JSON response by reading the 200/201 response schema:
+
+**Field value heuristics** (domain-aware, not random):
+
+| Field name pattern | Generated value |
+|---|---|
+| `id`, `*_id` | Realistic format for the API (e.g., Discord snowflake: `"1234567890123456789"`, UUID: `"550e8400-e29b-41d4-a716-446655440000"`) |
+| `name`, `username`, `title` | Realistic domain values (e.g., `"general"`, `"test-user"`, `"Bug: Login fails"`) |
+| `content`, `description`, `body` | `"Dogfood test content for validation"` |
+| `timestamp`, `created_at`, `updated_at` | `"2026-03-26T12:00:00.000Z"` |
+| `type` (enum in spec) | First enum value from the spec |
+| `url`, `avatar_url`, `icon_url` | `"https://example.com/test.png"` |
+| `email` | `"test@example.com"` |
+| `count`, `position`, `size` | `1` |
+| `boolean` fields | `true` |
+| Array fields | 2-3 items with the above heuristics |
+| Nested objects | Recursively generate from schema |
+
+Save mocks to `/tmp/<api>-cli-mocks/` for reuse.
+
+### Step 4.5b: Score Every Command on 5 Dimensions
+
+For each generated command, score 0-10 on each dimension (50 max):
+
+**Dimension 1: Request Construction (0-10)**
+
+Run the command with `--dry-run` and inspect the output:
+
+```bash
+<api>-cli <resource> <action> <required-args> --dry-run 2>&1
+```
+
+| Check | Points |
+|---|---|
+| Path params replaced (no `{param}` literals in URL) | 2 |
+| HTTP method matches spec | 2 |
+| Required query params present | 2 |
+| Body schema matches spec's requestBody | 2 |
+| Auth header present | 2 |
+
+**Dimension 2: Response Parsing (0-10)**
+
+Generate a synthetic response from the spec and verify the command can process it:
+
+| Check | Points |
+|---|---|
+| Can parse the spec's 200 response schema | 3 |
+| --json output is valid JSON | 2 |
+| --select works with fields from the response schema | 2 |
+| Table output renders without crash | 2 |
+| Error responses (401/404/429) produce correct exit codes | 1 |
+
+**Dimension 3: Schema Fidelity (0-10)**
+
+Compare generated flags against the spec's parameters:
+
+| Check | Points |
+|---|---|
+| All `required: true` params have CLI flags | 3 |
+| Flag types match spec types (string/int/bool) | 2 |
+| No hallucinated flags (every flag maps to a real spec param) | 3 |
+| Help descriptions come from spec, not invented | 2 |
+
+**Dimension 4: Example Quality (0-10)**
+
+Validate every example in --help and README:
+
+| Check | Points |
+|---|---|
+| Example IDs match realistic format (not "abc123") | 2 |
+| --stdin JSON matches spec's requestBody schema | 3 |
+| Required flags present in examples | 3 |
+| Example commands parse without usage error via --dry-run | 2 |
+
+**Dimension 5: Workflow Integrity (0-10)** (workflow commands only)
+
+| Check | Points |
+|---|---|
+| All API paths hit by the workflow exist in the spec | 3 |
+| Query params sent match spec's parameters | 2 |
+| Response fields accessed exist in the response schema | 3 |
+| Cross-entity joins reference valid fields | 2 |
+
+### Step 4.5c: Compute Aggregate Scores
+
+| Metric | Formula |
+|---|---|
+| **Per-command score** | Sum of 5 dimensions (0-50) |
+| **Pass rate** | % of commands scoring >= 35/50 (70%) |
+| **Critical failure count** | Commands scoring < 25/50 |
+| **Overall dogfood score** | Average across all tested commands |
+
+**Thresholds:**
+- **PASS:** Pass rate >= 90% AND 0 critical failures
+- **WARN:** Pass rate >= 70% AND <= 3 critical failures (auto-fix, then re-score)
+- **FAIL:** Pass rate < 70% OR > 3 critical failures (report issues, do NOT proceed)
+
+**Sampling for large CLIs (100+ commands):** Test ALL workflow commands + ALL commands with --stdin examples + random sample of 30 generated commands. Report sample size.
+
+### Step 4.5d: Auto-Fix Issues Found
+
+For each fixable issue:
+
+| Issue Type | Auto-Fix Action |
+|---|---|
+| Placeholder values ("abc123", "string") | Replace with realistic domain values from spec |
+| Missing required flags in examples | Add required flags with domain-realistic values |
+| --stdin JSON doesn't match requestBody | Regenerate from spec schema |
+| Lazy 1-word Short descriptions | Pull description from spec's endpoint summary |
+| Hallucinated flag (not in spec) | Remove the flag and its binding |
+| Wrong flag type (string instead of int) | Fix the cobra flag type |
+
+After auto-fixes:
+1. Run `go build ./...` and `go vet ./...` to verify fixes compile
+2. Re-run the dogfood scoring
+3. Report before/after scores
+
+### Step 4.5e: Write the Dogfood Report Artifact
+
+**Run the Artifact Writing plan generator** with all dogfood results as input. Write to `~/cli-printing-press/docs/plans/<today>-fix-<api>-cli-dogfood-report.md`.
+
+The artifact MUST include:
+- Per-command score table (sampled commands, all 5 dimensions)
+- Top 5 failures with root cause analysis
+- Hallucination list (flags/fields not in spec)
+- Auto-fixes applied with before/after diff
+- Recommendations for remaining manual fixes
+- Overall dogfood score, pass rate, critical failure count
+- PASS/WARN/FAIL verdict
+
+### PHASE GATE 4.5
+
+**STOP.** Verify ALL of these before proceeding:
+1. Every workflow command scored on all 5 dimensions
+2. Sample of generated commands scored (30+ or all if < 100)
+3. Synthetic responses generated from spec (not invented)
+4. Per-command score table computed
+5. Auto-fixes applied and compilation verified
+6. Re-score after fixes shows improvement
+7. Dogfood report artifact written
+8. Final verdict: PASS or WARN (FAIL = stop and report)
+
+Tell the user: "Phase 4.5 complete: Dogfood score [X]/50 avg across [N] commands. Pass rate: [Y]%. Critical failures: [Z]. Auto-fixed [K] issues (+[D] point improvement). [PASS/WARN/FAIL]. Proceeding to final Steinberger."
 
 ---
 
@@ -1119,4 +1279,7 @@ These phrases indicate a phase was shortcut. If you catch yourself writing them,
 - "REST polling is fine for tail" (Check if the API has WebSocket/SSE/Gateway. If yes, use it. REST polling misses events and wastes rate limit budget.)
 - "The generic store is good enough" (Domain-native tables ALWAYS beat JSON blob tables. A `messages` table with `channel_id`, `author_id`, `content` columns enables joins and filters that JSON blobs can't. Write the schema.)
 - "I'll build the data layer later" (Phase 0.7 runs BEFORE generation. The data layer spec informs Phase 4 Priority 0. Build it first, then workflows use it.)
-- "The artifact is just documentation" (The 6 plan artifacts ARE the product. They capture reasoning, evidence, and decisions. The generated CLI is a side effect.)
+- "The artifact is just documentation" (The 7 plan artifacts ARE the product. They capture reasoning, evidence, and decisions. The generated CLI is a side effect.)
+- "The CLI compiles so it works" (Compilation proves syntax, not semantics. A command that builds can still 400 on every real call. Run the dogfood.)
+- "We can't test without API keys" (The OpenAPI spec defines response schemas. Generate mocks from the spec. Test against them. Zero keys needed.)
+- "The dry-run looks right" (Dry-run validates request construction. You also need to feed synthetic responses to validate output parsing, --select, and table rendering.)
