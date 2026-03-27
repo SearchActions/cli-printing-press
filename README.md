@@ -74,24 +74,26 @@ Rung 3 is table stakes. Rung 4 is where discrawl lives. Rung 5 is where nobody e
 
 The press generates the 323-command wrapper in Phase 2. Then it generates the discrawl-style commands automatically from domain archetype templates. That's the difference between a spec compiler and an intelligence engine.
 
-## Why CLIs (Not APIs, Not MCP)
+## Why Not Just CLIs - CLIs + MCP
 
-The NOI is the creative intelligence. CLIs are the delivery mechanism. Here's why they win for agents:
+The NOI is the creative intelligence. The printing press generates **both interfaces** from one spec:
 
-**100x fewer tokens.** An MCP server loads [~55,000 tokens](https://manveerc.substack.com/p/mcp-vs-cli-ai-agents) of tool definitions per session. A CLI `--help` costs ~200 tokens. At 10K sessions/day, that's $1,600/day saved.
+- **`api-cli`** - cobra CLI for humans + shell agents (Claude Code, Codex, Gemini CLI)
+- **`api-mcp`** - MCP server for Claude Desktop, Cursor, Windsurf, Cline
 
-**Training data advantage.** LLMs were trained on millions of shell interactions. When an agent sees `mycli list --json | jq '.[] | select(.status == "active")'`, it already knows. [MCP composition patterns have zero training data](https://manveerc.substack.com/p/mcp-vs-cli-ai-agents).
+Same `internal/client`, same `internal/store`, same auth. Two binaries, zero code duplication.
 
-**Self-healing delegation.** [CLI agents are designed for delegation, not suggestion.](https://www.firecrawl.dev/blog/why-clis-are-better-for-agents) Exit code 0 = done. Exit code 1 = try again. No screenshots, no clicking, no UI fragility.
+**CLIs win for agents:** 100x fewer tokens than MCP tool definitions. LLMs were trained on shell interactions. Exit code 0 = done. `--json | jq` is a first-class composition pattern.
+
+**MCP wins for IDE integration:** Claude Desktop and Cursor discover tools automatically via MCP. No shell needed. The MCP server exposes the same operations as the CLI - including the data layer (sync, search, sql).
 
 ```
-Power User (architect)  -->  Agent (operator)  -->  CLI (interface)  -->  API
-  "Find stale issues"      runs the command       linear-cli stale      GraphQL
-  "Who's overloaded?"      parses JSON output     linear-cli load       queries
-  "Fix the auth bug"       chains 5 commands      linear-cli issue...   mutations
+One spec  -->  printing-press generate  -->  api-cli (cobra)  +  api-mcp (MCP server)
+                                              |                     |
+                                              same internal/client, internal/store
 ```
 
-Every API that gets a CLI becomes instantly accessible to Claude Code, Codex, Gemini CLI, and every open source agent. The printing press is the factory.
+Every API that gets a CLI+MCP becomes instantly accessible to every AI coding tool. The printing press is the factory.
 
 ## Domain Archetypes
 
@@ -109,20 +111,31 @@ The archetype is detected automatically from the spec. The entity mapper figures
 
 ## How It Works
 
-8 mandatory phases. Each phase writes a plan document. The artifacts are the product.
+10 phases. Each writes a plan document. The artifacts are the product.
 
 ```
-Phase 0    Visionary Research       (3-5 min)    NOI + domain identity + usage patterns
-Phase 0.5  Power User Workflows     (2-3 min)    Compound commands power users want
-Phase 0.7  Prediction Engine        (15-25 min)  SQLite schema + FTS5 + sync strategy
-Phase 1    Deep Research            (5-8 min)    Competitors, strategic justification
-Phase 2    Generate                 (1-2 min)    Go CLI from spec + archetype templates
-Phase 3    Steinberger Audit        (5-8 min)    Two-tier quality scoring (100 points)
-Phase 4    GOAT Build               (5-10 min)   Domain tables, workflow commands, insights
-Phase 4.5  Dogfood Emulation        (10-20 min)  Test every command against spec mocks
-Phase 4.6  Hallucination Audit      (5 min)      Dead flags, dead functions, ghost tables
-Phase 5    Final Steinberger        (2-3 min)    Before/after delta + report
+Phase 0     Visionary Research        (3-5 min)    NOI + domain identity + usage patterns
+Phase 0.1   API Key Prompt            (optional)   Offer live testing at end
+Phase 0.5   Power User Workflows      (2-3 min)    Compound commands power users want
+Phase 0.7   Prediction Engine         (15-25 min)  SQLite schema + FTS5 + sync strategy
+Phase 1     Deep Research             (5-8 min)    Competitors, strategic justification
+Phase 2     Generate                  (1-2 min)    Go CLI + MCP server from spec
+Phase 3     Non-Obvious Insight Review(5-8 min)    Two-tier quality scoring (100 points)
+Phase 4     GOAT Build                (5-10 min)   Domain tables, workflow commands, insights
+Phase 4.7   Proof of Behavior         (30 sec)     Verify data actually flows (no hallucinations)
+Phase 5     Ship Readiness Assessment (2-3 min)    Before/after delta + report
+Phase 5.5   Live API Testing          (optional)   Read-only tests against real API
+Phase 5.7   Ship Loop                 (auto)       Fix issues and re-score until PASS
 ```
+
+### Codex Mode (opt-in)
+
+```bash
+/printing-press Discord codex    # Offload code generation to Codex CLI (~60% Opus token savings)
+/printing-press Discord          # Standard Opus mode (default)
+```
+
+When you add `codex`, Phase 4's code generation tasks are delegated to Codex CLI. Claude stays the brain (research, planning, scoring, review). Codex does the hands (writing Go code from scoped prompts). Same quality, 60% fewer Opus tokens.
 
 ## What Gets Generated
 
@@ -140,9 +153,13 @@ Phase 5    Final Steinberger        (2-3 min)    Before/after delta + report
 
 **REST + GraphQL**: OpenAPI specs generate full CLIs. GraphQL SDL files are parsed with Relay pagination detection and produce the same domain-specific output.
 
-## The Steinberger Bar (v2 - Honest Scoring)
+**MCP server** (auto-generated): Every CLI gets a companion `cmd/api-mcp/main.go` that exposes the same operations as MCP tools. Same client, same store, same auth. Works with `claude mcp add ./bin/api-mcp`.
 
-Named after Peter Steinberger. Two tiers, 100 points max, weighted 50/50. Grade A = 85+.
+**Sync performance** (discrawl-inspired): Cursor-based pagination, batch SQLite transactions, tuned pragmas (`synchronous=NORMAL`, `mmap_size=256MB`), `--since` incremental sync, `--concurrency` parallel workers, progress reporting to stderr.
+
+## Quality Scoring (v2 - Honest Scoring)
+
+Inspired by Peter Steinberger's [gogcli](https://github.com/steipete/gogcli). Two tiers, 100 points max, weighted 50/50. Grade A = 85+.
 
 **Tier 1: Infrastructure** (50 points) - does the skeleton have the right patterns?
 
@@ -186,28 +203,62 @@ go build -o ./printing-press ./cmd/printing-press
 Then in Claude Code:
 
 ```bash
-/printing-press Discord
-/printing-press Stripe
-/printing-press --spec ./openapi.yaml
+/printing-press Discord                  # Full Opus run - CLI + MCP server
+/printing-press Stripe codex             # Codex mode - 60% fewer Opus tokens
+/printing-press --spec ./openapi.yaml    # From local spec file
 ```
+
+Each run produces two binaries (`api-cli` + `api-mcp`), 7 analysis documents, and a Quality Score.
 
 ## Verification Tools
 
-Two Go commands for mechanical validation - no vibes, no self-assessment.
+Four layers of mechanical validation - no vibes, no self-assessment.
 
 ```bash
-# Scorecard: two-tier scoring (infrastructure + domain correctness)
+# Quality Scorecard: two-tier scoring (infrastructure + domain correctness)
 printing-press scorecard --dir ./my-cli --spec ./openapi.json
 
 # Dogfood: catches dead flags, dead functions, auth mismatches, invalid paths
 printing-press dogfood --dir ./my-cli --spec ./openapi.json
 ```
 
-The dogfood command exists because the v1 scorecard tested syntax, not semantics. Generated CLIs scored Grade A and failed on the first real API call. The v2 scorecard + dogfood command make that impossible.
+### Proof of Behavior (Phase 4.7)
+
+The v1 scorecard checked string presence ("does sync.go exist?"). The Proof of Behavior checks data flow ("does sync.go actually call UpsertMessage on a table that search.go queries?").
+
+Four behavioral proofs:
+- **Path Proof**: Every URL in generated commands exists in the OpenAPI spec
+- **Flag Proof**: Every registered flag is referenced in at least one command
+- **Pipeline Proof**: Every SQLite table has a WRITE path (sync) and READ path (search/query)
+- **Auth Proof**: Auth header format matches the spec's securitySchemes
+
+If any proof fails, auto-remediation removes dead code and re-verifies. Hallucinated paths and auth mismatches are hard FAIL gates.
+
+### Live API Testing (Phase 5.5)
+
+When you provide an API key at the start, Phase 5.5 runs read-only tests against the real API:
+
+```
+LIVE API TEST RESULTS
+=====================
+Auth:     PASS (200 OK on doctor)
+List:     3/3 passed (users, channels, guilds)
+Get:      1/1 passed (user abc123)
+Sync:     PASS (5 pages synced, 12 blocks)
+Search:   PASS (3 results for "a")
+
+Verdict:  PASS - CLI works against real API
+```
+
+Safety: GET only, --limit 1, 10s timeout, stops on 401. Never creates, posts, or deletes anything.
+
+### Ship Loop (Phase 5.7)
+
+"Is this shippable?" triggers a fix cycle: identify top 3 issues, fix them, re-score. Max 3 iterations. No more dead-end assessments.
 
 ## Credits
 
-- **Peter Steinberger** ([@steipete](https://github.com/steipete)) - [discrawl](https://github.com/steipete/discrawl) and [gogcli](https://github.com/steipete/gogcli) set the bar. The Steinberger quality scoring system is named after him.
+- **Peter Steinberger** ([@steipete](https://github.com/steipete)) - [discrawl](https://github.com/steipete/discrawl) and [gogcli](https://github.com/steipete/gogcli) set the bar. The quality scoring system is inspired by his work. discrawl v0.2.0's sync architecture directly influenced the printing press templates.
 - **Trevin Chow** ([@trevin](https://x.com/trevin)) - [7 Principles for Agent-Friendly CLIs](https://x.com/trevin) shaped the agent-first template design.
 - **Ramp** ([@tryramp](https://github.com/ramp-public/ramp-cli)) - Their agent-first CLI inspired auto-JSON piping, --no-input, and --compact output.
 - **Matt Van Horn** ([@mvanhorn](https://github.com/mvanhorn)) - Author of the printing press and [/last30days](https://github.com/mvanhorn/last30days-skill) recency research skill.
