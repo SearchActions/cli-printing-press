@@ -12,8 +12,6 @@ import (
 	"sort"
 	"strings"
 	"text/tabwriter"
-
-	"github.com/mattn/go-isatty"
 )
 
 var As = errors.As
@@ -37,7 +35,18 @@ func colorEnabled() bool {
 	if os.Getenv("TERM") == "dumb" {
 		return false
 	}
-	return isatty.IsTerminal(os.Stdout.Fd()) || isatty.IsCygwinTerminal(os.Stdout.Fd())
+	return isTerminal(os.Stdout)
+}
+
+func isTerminal(w io.Writer) bool {
+	if f, ok := w.(*os.File); ok {
+		fi, err := f.Stat()
+		if err != nil {
+			return true
+		}
+		return (fi.Mode() & os.ModeCharDevice) != 0
+	}
+	return false
 }
 
 func bold(s string) string {
@@ -287,6 +296,10 @@ func filterFields(data json.RawMessage, fields string) json.RawMessage {
 
 // printOutputWithFlags routes output through the right format based on flags.
 func printOutputWithFlags(w io.Writer, data json.RawMessage, flags *rootFlags) error {
+	// Apply --compact: filter to high-gravity fields only
+	if flags.compact {
+		data = compactFields(data)
+	}
 	// Apply --select field filtering
 	if flags.selectFields != "" {
 		data = filterFields(data, flags.selectFields)
@@ -300,6 +313,47 @@ func printOutputWithFlags(w io.Writer, data json.RawMessage, flags *rootFlags) e
 		return printCSV(w, data)
 	}
 	return printOutput(w, data, flags.asJSON)
+}
+
+// compactFields keeps only the most important fields for agent consumption.
+func compactFields(data json.RawMessage) json.RawMessage {
+	keepFields := map[string]bool{
+		"id": true, "name": true, "title": true, "identifier": true,
+		"status": true, "state": true, "type": true, "priority": true,
+		"url": true, "email": true, "key": true,
+		"created_at": true, "updated_at": true, "createdAt": true, "updatedAt": true,
+		"description": true,
+	}
+
+	var items []map[string]any
+	if err := json.Unmarshal(data, &items); err == nil {
+		filtered := make([]map[string]any, 0, len(items))
+		for _, item := range items {
+			compact := map[string]any{}
+			for k, v := range item {
+				if keepFields[k] {
+					compact[k] = v
+				}
+			}
+			filtered = append(filtered, compact)
+		}
+		result, _ := json.Marshal(filtered)
+		return result
+	}
+
+	var obj map[string]any
+	if err := json.Unmarshal(data, &obj); err == nil {
+		compact := map[string]any{}
+		for k, v := range obj {
+			if keepFields[k] {
+				compact[k] = v
+			}
+		}
+		result, _ := json.Marshal(compact)
+		return result
+	}
+
+	return data
 }
 
 // printCSV renders JSON arrays as CSV with header row.
@@ -346,6 +400,10 @@ func printCSV(w io.Writer, data json.RawMessage) error {
 
 // printOutput auto-detects arrays and renders as tables, or prints raw JSON for objects.
 func printOutput(w io.Writer, data json.RawMessage, asJSON bool) error {
+	if !asJSON && !isTerminal(w) {
+		asJSON = true
+	}
+
 	if asJSON {
 		enc := json.NewEncoder(w)
 		enc.SetIndent("", "  ")
