@@ -8,17 +8,17 @@ Just making a CLI is not hard. Making a CLI that understands the power user is e
 /printing-press Linear
 ```
 
-One command. 8 phases. ~1 hour. Produces a production-ready Go CLI + 7 analysis documents. REST or GraphQL.
+One command. 10 phases. ~1 hour. Produces a Go CLI + MCP server + 7 analysis documents. REST or GraphQL.
 
-## 323 Commands vs. 12 Commands
+## 323 Commands AND 11 Commands
 
-Discord's API has 300+ endpoints. The printing press can generate a CLI that wraps all 323 of them. But [discrawl](https://github.com/steipete/discrawl) - Peter Steinberger's Discord tool - has **12 commands** and **551 stars**.
+Discord's API has 300+ endpoints. [discrawl](https://github.com/steipete/discrawl) - Peter Steinberger's Discord tool - ignores most of them and ships just **11 commands** (`sync`, `search`, `messages`, `mentions`, `members`, `sql`, `tail`, `channels`, `status`, `doctor`, `init`). It has **568 stars**.
 
-Why does the 12-command tool win?
+Those 11 commands are worth more than 323 endpoint wrappers because they embody a deep understanding of what power users actually need: conversations are institutional knowledge that should be archived, indexed, and searched locally.
 
-Because discrawl saw something in Discord's data that Discord itself didn't design for: **conversations are institutional knowledge**. Every message thread is a document that should be archived, indexed, and searched. Discrawl mirrors Discord into local SQLite with FTS5 full-text search, and those 12 commands - `sync`, `search`, `messages`, `mentions`, `members`, `sql`, `tail` - are worth more than 323 endpoint wrappers because they embody a deep understanding of what power users actually need.
+**The old question was: breadth or depth?** The printing press answers: **both.** It generates the 323 API wrappers (Phase 2) AND the 11 discrawl-style data layer commands (Phase 4) AND an MCP server. One spec in, three outputs.
 
-That understanding is the **Non-Obvious Insight**. And until now, discovering it required being Peter Steinberger.
+The difference isn't "how many commands" - it's whether the CLI understands the **Non-Obvious Insight** behind the API.
 
 ## The Non-Obvious Insight
 
@@ -42,11 +42,11 @@ The **Non-Obvious Insight (NOI)** is a one-sentence reframe:
 
 The NOI is the creative DNA of every CLI the press generates. Phase 0 cannot complete without one. If the LLM can't write an NOI, the research wasn't deep enough.
 
-The printing press automates what Steinberger does intuitively: look at an API, see what power users actually do with it, and build the 12 commands that matter instead of the 323 that don't.
+The printing press automates what Steinberger does intuitively: look at an API, see what power users actually do with it, and build the commands that matter - then also wrap every endpoint for completeness.
 
 ## How I Knew This Was Real
 
-I was deciding which Google Workspace CLI to use. Peter Steinberger's [gogcli](https://github.com/steipete/gogcli) (6.5K stars, Go) or Google's official [Workspace CLI](https://github.com/googleworkspace/cli) (10K+ stars in a week, Rust, dynamically generated from Google's Discovery Service).
+I was deciding which Google Workspace CLI to use. Peter Steinberger's [gogcli](https://github.com/steipete/gogcli) (6.5K+ stars, Go) or Google's official [Workspace CLI](https://github.com/googleworkspace/cli) (10K+ stars in a week, Rust, dynamically generated from Google's Discovery Service).
 
 I ran [/last30days](https://github.com/mvanhorn/last30days-skill) - my recency research skill that searches Reddit, X, YouTube, and the web for what people actually say about tools. It searched 34 X posts (1,437 likes), 5 YouTube videos (57K views), and 10 web sources.
 
@@ -72,7 +72,7 @@ Most API CLIs stop at Rung 1. The printing press climbs to Rung 5.
 
 Rung 3 is table stakes. Rung 4 is where discrawl lives. Rung 5 is where nobody else is yet.
 
-The press generates the 323-command wrapper in Phase 2. Then it generates the discrawl-style commands automatically from domain archetype templates. That's the difference between a spec compiler and an intelligence engine.
+The press generates the API wrapper in Phase 2 (Rung 1-2). Then it generates the discrawl-style data layer and workflow commands in Phase 4 (Rung 3-5) from domain archetype templates. Both in one run.
 
 ## Why Not Just CLIs - CLIs + MCP
 
