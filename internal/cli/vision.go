@@ -28,7 +28,7 @@ The vision command produces the structure; Phase 0 fills it with intelligence.`,
   printing-press vision --api stripe --output ./research`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if apiName == "" {
-				return fmt.Errorf("--api is required")
+				return &ExitError{Code: ExitInputError, Err: fmt.Errorf("--api is required")}
 			}
 			if outputDir == "" {
 				outputDir = apiName + "-cli"
@@ -74,7 +74,7 @@ The vision command produces the structure; Phase 0 fills it with intelligence.`,
 			}
 
 			if err := vision.WriteReport(plan, absOut); err != nil {
-				return fmt.Errorf("writing visionary research: %w", err)
+				return &ExitError{Code: ExitGenerationError, Err: fmt.Errorf("writing visionary research: %w", err)}
 			}
 
 			fmt.Fprintf(os.Stderr, "Visionary research template written to %s/visionary-research.md\n", absOut)

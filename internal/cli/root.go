@@ -97,16 +97,16 @@ func newGenerateCmd() *cobra.Command {
 					docSpec, err = docspec.GenerateFromDocs(docsURL, apiName)
 				}
 				if err != nil {
-					return fmt.Errorf("generating spec from docs: %w", err)
+					return &ExitError{Code: ExitSpecError, Err: fmt.Errorf("generating spec from docs: %w", err)}
 				}
 				docYAML, err := yaml.Marshal(docSpec)
 				if err != nil {
-					return fmt.Errorf("marshaling doc spec: %w", err)
+					return &ExitError{Code: ExitSpecError, Err: fmt.Errorf("marshaling doc spec: %w", err)}
 				}
 				// Re-parse through the standard path so validation is consistent
 				parsed, err := spec.ParseBytes(docYAML)
 				if err != nil {
-					return fmt.Errorf("parsing generated spec: %w", err)
+					return &ExitError{Code: ExitSpecError, Err: fmt.Errorf("parsing generated spec: %w", err)}
 				}
 
 				if outputDir == "" {
@@ -129,11 +129,11 @@ func newGenerateCmd() *cobra.Command {
 
 				gen := generator.New(parsed, absOut)
 				if err := gen.Generate(); err != nil {
-					return fmt.Errorf("generating project: %w", err)
+					return &ExitError{Code: ExitGenerationError, Err: fmt.Errorf("generating project: %w", err)}
 				}
 				if validate {
 					if err := gen.Validate(); err != nil {
-						return fmt.Errorf("validating generated project: %w", err)
+						return &ExitError{Code: ExitGenerationError, Err: fmt.Errorf("validating generated project: %w", err)}
 					}
 				}
 
@@ -169,14 +169,14 @@ func newGenerateCmd() *cobra.Command {
 			}
 
 			if len(specFiles) == 0 {
-				return fmt.Errorf("--spec is required")
+				return &ExitError{Code: ExitInputError, Err: fmt.Errorf("--spec is required")}
 			}
 
 			var specs []*spec.APISpec
 			for _, specFile := range specFiles {
 				data, err := readSpec(specFile, refresh, dryRun)
 				if err != nil {
-					return fmt.Errorf("reading spec %s: %w", specFile, err)
+					return &ExitError{Code: ExitSpecError, Err: fmt.Errorf("reading spec %s: %w", specFile, err)}
 				}
 
 				var apiSpec *spec.APISpec
@@ -192,7 +192,7 @@ func newGenerateCmd() *cobra.Command {
 					apiSpec, err = spec.ParseBytes(data)
 				}
 				if err != nil {
-					return fmt.Errorf("parsing spec %s: %w", specFile, err)
+					return &ExitError{Code: ExitSpecError, Err: fmt.Errorf("parsing spec %s: %w", specFile, err)}
 				}
 
 				specs = append(specs, apiSpec)
@@ -203,7 +203,7 @@ func newGenerateCmd() *cobra.Command {
 				apiSpec = specs[0]
 			} else {
 				if cliName == "" {
-					return fmt.Errorf("--name is required when using multiple specs")
+					return &ExitError{Code: ExitInputError, Err: fmt.Errorf("--name is required when using multiple specs")}
 				}
 				apiSpec = mergeSpecs(specs, cliName)
 			}
@@ -232,11 +232,11 @@ func newGenerateCmd() *cobra.Command {
 
 			gen := generator.New(apiSpec, absOut)
 			if err := gen.Generate(); err != nil {
-				return fmt.Errorf("generating project: %w", err)
+				return &ExitError{Code: ExitGenerationError, Err: fmt.Errorf("generating project: %w", err)}
 			}
 			if validate {
 				if err := gen.Validate(); err != nil {
-					return fmt.Errorf("validating generated project: %w", err)
+					return &ExitError{Code: ExitGenerationError, Err: fmt.Errorf("validating generated project: %w", err)}
 				}
 			}
 
@@ -435,7 +435,15 @@ func newPrintCmd() *cobra.Command {
 				Resume:    resume,
 			})
 			if err != nil {
-				return err
+				msg := err.Error()
+				switch {
+				case strings.Contains(msg, "already exists"):
+					return &ExitError{Code: ExitInputError, Err: err}
+				case strings.Contains(msg, "discovering spec"):
+					return &ExitError{Code: ExitSpecError, Err: err}
+				default:
+					return &ExitError{Code: ExitGenerationError, Err: err}
+				}
 			}
 
 			fmt.Fprintf(os.Stderr, "Pipeline created for %s\n", apiName)
