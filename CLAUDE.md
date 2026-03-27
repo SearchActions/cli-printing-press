@@ -7,6 +7,8 @@ go build -o ./printing-press ./cmd/printing-press
 go test ./...
 ```
 
+**IMPORTANT: Always use relative paths for build output.** Never build to `/tmp` or any shared absolute path. Multiple worktrees run concurrently and will stomp on each other. Use `./printing-press` exactly as shown above.
+
 ## Project Structure
 
 - `cmd/printing-press/` - CLI entry point
