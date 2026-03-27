@@ -23,7 +23,7 @@ func Init(apiName string, opts Options) (*PipelineState, error) {
 
 	outputDir := opts.OutputDir
 	if outputDir == "" {
-		outputDir = "./" + apiName + "-cli"
+		outputDir = filepath.Join("shelf", apiName+"-cli")
 	}
 
 	absOutputDir, err := filepath.Abs(outputDir)
