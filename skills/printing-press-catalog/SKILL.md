@@ -90,7 +90,7 @@ When invoked with `install <name>`:
    curl -sL -o /tmp/catalog-spec-$$.yaml "<spec_url>"
    cd ~/cli-printing-press && ./printing-press generate \
      --spec /tmp/catalog-spec-$$.yaml \
-     --output ./shelf/<name>-cli \
+     --output ./library/<name>-cli \
      --validate
    ```
 7. If all quality gates pass, present the result:
@@ -98,7 +98,7 @@ When invoked with `install <name>`:
    Generated <name>-cli with X resources.
 
    Try it:
-     cd shelf/<name>-cli
+     cd library/<name>-cli
      go install ./cmd/<name>-cli
      <name>-cli --help
      <name>-cli doctor

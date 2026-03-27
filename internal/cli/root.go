@@ -276,7 +276,7 @@ func newGenerateCmd() *cobra.Command {
 
 	cmd.Flags().StringSliceVar(&specFiles, "spec", nil, "Path or URL to API spec (can be repeated)")
 	cmd.Flags().StringVar(&cliName, "name", "", "CLI name (required when using multiple specs)")
-	cmd.Flags().StringVar(&outputDir, "output", "", "Output directory (default: shelf/<name>-cli)")
+	cmd.Flags().StringVar(&outputDir, "output", "", "Output directory (default: library/<name>-cli)")
 	cmd.Flags().BoolVar(&validate, "validate", true, "Run quality gates on the generated project")
 	cmd.Flags().BoolVar(&refresh, "refresh", false, "Refresh cached remote spec before generating")
 	cmd.Flags().BoolVar(&force, "force", false, "Remove existing output directory before generating")
@@ -469,7 +469,7 @@ func newPrintCmd() *cobra.Command {
 		},
 	}
 
-	cmd.Flags().StringVar(&outputDir, "output", "", "Output directory (default: shelf/<api-name>-cli)")
+	cmd.Flags().StringVar(&outputDir, "output", "", "Output directory (default: library/<api-name>-cli)")
 	cmd.Flags().BoolVar(&force, "force", false, "Overwrite existing pipeline")
 	cmd.Flags().BoolVar(&resume, "resume", false, "Resume from existing checkpoint")
 	cmd.Flags().BoolVar(&asJSON, "json", false, "Output as JSON")

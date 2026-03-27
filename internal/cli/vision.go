@@ -91,7 +91,7 @@ The vision command produces the structure; Phase 0 fills it with intelligence.`,
 	}
 
 	cmd.Flags().StringVar(&apiName, "api", "", "API name to research")
-	cmd.Flags().StringVar(&outputDir, "output", "", "Output directory (default: shelf/<api>-cli)")
+	cmd.Flags().StringVar(&outputDir, "output", "", "Output directory (default: library/<api>-cli)")
 	cmd.Flags().BoolVar(&asJSON, "json", false, "Output as JSON")
 
 	return cmd

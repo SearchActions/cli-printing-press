@@ -9,7 +9,7 @@ import (
 // DefaultOutputDir returns the default output directory for a given API name.
 // All commands should use this when --output is not specified.
 func DefaultOutputDir(apiName string) string {
-	return filepath.Join("shelf", apiName+"-cli")
+	return filepath.Join("library", apiName+"-cli")
 }
 
 // Options configures a pipeline run.

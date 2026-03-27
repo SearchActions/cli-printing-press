@@ -1,24 +1,24 @@
 ---
-title: "feat: Route generated CLI output to shelf/ directory"
+title: "feat: Route generated CLI output to library/ directory"
 type: feat
 status: completed
 date: 2026-03-27
 ---
 
-# feat: Route generated CLI output to shelf/ directory
+# feat: Route generated CLI output to library/ directory
 
 ## Overview
 
-Change the default output directory for generated CLIs from the repo root (e.g., `./stripe-cli/`) to a `shelf/` subdirectory (e.g., `./shelf/stripe-cli/`). Create `shelf/` if it doesn't exist. This namespaces generated output, keeps the repo root clean, and establishes a consistent location for CLIs that may later be submitted via PR or published elsewhere.
+Change the default output directory for generated CLIs from the repo root (e.g., `./stripe-cli/`) to a `library/` subdirectory (e.g., `./library/stripe-cli/`). Create `library/` if it doesn't exist. This namespaces generated output, keeps the repo root clean, and establishes a consistent location for CLIs that may later be submitted via PR or published elsewhere.
 
 ## Problem Frame
 
-Generated CLIs currently land in the repo root, cluttering it alongside source code, docs, and the existing `catalog/` metadata directory. There's no single place to find all generated CLIs. The `shelf/` directory provides a printing-press-aligned namespace — CLIs are "placed on the shelf" after being printed.
+Generated CLIs currently land in the repo root, cluttering it alongside source code, docs, and the existing `catalog/` metadata directory. There's no single place to find all generated CLIs. The `library/` directory provides a printing-press-aligned namespace — CLIs are "placed on the library" after being printed.
 
 ## Requirements Trace
 
-- R1. Default output directory changes from `./<name>-cli` to `./shelf/<name>-cli` across all commands
-- R2. `shelf/` directory is created automatically if it doesn't exist
+- R1. Default output directory changes from `./<name>-cli` to `./library/<name>-cli` across all commands
+- R2. `library/` directory is created automatically if it doesn't exist
 - R3. Explicit `--output` flag still overrides the default (no behavior change for explicit paths)
 - R4. Flag help text and CLI examples reflect the new default
 - R5. Skill documentation reflects the new default path
@@ -42,9 +42,9 @@ There are **four locations** where the default output path `<name>-cli` is const
 3. **`print` command** — `internal/pipeline/pipeline.go:25-26` — `outputDir = "./" + apiName + "-cli"`
 4. **`vision` command** — `internal/cli/vision.go:33-34` — `outputDir = apiName + "-cli"`
 
-All four follow the same pattern: check if `outputDir` is empty, if so set it to `<name>-cli`. The fix is to prepend `shelf/` to each default.
+All four follow the same pattern: check if `outputDir` is empty, if so set it to `<name>-cli`. The fix is to prepend `library/` to each default.
 
-After the default is set, each location calls `filepath.Abs(outputDir)` which will resolve `shelf/<name>-cli` relative to cwd — no additional changes needed for path resolution.
+After the default is set, each location calls `filepath.Abs(outputDir)` which will resolve `library/<name>-cli` relative to cwd — no additional changes needed for path resolution.
 
 ### Documentation References
 
@@ -53,15 +53,15 @@ After the default is set, each location calls `filepath.Abs(outputDir)` which wi
 
 ## Key Technical Decisions
 
-- **Use `filepath.Join("shelf", name+"-cli")` instead of string concatenation** — Ensures correct path separators on all platforms and is consistent with Go conventions.
-- **Create `shelf/` via `os.MkdirAll` on the resolved absolute path** — `os.MkdirAll` on the full output path (e.g., `/abs/path/shelf/stripe-cli/`) will create both `shelf/` and the CLI subdirectory as needed. The generator's `Generate()` method already calls `os.MkdirAll` for its internal subdirectories, so `shelf/` creation happens naturally. No separate mkdir step is needed.
-- **Add `shelf/` to `.gitignore`** — Generated CLIs are build artifacts, not source. Keeping them gitignored prevents accidental commits of large generated trees while still allowing the directory to exist locally.
+- **Use `filepath.Join("library", name+"-cli")` instead of string concatenation** — Ensures correct path separators on all platforms and is consistent with Go conventions.
+- **Create `library/` via `os.MkdirAll` on the resolved absolute path** — `os.MkdirAll` on the full output path (e.g., `/abs/path/library/stripe-cli/`) will create both `library/` and the CLI subdirectory as needed. The generator's `Generate()` method already calls `os.MkdirAll` for its internal subdirectories, so `library/` creation happens naturally. No separate mkdir step is needed.
+- **Add `library/` to `.gitignore`** — Generated CLIs are build artifacts, not source. Keeping them gitignored prevents accidental commits of large generated trees while still allowing the directory to exist locally.
 
 ## Open Questions
 
 ### Resolved During Planning
 
-- **Should `shelf/` be gitignored?** Yes — generated CLIs are ephemeral build output. Users who want to commit a CLI can use `git add -f` or move it out. This matches the pattern where `printing-press` (the binary) is already gitignored.
+- **Should `library/` be gitignored?** Yes — generated CLIs are ephemeral build output. Users who want to commit a CLI can use `git add -f` or move it out. This matches the pattern where `printing-press` (the binary) is already gitignored.
 
 ### Deferred to Implementation
 
@@ -69,9 +69,9 @@ After the default is set, each location calls `filepath.Abs(outputDir)` which wi
 
 ## Implementation Units
 
-- [ ] **Unit 1: Change default output paths to shelf/ prefix**
+- [ ] **Unit 1: Change default output paths to library/ prefix**
 
-  **Goal:** All four default-path locations prepend `shelf/` so generated CLIs land in `shelf/<name>-cli/` by default.
+  **Goal:** All four default-path locations prepend `library/` so generated CLIs land in `library/<name>-cli/` by default.
 
   **Requirements:** R1, R2
 
@@ -83,11 +83,11 @@ After the default is set, each location calls `filepath.Abs(outputDir)` which wi
   - Modify: `internal/pipeline/pipeline.go`
 
   **Approach:**
-  - In each of the four default-path assignments, change from `<name> + "-cli"` to `filepath.Join("shelf", <name>+"-cli")`.
-  - `root.go:214`: `outputDir = filepath.Join("shelf", apiSpec.Name+"-cli")`
-  - `root.go:115`: `outputDir = filepath.Join("shelf", parsed.Name+"-cli")`
-  - `pipeline.go:26`: `outputDir = filepath.Join("shelf", apiName+"-cli")`
-  - `vision.go:34`: `outputDir = filepath.Join("shelf", apiName+"-cli")`
+  - In each of the four default-path assignments, change from `<name> + "-cli"` to `filepath.Join("library", <name>+"-cli")`.
+  - `root.go:214`: `outputDir = filepath.Join("library", apiSpec.Name+"-cli")`
+  - `root.go:115`: `outputDir = filepath.Join("library", parsed.Name+"-cli")`
+  - `pipeline.go:26`: `outputDir = filepath.Join("library", apiName+"-cli")`
+  - `vision.go:34`: `outputDir = filepath.Join("library", apiName+"-cli")`
   - The subsequent `filepath.Abs()` call handles resolution to an absolute path. `os.MkdirAll` in the generator handles directory creation. No other code changes needed for path mechanics.
 
   **Patterns to follow:**
@@ -100,13 +100,13 @@ After the default is set, each location calls `filepath.Abs(outputDir)` which wi
   - Existing tests pass (`go test ./...`) — tests use explicit `t.TempDir()` paths, not defaults
 
   **Verification:**
-  - All four default paths produce `shelf/<name>-cli` when `--output` is not specified
+  - All four default paths produce `library/<name>-cli` when `--output` is not specified
   - `--output /custom/path` still works unchanged
   - `go test ./...` passes
 
 - [ ] **Unit 2: Update flag help text and examples**
 
-  **Goal:** CLI help output reflects the new `shelf/` default so users aren't surprised.
+  **Goal:** CLI help output reflects the new `library/` default so users aren't surprised.
 
   **Requirements:** R4
 
@@ -117,9 +117,9 @@ After the default is set, each location calls `filepath.Abs(outputDir)` which wi
   - Modify: `internal/cli/vision.go`
 
   **Approach:**
-  - `root.go:279`: Change flag description to `"Output directory (default: shelf/<name>-cli)"`
-  - `root.go:472`: Change to `"Output directory (default: shelf/<api-name>-cli)"`
-  - `vision.go:93`: Change to `"Output directory (default: shelf/<api>-cli)"`
+  - `root.go:279`: Change flag description to `"Output directory (default: library/<name>-cli)"`
+  - `root.go:472`: Change to `"Output directory (default: library/<api-name>-cli)"`
+  - `vision.go:93`: Change to `"Output directory (default: library/<api>-cli)"`
 
   **Patterns to follow:**
   - Existing flag description format
@@ -129,9 +129,9 @@ After the default is set, each location calls `filepath.Abs(outputDir)` which wi
   - `printing-press print --help` shows updated default
 
   **Verification:**
-  - All three `--output` flag descriptions reference `shelf/`
+  - All three `--output` flag descriptions reference `library/`
 
-- [ ] **Unit 3: Add shelf/ to .gitignore and update skill docs**
+- [ ] **Unit 3: Add library/ to .gitignore and update skill docs**
 
   **Goal:** Generated CLIs are gitignored; skill documentation reflects the new path.
 
@@ -144,18 +144,18 @@ After the default is set, each location calls `filepath.Abs(outputDir)` which wi
   - Modify: `skills/printing-press-catalog/SKILL.md`
 
   **Approach:**
-  - Add `shelf/` line to `.gitignore`
-  - In `SKILL.md`, update the `--output ./<name>-cli` example to `--output ./shelf/<name>-cli` and update the "Try it" section paths from `cd <name>-cli` to `cd shelf/<name>-cli`
+  - Add `library/` line to `.gitignore`
+  - In `SKILL.md`, update the `--output ./<name>-cli` example to `--output ./library/<name>-cli` and update the "Try it" section paths from `cd <name>-cli` to `cd library/<name>-cli`
 
   **Patterns to follow:**
   - Existing `.gitignore` entries (`printing-press`, `.cache/`)
 
   **Test scenarios:**
-  - `git status` does not show generated CLI directories inside `shelf/`
+  - `git status` does not show generated CLI directories inside `library/`
 
   **Verification:**
-  - `.gitignore` contains `shelf/`
-  - Skill file references `shelf/` in generation and try-it instructions
+  - `.gitignore` contains `library/`
+  - Skill file references `library/` in generation and try-it instructions
 
 ## System-Wide Impact
 
@@ -166,7 +166,7 @@ After the default is set, each location calls `filepath.Abs(outputDir)` which wi
 
 ## Risks & Dependencies
 
-- **Low risk:** Users with muscle memory for `cd <name>-cli` after generation will need to use `cd shelf/<name>-cli`. Mitigated by updating the post-generation output message (which already prints the output path).
+- **Low risk:** Users with muscle memory for `cd <name>-cli` after generation will need to use `cd library/<name>-cli`. Mitigated by updating the post-generation output message (which already prints the output path).
 
 ## Sources & References
 

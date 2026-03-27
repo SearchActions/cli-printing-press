@@ -108,8 +108,8 @@ func TestDefaultOutputDir(t *testing.T) {
 		apiName  string
 		expected string
 	}{
-		{"simple", "stripe", "shelf/stripe-cli"},
-		{"hyphenated", "my-api", "shelf/my-api-cli"},
+		{"simple", "stripe", "library/stripe-cli"},
+		{"hyphenated", "my-api", "library/my-api-cli"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
