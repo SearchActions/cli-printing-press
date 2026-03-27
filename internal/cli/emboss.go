@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/mvanhorn/cli-printing-press/internal/pipeline"
@@ -13,14 +14,14 @@ import (
 
 // EmbossReport captures the before/after delta from an emboss cycle.
 type EmbossReport struct {
-	Dir            string          `json:"dir"`
-	Spec           string          `json:"spec"`
-	Timestamp      string          `json:"timestamp"`
-	Before         EmbossSnapshot  `json:"before"`
-	After          *EmbossSnapshot `json:"after,omitempty"`
-	Delta          *EmbossDelta    `json:"delta,omitempty"`
-	Improvements   []string        `json:"improvements,omitempty"`
-	Mode           string          `json:"mode"` // "audit-only" or "full"
+	Dir          string          `json:"dir"`
+	Spec         string          `json:"spec"`
+	Timestamp    string          `json:"timestamp"`
+	Before       EmbossSnapshot  `json:"before"`
+	After        *EmbossSnapshot `json:"after,omitempty"`
+	Delta        *EmbossDelta    `json:"delta,omitempty"`
+	Improvements []string        `json:"improvements,omitempty"`
+	Mode         string          `json:"mode"` // "audit-only" or "full"
 }
 
 type EmbossSnapshot struct {
@@ -47,6 +48,8 @@ func newEmbossCmd() *cobra.Command {
 	var envVar string
 	var asJSON bool
 	var auditOnly bool
+	var saveBaseline bool
+	var keepBaseline bool
 
 	cmd := &cobra.Command{
 		Use:   "emboss",
@@ -70,6 +73,8 @@ The improvement steps (2-4) are driven by the /printing-press emboss skill.`,
   # Audit with live API testing
   printing-press emboss --dir ./discord-cli --spec /tmp/spec.json --api-key $TOKEN --audit-only`,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			baselinePath := filepath.Join(dir, ".emboss-baseline.json")
+			name := filepath.Base(dir)
 			report := &EmbossReport{
 				Dir:       dir,
 				Spec:      specPath,
@@ -82,53 +87,59 @@ The improvement steps (2-4) are driven by the /printing-press emboss skill.`,
 				report.Mode = "full"
 			}
 
+			if data, err := os.ReadFile(baselinePath); err == nil {
+				var baselineReport EmbossReport
+				if err := json.Unmarshal(data, &baselineReport); err != nil {
+					fmt.Fprintf(os.Stderr, "warning: failed to load baseline from %s: %v\n", baselinePath, err)
+				} else {
+					report.Before = baselineReport.Before
+					fmt.Fprintln(os.Stderr, "Existing baseline found. Running fresh audit for delta...")
+					after := runEmbossAudit(dir, specPath, apiKey, envVar, "after")
+					report.After = &after
+					report.Delta = computeDelta(report.Before, after)
+					report.Mode = "delta"
+					reportPath, writeErr := writeEmbossDeltaReport(name, report.Before, after, report.Delta)
+					if writeErr != nil {
+						fmt.Fprintf(os.Stderr, "warning: failed to write delta report: %v\n", writeErr)
+					} else {
+						fmt.Fprintf(os.Stderr, "Delta report written: %s\n", reportPath)
+					}
+					if !keepBaseline {
+						if err := os.Remove(baselinePath); err != nil && !os.IsNotExist(err) {
+							fmt.Fprintf(os.Stderr, "warning: failed to remove baseline %s: %v\n", baselinePath, err)
+						}
+					}
+					return printEmbossReport(cmd, report, asJSON)
+				}
+			}
+
 			// Step 1: AUDIT - baseline
-			fmt.Fprintln(os.Stderr, "Step 1: AUDIT - Running verify + scorecard for baseline...")
-
-			// Run verify
-			verifyCfg := pipeline.VerifyConfig{
-				Dir:       dir,
-				SpecPath:  specPath,
-				APIKey:    apiKey,
-				EnvVar:    envVar,
-				Threshold: 80,
-			}
-			verifyReport, err := pipeline.RunVerify(verifyCfg)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "  verify error: %v (continuing with partial baseline)\n", err)
-			}
-
-			// Run scorecard
-			scorecardReport, err := pipeline.RunScorecard(dir, "", specPath)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "  scorecard error: %v (continuing with partial baseline)\n", err)
-			}
-
-			// Build baseline snapshot
-			report.Before = EmbossSnapshot{}
-			if verifyReport != nil {
-				report.Before.VerifyPassRate = verifyReport.PassRate
-				report.Before.VerifyPassed = verifyReport.Passed
-				report.Before.VerifyTotal = verifyReport.Total
-				report.Before.DataPipeline = verifyReport.DataPipeline
-				report.Before.CommandCount = verifyReport.Total
-			}
-			if scorecardReport != nil {
-				report.Before.ScorecardTotal = scorecardReport.Steinberger.Total
-				report.Before.ScorecardGrade = scorecardGrade(scorecardReport.Steinberger.Total)
-			}
+			report.Before = runEmbossAudit(dir, specPath, apiKey, envVar, "baseline")
 
 			if auditOnly {
+				if saveBaseline {
+					if err := saveEmbossBaseline(baselinePath, report); err != nil {
+						fmt.Fprintf(os.Stderr, "warning: failed to save baseline to %s: %v\n", baselinePath, err)
+					}
+				}
 				return printEmbossReport(cmd, report, asJSON)
 			}
 
-			// Steps 2-4 are skill-driven (re-research, gap analysis, improve)
-			// The binary just does the mechanical audit + re-verify
-			fmt.Fprintln(os.Stderr, "\nSteps 2-4: Run the skill for improvements:")
-			fmt.Fprintf(os.Stderr, "  /printing-press emboss %s\n\n", dir)
-			fmt.Fprintln(os.Stderr, "After improvements, re-run with --audit-only to get the 'after' snapshot.")
+			if saveBaseline || report.Mode == "full" {
+				if err := saveEmbossBaseline(baselinePath, report); err != nil {
+					fmt.Fprintf(os.Stderr, "warning: failed to save baseline to %s: %v\n", baselinePath, err)
+				}
+			}
 
-			return printEmbossReport(cmd, report, asJSON)
+			if err := printEmbossReport(cmd, report, asJSON); err != nil {
+				return err
+			}
+
+			fmt.Fprintln(os.Stderr, "\nBaseline saved. Now run the skill for improvements:")
+			fmt.Fprintf(os.Stderr, "  /printing-press emboss %s\n\n", dir)
+			fmt.Fprintln(os.Stderr, "When done, re-run this command to compute the delta:")
+			fmt.Fprintf(os.Stderr, "  printing-press emboss --dir %s --spec %s\n", dir, specPath)
+			return nil
 		},
 	}
 
@@ -138,8 +149,98 @@ The improvement steps (2-4) are driven by the /printing-press emboss skill.`,
 	cmd.Flags().StringVar(&envVar, "env-var", "", "Environment variable name for the API key")
 	cmd.Flags().BoolVar(&asJSON, "json", false, "Output as JSON")
 	cmd.Flags().BoolVar(&auditOnly, "audit-only", false, "Only run the baseline audit, no improvements")
+	cmd.Flags().BoolVar(&saveBaseline, "save-baseline", false, "Save the baseline report to disk for a future delta run")
+	cmd.Flags().BoolVar(&keepBaseline, "keep-baseline", false, "Keep the saved baseline after computing a delta")
 	_ = cmd.MarkFlagRequired("dir")
 	return cmd
+}
+
+func runEmbossAudit(dir, specPath, apiKey, envVar, label string) EmbossSnapshot {
+	fmt.Fprintf(os.Stderr, "Step 1: AUDIT - Running verify + scorecard for %s...\n", label)
+
+	verifyCfg := pipeline.VerifyConfig{
+		Dir:       dir,
+		SpecPath:  specPath,
+		APIKey:    apiKey,
+		EnvVar:    envVar,
+		Threshold: 80,
+	}
+	verifyReport, err := pipeline.RunVerify(verifyCfg)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "  verify error: %v (continuing with partial %s)\n", err, label)
+	}
+
+	scorecardReport, err := pipeline.RunScorecard(dir, "", specPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "  scorecard error: %v (continuing with partial %s)\n", err, label)
+	}
+
+	snapshot := EmbossSnapshot{}
+	if verifyReport != nil {
+		snapshot.VerifyPassRate = verifyReport.PassRate
+		snapshot.VerifyPassed = verifyReport.Passed
+		snapshot.VerifyTotal = verifyReport.Total
+		snapshot.DataPipeline = verifyReport.DataPipeline
+		snapshot.CommandCount = verifyReport.Total
+	}
+	if scorecardReport != nil {
+		snapshot.ScorecardTotal = scorecardReport.Steinberger.Total
+		snapshot.ScorecardGrade = scorecardGrade(scorecardReport.Steinberger.Total)
+	}
+	return snapshot
+}
+
+func saveEmbossBaseline(path string, report *EmbossReport) error {
+	data, err := json.MarshalIndent(report, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, data, 0644)
+}
+
+func computeDelta(before, after EmbossSnapshot) *EmbossDelta {
+	return &EmbossDelta{
+		ScorecardDelta: after.ScorecardTotal - before.ScorecardTotal,
+		VerifyDelta:    after.VerifyPassRate - before.VerifyPassRate,
+		CommandDelta:   after.CommandCount - before.CommandCount,
+		PipelineFixed:  !before.DataPipeline && after.DataPipeline,
+	}
+}
+
+func writeEmbossDeltaReport(name string, before, after EmbossSnapshot, delta *EmbossDelta) (string, error) {
+	reportDir := filepath.Join("docs", "plans")
+	if err := os.MkdirAll(reportDir, 0755); err != nil {
+		return "", err
+	}
+
+	filename := fmt.Sprintf("%s-emboss-%s-delta.md", time.Now().Format("2006-01-02"), name)
+	path := filepath.Join(reportDir, filename)
+	content := strings.Join([]string{
+		fmt.Sprintf("# Emboss Delta Report: %s", name),
+		"",
+		"| Metric | Before | After | Delta |",
+		"| --- | --- | --- | --- |",
+		fmt.Sprintf("| Scorecard | %d (%s) | %d (%s) | %+d |", before.ScorecardTotal, before.ScorecardGrade, after.ScorecardTotal, after.ScorecardGrade, delta.ScorecardDelta),
+		fmt.Sprintf("| Verify | %.0f%% (%d/%d) | %.0f%% (%d/%d) | %+.0f%% |", before.VerifyPassRate, before.VerifyPassed, before.VerifyTotal, after.VerifyPassRate, after.VerifyPassed, after.VerifyTotal, delta.VerifyDelta),
+		fmt.Sprintf("| Pipeline | %s | %s | %s |", boolStatus(before.DataPipeline), boolStatus(after.DataPipeline), pipelineDeltaStatus(before.DataPipeline, after.DataPipeline, delta.PipelineFixed)),
+		fmt.Sprintf("| Commands | %d | %d | %+d |", before.CommandCount, after.CommandCount, delta.CommandDelta),
+		"",
+	}, "\n")
+
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		return "", err
+	}
+	return path, nil
+}
+
+func pipelineDeltaStatus(before, after, fixed bool) string {
+	if fixed {
+		return "FIXED"
+	}
+	if before == after {
+		return "UNCHANGED"
+	}
+	return "REGRESSED"
 }
 
 func printEmbossReport(cmd *cobra.Command, report *EmbossReport, asJSON bool) error {
