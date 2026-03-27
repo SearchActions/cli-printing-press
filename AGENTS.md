@@ -32,6 +32,14 @@ Catalog entries in `catalog/` must pass `internal/catalog` validation:
 - category must be: auth, payments, email, developer-tools, project-management, communication, crm, example
 - tier must be: official or community
 
+## Testing
+
+**When you change code, check for a `_test.go` file in the same package.** If one exists, read it — your change likely requires a test update. If tests fail after your change, investigate whether it's a bug in your code or a stale test — don't just delete.
+
+Add tests for new non-trivial logic. Match the package's existing style (typically table-driven with `testify/assert`). Skip tests for CLI glue, trivial wrappers, and code only meaningfully tested via integration (`FULL_RUN=1`).
+
+Run `go test ./...` before considering your work done.
+
 ## Quality Gates
 
 Generated CLIs must pass 7 gates: go mod tidy, go vet, go build, binary build, --help, version, doctor.
