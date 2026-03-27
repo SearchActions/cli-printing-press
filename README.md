@@ -117,40 +117,63 @@ Phase 0.5  Power User Workflows     (2-3 min)    Compound commands power users w
 Phase 0.7  Prediction Engine        (15-25 min)  SQLite schema + FTS5 + sync strategy
 Phase 1    Deep Research            (5-8 min)    Competitors, strategic justification
 Phase 2    Generate                 (1-2 min)    Go CLI from spec + archetype templates
-Phase 3    Steinberger Audit        (5-8 min)    12-dimension quality scoring
-Phase 4    GOAT Build               (5-10 min)   Review workflows, add NOI-driven insights
+Phase 3    Steinberger Audit        (5-8 min)    Two-tier quality scoring (100 points)
+Phase 4    GOAT Build               (5-10 min)   Domain tables, workflow commands, insights
 Phase 4.5  Dogfood Emulation        (10-20 min)  Test every command against spec mocks
+Phase 4.6  Hallucination Audit      (5 min)      Dead flags, dead functions, ghost tables
 Phase 5    Final Steinberger        (2-3 min)    Before/after delta + report
 ```
 
 ## What Gets Generated
 
-Every CLI ships with: `--json`, `--select`, `--dry-run`, `--stdin`, `--csv`, `--plain`, `--quiet`, `--yes`, `--no-cache`, `--no-color`. Plus: doctor health check, TOML config, OAuth2, retry with backoff, typed exit codes (`0`=success, `2`=usage, `3`=not found, `4`=auth, `5`=API, `7`=rate limited, `10`=config).
+**Agent-first flags** (every command): `--json`, `--select`, `--dry-run`, `--stdin`, `--csv`, `--compact`, `--quiet`, `--yes`, `--no-input`, `--no-cache`, `--no-color`. Auto-JSON when piped (no `--json` needed). Typed exit codes (`0`=success, `2`=usage, `3`=not found, `4`=auth, `5`=API, `7`=rate limited).
 
-**Data layer** (high-gravity entities): domain-specific SQLite tables, FTS5 search, incremental sync, `sql` command for raw queries.
+**Actionable errors**: errors include the specific flag/arg that's wrong, the correct usage pattern, and the command path. Agents self-correct in one retry.
+
+**Bounded output**: list commands show "Showing N results. To narrow: add --limit, --json --select, or filter flags." Token-conscious `--compact` mode returns only high-gravity fields (id, name, status, timestamps) - 60-80% fewer tokens.
+
+**Data layer** (high-gravity entities): domain-specific SQLite tables with proper columns (not JSON blobs), FTS5 full-text search, incremental sync with cursor tracking, `sql` command for raw queries, domain-specific `UpsertX()` and `SearchX()` methods.
 
 **Workflow commands** (from archetype): `stale`, `orphans`, `load`, `channel-health`, `reconcile`, etc.
 
-**Insight commands** (Rung 5): `health` (composite 0-100 score), `similar` (FTS5 duplicate detection).
+**Insight commands** (Rung 5): `health` (composite score), `similar` (duplicate detection), `trends`, `bottleneck`, `forecast`, `patterns`.
 
-## The Steinberger Bar
+**REST + GraphQL**: OpenAPI specs generate full CLIs. GraphQL SDL files are parsed with Relay pagination detection and produce the same domain-specific output.
 
-Named after Peter Steinberger, whose CLIs (gogcli, discrawl) set the quality standard. 12 dimensions, 120 points max, Grade A = 80%+.
+## The Steinberger Bar (v2 - Honest Scoring)
 
-| Dimension | What 10/10 Looks Like |
-|-----------|----------------------|
-| Output Modes | --json, --csv, --plain, --select, --quiet, --template |
-| Auth | OAuth browser flow, token storage, multiple profiles |
-| Error Handling | Typed exits, retry with backoff, actionable hints |
-| Terminal UX | Progress spinners, color themes, pager |
-| README | Install, quickstart, every command with example, cookbook |
-| Doctor | Validates auth, API version, rate limits, config |
-| Agent-Native | --json, --select, --dry-run, --stdin, idempotent, typed exits |
-| Local Cache | SQLite + FTS5, --no-cache bypass |
-| Breadth | Every endpoint + convenience wrappers |
-| Vision | Sync + search + tail + export + domain workflows |
-| Workflows | Compound commands combining 2+ API calls |
-| Insight | Behavioral commands that see patterns humans miss |
+Named after Peter Steinberger. Two tiers, 100 points max, weighted 50/50. Grade A = 85+.
+
+**Tier 1: Infrastructure** (50 points) - does the skeleton have the right patterns?
+
+| Dimension | What It Checks |
+|-----------|---------------|
+| Output Modes | --json, --csv, --select, --quiet, --compact, auto-JSON when piped |
+| Auth | OAuth flow, format-aware headers (Bot/Bearer/Basic from spec) |
+| Error Handling | Typed exits, retry with backoff, actionable error messages |
+| Agent-Native | --json, --select, --dry-run, --stdin, --no-input, --compact, --yes |
+| + 5 more | Terminal UX, README, Doctor, Local Cache, Breadth |
+
+**Tier 2: Domain Correctness** (50 points) - does the code actually work?
+
+| Dimension | What It Checks |
+|-----------|---------------|
+| Path Validity | Generated paths exist in the OpenAPI spec |
+| Auth Protocol | Auth format matches spec's securitySchemes |
+| Data Pipeline | Sync calls domain-specific UpsertX(), not generic Upsert() |
+| Sync Correctness | Real resources, nested paths, pagination, incremental cursors |
+| Type Fidelity | String IDs (not int), required params marked, quality descriptions |
+| Dead Code | No unwired flags, no uncalled functions, no ghost tables |
+
+**Why two tiers?** The original scorecard tested syntax (does this string exist in the file?) not semantics (does this code actually work?). Generated CLIs scored Grade A and failed on the first real API call. The v2 scorecard catches that.
+
+```bash
+# Run the honest scorecard
+printing-press scorecard --dir ./discord-cli --spec /tmp/discord-spec.json
+
+# Run the mechanical dogfood validator
+printing-press dogfood --dir ./discord-cli --spec /tmp/discord-spec.json
+```
 
 ## Quick Start
 
@@ -168,9 +191,25 @@ Then in Claude Code:
 /printing-press --spec ./openapi.yaml
 ```
 
+## Verification Tools
+
+Two Go commands for mechanical validation - no vibes, no self-assessment.
+
+```bash
+# Scorecard: two-tier scoring (infrastructure + domain correctness)
+printing-press scorecard --dir ./my-cli --spec ./openapi.json
+
+# Dogfood: catches dead flags, dead functions, auth mismatches, invalid paths
+printing-press dogfood --dir ./my-cli --spec ./openapi.json
+```
+
+The dogfood command exists because the v1 scorecard tested syntax, not semantics. Generated CLIs scored Grade A and failed on the first real API call. The v2 scorecard + dogfood command make that impossible.
+
 ## Credits
 
 - **Peter Steinberger** ([@steipete](https://github.com/steipete)) - [discrawl](https://github.com/steipete/discrawl) and [gogcli](https://github.com/steipete/gogcli) set the bar. The Steinberger quality scoring system is named after him.
+- **Trevin Chow** ([@trevin](https://x.com/trevin)) - [7 Principles for Agent-Friendly CLIs](https://x.com/trevin) shaped the agent-first template design.
+- **Ramp** ([@tryramp](https://github.com/ramp-public/ramp-cli)) - Their agent-first CLI inspired auto-JSON piping, --no-input, and --compact output.
 - **Matt Van Horn** ([@mvanhorn](https://github.com/mvanhorn)) - Author of the printing press and [/last30days](https://github.com/mvanhorn/last30days-skill) recency research skill.
 
 ## License
