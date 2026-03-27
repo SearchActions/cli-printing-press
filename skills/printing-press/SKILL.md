@@ -135,7 +135,7 @@ The key insight: **detect first, ask permission second.** Don't make the user fi
 Every run produces the GOAT CLI through 8 mandatory phases + 7 comprehensive plan documents:
 
 ```
-PHASE 0 -> PHASE 0.5 -> PHASE 0.7 -> PHASE 1 -> PHASE 2 -> PHASE 3 -> PHASE 4 -> PHASE 4.5 -> PHASE 5
+PHASE 0 -> PHASE 0.5 -> PHASE 0.7 -> PHASE 0.8 -> PHASE 0.9 -> PHASE 1 -> PHASE 2 -> PHASE 3 -> PHASE 4 -> PHASE 4.5 -> PHASE 4.6 -> PHASE 4.8 -> PHASE 5
 (3-5m)     (2-3m)       (15-25m)     (5-8m)     (1-2m)     (5-8m)     (5-10m)    (10-20m)      (2-3m)
 Visionary  Workflows    Prediction   Research   Generate   Audit      Build      Dogfood       Final
 Research   (commands)   Engine       (specs)    (code)     (review)   (fixes)    Emulation     Quality Score
@@ -321,6 +321,22 @@ Find ALL tools for this API, not just API wrappers:
 **Tier 3: Ecosystem Search**
 6. **WebSearch**: `awesome "<API name>" site:github.com`
 
+**Tier 4: Market Landscape Search** (CRITICAL - finds the REAL competitive terrain)
+
+The API wrapper is not the only competitor. Developers stack 3-4 tools. Find them all.
+
+7. **WebSearch**: `"<API name>" CLI alternative OR replacement`
+8. **WebSearch**: `"<API domain>" TUI OR terminal tool 2026` (use the domain from Step 0a, e.g., "git" for GitHub, "payments" for Stripe)
+9. **WebSearch**: `best "<API domain>" workflow tool`
+10. **WebSearch**: `"<API name>" "I switched to" OR "better than"`
+
+Classify the landscape into lanes:
+- **Forge/Platform CLIs** - direct API wrappers (gh, glab, stripe-cli)
+- **Workflow Overlays** - higher-level tools on top (Graphite, Git Town)
+- **Alternative UX** - rethink the domain interaction (lazygit, jj, Warp)
+
+Most developers stack tools from multiple lanes. Our CLI should complement the incumbent, not compete head-on.
+
 For each tool found, classify it:
 
 | Type | Description | Example |
@@ -485,6 +501,22 @@ Score each workflow on:
 
 These become **mandatory Phase 4 work items**. They are NOT optional polish. They are the PRODUCT.
 
+### Step 0.5f: Naming Pass (User Outcomes, Not API Resources)
+
+For each selected workflow, rename it from API-speak to user-speak. The name should complete this sentence: **"I need to check ___"**
+
+| API-oriented (bad) | User-oriented (good) | Why |
+|---|---|---|
+| `actions-health` | `ci-health` or `flaky` | Users say "is CI flaky?" not "are actions healthy?" |
+| `contributors` | `leaderboard` or `who-shipped` | The question being answered |
+| `activity` | `standup` | The workflow it serves |
+
+Rules:
+- Names should be verbs or nouns a developer would type naturally
+- If the incumbent has a name for this concept, use a different name (don't collide)
+- Max 15 characters, no hyphens if possible
+- Test: "Would an engineering manager type this without reading --help first?"
+
 ### PHASE GATE 0.5
 
 **STOP.** Tell the user: "Identified [N] power-user workflows for [API name]. Top 5:
@@ -631,7 +663,70 @@ The artifact MUST include:
 7. Domain-specific search filters mapped to SQL WHERE clauses
 8. At least 3 compound queries validated (joins work, columns exist)
 
-Tell the user: "Phase 0.7 complete: [N] primary entities for SQLite ([list]), [M] compound queries validated. Sync via [cursor type]. FTS5 on [fields]. Key prediction: [most valuable data-layer feature]. Proceeding to deep research."
+Tell the user: "Phase 0.7 complete: [N] primary entities for SQLite ([list]), [M] compound queries validated. Sync via [cursor type]. FTS5 on [fields]. Key prediction: [most valuable data-layer feature]. Proceeding to product thesis."
+
+---
+
+# PHASE 0.8: PRODUCT THESIS
+
+## THIS PHASE IS MANDATORY. DO NOT SKIP IT.
+
+Before generating any code, articulate why someone would install this CLI. If you can't answer these five questions in one sentence each, the research phases missed something - go back.
+
+### Step 0.8a: Answer Five Questions
+
+1. **Who is this for?** (one sentence, specific persona)
+   - Bad: "Developers who use the GitHub API"
+   - Good: "Engineering managers who need cross-repo PR triage without a dashboard"
+
+2. **What's the comparison table?** (us vs incumbent, 5 rows minimum)
+   | Capability | Incumbent | Ours |
+   |-----------|-----------|------|
+   Fill this in with real capabilities from Phase 0 research.
+
+3. **What's the HN headline?** (one sentence that makes a developer click)
+   - Bad: "A new CLI for the GitHub API"
+   - Good: "I built a GitHub CLI that finds stale PRs and lets you SQL query your repos offline"
+
+4. **What's the name?** (short, memorable, not confused with the incumbent)
+   - Consider: trademark risk, existing tools with that name, domain clarity
+   - Test: can you `brew install <name>` without collision?
+   - The generator will use this name. Do NOT default to `<api>-cli`.
+
+5. **What's the anti-scope?** (what we deliberately do NOT build)
+   - Example: "Not a TUI. Not a git replacement. Complements gh, doesn't replace it."
+
+### Step 0.8b: Write the Product Thesis
+
+Write one paragraph that combines the answers above. This paragraph should make a developer say "I need this." It goes in the README later.
+
+### PHASE GATE 0.8
+
+**STOP.** Verify:
+1. All 5 questions answered with specific, non-generic answers
+2. Product thesis paragraph written
+3. Name chosen (not `<api>-cli`)
+4. Comparison table has at least one row where we clearly win
+
+Tell the user: "Product thesis: [1-sentence pitch]. Name: [name]. Key differentiator: [comparison table winner]. Proceeding to deep research."
+
+---
+
+# PHASE 0.9: CHECK FOR PRIOR RESEARCH
+
+Before starting Phase 1 research from scratch, check if the user already did research:
+
+```bash
+ls ~/cli-printing-press/docs/plans/*<api-name>* ~/docs/plans/*<api-name>* 2>/dev/null
+```
+
+If found:
+1. **Read** every matching plan document
+2. Extract: competitive landscape, user pain points, tool rankings, product positioning
+3. **Skip redundant Phase 1 research** - if the prior plan already covers competitor analysis and demand signals, don't re-search. Focus Phase 1 on filling gaps (spec discovery, auth method, endpoint count).
+4. Note which Phase 1 steps are already answered by prior research.
+
+If not found: proceed to Phase 1 normally.
 
 ---
 
@@ -1402,6 +1497,62 @@ Tell the user: "Phase 4.6 complete: [N] dead flags fixed, [M] dead functions rem
 
 ---
 
+# PHASE 4.8: RUNTIME VERIFICATION
+
+## THIS PHASE IS MANDATORY. DO NOT SKIP IT.
+
+The scorecard measures files. This phase measures behavior. Build the CLI and test every command.
+
+### Step 4.8a: Run the Runtime Verifier
+
+```bash
+cd ~/cli-printing-press && ./printing-press verify \
+  --dir ./<api>-cli \
+  --spec /tmp/<api>-spec.json \
+  --threshold 80
+```
+
+If you collected an API key in Phase 0.1, add it:
+
+```bash
+cd ~/cli-printing-press && ./printing-press verify \
+  --dir ./<api>-cli \
+  --spec /tmp/<api>-spec.json \
+  --api-key "$<API_ENV_VAR>" \
+  --env-var <API_ENV_VAR> \
+  --threshold 80
+```
+
+The verifier:
+1. Builds the CLI binary
+2. Starts a mock server (or uses the real API if key provided - read-only GETs only)
+3. Tests every discovered command: --help, --dry-run, --json execution
+4. Tests the data pipeline end-to-end: sync -> sql -> search -> health
+5. Scores each command (0-3) and computes aggregate pass rate
+
+### Step 4.8b: Interpret Results
+
+- **PASS** (>= 80% pass rate, data pipeline works, 0 critical): Proceed to Phase 5.
+- **WARN** (60-80%): Review failures. Fix the top 3 manually and re-run.
+- **FAIL** (< 60% or data pipeline broken): DO NOT proceed. Fix until at least WARN.
+
+For each failing command, the verifier reports which test failed (help/dry-run/execute). Fix the root cause:
+- Help fails = command not registered in root.go
+- Dry-run fails = dryRun flag not checked in RunE
+- Execute fails = wrong path, bad response parsing, or missing required flags
+
+### PHASE GATE 4.8
+
+**STOP.** Verify:
+1. `printing-press verify` ran to completion
+2. Pass rate >= 80%
+3. Data pipeline: sync populates tables, sql queries them, search finds results
+4. 0 critical failures
+
+Tell the user: "Runtime verification: [X]% pass rate ([N]/[M] commands). Data pipeline: [PASS/FAIL]. Mode: [live/mock]. Proceeding to final report."
+
+---
+
 # PHASE 5: FINAL QUALITY SCORE + REPORT
 
 ## THIS PHASE IS MANDATORY. DO NOT SKIP IT.
@@ -1642,6 +1793,10 @@ These phrases indicate a phase was shortcut. If you catch yourself writing them,
 - "The error handling score is low, let me add error types" (STOP. Error types must be used in actual error paths. Adding newAuthError() that nobody calls is gaming, not engineering.)
 - "I'll add --csv and --quiet flags to root.go" (STOP. Every registered flag must be checked in at least one RunE function. Flags nobody reads are dead flags. Phase 4.6 catches this.)
 - "I'll add insight command files to match the scorecard prefixes" (STOP. Insight commands must query tables that are actually populated. A health command querying an empty database is theater.)
+- "I'll skip the dogfood/verify to save time" (Skipping testing is how you produce a CLI that scores 73/100 with a broken core feature. The GitHub run proved this. Run `printing-press verify`.)
+- "The scorecard is 73 so it's good enough" (The scorecard measures files, not behavior. A 73 scorecard with 0% verify pass rate is a CLI that looks good on paper and crashes on first use. Run verify.)
+- "I tested 5 commands manually, that's enough" (5/127 is 3.9%. That's not testing. Run `printing-press verify` which tests every command automatically in under 60 seconds.)
+- "The CLI compiles so it's ready to ship" (Compilation proves syntax. `printing-press verify` proves behavior. A CLI that compiles but 404s on sync is not shippable.)
 
 **Module path rule:**
 - The go.mod module path MUST be a valid Go import path with a real org name (e.g., `github.com/mvanhorn/discord-cli`). The literal string `USER` is never acceptable. The generator auto-derives from git config.
@@ -1653,6 +1808,7 @@ These phrases indicate a phase was shortcut. If you catch yourself writing them,
 - **Phase 4 (GOAT Build): 35%** - THIS IS WHERE THE PRODUCT IS BUILT. Do not rush.
 - Phase 4.5 (Dogfood): 10%
 - Phase 4.6 (Hallucination Audit): 5%
+- **Phase 4.8 (Runtime Verification): 10%** - THIS IS WHERE YOU PROVE IT WORKS. Do not skip.
 - Phase 5 (Final Report): 5%
 
 **Scorecard uses two tiers (100-point scale):**
