@@ -110,6 +110,9 @@ func authHeader(token string) string {
 	assert.True(t, report.PipelineCheck.SyncCallsDomain)
 	assert.True(t, report.PipelineCheck.SearchCallsDomain)
 	assert.Equal(t, 1, report.PipelineCheck.DomainTables)
+	assert.Equal(t, 0, report.ExampleCheck.Tested)
+	assert.True(t, report.ExampleCheck.Skipped)
+	assert.Equal(t, "no CLI command directory found", report.ExampleCheck.Detail)
 
 	loaded, err := LoadDogfoodResults(dir)
 	require.NoError(t, err)
@@ -154,6 +157,109 @@ func TestDeriveDogfoodVerdict(t *testing.T) {
 
 	report.PipelineCheck.SyncCallsDomain = true
 	assert.Equal(t, "PASS", deriveDogfoodVerdict(report, true))
+
+	// ExampleCheck: FAIL when <50% coverage
+	report.ExampleCheck = ExampleCheckResult{Tested: 10, WithExamples: 4}
+	assert.Equal(t, "FAIL", deriveDogfoodVerdict(report, true))
+
+	// ExampleCheck: not FAIL at exactly 50%
+	report.ExampleCheck = ExampleCheckResult{Tested: 10, WithExamples: 5}
+	assert.Equal(t, "PASS", deriveDogfoodVerdict(report, true))
+
+	// ExampleCheck: WARN when invalid flags present
+	report.ExampleCheck = ExampleCheckResult{Tested: 10, WithExamples: 10, InvalidFlags: []string{"--bogus"}}
+	assert.Equal(t, "WARN", deriveDogfoodVerdict(report, true))
+
+	// ExampleCheck: WARN when skipped (build failure etc.)
+	report.ExampleCheck = ExampleCheckResult{Skipped: true, Detail: "could not build CLI binary"}
+	assert.Equal(t, "WARN", deriveDogfoodVerdict(report, true))
+
+	// ExampleCheck: PASS when ran successfully with no issues
+	report.ExampleCheck = ExampleCheckResult{Tested: 10, WithExamples: 10, ValidExamples: 10}
+	assert.Equal(t, "PASS", deriveDogfoodVerdict(report, true))
+}
+
+func TestExtractExamplesSection(t *testing.T) {
+	tests := []struct {
+		name string
+		help string
+		want string
+	}{
+		{
+			name: "standard cobra help",
+			help: "Some command\n\nUsage:\n  cli users list [flags]\n\nExamples:\n  # List all users\n  cli users list --limit 10\n\nFlags:\n  --limit int   max results\n",
+			want: "# List all users\n  cli users list --limit 10",
+		},
+		{
+			name: "no examples section",
+			help: "Some command\n\nUsage:\n  cli version\n\nFlags:\n  -h, --help   help\n",
+			want: "",
+		},
+		{
+			name: "examples before global flags",
+			help: "Examples:\n  cli foo --bar baz\n\nGlobal Flags:\n  --config string\n",
+			want: "cli foo --bar baz",
+		},
+		{
+			name: "multi-line examples",
+			help: "Examples:\n  # First example\n  cli do --a 1\n\n  # Second example\n  cli do --b 2\n\nFlags:\n  --a int\n",
+			want: "# First example\n  cli do --a 1\n\n  # Second example\n  cli do --b 2",
+		},
+		{
+			name: "empty help",
+			help: "",
+			want: "",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, extractExamplesSection(tt.help))
+		})
+	}
+}
+
+func TestExtractFlagNames(t *testing.T) {
+	tests := []struct {
+		name string
+		text string
+		want []string
+	}{
+		{
+			name: "multiple flags",
+			text: "cli users list --limit 10 --format json",
+			want: []string{"format", "limit"},
+		},
+		{
+			name: "deduplication",
+			text: "--flag value --flag other",
+			want: []string{"flag"},
+		},
+		{
+			name: "hyphenated flag names",
+			text: "--dry-run --output-format table",
+			want: []string{"dry-run", "output-format"},
+		},
+		{
+			name: "ignores short flags",
+			text: "-h --help -v --verbose",
+			want: []string{"help", "verbose"},
+		},
+		{
+			name: "no flags",
+			text: "just some text with no flags",
+			want: nil,
+		},
+		{
+			name: "ignores uppercase",
+			text: "--OK should not match",
+			want: nil,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, extractFlagNames(tt.text))
+		})
+	}
 }
 
 func writeTestFile(t *testing.T, path string, content string) {

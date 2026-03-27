@@ -1,13 +1,16 @@
 package pipeline
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
+	"time"
 )
 
 type DogfoodReport struct {
@@ -18,8 +21,9 @@ type DogfoodReport struct {
 	AuthCheck     AuthCheckResult `json:"auth_check"`
 	DeadFlags     DeadCodeResult  `json:"dead_flags"`
 	DeadFuncs     DeadCodeResult  `json:"dead_functions"`
-	PipelineCheck PipelineResult  `json:"pipeline_check"`
-	Issues        []string        `json:"issues"`
+	PipelineCheck PipelineResult    `json:"pipeline_check"`
+	ExampleCheck  ExampleCheckResult `json:"example_check"`
+	Issues        []string           `json:"issues"`
 }
 
 type PathCheckResult struct {
@@ -47,6 +51,16 @@ type PipelineResult struct {
 	SearchCallsDomain bool   `json:"search_calls_domain"`
 	DomainTables      int    `json:"domain_tables"`
 	Detail            string `json:"detail"`
+}
+
+type ExampleCheckResult struct {
+	Tested        int      `json:"tested"`
+	WithExamples  int      `json:"with_examples"`
+	ValidExamples int      `json:"valid_examples"`
+	InvalidFlags  []string `json:"invalid_flags,omitempty"`
+	Missing       []string `json:"missing,omitempty"`
+	Skipped       bool     `json:"skipped,omitempty"`
+	Detail        string   `json:"detail"`
 }
 
 type openAPISpec struct {
@@ -86,6 +100,7 @@ func RunDogfood(dir, specPath string) (*DogfoodReport, error) {
 	report.DeadFlags = checkDeadFlags(dir)
 	report.DeadFuncs = checkDeadFunctions(dir)
 	report.PipelineCheck = checkPipelineIntegrity(dir)
+	report.ExampleCheck = checkExamples(dir)
 	report.Issues = collectDogfoodIssues(report, spec != nil)
 	report.Verdict = deriveDogfoodVerdict(report, spec != nil)
 
@@ -383,6 +398,9 @@ func deriveDogfoodVerdict(report *DogfoodReport, hasSpec bool) string {
 	if report.DeadFlags.Dead >= 3 {
 		return "FAIL"
 	}
+	if report.ExampleCheck.Tested > 0 && (report.ExampleCheck.WithExamples*100/report.ExampleCheck.Tested) < 50 {
+		return "FAIL"
+	}
 	if report.DeadFlags.Dead >= 1 && report.DeadFlags.Dead <= 2 {
 		return "WARN"
 	}
@@ -390,6 +408,12 @@ func deriveDogfoodVerdict(report *DogfoodReport, hasSpec bool) string {
 		return "WARN"
 	}
 	if !report.PipelineCheck.SyncCallsDomain {
+		return "WARN"
+	}
+	if len(report.ExampleCheck.InvalidFlags) > 0 {
+		return "WARN"
+	}
+	if report.ExampleCheck.Skipped {
 		return "WARN"
 	}
 	return "PASS"
@@ -414,7 +438,222 @@ func collectDogfoodIssues(report *DogfoodReport, hasSpec bool) []string {
 	if !report.PipelineCheck.SyncCallsDomain {
 		issues = append(issues, "sync uses generic Upsert only")
 	}
+	if report.ExampleCheck.Tested > 0 && (report.ExampleCheck.WithExamples*100/report.ExampleCheck.Tested) < 50 {
+		issues = append(issues, fmt.Sprintf("%d%% example coverage", report.ExampleCheck.WithExamples*100/report.ExampleCheck.Tested))
+	}
+	if len(report.ExampleCheck.InvalidFlags) > 0 {
+		issues = append(issues, fmt.Sprintf("%d invalid flags in examples", len(report.ExampleCheck.InvalidFlags)))
+	}
+	if report.ExampleCheck.Skipped {
+		issues = append(issues, fmt.Sprintf("example check skipped: %s", report.ExampleCheck.Detail))
+	}
 	return issues
+}
+
+func checkExamples(dir string) ExampleCheckResult {
+	result := ExampleCheckResult{}
+
+	cliName := findCLIName(dir)
+	if cliName == "" {
+		result.Skipped = true
+		result.Detail = "no CLI command directory found"
+		return result
+	}
+
+	binaryPath, err := buildDogfoodBinary(dir, cliName)
+	if err != nil {
+		result.Skipped = true
+		result.Detail = fmt.Sprintf("could not build CLI binary: %v", err)
+		return result
+	}
+
+	// Get global flags from root --help
+	globalOut, err := runDogfoodCmd(binaryPath, 15*time.Second, "--help")
+	if err != nil {
+		result.Skipped = true
+		result.Detail = fmt.Sprintf("failed to run --help: %v", err)
+		return result
+	}
+	globalFlags := extractFlagNames(globalOut)
+
+	// List command files (same filtering as PathCheck)
+	cliDir := filepath.Join(dir, "internal", "cli")
+	files := listGoFiles(cliDir)
+	var endpointFiles []string
+	for _, file := range files {
+		base := filepath.Base(file)
+		switch base {
+		case "root.go", "helpers.go", "doctor.go", "auth.go", "dogfood.go", "scorecard.go", "vision.go":
+			continue
+		}
+		// Only include endpoint commands (those with RunE)
+		content, err := os.ReadFile(file)
+		if err != nil {
+			continue
+		}
+		if !strings.Contains(string(content), "RunE:") {
+			continue
+		}
+		endpointFiles = append(endpointFiles, file)
+	}
+	sort.Strings(endpointFiles)
+	if len(endpointFiles) > 10 {
+		endpointFiles = sampleEvenly(endpointFiles, 10)
+	}
+
+	for _, file := range endpointFiles {
+		base := strings.TrimSuffix(filepath.Base(file), ".go")
+		parts := strings.Split(base, "_")
+
+		result.Tested++
+		cmdLabel := strings.Join(parts, " ")
+
+		cmdArgs := append(parts, "--help")
+		cmdOut, err := runDogfoodCmd(binaryPath, 15*time.Second, cmdArgs...)
+		if err != nil {
+			result.Missing = append(result.Missing, cmdLabel)
+			continue
+		}
+
+		examples := extractExamplesSection(cmdOut)
+		if examples == "" {
+			result.Missing = append(result.Missing, cmdLabel)
+			continue
+		}
+
+		result.WithExamples++
+
+		// Extract flags used in examples
+		exampleFlags := extractFlagNames(examples)
+		// Extract all valid flags from command help + global flags
+		cmdFlags := extractFlagNames(cmdOut)
+		allValidFlags := make(map[string]struct{})
+		for _, f := range cmdFlags {
+			allValidFlags[f] = struct{}{}
+		}
+		for _, f := range globalFlags {
+			allValidFlags[f] = struct{}{}
+		}
+
+		valid := true
+		for _, f := range exampleFlags {
+			if _, ok := allValidFlags[f]; !ok {
+				result.InvalidFlags = append(result.InvalidFlags, "--"+f)
+				valid = false
+			}
+		}
+		if valid {
+			result.ValidExamples++
+		}
+	}
+
+	result.InvalidFlags = uniqueSorted(result.InvalidFlags)
+	result.Missing = uniqueSorted(result.Missing)
+
+	if result.Tested == 0 {
+		result.Detail = "no endpoint commands found to test"
+	} else {
+		result.Detail = fmt.Sprintf("%d/%d commands have examples", result.WithExamples, result.Tested)
+		if len(result.InvalidFlags) > 0 {
+			result.Detail += fmt.Sprintf(" (%d invalid flags: %s)", len(result.InvalidFlags), strings.Join(result.InvalidFlags, ", "))
+		}
+	}
+
+	return result
+}
+
+func findCLIName(dir string) string {
+	cmdDir := filepath.Join(dir, "cmd")
+	entries, err := os.ReadDir(cmdDir)
+	if err != nil {
+		return ""
+	}
+	for _, entry := range entries {
+		if entry.IsDir() && strings.HasSuffix(entry.Name(), "-cli") {
+			return entry.Name()
+		}
+	}
+	return ""
+}
+
+func buildDogfoodBinary(dir, cliName string) (string, error) {
+	buildPath := filepath.Join(dir, cliName+"-dogfood")
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "go", "build", "-o", buildPath, "./cmd/"+cliName)
+	cmd.Dir = dir
+	if err := cmd.Run(); err != nil {
+		if ctx.Err() == context.DeadlineExceeded {
+			return "", fmt.Errorf("timed out after 2m")
+		}
+		return "", err
+	}
+	return buildPath, nil
+}
+
+func runDogfoodCmd(binary string, timeout time.Duration, args ...string) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, binary, args...)
+	out, err := cmd.CombinedOutput()
+	if err != nil && ctx.Err() == context.DeadlineExceeded {
+		return "", fmt.Errorf("timed out after %s", timeout)
+	}
+	// --help often returns exit 0, but accept output regardless
+	if len(out) > 0 {
+		return string(out), nil
+	}
+	return "", err
+}
+
+func extractExamplesSection(helpOutput string) string {
+	lines := strings.Split(helpOutput, "\n")
+	var inExamples bool
+	var examples []string
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "Examples:" {
+			inExamples = true
+			continue
+		}
+		if inExamples {
+			// Section headers in Cobra help are non-indented and non-empty
+			if len(line) > 0 && line[0] != ' ' && line[0] != '\t' {
+				break
+			}
+			examples = append(examples, line)
+		}
+	}
+	return strings.TrimSpace(strings.Join(examples, "\n"))
+}
+
+func extractFlagNames(text string) []string {
+	re := regexp.MustCompile(`--([a-z][-a-z0-9]*)`)
+	matches := re.FindAllStringSubmatch(text, -1)
+	seen := make(map[string]struct{})
+	var flags []string
+	for _, match := range matches {
+		name := match[1]
+		if _, ok := seen[name]; !ok {
+			seen[name] = struct{}{}
+			flags = append(flags, name)
+		}
+	}
+	sort.Strings(flags)
+	return flags
+}
+
+func sampleEvenly(items []string, n int) []string {
+	if len(items) <= n {
+		return items
+	}
+	step := float64(len(items)) / float64(n)
+	result := make([]string, n)
+	for i := 0; i < n; i++ {
+		idx := int(float64(i) * step)
+		result[i] = items[idx]
+	}
+	return result
 }
 
 func compileSpecPathPatterns(paths map[string]json.RawMessage) []*regexp.Regexp {
