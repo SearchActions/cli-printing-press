@@ -10,9 +10,19 @@ Just making a CLI is not hard. Making a CLI that understands the power user is e
 
 One command. 10 phases. ~1 hour. Produces a Go CLI + MCP server + 7 analysis documents. REST or GraphQL.
 
+### Get it
+
+```bash
+# Claude Code
+/install-skill https://github.com/mvanhorn/cli-printing-press
+
+# Then build the binary (needed for scorecard + verify)
+cd ~/cli-printing-press && go build -o ./printing-press ./cmd/printing-press
+```
+
 ## Every Endpoint. Every Insight. One Command.
 
-Discord's API has 300+ endpoints. Most generators stop there - wrap every endpoint, ship it, done. But [discrawl](https://github.com/steipete/discrawl) - Peter Steinberger's Discord tool - ignores most of them. It ships 11 commands: `sync`, `search`, `sql`, `tail`, `mentions`, `members`. **568 stars.**
+Discord's API has 300+ endpoints. Most generators stop there - wrap every endpoint, ship it, done. But [discrawl](https://github.com/steipete/discrawl) - Peter Steinberger's Discord tool - ignores most of them. It ships 11 commands: `sync`, `search`, `sql`, `tail`, `mentions`, `members`. **583 stars.**
 
 Why does the 11-command tool win? Because Steinberger saw something Discord's own API designers didn't: **conversations are institutional knowledge.** Every message thread is a document that should be archived, indexed, and searched locally. Those 11 commands embody that insight. The 300 endpoint wrappers don't.
 
@@ -53,8 +63,6 @@ The verdict surprised me: **use gogcli**. The newer, official tool with 10x the 
 Google's CLI wraps every endpoint but doesn't understand the user. Steinberger's CLI understands what people actually do with Gmail, Calendar, and Sheets - and builds human-friendly commands around those workflows. Setup is `brew install gogcli` vs. a multi-step Google Cloud Console OAuth dance.
 
 That's the NOI again. Breadth doesn't beat depth. Understanding the user beats understanding the API. And /last30days saw it in the community data before I could see it myself.
-
--- [Matt Van Horn](https://github.com/mvanhorn)
 
 ## The Creativity Ladder
 
@@ -192,13 +200,20 @@ printing-press dogfood --dir ./discord-cli --spec /tmp/discord-spec.json
 
 ## Quick Start
 
+### Install the Skill (Claude Code)
+
 ```bash
-git clone https://github.com/mvanhorn/cli-printing-press.git
-cd cli-printing-press
+/install-skill https://github.com/mvanhorn/cli-printing-press
+```
+
+Then build the binary (needed for scorecard, verify, and dogfood commands):
+
+```bash
+cd ~/cli-printing-press
 go build -o ./printing-press ./cmd/printing-press
 ```
 
-Then in Claude Code:
+### Run It
 
 ```bash
 /printing-press Discord                  # Full Opus run - CLI + MCP server
@@ -259,8 +274,6 @@ Safety: GET only, --limit 1, 10s timeout, stops on 401. Never creates, posts, or
 - **Peter Steinberger** ([@steipete](https://github.com/steipete)) - [discrawl](https://github.com/steipete/discrawl) and [gogcli](https://github.com/steipete/gogcli) set the bar. The quality scoring system is inspired by his work. discrawl v0.2.0's sync architecture directly influenced the printing press templates.
 - **Trevin Chow** ([@trevin](https://x.com/trevin)) - [7 Principles for Agent-Friendly CLIs](https://x.com/trevin) shaped the agent-first template design.
 - **Ramp** ([@tryramp](https://github.com/ramp-public/ramp-cli)) - Their agent-first CLI inspired auto-JSON piping, --no-input, and --compact output.
-- **Matt Van Horn** ([@mvanhorn](https://github.com/mvanhorn)) - Author of the printing press and [/last30days](https://github.com/mvanhorn/last30days-skill) recency research skill.
-
 ## License
 
 MIT
