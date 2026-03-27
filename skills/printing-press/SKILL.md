@@ -23,7 +23,73 @@ Generate the best CLI that has ever existed for any API. Five mandatory phases. 
 /printing-press Notion
 /printing-press Plaid payments API
 /printing-press --spec ./openapi.yaml
+/printing-press Discord codex          # Codex mode: offload code generation to save Opus tokens
 ```
+
+## Codex Mode (Opt-In)
+
+Add `codex` to the command to offload code generation (Phase 4, 4.5, 5.7) to Codex CLI. Claude stays the brain (research, planning, scoring, review). Codex does the hands (writing Go code). Saves ~60% Opus tokens per run.
+
+**Default is OFF.** Standard Opus mode runs unless you explicitly type `codex`.
+
+### Mode Detection
+
+```
+if the user's arguments contain "codex" or "--codex":
+  CODEX_MODE = true
+  Verify: command -v codex >/dev/null 2>&1
+  If codex not installed: print "Codex CLI not found - running standard mode." and set CODEX_MODE = false
+  Guard: if $CODEX_SANDBOX or $CODEX_SESSION_ID is set, print "Already inside Codex sandbox" and set CODEX_MODE = false
+else:
+  CODEX_MODE = false (default)
+```
+
+### Codex Delegation Pattern
+
+When CODEX_MODE is true and a task is pure code generation (writing a Go file, applying a fix):
+
+1. **Claude assembles the prompt** with: task description, exact files to modify, current code context (paste real code), expected change in plain English, conventions from the codebase, and constraints (no git, no PRs, <200 lines, run go build at end)
+
+2. **Write prompt and delegate:**
+```bash
+CODEX_PROMPT="TASK: [1-sentence description]
+
+FILES TO MODIFY:
+- [exact paths]
+
+CURRENT CODE:
+[paste relevant functions/signatures from codebase]
+
+EXPECTED CHANGE:
+[plain English description of the diff]
+
+CONVENTIONS:
+- [commit style, import patterns, error handling from the codebase]
+
+CONSTRAINTS:
+- Do NOT run git commit, git push, or git add. The sandbox blocks .git writes.
+- Do NOT modify files outside the listed paths.
+- Keep changes under 200 lines.
+
+VERIFY: After changes, run: go build ./... && go vet ./..."
+
+cd ~/cli-printing-press && echo "$CODEX_PROMPT" | codex exec --yolo -
+```
+
+3. **Claude reviews the diff:** Verify non-empty, in-scope, compiles (`go build && go vet`). If lint/format fails, auto-fix.
+
+4. **On failure:** Fall back to Claude for that task. Track consecutive failures - after 3, disable Codex for remaining tasks.
+
+### What Gets Delegated vs What Stays on Claude
+
+| Delegated to Codex (code generation) | Stays on Claude (reasoning) |
+|---|---|
+| Writing store.go domain tables | Phase 0-1: Research, prediction engine |
+| Writing workflow commands (sync, search, sql, etc.) | Phase 0.7: Architecture decisions |
+| Writing insight commands (health, trends, etc.) | Phase 3: Non-Obvious Insight Review |
+| Applying scorecard fixes (dead code, wiring flags) | Phase 4.7: Proof of Behavior verification |
+| README cookbook section | Phase 5: Ship Readiness Assessment |
+| Fix cycle patches (5-50 lines each) | Phase 5.5: Live API Testing |
 
 ## Prerequisites
 
@@ -905,6 +971,46 @@ Tell the user: "Phase 3 complete: Baseline Quality Score: [X]/100 (Grade [X]). F
 **GraphQL APIs:** For GraphQL APIs, Phase 2 only produced scaffolding (no generated commands). Phase 4 is where ALL commands get written by hand. Use the GraphQL schema + Phase 0.5 workflows + Phase 0.7 data layer spec to determine which queries/mutations to wrap as CLI commands. Each command sends a GraphQL query via the client wrapper. Prioritize workflow commands over CRUD wrappers - a `linear-cli stale --days 30 --team ENG` is more valuable than `linear-cli issues list`.
 
 Execute in this priority order. Do NOT skip Priority 0 to go straight to workflows.
+
+### Codex Delegation in Phase 4
+
+If CODEX_MODE is true, each Priority 0/1/2/3 task below is a **separate Codex call**:
+- Claude reads the Phase 0.7 spec and Phase 3 audit to decide WHAT to build
+- Claude assembles a Codex prompt for each task with: the specific file, current code context, expected behavior
+- Codex writes the code (one task = one Codex call, scoped to 1-2 files, <200 lines)
+- Claude reviews the diff, runs `go build ./... && go vet ./...`
+- If Codex fails: Claude writes that task directly (fallback)
+- After all tasks: run Proof of Behavior verification to catch any issues
+
+**Example Codex prompt for store.go rewrite:**
+```
+TASK: Rewrite store.go with domain-specific tables for Discord.
+
+FILES TO MODIFY:
+- discord-cli/internal/store/store.go
+
+CURRENT CODE (Open function signature):
+func Open(dbPath string) (*Store, error) { ... }
+
+EXPECTED CHANGE:
+Replace the generic resources table with domain-specific tables:
+- messages: id, channel_id, guild_id, author_id, content, timestamp, data JSON
+- members: guild_id, user_id, username, display_name, roles JSON, data JSON
+- channels: id, guild_id, name, type, parent_id, data JSON
+Add FTS5 on messages.content and members.username.
+Add UpsertMessage, UpsertMember, UpsertChannel methods.
+Add SearchMessages method using FTS5 MATCH.
+
+CONVENTIONS:
+- Use modernc.org/sqlite (pure Go, no CGO)
+- WAL mode + synchronous=NORMAL + mmap_size=268435456
+- FTS5 with content='table', content_rowid='rowid'
+
+CONSTRAINTS:
+- Do NOT run git commit/push/add
+- Keep under 400 lines (store.go can be longer than typical)
+- Run: cd discord-cli && go build ./... && go vet ./...
+```
 
 ### Priority 0: Data Layer Foundation (from Phase 0.7)
 
