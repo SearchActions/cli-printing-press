@@ -1,0 +1,145 @@
+package cli
+
+import (
+	"encoding/json"
+	"fmt"
+	"os"
+
+	"github.com/mvanhorn/cli-printing-press/internal/pipeline"
+	"github.com/spf13/cobra"
+)
+
+func newVerifyCmd() *cobra.Command {
+	var dir string
+	var specPath string
+	var apiKey string
+	var envVar string
+	var threshold int
+	var fix bool
+	var maxIterations int
+	var asJSON bool
+
+	cmd := &cobra.Command{
+		Use:   "verify",
+		Short: "Runtime-test a generated CLI against real API or mock server",
+		Long: `Build the generated CLI, then run every command against the real API
+(read-only GETs) or a spec-derived mock server. Produces a PASS/WARN/FAIL
+verdict with per-command scores and a data pipeline integrity check.
+
+If --api-key is provided, tests run against the real API (read-only only).
+Otherwise, a mock server is started from the OpenAPI spec.
+
+Use --fix to auto-patch common failures and re-test (max 3 iterations).`,
+		Example: `  # Test against real API (read-only GETs only)
+  printing-press verify --dir ./github-cli --spec /tmp/spec.json --api-key $GITHUB_TOKEN
+
+  # Test against mock server (no API key needed)
+  printing-press verify --dir ./github-cli --spec /tmp/spec.json
+
+  # Auto-fix failures and re-test
+  printing-press verify --dir ./github-cli --spec /tmp/spec.json --fix
+
+  # Set pass threshold and output JSON
+  printing-press verify --dir ./github-cli --spec /tmp/spec.json --threshold 70 --json`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cfg := pipeline.VerifyConfig{
+				Dir:       dir,
+				SpecPath:  specPath,
+				APIKey:    apiKey,
+				EnvVar:    envVar,
+				Threshold: threshold,
+			}
+
+			report, err := pipeline.RunVerify(cfg)
+			if err != nil {
+				return fmt.Errorf("running verify: %w", err)
+			}
+
+			// Run fix loop if requested and score is below threshold
+			var fixReport *pipeline.FixLoopReport
+			if fix && report.PassRate < float64(threshold) {
+				fmt.Printf("\nPass rate %.0f%% < %d%% threshold. Running fix loop (max %d iterations)...\n\n",
+					report.PassRate, threshold, maxIterations)
+				fixReport, err = pipeline.RunFixLoop(cfg, report, maxIterations)
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "Fix loop error: %v\n", err)
+				} else if fixReport.FinalReport != nil {
+					report = fixReport.FinalReport
+				}
+			}
+
+			if asJSON {
+				output := map[string]any{"verify": report}
+				if fixReport != nil {
+					output["fix_loop"] = fixReport
+				}
+				enc := json.NewEncoder(os.Stdout)
+				enc.SetIndent("", "  ")
+				return enc.Encode(output)
+			}
+
+			printVerifyReport(report)
+
+			if fixReport != nil {
+				fmt.Printf("\nFix Loop: %d iterations, improved: %v\n", len(fixReport.Iterations), fixReport.Improved)
+				for _, iter := range fixReport.Iterations {
+					fmt.Printf("  Iteration %d: %.0f%% -> %.0f%% (%+.0f%%), %d fixes applied\n",
+						iter.Number, iter.BeforeRate, iter.AfterRate, iter.Delta, len(iter.Fixes))
+				}
+			}
+
+			if report.Verdict == "FAIL" {
+				os.Exit(1)
+			}
+			return nil
+		},
+	}
+
+	cmd.Flags().StringVar(&dir, "dir", "", "Path to the generated CLI directory (required)")
+	cmd.Flags().StringVar(&specPath, "spec", "", "Path to the OpenAPI spec file")
+	cmd.Flags().StringVar(&apiKey, "api-key", "", "API key for live testing (read-only GETs only)")
+	cmd.Flags().StringVar(&envVar, "env-var", "", "Environment variable name for the API key (e.g., GITHUB_TOKEN)")
+	cmd.Flags().IntVar(&threshold, "threshold", 80, "Minimum pass rate percentage")
+	cmd.Flags().BoolVar(&fix, "fix", false, "Auto-fix common failures and re-test")
+	cmd.Flags().IntVar(&maxIterations, "max-iterations", 3, "Maximum fix loop iterations")
+	cmd.Flags().BoolVar(&asJSON, "json", false, "Output as JSON")
+	_ = cmd.MarkFlagRequired("dir")
+	return cmd
+}
+
+func printVerifyReport(report *pipeline.VerifyReport) {
+	fmt.Printf("Runtime Verification: %s\n", report.Binary)
+	fmt.Printf("Mode: %s\n\n", report.Mode)
+
+	// Per-command results
+	fmt.Printf("%-30s %-12s %-6s %-8s %-8s %s\n", "COMMAND", "KIND", "HELP", "DRY-RUN", "EXEC", "SCORE")
+	for _, r := range report.Results {
+		fmt.Printf("%-30s %-12s %-6s %-8s %-8s %d/3\n",
+			truncStr(r.Command, 30),
+			r.Kind,
+			passFail(r.Help),
+			passFail(r.DryRun),
+			passFail(r.Execute),
+			r.Score)
+	}
+
+	fmt.Println()
+	fmt.Printf("Data Pipeline: %s\n", passFail(report.DataPipeline))
+	fmt.Printf("Pass Rate: %.0f%% (%d/%d passed, %d critical)\n",
+		report.PassRate, report.Passed, report.Total, report.Critical)
+	fmt.Printf("Verdict: %s\n", report.Verdict)
+}
+
+func passFail(b bool) string {
+	if b {
+		return "PASS"
+	}
+	return "FAIL"
+}
+
+func truncStr(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n-3] + "..."
+}
