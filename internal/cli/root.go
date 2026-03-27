@@ -103,6 +103,11 @@ func newGenerateCmd() *cobra.Command {
 					if err := os.RemoveAll(absOut); err != nil {
 						return fmt.Errorf("removing existing output dir: %w", err)
 					}
+				} else if info, err := os.Stat(absOut); err == nil && info.IsDir() {
+					entries, _ := os.ReadDir(absOut)
+					if len(entries) > 0 {
+						return fmt.Errorf("output directory %s already exists (use --force to overwrite)", absOut)
+					}
 				}
 
 				gen := generator.New(parsed, absOut)
@@ -186,6 +191,11 @@ func newGenerateCmd() *cobra.Command {
 			if force {
 				if err := os.RemoveAll(absOut); err != nil {
 					return fmt.Errorf("removing existing output dir: %w", err)
+				}
+			} else if info, err := os.Stat(absOut); err == nil && info.IsDir() {
+				entries, _ := os.ReadDir(absOut)
+				if len(entries) > 0 {
+					return fmt.Errorf("output directory %s already exists (use --force to overwrite)", absOut)
 				}
 			}
 
