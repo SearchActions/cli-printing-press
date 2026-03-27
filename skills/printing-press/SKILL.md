@@ -97,17 +97,38 @@ cd ~/cli-printing-press && echo "$CODEX_PROMPT" | codex exec --yolo -
 - The printing-press repo at `~/cli-printing-press`
 - Build binary if missing: `cd ~/cli-printing-press && go build -o ./printing-press ./cmd/printing-press`
 
-## Phase 0.1: API KEY PROMPT
+## Phase 0.1: API KEY AUTO-DETECTION
 
-Before any research or generation, ask the user:
+Before asking the user for anything, silently check if a token is already available:
 
-"Do you want to provide an API key so I can test the generated CLI against the real API at the end?
-This is optional but catches auth mismatches, wrong endpoint paths, and response parsing bugs.
+```
+1. Check common env vars for the target API:
+   - GitHub: $GITHUB_TOKEN, $GH_TOKEN, or run `gh auth token` if gh CLI is installed
+   - Discord: $DISCORD_TOKEN, $DISCORD_BOT_TOKEN
+   - Linear: $LINEAR_API_KEY
+   - Notion: $NOTION_TOKEN
+   - Stripe: $STRIPE_SECRET_KEY (read-only test key only)
+   - Generic: $API_KEY, $API_TOKEN
 
-Safety: I will ONLY run read-only operations (list, get, search). I will NEVER create, update, delete, or post anything."
+2. If a token is found:
+   Tell the user: "I found a [API_NAME] token in your environment ([source]).
+   I'd like to use it for read-only live testing at the end (Phase 5.5).
+   This catches auth mismatches, wrong paths, and parsing bugs before you ship.
 
-If yes: Store the key in a session variable. Note which env var name the API uses (e.g., DISCORD_TOKEN, NOTION_TOKEN, LINEAR_API_KEY).
-If no: Skip Phase 5.5, rely on dry-run validation only.
+   Safety: I will ONLY run GET/list/search operations. I will NEVER create,
+   update, delete, or post anything. OK to use it?"
+
+   If yes (or user says nothing / proceeds): store the token for Phase 5.5
+   If no: skip live testing
+
+3. If no token found:
+   Tell the user: "No API token detected. If you want live testing at the end,
+   you can provide one now (or I'll skip it and use dry-run validation only)."
+
+   Accept token if provided, otherwise skip Phase 5.5.
+```
+
+The key insight: **detect first, ask permission second.** Don't make the user figure out what you need - find it yourself, explain what you'll do with it (read-only), and ask for a yes/no.
 
 ## How This Works
 
