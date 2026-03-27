@@ -13,11 +13,7 @@ One command. 10 phases. ~1 hour. Produces a Go CLI + MCP server + 7 analysis doc
 ### Get it
 
 ```bash
-# Claude Code
 /install-skill https://github.com/mvanhorn/cli-printing-press
-
-# Then build the binary (needed for scorecard + verify)
-cd ~/cli-printing-press && go build -o ./printing-press ./cmd/printing-press
 ```
 
 ## Every Endpoint. Every Insight. One Command.
