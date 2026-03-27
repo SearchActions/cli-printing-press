@@ -10,15 +10,13 @@ Just making a CLI is not hard. Making a CLI that understands the power user is e
 
 One command. 10 phases. ~1 hour. Produces a Go CLI + MCP server + 7 analysis documents. REST or GraphQL.
 
-## 323 Commands AND 11 Commands
+## Every Endpoint. Every Insight. One Command.
 
-Discord's API has 300+ endpoints. [discrawl](https://github.com/steipete/discrawl) - Peter Steinberger's Discord tool - ignores most of them and ships just **11 commands** (`sync`, `search`, `messages`, `mentions`, `members`, `sql`, `tail`, `channels`, `status`, `doctor`, `init`). It has **568 stars**.
+Discord's API has 300+ endpoints. Most generators stop there - wrap every endpoint, ship it, done. But [discrawl](https://github.com/steipete/discrawl) - Peter Steinberger's Discord tool - ignores most of them. It ships 11 commands: `sync`, `search`, `sql`, `tail`, `mentions`, `members`. **568 stars.**
 
-Those 11 commands are worth more than 323 endpoint wrappers because they embody a deep understanding of what power users actually need: conversations are institutional knowledge that should be archived, indexed, and searched locally.
+Why does the 11-command tool win? Because Steinberger saw something Discord's own API designers didn't: **conversations are institutional knowledge.** Every message thread is a document that should be archived, indexed, and searched locally. Those 11 commands embody that insight. The 300 endpoint wrappers don't.
 
-**The old question was: breadth or depth?** The printing press answers: **both.** It generates the 323 API wrappers (Phase 2) AND the 11 discrawl-style data layer commands (Phase 4) AND an MCP server. One spec in, three outputs.
-
-The difference isn't "how many commands" - it's whether the CLI understands the **Non-Obvious Insight** behind the API.
+Until now, you had to choose: breadth (wrap every endpoint) or depth (understand the user). The printing press eliminates that choice. It generates the full API surface AND the discrawl-style intelligence layer AND an MCP server. One spec in. Everything out.
 
 ## The Non-Obvious Insight
 
