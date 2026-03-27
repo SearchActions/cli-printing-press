@@ -112,7 +112,7 @@ func newGenerateCmd() *cobra.Command {
 				}
 
 				if outputDir == "" {
-					outputDir = filepath.Join("shelf", parsed.Name+"-cli")
+					outputDir = pipeline.DefaultOutputDir(parsed.Name)
 				}
 				absOut, err := filepath.Abs(outputDir)
 				if err != nil {
@@ -211,7 +211,7 @@ func newGenerateCmd() *cobra.Command {
 			}
 
 			if outputDir == "" {
-				outputDir = filepath.Join("shelf", apiSpec.Name+"-cli")
+				outputDir = pipeline.DefaultOutputDir(apiSpec.Name)
 			}
 
 			absOut, err := filepath.Abs(outputDir)

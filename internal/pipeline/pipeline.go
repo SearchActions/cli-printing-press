@@ -6,6 +6,12 @@ import (
 	"path/filepath"
 )
 
+// DefaultOutputDir returns the default output directory for a given API name.
+// All commands should use this when --output is not specified.
+func DefaultOutputDir(apiName string) string {
+	return filepath.Join("shelf", apiName+"-cli")
+}
+
 // Options configures a pipeline run.
 type Options struct {
 	OutputDir string
@@ -23,7 +29,7 @@ func Init(apiName string, opts Options) (*PipelineState, error) {
 
 	outputDir := opts.OutputDir
 	if outputDir == "" {
-		outputDir = filepath.Join("shelf", apiName+"-cli")
+		outputDir = DefaultOutputDir(apiName)
 	}
 
 	absOutputDir, err := filepath.Abs(outputDir)

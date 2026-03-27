@@ -101,7 +101,7 @@ internal/generator/generator.go (New + Generate)
   renders 30+ .tmpl files to output dir
   |
   v
-Generated CLI project at ./<name>-cli/
+Generated CLI project at ./shelf/<name>-cli/
   cmd/<name>-cli/main.go
   cmd/<name>-mcp/main.go
   internal/cli/   (per-resource commands)

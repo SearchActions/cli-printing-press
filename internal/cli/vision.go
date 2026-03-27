@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/mvanhorn/cli-printing-press/internal/pipeline"
 	"github.com/mvanhorn/cli-printing-press/internal/vision"
 	"github.com/spf13/cobra"
 )
@@ -31,7 +32,7 @@ The vision command produces the structure; Phase 0 fills it with intelligence.`,
 				return &ExitError{Code: ExitInputError, Err: fmt.Errorf("--api is required")}
 			}
 			if outputDir == "" {
-				outputDir = filepath.Join("shelf", apiName+"-cli")
+				outputDir = pipeline.DefaultOutputDir(apiName)
 			}
 
 			absOut, err := filepath.Abs(outputDir)
