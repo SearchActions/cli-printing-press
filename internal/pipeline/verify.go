@@ -527,10 +527,25 @@ func countTableColumns(storeSrc, tableName string) int {
 
 func camelToKebab(s string) string {
 	var b strings.Builder
-	for i, r := range s {
+	runes := []rune(s)
+	for i, r := range runes {
 		if unicode.IsUpper(r) {
+			// Don't insert hyphen if:
+			// - first character
+			// - previous char was also uppercase AND next char is uppercase or end (acronym interior)
 			if i > 0 {
-				b.WriteByte('-')
+				prevUpper := unicode.IsUpper(runes[i-1])
+				nextUpper := i+1 < len(runes) && unicode.IsUpper(runes[i+1])
+				nextEnd := i+1 >= len(runes)
+				if prevUpper && (nextUpper || nextEnd) {
+					// Inside or at end of acronym - no hyphen
+				} else if !prevUpper {
+					// Start of new word after lowercase
+					b.WriteByte('-')
+				} else {
+					// prevUpper && next is lowercase = start of new word after acronym (e.g., PRTriage -> pr-triage)
+					b.WriteByte('-')
+				}
 			}
 			b.WriteRune(unicode.ToLower(r))
 		} else {

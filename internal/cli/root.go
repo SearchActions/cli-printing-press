@@ -39,6 +39,7 @@ func Execute() error {
 	rootCmd.AddCommand(newGenerateCmd())
 	rootCmd.AddCommand(newScorecardCmd())
 	rootCmd.AddCommand(newDogfoodCmd())
+	rootCmd.AddCommand(newVerifyCmd())
 	rootCmd.AddCommand(newVisionCmd())
 	rootCmd.AddCommand(newVersionCmd())
 	rootCmd.AddCommand(newPrintCmd())
@@ -180,14 +181,14 @@ func newGenerateCmd() *cobra.Command {
 				}
 
 				var apiSpec *spec.APISpec
-				if graphql.IsGraphQLSDL(data) {
-					apiSpec, err = graphql.ParseSDLBytes(specFile, data)
-				} else if openapi.IsOpenAPI(data) {
+				if openapi.IsOpenAPI(data) {
 					if lenient {
 						apiSpec, err = openapi.ParseLenient(data)
 					} else {
 						apiSpec, err = openapi.Parse(data)
 					}
+				} else if graphql.IsGraphQLSDL(data) {
+					apiSpec, err = graphql.ParseSDLBytes(specFile, data)
 				} else {
 					apiSpec, err = spec.ParseBytes(data)
 				}
