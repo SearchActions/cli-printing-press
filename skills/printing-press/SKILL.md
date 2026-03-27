@@ -1410,30 +1410,57 @@ Parsing:  N errors (list any JSON parsing failures)
 Verdict:  PASS/WARN/FAIL
 ```
 
-If any test fails, add the failure to the issues list for the Ship Loop.
+If ANY test fails (WARN or FAIL verdict), automatically enter Phase 5.7 Ship Loop:
+
+1. For each failure, classify the bug:
+   - **Auth failure (401/403)**: Check client.go auth header format against spec's securitySchemes
+   - **Path not found (404)**: Check the URL path in the command file against the spec
+   - **Parse error**: Check response struct tags against actual API response shape
+   - **Sync failure**: Check pagination params, cursor handling, rate limiting
+   - **Timeout**: Check if the endpoint exists and the base URL is correct
+
+2. Write a targeted fix plan listing each bug with file:line and proposed fix
+3. Present the plan to the user: "Live testing found N bugs. Here's the fix plan. Proceed?"
+4. If yes: fix all bugs, then re-run Phase 5.5 live tests to verify
+5. If all tests pass after fix: proceed to Final Report with PASS
+6. If still failing: report remaining issues, max 2 fix cycles for live test bugs
 
 ---
 
 # PHASE 5.7: SHIP LOOP
 
-After presenting the Final Report, if the verdict has critical issues:
+This phase runs automatically when Phase 5.5 live tests find bugs, OR when the user asks "is this shippable?"
 
-1. Extract the top 3 highest-impact issues from the report
-2. Write a targeted fix plan (not a full Phase 4 rerun - just the specific issues)
-3. Apply fixes
-4. Re-run Proof of Behavior verification (Phase 4.7)
-5. Re-run scorecard
-6. Present updated score with delta
+## Auto-trigger from Phase 5.5
 
-If the user asks "is this shippable?" at any point:
-1. Run the scorecard + Proof of Behavior verification
-2. If PASS: "Yes, ship it. Quality Score: X/100, 0 critical issues."
-3. If WARN: "Shippable with caveats: [list]. Quality Score: X/100."
-4. If FAIL: "Not yet. Top issues: [list]. Want me to fix these and re-score?"
-   - If user says yes: enter the fix loop (steps 1-6 above)
-   - If user says no: present the issues for manual review
+When live API testing finds bugs, this phase runs immediately (no user prompt needed).
+The fix plan is derived directly from the test failures - concrete bugs with concrete fixes.
 
-Max 3 fix-loop iterations per session. After 3, report remaining issues and stop.
+## Auto-trigger from "is this shippable?"
+
+When the user asks "is this shippable?", "can we ship this?", "is it ready?", or similar:
+
+1. Run the Quality Scorecard + Proof of Behavior verification
+2. If API key is available: also run Phase 5.5 live tests
+3. Collect all issues into a single list
+4. If PASS (score >= 65, no critical issues, live tests pass): "Yes, ship it. Quality Score: X/100."
+5. If WARN (minor issues only): "Shippable with caveats: [list]. Quality Score: X/100."
+6. If FAIL (critical issues):
+   - Present: "Not yet. Found N issues. Top 3:"
+   - List each issue with severity, file, and proposed fix
+   - Ask: "Want me to fix these and re-test?"
+   - If yes: write fix plan -> apply fixes -> re-run verification + live tests -> present updated score
+   - If no: present issues for manual review
+
+## Fix Loop Rules
+
+- Max 3 fix-loop iterations per session
+- Each iteration targets only the top 3 highest-impact issues
+- After each fix: `go build ./... && go vet ./...` must pass
+- After each fix: re-run Proof of Behavior verification
+- After each fix: if API key available, re-run live tests
+- After 3 iterations: report remaining issues and stop (avoid infinite loops)
+- Each iteration should show: score before -> score after -> delta
 
 ---
 
