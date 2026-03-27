@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -12,6 +13,7 @@ import (
 func newVisionCmd() *cobra.Command {
 	var apiName string
 	var outputDir string
+	var asJSON bool
 
 	cmd := &cobra.Command{
 		Use:   "vision",
@@ -75,12 +77,19 @@ The vision command produces the structure; Phase 0 fills it with intelligence.`,
 
 			fmt.Fprintf(os.Stderr, "Visionary research template written to %s/visionary-research.md\n", absOut)
 			fmt.Fprintf(os.Stderr, "Run Phase 0 (SKILL.md) to fill it with real research.\n")
+			if asJSON {
+				json.NewEncoder(os.Stdout).Encode(map[string]interface{}{
+					"api_name":    apiName,
+					"output_file": filepath.Join(absOut, "visionary-research.md"),
+				})
+			}
 			return nil
 		},
 	}
 
 	cmd.Flags().StringVar(&apiName, "api", "", "API name to research")
 	cmd.Flags().StringVar(&outputDir, "output", "", "Output directory (default: <api>-cli)")
+	cmd.Flags().BoolVar(&asJSON, "json", false, "Output as JSON")
 
 	return cmd
 }
