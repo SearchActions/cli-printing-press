@@ -24,6 +24,8 @@ which uses LLM + web search to discover usage patterns, non-wrapper tools,
 workflows, and architecture decisions.
 
 The vision command produces the structure; Phase 0 fills it with intelligence.`,
+		Example: `  # Generate visionary research for an API
+  printing-press vision --api stripe --output ./research`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if apiName == "" {
 				return fmt.Errorf("--api is required")

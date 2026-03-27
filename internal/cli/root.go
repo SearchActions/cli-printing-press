@@ -62,6 +62,17 @@ func newGenerateCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "generate",
 		Short: "Generate a Go CLI project from an API spec",
+		Example: `  # Generate from a local OpenAPI spec
+  printing-press generate --spec ./openapi.yaml
+
+  # Generate from a URL with force overwrite
+  printing-press generate --spec https://api.example.com/openapi.json --force
+
+  # Generate from API documentation
+  printing-press generate --docs https://docs.stripe.com/api --name stripe
+
+  # Multiple specs merged into one CLI
+  printing-press generate --spec api-v1.yaml --spec api-v2.yaml --name myapi`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if dryRun && docsURL != "" {
 				return fmt.Errorf("--dry-run cannot be used with --docs (doc scraping has unavoidable side effects)")
@@ -377,8 +388,9 @@ func fetchOrCacheSpec(specURL string, refresh bool, skipCache bool) ([]byte, err
 
 func newVersionCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "version",
-		Short: "Print version",
+		Use:     "version",
+		Short:   "Print version",
+		Example: `  printing-press version`,
 		Run: func(cmd *cobra.Command, args []string) {
 			fmt.Printf("printing-press %s\n", version)
 		},
@@ -395,7 +407,15 @@ func newPrintCmd() *cobra.Command {
 		Use:   "print <api-name>",
 		Short: "Create an autonomous CLI generation pipeline",
 		Long:  "Creates a pipeline directory with plan seeds for each phase. Use /ce:work on each plan to execute.",
-		Args:  cobra.ExactArgs(1),
+		Example: `  # Run full pipeline for a catalog API
+  printing-press print stripe
+
+  # Force overwrite existing pipeline
+  printing-press print stripe --force
+
+  # Resume an interrupted pipeline
+  printing-press print stripe --resume`,
+		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			apiName := args[0]
 
