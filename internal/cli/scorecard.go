@@ -24,7 +24,7 @@ func newScorecardCmd() *cobra.Command {
   printing-press scorecard --dir ./generated/stripe-cli --json`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if dir == "" {
-				return fmt.Errorf("--dir is required")
+				return &ExitError{Code: ExitInputError, Err: fmt.Errorf("--dir is required")}
 			}
 
 			// Use a temp pipeline dir for the scorecard output
@@ -36,7 +36,7 @@ func newScorecardCmd() *cobra.Command {
 
 			sc, err := pipeline.RunScorecard(dir, pipelineDir, specPath)
 			if err != nil {
-				return fmt.Errorf("running scorecard: %w", err)
+				return &ExitError{Code: ExitGenerationError, Err: fmt.Errorf("running scorecard: %w", err)}
 			}
 
 			if asJSON {

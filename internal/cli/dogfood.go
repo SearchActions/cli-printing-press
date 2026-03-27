@@ -28,7 +28,7 @@ func newDogfoodCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			report, err := pipeline.RunDogfood(dir, specPath)
 			if err != nil {
-				return fmt.Errorf("running dogfood: %w", err)
+				return &ExitError{Code: ExitGenerationError, Err: fmt.Errorf("running dogfood: %w", err)}
 			}
 
 			if asJSON {

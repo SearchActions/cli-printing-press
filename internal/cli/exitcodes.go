@@ -1,0 +1,19 @@
+package cli
+
+// Exit codes for structured error reporting.
+const (
+	ExitSuccess         = 0
+	ExitInputError      = 1
+	ExitSpecError       = 2
+	ExitGenerationError = 3
+	ExitUnknownError    = 4
+)
+
+// ExitError wraps an error with a specific exit code.
+type ExitError struct {
+	Code int
+	Err  error
+}
+
+func (e *ExitError) Error() string { return e.Err.Error() }
+func (e *ExitError) Unwrap() error { return e.Err }
