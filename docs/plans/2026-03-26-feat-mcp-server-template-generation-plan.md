@@ -1,7 +1,7 @@
 ---
 title: "feat: Generate MCP Server Alongside CLI from OpenAPI Spec"
 type: feat
-status: active
+status: completed
 date: 2026-03-26
 ---
 

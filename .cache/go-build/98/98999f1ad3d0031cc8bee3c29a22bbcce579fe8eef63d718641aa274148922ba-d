@@ -1,0 +1,3 @@
+./generator.go
+./validate.go
+./generator_test.go

@@ -1,0 +1,5 @@
+./generator.go
+./readme_augment.go
+./textfilter.go
+./validate.go
+./vision_templates.go

@@ -1,7 +1,7 @@
 ---
 title: "feat: Codex Delegation Mode for Printing Press"
 type: feat
-status: active
+status: completed
 date: 2026-03-27
 ---
 

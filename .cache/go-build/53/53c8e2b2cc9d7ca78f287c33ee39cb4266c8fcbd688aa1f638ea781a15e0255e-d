@@ -1,0 +1,4 @@
+# test log
+open ../../testdata/catalog
+open ../../testdata/catalog/petstore.yaml
+open ../../testdata/catalog/test-api.yaml
