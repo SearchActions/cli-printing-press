@@ -24,7 +24,101 @@ Generate the best CLI that has ever existed for any API. Five mandatory phases. 
 /printing-press Plaid payments API
 /printing-press --spec ./openapi.yaml
 /printing-press Discord codex          # Codex mode: offload code generation to save Opus tokens
+/printing-press emboss ./discord-cli   # Second pass: improve an existing CLI
 ```
+
+## Emboss Mode (Second Pass)
+
+When the user's arguments start with `emboss`, this is NOT a from-scratch run. The CLI already exists. Run a 30-minute improvement cycle.
+
+```
+if the user's arguments start with "emboss":
+  EMBOSS_MODE = true
+  EMBOSS_DIR = first argument after "emboss"
+  Verify the directory exists and contains a Go CLI (check for cmd/ and internal/cli/)
+else:
+  EMBOSS_MODE = false (default - normal generation)
+```
+
+### The Emboss Cycle (6 steps, ~30 minutes)
+
+**Step 1: AUDIT (5 min)** - Get a baseline without changing anything.
+
+```bash
+cd ~/cli-printing-press && ./printing-press emboss --dir <cli-dir> --spec <spec-path> --audit-only
+```
+
+Read the output. Note the scorecard score, verify pass rate, data pipeline status, and command count. This is the "before" snapshot.
+
+Also read:
+- The CLI's README for what commands exist
+- Any Phase 0-5 artifacts in `docs/plans/` for this API
+- The CLI's `internal/cli/root.go` to catalog registered commands
+
+**Step 2: RE-RESEARCH (10 min)** - What's changed since v1?
+
+This is NOT a full Phase 0 redo. Run targeted searches:
+
+1. **WebSearch**: `"<API name>" CLI tool 2026` (any new competitors since v1?)
+2. **WebSearch**: `"<API name>" "I wish" OR "I built" site:reddit.com OR site:news.ycombinator.com` (new pain points?)
+3. Check npm: has anyone published a new CLI for this API?
+4. Check if the API spec has been updated (new endpoints?)
+
+Output: a "what's new" briefing (5-10 bullet points, not a full research document).
+
+**Step 3: GAP ANALYSIS (5 min)** - What are the top 5 improvements?
+
+Compare the audit baseline + re-research against what's possible. Score each potential improvement:
+
+| Improvement | User Impact (1-5) | Score Impact (1-5) | Effort (1-5, 5=easy) | Total |
+|------------|-------------------|-------------------|---------------------|-------|
+
+Pick the top 5. Present to the user for approval before building.
+
+Common improvement categories:
+- Fix broken commands (from verify failures)
+- Add missing workflow commands (from re-research)
+- Improve data layer (add tables, fix sync, add FTS5)
+- Polish README (add cookbook, fix examples)
+- Add new endpoints (from spec updates)
+
+**Step 4: IMPROVE (15 min)** - Build the top 5.
+
+For each approved improvement:
+1. Implement it (delegate to Codex if codex mode)
+2. Run `go build && go vet` to verify compilation
+3. Commit atomically: `feat(<api>): <improvement description>`
+
+**Step 5: RE-VERIFY (5 min)** - Prove it worked.
+
+```bash
+cd ~/cli-printing-press && ./printing-press emboss --dir <cli-dir> --spec <spec-path> --audit-only
+```
+
+Compare the new numbers to the baseline from Step 1.
+
+**Step 6: REPORT** - Tell the user the delta.
+
+```
+EMBOSS COMPLETE: <api>-cli
+  Scorecard: <before> -> <after> (+<delta>)
+  Verify:    <before>% -> <after>% (+<delta>%)
+  Commands:  <before> -> <after> (+<delta>)
+  Pipeline:  <before> -> <after>
+  Top improvements: <list>
+```
+
+### Emboss Phase Gate
+
+The emboss is successful if:
+- Scorecard improved by at least 3 points
+- Verify pass rate improved or stayed the same
+- No new critical failures introduced
+- All improvements compile and pass `go vet`
+
+If verify pass rate DECREASED, something broke. Revert the last improvement and investigate.
+
+---
 
 ## Codex Mode (Opt-In)
 

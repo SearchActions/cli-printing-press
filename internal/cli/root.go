@@ -40,6 +40,7 @@ func Execute() error {
 	rootCmd.AddCommand(newScorecardCmd())
 	rootCmd.AddCommand(newDogfoodCmd())
 	rootCmd.AddCommand(newVerifyCmd())
+	rootCmd.AddCommand(newEmbossCmd())
 	rootCmd.AddCommand(newVisionCmd())
 	rootCmd.AddCommand(newVersionCmd())
 	rootCmd.AddCommand(newPrintCmd())
