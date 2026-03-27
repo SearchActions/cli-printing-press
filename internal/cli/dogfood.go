@@ -128,6 +128,28 @@ func printDogfoodReport(report *pipeline.DogfoodReport) {
 	fmt.Printf("  Domain tables: %d\n", report.PipelineCheck.DomainTables)
 	fmt.Println()
 
+	if report.ExampleCheck.Skipped {
+		fmt.Printf("Examples:          SKIP (%s)\n", report.ExampleCheck.Detail)
+	} else {
+		exampleStatus := "PASS"
+		if report.ExampleCheck.Tested > 0 && (report.ExampleCheck.WithExamples*100/report.ExampleCheck.Tested) < 50 {
+			exampleStatus = "FAIL"
+		} else if len(report.ExampleCheck.InvalidFlags) > 0 {
+			exampleStatus = "WARN"
+		} else if report.ExampleCheck.Tested == 0 {
+			exampleStatus = "SKIP"
+		}
+		fmt.Printf("Examples:          %d/%d commands have examples", report.ExampleCheck.WithExamples, report.ExampleCheck.Tested)
+		if len(report.ExampleCheck.InvalidFlags) > 0 {
+			fmt.Printf(" (%d invalid flags: %s)", len(report.ExampleCheck.InvalidFlags), strings.Join(report.ExampleCheck.InvalidFlags, ", "))
+		}
+		fmt.Printf(" (%s)\n", exampleStatus)
+		for _, cmd := range report.ExampleCheck.Missing {
+			fmt.Printf("  - %s: missing example\n", cmd)
+		}
+	}
+	fmt.Println()
+
 	fmt.Printf("Verdict: %s\n", report.Verdict)
 	for _, issue := range report.Issues {
 		fmt.Printf("  - %s\n", issue)
