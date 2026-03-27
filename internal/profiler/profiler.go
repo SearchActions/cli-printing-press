@@ -35,6 +35,15 @@ type DomainSignals struct {
 	HasEstimates     bool
 }
 
+// PaginationProfile describes the detected pagination patterns across the API.
+type PaginationProfile struct {
+	CursorParam     string `json:"cursor_param"`    // most common cursor param name (after, cursor, page_token, offset)
+	PageSizeParam   string `json:"page_size_param"`  // most common page size param (limit, per_page, page_size, first)
+	SinceParam      string `json:"since_param"`      // temporal filter param (since, updated_after, modified_since)
+	ItemsKey        string `json:"items_key"`         // response array key (data, results, items, or "" for root array)
+	DefaultPageSize int    `json:"default_page_size"` // detected or default 100
+}
+
 // APIProfile describes the shape of an API and what power-user features it warrants.
 type APIProfile struct {
 	HighVolume       bool
@@ -54,7 +63,8 @@ type APIProfile struct {
 	SyncableResources []string
 	SearchableFields  map[string][]string
 
-	Domain DomainSignals
+	Domain     DomainSignals
+	Pagination PaginationProfile
 }
 
 func Profile(s *spec.APISpec) *APIProfile {
@@ -76,6 +86,11 @@ func Profile(s *spec.APISpec) *APIProfile {
 	var getEndpoints int
 	var listCapableGETs int
 	var hasSearchEndpoint bool
+
+	cursorParams := make(map[string]int)
+	pageSizeParams := make(map[string]int)
+	sinceParams := make(map[string]int)
+	responsePaths := make(map[string]int)
 
 	var walk func(name string, r spec.Resource)
 	walk = func(name string, r spec.Resource) {
@@ -124,6 +139,24 @@ func Profile(s *spec.APISpec) *APIProfile {
 				if endpoint.Pagination != nil {
 					p.ListEndpoints++
 					syncable[resourceName] = struct{}{}
+				}
+			}
+
+			if endpoint.Pagination != nil {
+				if endpoint.Pagination.CursorParam != "" {
+					cursorParams[endpoint.Pagination.CursorParam]++
+				}
+				if endpoint.Pagination.LimitParam != "" {
+					pageSizeParams[endpoint.Pagination.LimitParam]++
+				}
+			}
+			if endpoint.ResponsePath != "" {
+				responsePaths[endpoint.ResponsePath]++
+			}
+			for _, param := range endpoint.Params {
+				name := strings.ToLower(param.Name)
+				if strings.Contains(name, "since") || strings.Contains(name, "updated_after") || strings.Contains(name, "modified_since") || strings.Contains(name, "updated_at") {
+					sinceParams[param.Name]++
 				}
 			}
 
@@ -183,6 +216,14 @@ func Profile(s *spec.APISpec) *APIProfile {
 	}
 
 	p.Domain = detectDomainSignals(s)
+
+	p.Pagination = PaginationProfile{
+		CursorParam:     mostCommon(cursorParams, "after"),
+		PageSizeParam:   mostCommon(pageSizeParams, "limit"),
+		SinceParam:      mostCommon(sinceParams, ""),
+		ItemsKey:        mostCommon(responsePaths, ""),
+		DefaultPageSize: 100,
+	}
 
 	return p
 }
@@ -651,4 +692,19 @@ func scanFieldSignals(params []spec.Param, ds *DomainSignals) {
 			scanFieldSignals(param.Fields, ds)
 		}
 	}
+}
+
+func mostCommon(counts map[string]int, fallback string) string {
+	if len(counts) == 0 {
+		return fallback
+	}
+	best := fallback
+	bestCount := 0
+	for k, v := range counts {
+		if v > bestCount {
+			best = k
+			bestCount = v
+		}
+	}
+	return best
 }
