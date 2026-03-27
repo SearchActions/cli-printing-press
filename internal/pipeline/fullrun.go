@@ -39,6 +39,11 @@ type FullRunResult struct {
 	Dogfood      *DogfoodReport
 	DogfoodError string
 
+	// Step 5.5: Verification
+	Verification      *VerificationReport
+	VerificationError string
+	Remediation       *RemediationResult
+
 	// Step 5: Scorecard
 	Scorecard      *Scorecard
 	ScorecardError string
@@ -140,6 +145,35 @@ func MakeBestCLI(apiName, level, specFlag, specURL, outputDir, pressBinary strin
 			result.Errors = append(result.Errors, fmt.Sprintf("dogfood write: %v", err))
 		}
 		result.Dogfood = dogfood
+	}
+
+	// Step 5.5: Proof of Behavior Verification
+	verSpecPath := ""
+	if specFlag == "--spec" {
+		verSpecPath = specURL
+	}
+	verReport, verErr := RunVerification(outputDir, verSpecPath)
+	if verErr != nil {
+		result.VerificationError = verErr.Error()
+		result.Errors = append(result.Errors, fmt.Sprintf("verification: %v", verErr))
+	} else {
+		result.Verification = verReport
+
+		// Auto-remediate if WARN or FAIL
+		if verReport.Verdict != "PASS" {
+			remResult, remErr := Remediate(outputDir, verReport)
+			if remErr != nil {
+				result.Errors = append(result.Errors, fmt.Sprintf("remediation: %v", remErr))
+			} else {
+				result.Remediation = remResult
+
+				// Re-verify after remediation
+				reVerReport, reVerErr := RunVerification(outputDir, verSpecPath)
+				if reVerErr == nil {
+					result.Verification = reVerReport
+				}
+			}
+		}
 	}
 
 	// Step 6: Scorecard
@@ -332,6 +366,24 @@ func PrintComparisonTable(results []*FullRunResult) string {
 		return r.Dogfood.Verdict
 	})
 
+	// Verification
+	writeRow(&b, "Verification", results, func(r *FullRunResult) string {
+		if r.Verification == nil {
+			return "n/a"
+		}
+		summary := r.Verification.Verdict
+		if r.Verification.HallucinatedPaths > 0 {
+			summary += fmt.Sprintf(" %dp", r.Verification.HallucinatedPaths)
+		}
+		if r.Verification.DeadFlags > 0 {
+			summary += fmt.Sprintf(" %df", r.Verification.DeadFlags)
+		}
+		if r.Verification.GhostTables > 0 {
+			summary += fmt.Sprintf(" %dg", r.Verification.GhostTables)
+		}
+		return summary
+	})
+
 	// LLM Polish
 	writeRow(&b, "LLM Polish", results, func(r *FullRunResult) string {
 		if r.PolishResult == nil {
@@ -502,6 +554,22 @@ func GenerateLearningsPlan(results []*FullRunResult, outputPath string) error {
 			}
 		} else {
 			b.WriteString(fmt.Sprintf("- **%s** - dogfood not run (%s)\n", r.APIName, r.DogfoodError))
+		}
+	}
+	b.WriteString("\n")
+
+	// Verification summary
+	b.WriteString("## Verification Summary\n\n")
+	for _, r := range results {
+		if r.Verification != nil {
+			b.WriteString(fmt.Sprintf("- **%s** - %s (paths:%d flags:%d ghost:%d fts:%d)\n",
+				r.APIName, r.Verification.Verdict,
+				r.Verification.HallucinatedPaths,
+				r.Verification.DeadFlags,
+				r.Verification.GhostTables,
+				r.Verification.OrphanFTS))
+		} else {
+			b.WriteString(fmt.Sprintf("- **%s** - not run (%s)\n", r.APIName, r.VerificationError))
 		}
 	}
 	b.WriteString("\n")
