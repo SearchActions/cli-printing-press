@@ -8,6 +8,14 @@ This is built as a Claude Code skill. You run `/printing-press Discord` inside C
 
 ---
 
+## How It's Used
+
+The primary entry point for users is the **`/printing-press` Claude Code skill** (defined in `skills/printing-press/`). A user types `/printing-press <API name>` inside Claude Code and the skill drives the entire pipeline. Everything else in this repo -- the Go binary, the parsers, the templates, the profiler -- exists to serve that skill.
+
+Developers working on this codebase build and test the Go binary directly (`go build`, `go test`), but the thing you're ultimately shipping is the skill-driven experience.
+
+---
+
 ## How Is It Organized?
 
 ```
@@ -76,9 +84,20 @@ This project has no external service dependencies. It's a pure Go binary that re
 
 ## Primary Flows
 
-### Flow 1: Direct Generation (`printing-press generate`)
+### Flow 1: Pipeline Orchestration (`/printing-press` skill -> `printing-press print`)
 
-For one-shot generation from a spec file:
+This is the flow users hit. The `/printing-press` Claude Code skill invokes `printing-press print`:
+
+1. `internal/cli/root.go` (`newPrintCmd`) calls `pipeline.Init()` with the API name
+2. `pipeline.Init()` calls `DiscoverSpec()` which looks up the API in `catalog/` entries
+3. Seeds are written for each of the 8 phases into `docs/plans/<api>-pipeline/`
+4. `state.json` is created to track progress across sessions
+5. The user runs `/ce:work` on each phase plan sequentially
+6. `CompleteAndPlanNext()` dynamically generates the next phase's plan using outputs from completed phases
+
+### Flow 2: Direct Generation (`printing-press generate`)
+
+Lower-level escape hatch for one-shot generation from a spec file:
 
 ```
 printing-press generate --spec ./openapi.yaml
@@ -113,17 +132,6 @@ Quality gates (if --validate)
   go mod tidy -> go vet -> go build
   -> binary --help -> version -> doctor
 ```
-
-### Flow 2: Pipeline Orchestration (`printing-press print`)
-
-For the full multi-phase experience used by the Claude Code skill:
-
-1. `internal/cli/root.go` (`newPrintCmd`) calls `pipeline.Init()` with the API name
-2. `pipeline.Init()` calls `DiscoverSpec()` which looks up the API in `catalog/` entries
-3. Seeds are written for each of the 8 phases into `docs/plans/<api>-pipeline/`
-4. `state.json` is created to track progress across sessions
-5. The user runs `/ce:work` on each phase plan sequentially
-6. `CompleteAndPlanNext()` dynamically generates the next phase's plan using outputs from completed phases
 
 ### Flow 3: Docs-to-Spec (`--docs`)
 
