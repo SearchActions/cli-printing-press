@@ -14,3 +14,13 @@ install:
 
 clean:
 	rm -rf bin/
+{{- if .VisionSet.MCP}}
+
+build-mcp:
+	go build -o bin/{{.Name}}-mcp ./cmd/{{.Name}}-mcp
+
+install-mcp:
+	go install ./cmd/{{.Name}}-mcp
+
+build-all: build build-mcp
+{{- end}}

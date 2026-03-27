@@ -103,9 +103,7 @@ func (g *Generator) Generate() error {
 		"cache.go.tmpl":        filepath.Join("internal", "cache", "cache.go"),
 		"client.go.tmpl":       filepath.Join("internal", "client", "client.go"),
 		"types.go.tmpl":        filepath.Join("internal", "types", "types.go"),
-		"goreleaser.yaml.tmpl": ".goreleaser.yaml",
 		"golangci.yml.tmpl":    ".golangci.yml",
-		"makefile.tmpl":        "Makefile",
 		"readme.md.tmpl":       "README.md",
 		"LICENSE.tmpl":         "LICENSE",
 		"NOTICE.tmpl":          "NOTICE",
@@ -217,6 +215,22 @@ func (g *Generator) Generate() error {
 		return fmt.Errorf("rendering auth: %w", err)
 	}
 
+	// MCP server: generate cmd/{name}-mcp/ entry point and internal/mcp/ package
+	if g.VisionSet.MCP || true { // Always generate MCP for now
+		mcpDirs := []string{
+			filepath.Join("cmd", g.Spec.Name+"-mcp"),
+			filepath.Join("internal", "mcp"),
+		}
+		for _, d := range mcpDirs {
+			if err := os.MkdirAll(filepath.Join(g.OutputDir, d), 0755); err != nil {
+				return fmt.Errorf("creating MCP dir %s: %w", d, err)
+			}
+		}
+		if err := g.renderTemplate("main_mcp.go.tmpl", filepath.Join("cmd", g.Spec.Name+"-mcp", "main.go"), g.Spec); err != nil {
+			return fmt.Errorf("rendering MCP main: %w", err)
+		}
+	}
+
 	// Vision features: profile the API and render selected templates
 	if g.VisionSet.IsZero() {
 		// Auto-profile if no explicit vision set provided
@@ -323,6 +337,26 @@ func (g *Generator) Generate() error {
 		}
 	}
 
+	// Render MCP tools registration (needs VisionSet + store data)
+	if g.VisionSet.MCP {
+		mcpData := struct {
+			*spec.APISpec
+			SyncableResources []string
+			SearchableFields  map[string][]string
+			Tables            []TableDef
+			VisionSet         VisionTemplateSet
+		}{
+			APISpec:           g.Spec,
+			SyncableResources: g.profile.SyncableResources,
+			SearchableFields:  g.profile.SearchableFields,
+			Tables:            schema,
+			VisionSet:         g.VisionSet,
+		}
+		if err := g.renderTemplate("mcp_tools.go.tmpl", filepath.Join("internal", "mcp", "tools.go"), mcpData); err != nil {
+			return fmt.Errorf("rendering MCP tools: %w", err)
+		}
+	}
+
 	rootData := struct {
 		*spec.APISpec
 		VisionSet VisionTemplateSet
@@ -332,6 +366,12 @@ func (g *Generator) Generate() error {
 	}
 	if err := g.renderTemplate("go.mod.tmpl", "go.mod", rootData); err != nil {
 		return fmt.Errorf("rendering go.mod: %w", err)
+	}
+	if err := g.renderTemplate("makefile.tmpl", "Makefile", rootData); err != nil {
+		return fmt.Errorf("rendering Makefile: %w", err)
+	}
+	if err := g.renderTemplate("goreleaser.yaml.tmpl", ".goreleaser.yaml", rootData); err != nil {
+		return fmt.Errorf("rendering goreleaser: %w", err)
 	}
 
 	return nil

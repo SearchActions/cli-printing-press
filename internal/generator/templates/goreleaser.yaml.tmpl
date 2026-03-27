@@ -17,6 +17,22 @@ builds:
       - linux_arm64
       - windows_amd64
       - windows_arm64
+{{- if .VisionSet.MCP}}
+  - id: {{.Name}}-mcp
+    main: ./cmd/{{.Name}}-mcp
+    binary: {{.Name}}-mcp
+    env:
+      - CGO_ENABLED=0
+    ldflags:
+      - -s -w
+    targets:
+      - darwin_amd64
+      - darwin_arm64
+      - linux_amd64
+      - linux_arm64
+      - windows_amd64
+      - windows_arm64
+{{- end}}
 archives:
   - formats: [tar.gz]
     name_template: "{{"{{"}} .ProjectName {{"}}"}}_{{"{{"}} .Version {{"}}"}}_{{"{{"}} .Os {{"}}"}}_{{"{{"}} .Arch {{"}}"}}"
@@ -34,3 +50,6 @@ brews:
     description: "{{.Description}}"
     install: |
       bin.install "{{.Name}}-cli"
+{{- if .VisionSet.MCP}}
+      bin.install "{{.Name}}-mcp"
+{{- end}}

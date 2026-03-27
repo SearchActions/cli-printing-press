@@ -13,13 +13,14 @@ type VisionTemplateSet struct {
 	Sync      bool
 	Tail      bool
 	Analytics bool
+	MCP       bool
 	Workflows []string
 	Insights  []string
 }
 
 func (s VisionTemplateSet) IsZero() bool {
 	return !s.Export && !s.Import && !s.Store && !s.Search &&
-		!s.Sync && !s.Tail && !s.Analytics &&
+		!s.Sync && !s.Tail && !s.Analytics && !s.MCP &&
 		len(s.Workflows) == 0 && len(s.Insights) == 0
 }
 
@@ -111,6 +112,9 @@ func SelectVisionTemplates(plan *vision.VisionaryPlan) VisionTemplateSet {
 			"workflows/comm_health.go.tmpl",
 		}
 	}
+
+	// MCP server is always generated alongside the CLI
+	set.MCP = true
 
 	if plan.Insight.HasInsight() {
 		set.Insights = []string{
