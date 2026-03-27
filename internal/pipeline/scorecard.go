@@ -1405,7 +1405,7 @@ func writeScorecardMD(sc *Scorecard, pipelineDir string) error {
 	b.WriteString(fmt.Sprintf("**Overall Grade: %s** (%d%%)\n\n", sc.OverallGrade, sc.Steinberger.Percentage))
 
 	// Steinberger dimensions table
-	b.WriteString("## Steinberger Bar\n\n")
+	b.WriteString("## Quality Dimensions\n\n")
 	b.WriteString("| Dimension | Score |\n")
 	b.WriteString("|-----------|-------|\n")
 	s := sc.Steinberger

@@ -214,9 +214,9 @@ func generateShipPlan(ctx PlanContext) (string, error) {
 	if ctx.Scorecard != nil {
 		b.WriteString("## Ship Decision\n\n")
 		if ctx.Scorecard.Steinberger.Percentage >= 65 {
-			b.WriteString(fmt.Sprintf("**SHIP** - Steinberger score %d%% (grade %s) meets threshold.\n\n", ctx.Scorecard.Steinberger.Percentage, ctx.Scorecard.OverallGrade))
+			b.WriteString(fmt.Sprintf("**SHIP** - Quality score %d%% (grade %s) meets threshold.\n\n", ctx.Scorecard.Steinberger.Percentage, ctx.Scorecard.OverallGrade))
 		} else {
-			b.WriteString(fmt.Sprintf("**HOLD** - Steinberger score %d%% (grade %s) is below 65%% threshold.\n", ctx.Scorecard.Steinberger.Percentage, ctx.Scorecard.OverallGrade))
+			b.WriteString(fmt.Sprintf("**HOLD** - Quality score %d%% (grade %s) is below 65%% threshold.\n", ctx.Scorecard.Steinberger.Percentage, ctx.Scorecard.OverallGrade))
 			b.WriteString("Fix the gaps identified in the scorecard before shipping.\n\n")
 		}
 	}

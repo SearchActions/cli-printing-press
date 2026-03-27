@@ -1,6 +1,6 @@
 ---
 name: printing-press
-description: Generate the GOAT CLI for any API. 5-phase loop with dual Steinberger analysis, deep competitor research, complex body field handling, and before/after scoring delta.
+description: Generate the GOAT CLI for any API. 5-phase loop with Non-Obvious Insight Review and Ship Readiness Assessment, deep competitor research, complex body field handling, and before/after scoring delta.
 version: 1.1.0
 allowed-tools:
   - Bash
@@ -17,7 +17,7 @@ allowed-tools:
 
 # /printing-press
 
-Generate the best CLI that has ever existed for any API. Five mandatory phases. Dual Steinberger analysis. No shortcuts.
+Generate the best CLI that has ever existed for any API. Five mandatory phases. Non-Obvious Insight Review + Ship Readiness Assessment. No shortcuts.
 
 ```
 /printing-press Notion
@@ -31,6 +31,18 @@ Generate the best CLI that has ever existed for any API. Five mandatory phases. 
 - The printing-press repo at `~/cli-printing-press`
 - Build binary if missing: `cd ~/cli-printing-press && go build -o ./printing-press ./cmd/printing-press`
 
+## Phase 0.1: API KEY PROMPT
+
+Before any research or generation, ask the user:
+
+"Do you want to provide an API key so I can test the generated CLI against the real API at the end?
+This is optional but catches auth mismatches, wrong endpoint paths, and response parsing bugs.
+
+Safety: I will ONLY run read-only operations (list, get, search). I will NEVER create, update, delete, or post anything."
+
+If yes: Store the key in a session variable. Note which env var name the API uses (e.g., DISCORD_TOKEN, NOTION_TOKEN, LINEAR_API_KEY).
+If no: Skip Phase 5.5, rely on dry-run validation only.
+
 ## How This Works
 
 Every run produces the GOAT CLI through 8 mandatory phases + 7 comprehensive plan documents:
@@ -39,7 +51,7 @@ Every run produces the GOAT CLI through 8 mandatory phases + 7 comprehensive pla
 PHASE 0 -> PHASE 0.5 -> PHASE 0.7 -> PHASE 1 -> PHASE 2 -> PHASE 3 -> PHASE 4 -> PHASE 4.5 -> PHASE 5
 (3-5m)     (2-3m)       (15-25m)     (5-8m)     (1-2m)     (5-8m)     (5-10m)    (10-20m)      (2-3m)
 Visionary  Workflows    Prediction   Research   Generate   Audit      Build      Dogfood       Final
-Research   (commands)   Engine       (specs)    (code)     (review)   (fixes)    Emulation     Steinberger
+Research   (commands)   Engine       (specs)    (code)     (review)   (fixes)    Emulation     Quality Score
                         (data layer)                                             (spec-test)
 ```
 
@@ -61,7 +73,7 @@ Phase 4.5 -> <today>-fix-<api>-cli-dogfood-report.md
 
 Each artifact chains into the next. **Read the previous phase's artifact before starting the next phase.**
 
-**The Steinberger bar:** Peter Steinberger's gogcli is the 10/10 reference. Every generated CLI is scored against it TWICE - once during audit to find gaps, once after fixes to prove improvement. The delta is the proof of work.
+**The quality bar:** Peter Steinberger's gogcli is the 10/10 reference. Every generated CLI is scored against it TWICE - once during the Non-Obvious Insight Review to find gaps, once in the Ship Readiness Assessment to prove improvement. The delta is the proof of work.
 
 **Grade thresholds (10 dimensions, 100 max):**
 - **Grade A:** 80+/100 (80%)
@@ -653,7 +665,7 @@ date: <today>
 ## Target
 - Command count: <N - match or beat best competitor>
 - Key differentiator: <specific features we'll have that competitors don't>
-- Quality bar: Steinberger Grade A (80+/100)
+- Quality bar: Quality Grade A (80+/100)
 ```
 
 ### PHASE GATE 1
@@ -758,15 +770,15 @@ Max 3 retries. Read errors carefully and fix spec issues.
 2. `go build ./...` succeeds
 3. List of skipped complex body fields is saved for Phase 3
 
-Tell the user: "Phase 2 complete: Generated <api>-cli with [N] resources, [M] endpoints. [K] complex body fields noted for Phase 4. Proceeding to Steinberger audit."
+Tell the user: "Phase 2 complete: Generated <api>-cli with [N] resources, [M] endpoints. [K] complex body fields noted for Phase 4. Proceeding to Non-Obvious Insight Review."
 
 ---
 
-# PHASE 3: STEINBERGER AUDIT
+# PHASE 3: NON-OBVIOUS INSIGHT REVIEW
 
 ## THIS PHASE IS MANDATORY. DO NOT SKIP IT.
 
-This phase has TWO parts: (A) code review for tactical fixes, and (B) Steinberger analysis for strategic assessment. Both are required.
+This phase has TWO parts: (A) code review for tactical fixes, and (B) Non-Obvious Insight Review for strategic assessment. Both are required.
 
 ## Part A: Code Review
 
@@ -807,7 +819,7 @@ For each field skipped by the generator (from Phase 2 Step 2.4):
 2. Can the user work around it with `--stdin`?
 3. What example JSON would a user pipe in?
 
-## Part B: First Steinberger Analysis
+## Part B: Non-Obvious Insight Review
 
 ### Step 3.0: Run automated scorecard
 
@@ -819,7 +831,7 @@ cd ~/cli-printing-press && ./printing-press scorecard --dir ./<api>-cli
 
 Use these numbers as the baseline. The hand-scoring in Step 3.7 should explain WHY each dimension got its score, not re-guess the number.
 
-### Step 3.7: Score against the Steinberger bar
+### Step 3.7: Score against the quality bar
 
 Score each dimension 0-10. For EACH dimension, provide THREE things:
 1. **Current score** with justification
@@ -827,7 +839,7 @@ Score each dimension 0-10. For EACH dimension, provide THREE things:
 3. **What specific changes would raise the score** (actionable items)
 
 ```markdown
-## First Steinberger Analysis (Baseline)
+## Quality Assessment (Baseline)
 
 | Dimension | Score | What 10 Looks Like | How to Get There |
 |-----------|-------|-------------------|-----------------|
@@ -847,7 +859,7 @@ Score each dimension 0-10. For EACH dimension, provide THREE things:
 
 ### Step 3.8: Write the GOAT improvement plan
 
-Based on the Steinberger analysis, identify:
+Based on the quality analysis, identify:
 
 1. **Top 5 highest-impact improvements** (will raise the score the most)
 2. **Commands to ADD** (not just rename - new functionality)
@@ -863,22 +875,22 @@ Include ALL of:
 - Help text quality assessment
 - Agent-native checklist
 - Specific fixes needed (file paths + what to change)
-- First Steinberger Analysis table (full)
+- Quality Assessment table (full)
 - GOAT improvement plan (top 5 + commands to add)
 - Complex body field plan
 
 ### PHASE GATE 3
 
 **STOP.** Verify ALL of these:
-1. Audit artifact exists with Steinberger analysis table
-2. Each Steinberger dimension has: score, "what 10 looks like", and "how to get there"
+1. Audit artifact exists with Quality Assessment table
+2. Each quality dimension has: score, "what 10 looks like", and "how to get there"
 3. GOAT plan has at least 5 specific improvements
 4. Complex body fields have a plan (not just "limitation")
 5. Baseline total score is recorded
 
 **Write Phase 3 Artifact:** Run the Artifact Writing plan generator with all Phase 3 analysis as input. Write to `~/cli-printing-press/docs/plans/<today>-fix-<api>-cli-audit.md`. Include: scorecard baseline, full 11-dimension hand-scored table, GOAT improvement plan, complex body field plan, data layer integration notes from Phase 0.7.
 
-Tell the user: "Phase 3 complete: Baseline Steinberger Score: [X]/100 (Grade [X]). Found [N] tactical fixes + [M] GOAT improvements. Top improvement: [description]. Proceeding to GOAT build."
+Tell the user: "Phase 3 complete: Baseline Quality Score: [X]/100 (Grade [X]). Found [N] tactical fixes + [M] GOAT improvements. Top improvement: [description]. Proceeding to GOAT build."
 
 ---
 
@@ -1190,7 +1202,7 @@ Review the "Here's what I think we should make" section from the report. For eac
 
 1. Is this a quick win (< 10 min to implement)? -> Do it now
 2. Is this a significant feature (> 10 min)? -> Add to the dogfood report as "Future Work"
-3. Does this improve the Steinberger score? -> Prioritize it
+3. Does this improve the quality score? -> Prioritize it
 
 After implementing quick wins, re-run `go build` and the dogfood on affected commands.
 
@@ -1263,11 +1275,11 @@ Tell the user: "Phase 4.6 complete: [N] dead flags fixed, [M] dead functions rem
 
 ---
 
-# PHASE 5: FINAL STEINBERGER + REPORT
+# PHASE 5: FINAL QUALITY SCORE + REPORT
 
 ## THIS PHASE IS MANDATORY. DO NOT SKIP IT.
 
-### Step 5.1: Second Steinberger Analysis (Post-Fix)
+### Step 5.1: Ship Readiness Assessment
 
 Run the automated scorecard again to measure improvement:
 
@@ -1278,7 +1290,7 @@ cd ~/cli-printing-press && ./printing-press scorecard --dir ./<api>-cli
 Re-score ALL 10 dimensions. Show the DELTA from the baseline:
 
 ```markdown
-## Final Steinberger Analysis (Post-Fix)
+## Ship Readiness Assessment (Post-Fix)
 
 | Dimension | Before | After | Delta | What Changed |
 |-----------|--------|-------|-------|-------------|
@@ -1314,9 +1326,9 @@ Generated <api>-cli with <N> resources and <M> commands.
 Resources: <comma-separated list>
 ```
 
-**2. Steinberger Score (Before/After):**
+**2. Quality Score (Before/After):**
 ```
-Steinberger Score: Before X/100 -> After Y/100 (+Z points) - Grade [A/B/C]
+Quality Score: Before X/100 -> After Y/100 (+Z points) - Grade [A/B/C]
 
 [Full before/after table from Step 5.1]
 ```
@@ -1356,6 +1368,75 @@ echo '<realistic-json>' | <api>-cli <resource> create --stdin
 
 ---
 
+# PHASE 5.5: LIVE API TESTING (optional - requires API key from Phase 0.1)
+
+Skip this phase entirely if no API key was provided in Phase 0.1.
+
+## Safety Rules (NON-NEGOTIABLE)
+
+These rules CANNOT be overridden. Violation = immediate abort.
+
+1. ONLY execute HTTP GET operations (list, get, search, doctor)
+2. NEVER execute POST, PUT, PATCH, DELETE (no creating, updating, deleting, posting, sending)
+3. NEVER pass --stdin with body content to any command
+4. NEVER call webhook execute, message create, channel post, or any mutation endpoint
+5. Timeout: 10 seconds per call, 2 minutes total for all testing
+6. Stop immediately on 401/403 (don't burn rate limits on bad auth)
+7. Print every command to stderr BEFORE executing it
+8. Use --limit 1 on all list calls (minimize API usage)
+9. Use --max-pages 5 on sync (tiny scope)
+
+## Test Sequence
+
+1. Set the API key as env var: `export <ENV_VAR_NAME>="<key>"`
+2. `<cli> doctor` - validates auth works (expect 200 OK)
+3. Pick 3 list endpoints, run each with `--limit 1 --json`
+4. From the first list result, extract one ID
+5. Run `<cli> <resource> get <id> --json` to validate single-resource fetch
+6. If data layer exists: `<cli> sync --max-pages 5` to validate sync with tiny scope
+7. If search exists: `<cli> search "a" --limit 1` to validate search
+8. Report results:
+
+```
+LIVE API TEST RESULTS
+=====================
+Auth:     PASS/FAIL (doctor response)
+List:     N/M passed (resource names)
+Get:      PASS/FAIL (resource + ID)
+Sync:     PASS/FAIL (pages synced, blocks synced) or SKIPPED
+Search:   PASS/FAIL (result count) or SKIPPED
+Parsing:  N errors (list any JSON parsing failures)
+
+Verdict:  PASS/WARN/FAIL
+```
+
+If any test fails, add the failure to the issues list for the Ship Loop.
+
+---
+
+# PHASE 5.7: SHIP LOOP
+
+After presenting the Final Report, if the verdict has critical issues:
+
+1. Extract the top 3 highest-impact issues from the report
+2. Write a targeted fix plan (not a full Phase 4 rerun - just the specific issues)
+3. Apply fixes
+4. Re-run Proof of Behavior verification (Phase 4.7)
+5. Re-run scorecard
+6. Present updated score with delta
+
+If the user asks "is this shippable?" at any point:
+1. Run the scorecard + Proof of Behavior verification
+2. If PASS: "Yes, ship it. Quality Score: X/100, 0 critical issues."
+3. If WARN: "Shippable with caveats: [list]. Quality Score: X/100."
+4. If FAIL: "Not yet. Top issues: [list]. Want me to fix these and re-score?"
+   - If user says yes: enter the fix loop (steps 1-6 above)
+   - If user says no: present the issues for manual review
+
+Max 3 fix-loop iterations per session. After 3, report remaining issues and stop.
+
+---
+
 ## Writing Specs from Docs
 
 When no OpenAPI spec exists:
@@ -1386,7 +1467,7 @@ These phrases indicate a phase was shortcut. If you catch yourself writing them,
 - "This is a limitation of the generator" (fix it, don't accept it)
 - "Complex types not supported" (add --stdin examples)
 - "We'll skip this for now" (no skipping - do it or explain why it's impossible)
-- "The quality is good enough" (score it against Steinberger, prove it's good enough with numbers)
+- "The quality is good enough" (score it against the quality bar, prove it's good enough with numbers)
 - "Let's wrap up" (are all 5 phases complete with artifacts?)
 - "This API doesn't need local persistence" (Did you run Phase 0? Check the data profile. If search need is high, it needs persistence.)
 - "This is just an API wrapper" (Run Phase 0 again. What would a thoughtful developer build?)

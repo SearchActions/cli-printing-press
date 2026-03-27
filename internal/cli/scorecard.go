@@ -42,7 +42,7 @@ func newScorecardCmd() *cobra.Command {
 
 			// Human-readable output
 			s := sc.Steinberger
-			fmt.Printf("Steinberger Scorecard: %s\n\n", sc.APIName)
+			fmt.Printf("Quality Scorecard: %s\n\n", sc.APIName)
 			fmt.Printf("  Output Modes   %d/10\n", s.OutputModes)
 			fmt.Printf("  Auth           %d/10\n", s.Auth)
 			fmt.Printf("  Error Handling %d/10\n", s.ErrorHandling)
