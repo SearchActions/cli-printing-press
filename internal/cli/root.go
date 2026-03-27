@@ -57,11 +57,15 @@ func newGenerateCmd() *cobra.Command {
 	var docsURL string
 	var polish bool
 	var asJSON bool
+	var dryRun bool
 
 	cmd := &cobra.Command{
 		Use:   "generate",
 		Short: "Generate a Go CLI project from an API spec",
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if dryRun && docsURL != "" {
+				return fmt.Errorf("--dry-run cannot be used with --docs (doc scraping has unavoidable side effects)")
+			}
 			if docsURL != "" {
 				apiName := cliName
 				if apiName == "" {
@@ -154,7 +158,7 @@ func newGenerateCmd() *cobra.Command {
 
 			var specs []*spec.APISpec
 			for _, specFile := range specFiles {
-				data, err := readSpec(specFile, refresh)
+				data, err := readSpec(specFile, refresh, dryRun)
 				if err != nil {
 					return fmt.Errorf("reading spec %s: %w", specFile, err)
 				}
@@ -195,6 +199,9 @@ func newGenerateCmd() *cobra.Command {
 			absOut, err := filepath.Abs(outputDir)
 			if err != nil {
 				return fmt.Errorf("resolving output path: %w", err)
+			}
+			if dryRun {
+				return printDryRun(apiSpec, absOut, specFiles)
 			}
 			if force {
 				if err := os.RemoveAll(absOut); err != nil {
@@ -254,13 +261,14 @@ func newGenerateCmd() *cobra.Command {
 	cmd.Flags().StringVar(&docsURL, "docs", "", "API documentation URL to generate spec from")
 	cmd.Flags().BoolVar(&polish, "polish", false, "Run LLM polish pass on generated CLI (requires claude or codex CLI)")
 	cmd.Flags().BoolVar(&asJSON, "json", false, "Output as JSON")
+	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Parse spec and show what would be generated without writing files (remote specs are still fetched)")
 
 	return cmd
 }
 
-func readSpec(specFile string, refresh bool) ([]byte, error) {
+func readSpec(specFile string, refresh bool, skipCache bool) ([]byte, error) {
 	if strings.HasPrefix(specFile, "http://") || strings.HasPrefix(specFile, "https://") {
-		return fetchOrCacheSpec(specFile, refresh)
+		return fetchOrCacheSpec(specFile, refresh, skipCache)
 	}
 
 	return os.ReadFile(specFile)
@@ -311,7 +319,7 @@ func mergeSpecs(specs []*spec.APISpec, name string) *spec.APISpec {
 	return merged
 }
 
-func fetchOrCacheSpec(specURL string, refresh bool) ([]byte, error) {
+func fetchOrCacheSpec(specURL string, refresh bool, skipCache bool) ([]byte, error) {
 	sum := sha256.Sum256([]byte(specURL))
 	cacheKey := hex.EncodeToString(sum[:])
 
@@ -321,11 +329,9 @@ func fetchOrCacheSpec(specURL string, refresh bool) ([]byte, error) {
 	}
 
 	cacheDir := filepath.Join(homeDir, ".cache", "printing-press", "specs")
-	if err := os.MkdirAll(cacheDir, 0o755); err != nil {
-		return nil, fmt.Errorf("creating cache directory: %w", err)
-	}
-
 	cachePath := filepath.Join(cacheDir, cacheKey+".json")
+
+	// Read from existing cache even in dry-run mode (no writes needed)
 	if !refresh {
 		info, err := os.Stat(cachePath)
 		switch {
@@ -357,8 +363,13 @@ func fetchOrCacheSpec(specURL string, refresh bool) ([]byte, error) {
 		return nil, fmt.Errorf("reading response body: %w", err)
 	}
 
-	if err := os.WriteFile(cachePath, data, 0o644); err != nil {
-		return nil, fmt.Errorf("writing cached spec: %w", err)
+	if !skipCache {
+		if err := os.MkdirAll(cacheDir, 0o755); err != nil {
+			return nil, fmt.Errorf("creating cache directory: %w", err)
+		}
+		if err := os.WriteFile(cachePath, data, 0o644); err != nil {
+			return nil, fmt.Errorf("writing cached spec: %w", err)
+		}
 	}
 
 	return data, nil
@@ -434,4 +445,36 @@ func countCompletedPhases(state *pipeline.PipelineState) int {
 		}
 	}
 	return n
+}
+
+func printDryRun(apiSpec *spec.APISpec, absOut string, specFiles []string) error {
+	resourceCount := 0
+	endpointCount := 0
+	for _, r := range apiSpec.Resources {
+		resourceCount++
+		endpointCount += len(r.Endpoints)
+		for _, sub := range r.SubResources {
+			resourceCount++
+			endpointCount += len(sub.Endpoints)
+		}
+	}
+
+	fmt.Fprintf(os.Stderr, "Dry run — spec parsed, no files will be generated\n")
+	fmt.Fprintf(os.Stderr, "  Spec files: %s\n", strings.Join(specFiles, ", "))
+	fmt.Fprintf(os.Stderr, "  API name:   %s\n", apiSpec.Name)
+	fmt.Fprintf(os.Stderr, "  Output dir: %s\n", absOut)
+	fmt.Fprintf(os.Stderr, "  Resources:  %d\n", resourceCount)
+	fmt.Fprintf(os.Stderr, "  Endpoints:  %d\n", endpointCount)
+
+	summary := map[string]any{
+		"dry_run":        true,
+		"name":           apiSpec.Name,
+		"output_dir":     absOut,
+		"spec_files":     specFiles,
+		"resource_count": resourceCount,
+		"endpoint_count": endpointCount,
+	}
+	enc := json.NewEncoder(os.Stdout)
+	enc.SetIndent("", "  ")
+	return enc.Encode(summary)
 }
