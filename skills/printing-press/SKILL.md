@@ -205,24 +205,25 @@ Before asking the user for anything, silently check if a token is already availa
    - Generic: $API_KEY, $API_TOKEN
 
 2. If a token is found:
-   Tell the user: "I found a [API_NAME] token in your environment ([source]).
-   I'd like to use it for read-only live testing at the end (Phase 5.5).
-   This catches auth mismatches, wrong paths, and parsing bugs before you ship.
+   Use AskUserQuestion to ask:
+   "Found a [API_NAME] token in $[ENV_VAR]. Use it for read-only live testing at the end?"
+   Options:
+   - "Yes, use it" (read-only GETs only, never creates/updates/deletes)
+   - "No, skip live testing" (use dry-run and mock validation only)
 
-   Safety: I will ONLY run GET/list/search operations. I will NEVER create,
-   update, delete, or post anything. OK to use it?"
-
-   If yes (or user says nothing / proceeds): store the token for Phase 5.5
-   If no: skip live testing
+   **WAIT for the user's answer before proceeding.** Do NOT continue to Phase 0 until answered.
 
 3. If no token found:
-   Tell the user: "No API token detected. If you want live testing at the end,
-   you can provide one now (or I'll skip it and use dry-run validation only)."
+   Use AskUserQuestion to ask:
+   "No [API_NAME] token detected. Want to provide one for live testing?"
+   Options:
+   - "I'll set it up" (user will paste or export the token, then you re-check)
+   - "Skip, no live testing" (proceed without, use dry-run validation only)
 
-   Accept token if provided, otherwise skip Phase 5.5.
+   **WAIT for the user's answer before proceeding.** Do NOT continue to Phase 0 until answered.
 ```
 
-The key insight: **detect first, ask permission second.** Don't make the user figure out what you need - find it yourself, explain what you'll do with it (read-only), and ask for a yes/no.
+The key insight: **detect first, ask permission second, WAIT for the answer.** Don't barrel ahead into research while the user is still deciding. The AskUserQuestion tool blocks until they respond.
 
 ## How This Works
 
