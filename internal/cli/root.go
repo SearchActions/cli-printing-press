@@ -3,6 +3,7 @@ package cli
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -55,6 +56,7 @@ func newGenerateCmd() *cobra.Command {
 	var lenient bool
 	var docsURL string
 	var polish bool
+	var asJSON bool
 
 	cmd := &cobra.Command{
 		Use:   "generate",
@@ -115,6 +117,7 @@ func newGenerateCmd() *cobra.Command {
 					}
 				}
 
+				polished := false
 				if polish {
 					fmt.Fprintln(os.Stderr, "Running LLM polish pass...")
 					polishResult, polishErr := llmpolish.Polish(llmpolish.PolishRequest{
@@ -126,12 +129,22 @@ func newGenerateCmd() *cobra.Command {
 					} else if polishResult.Skipped {
 						fmt.Fprintf(os.Stderr, "polish skipped: %s\n", polishResult.SkipReason)
 					} else {
+						polished = true
 						fmt.Fprintf(os.Stderr, "Polish: %d help texts improved, %d examples added, README %v\n",
 							polishResult.HelpTextsImproved, polishResult.ExamplesAdded, polishResult.READMERewritten)
 					}
 				}
 
 				fmt.Fprintf(os.Stderr, "Generated %s-cli at %s (from docs)\n", parsed.Name, absOut)
+				if asJSON {
+					json.NewEncoder(os.Stdout).Encode(map[string]interface{}{
+						"name":       parsed.Name,
+						"output_dir": absOut,
+						"spec_files": specFiles,
+						"validated":  validate,
+						"polished":   polished,
+					})
+				}
 				return nil
 			}
 
@@ -199,6 +212,7 @@ func newGenerateCmd() *cobra.Command {
 				}
 			}
 
+			polished := false
 			if polish {
 				fmt.Fprintln(os.Stderr, "Running LLM polish pass...")
 				polishResult, polishErr := llmpolish.Polish(llmpolish.PolishRequest{
@@ -210,12 +224,22 @@ func newGenerateCmd() *cobra.Command {
 				} else if polishResult.Skipped {
 					fmt.Fprintf(os.Stderr, "polish skipped: %s\n", polishResult.SkipReason)
 				} else {
+					polished = true
 					fmt.Fprintf(os.Stderr, "Polish: %d help texts improved, %d examples added, README %v\n",
 						polishResult.HelpTextsImproved, polishResult.ExamplesAdded, polishResult.READMERewritten)
 				}
 			}
 
 			fmt.Fprintf(os.Stderr, "Generated %s-cli at %s\n", apiSpec.Name, absOut)
+			if asJSON {
+				json.NewEncoder(os.Stdout).Encode(map[string]interface{}{
+					"name":       apiSpec.Name,
+					"output_dir": absOut,
+					"spec_files": specFiles,
+					"validated":  validate,
+					"polished":   polished,
+				})
+			}
 			return nil
 		},
 	}
@@ -229,6 +253,7 @@ func newGenerateCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&lenient, "lenient", false, "Skip validation errors from broken $refs in OpenAPI specs")
 	cmd.Flags().StringVar(&docsURL, "docs", "", "API documentation URL to generate spec from")
 	cmd.Flags().BoolVar(&polish, "polish", false, "Run LLM polish pass on generated CLI (requires claude or codex CLI)")
+	cmd.Flags().BoolVar(&asJSON, "json", false, "Output as JSON")
 
 	return cmd
 }
@@ -353,6 +378,7 @@ func newPrintCmd() *cobra.Command {
 	var outputDir string
 	var force bool
 	var resume bool
+	var asJSON bool
 
 	cmd := &cobra.Command{
 		Use:   "print <api-name>",
@@ -380,6 +406,14 @@ func newPrintCmd() *cobra.Command {
 			}
 			fmt.Fprintf(os.Stderr, "\nStart with: /ce:work %s\n", state.PlanPath(pipeline.PhasePreflight))
 
+			if asJSON {
+				json.NewEncoder(os.Stdout).Encode(map[string]interface{}{
+					"api_name":         apiName,
+					"pipeline_dir":     state.OutputDir,
+					"phases_completed": countCompletedPhases(state),
+					"state_file":       pipeline.StatePath(apiName),
+				})
+			}
 			return nil
 		},
 	}
@@ -387,6 +421,17 @@ func newPrintCmd() *cobra.Command {
 	cmd.Flags().StringVar(&outputDir, "output", "", "Output directory (default: ./<api-name>-cli)")
 	cmd.Flags().BoolVar(&force, "force", false, "Overwrite existing pipeline")
 	cmd.Flags().BoolVar(&resume, "resume", false, "Resume from existing checkpoint")
+	cmd.Flags().BoolVar(&asJSON, "json", false, "Output as JSON")
 
 	return cmd
+}
+
+func countCompletedPhases(state *pipeline.PipelineState) int {
+	n := 0
+	for _, p := range state.Phases {
+		if p.Status == pipeline.StatusCompleted {
+			n++
+		}
+	}
+	return n
 }
