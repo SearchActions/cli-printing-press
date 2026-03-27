@@ -98,9 +98,9 @@ func new{{camel .FuncPrefix}}{{camel .EndpointName}}Cmd(flags *rootFlags) *cobra
 				}
 {{- end}}
 			}
-			data, err := c.Post(path, body)
+			data, statusCode, err := c.Post(path, body)
 {{- else if eq .Endpoint.Method "DELETE"}}
-			data, err := c.Delete(path)
+			data, statusCode, err := c.Delete(path)
 {{- else if eq .Endpoint.Method "PUT"}}
 			var body map[string]any
 			if stdinBody {
@@ -121,7 +121,7 @@ func new{{camel .FuncPrefix}}{{camel .EndpointName}}Cmd(flags *rootFlags) *cobra
 				}
 {{- end}}
 			}
-			data, err := c.Put(path, body)
+			data, statusCode, err := c.Put(path, body)
 {{- else if eq .Endpoint.Method "PATCH"}}
 			var body map[string]any
 			if stdinBody {
@@ -142,7 +142,7 @@ func new{{camel .FuncPrefix}}{{camel .EndpointName}}Cmd(flags *rootFlags) *cobra
 				}
 {{- end}}
 			}
-			data, err := c.Patch(path, body)
+			data, statusCode, err := c.Patch(path, body)
 {{- end}}
 {{- if eq .Endpoint.Method "DELETE"}}
 			if err != nil {
@@ -154,6 +154,44 @@ func new{{camel .FuncPrefix}}{{camel .EndpointName}}Cmd(flags *rootFlags) *cobra
 			}
 {{- end}}
 
+{{- if not (or (eq .Endpoint.Method "GET") (eq .Endpoint.Method "HEAD"))}}
+			if flags.asJSON || !isTerminal(cmd.OutOrStdout()) {
+				if flags.quiet {
+					return nil
+				}
+				// Apply --compact and --select to the API response before wrapping
+				filtered := data
+				if flags.compact {
+					filtered = compactFields(filtered)
+				}
+				if flags.selectFields != "" {
+					filtered = filterFields(filtered, flags.selectFields)
+				}
+				envelope := map[string]any{
+					"action":   "{{lower .Endpoint.Method}}",
+					"resource": "{{.ResourceName}}",
+					"path":     path,
+					"status":   statusCode,
+					"success":  statusCode >= 200 && statusCode < 300,
+				}
+				if flags.dryRun {
+					envelope["dry_run"] = true
+					envelope["status"] = 0
+					envelope["success"] = false
+				}
+				if len(filtered) > 0 {
+					var parsed any
+					if err := json.Unmarshal(filtered, &parsed); err == nil {
+						envelope["data"] = parsed
+					}
+				}
+				envelopeJSON, err := json.Marshal(envelope)
+				if err != nil {
+					return err
+				}
+				return printOutput(cmd.OutOrStdout(), json.RawMessage(envelopeJSON), true)
+			}
+{{- end}}
 			return printOutputWithFlags(cmd.OutOrStdout(), data, flags)
 		},
 	}

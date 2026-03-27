@@ -287,3 +287,52 @@ func TestGeneratedOutput_READMEHasQuickStart(t *testing.T) {
 	assert.Contains(t, content, "Output Formats")
 	assert.Contains(t, content, "Agent Usage")
 }
+
+func TestGeneratedOutput_MutatingCommandsHaveEnvelope(t *testing.T) {
+	t.Parallel()
+
+	outputDir := generatePetstore(t)
+
+	// POST command should have confirmation envelope
+	addGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "pet_add.go"))
+	require.NoError(t, err)
+	content := string(addGo)
+	assert.Contains(t, content, `envelope := map[string]any{`)
+	assert.Contains(t, content, `"action":`)
+	assert.Contains(t, content, `"resource":`)
+	assert.Contains(t, content, `"status":   statusCode`)
+	assert.Contains(t, content, `"success":  statusCode >= 200 && statusCode < 300`)
+	// Envelope fires on both --json and auto-JSON (piped/non-TTY)
+	assert.Contains(t, content, `flags.asJSON || !isTerminal(cmd.OutOrStdout())`)
+
+	// --quiet is respected before envelope output
+	assert.Contains(t, content, "if flags.quiet {")
+
+	// --select and --compact are applied to inner data before wrapping in envelope
+	assert.Contains(t, content, "filtered := data")
+	assert.Contains(t, content, "compactFields(filtered)")
+	assert.Contains(t, content, "filterFields(filtered, flags.selectFields)")
+	assert.Contains(t, content, `json.Unmarshal(filtered, &parsed)`)
+
+	// Envelope bypasses printOutputWithFlags to avoid double-filtering
+	assert.Contains(t, content, `printOutput(cmd.OutOrStdout(), json.RawMessage(envelopeJSON), true)`)
+
+	// Dry-run is flagged honestly in the envelope
+	assert.Contains(t, content, `flags.dryRun`)
+	assert.Contains(t, content, `envelope["dry_run"] = true`)
+	assert.Contains(t, content, `envelope["status"] = 0`)
+	assert.Contains(t, content, `envelope["success"] = false`)
+}
+
+func TestGeneratedOutput_GetCommandsLackEnvelope(t *testing.T) {
+	t.Parallel()
+
+	outputDir := generatePetstore(t)
+
+	// GET command should NOT have confirmation envelope
+	getGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "pet_get-by-id.go"))
+	require.NoError(t, err)
+	content := string(getGo)
+	assert.NotContains(t, content, "envelope")
+	assert.NotContains(t, content, "statusCode")
+}

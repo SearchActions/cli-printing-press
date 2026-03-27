@@ -60,7 +60,7 @@ func (c *Client) Get(path string, params map[string]string) (json.RawMessage, er
 			return cached, nil
 		}
 	}
-	result, err := c.do("GET", path, params, nil)
+	result, _, err := c.do("GET", path, params, nil)
 	if err == nil && !c.NoCache && c.cacheDir != "" {
 		c.writeCache(path, params, result)
 	}
@@ -95,30 +95,30 @@ func (c *Client) writeCache(path string, params map[string]string, data json.Raw
 	os.WriteFile(cacheFile, []byte(data), 0o644)
 }
 
-func (c *Client) Post(path string, body any) (json.RawMessage, error) {
+func (c *Client) Post(path string, body any) (json.RawMessage, int, error) {
 	return c.do("POST", path, nil, body)
 }
 
-func (c *Client) Delete(path string) (json.RawMessage, error) {
+func (c *Client) Delete(path string) (json.RawMessage, int, error) {
 	return c.do("DELETE", path, nil, nil)
 }
 
-func (c *Client) Put(path string, body any) (json.RawMessage, error) {
+func (c *Client) Put(path string, body any) (json.RawMessage, int, error) {
 	return c.do("PUT", path, nil, body)
 }
 
-func (c *Client) Patch(path string, body any) (json.RawMessage, error) {
+func (c *Client) Patch(path string, body any) (json.RawMessage, int, error) {
 	return c.do("PATCH", path, nil, body)
 }
 
-func (c *Client) do(method, path string, params map[string]string, body any) (json.RawMessage, error) {
+func (c *Client) do(method, path string, params map[string]string, body any) (json.RawMessage, int, error) {
 	url := c.BaseURL + path
 
 	var bodyBytes []byte
 	if body != nil {
 		b, err := json.Marshal(body)
 		if err != nil {
-			return nil, fmt.Errorf("marshaling body: %w", err)
+			return nil, 0, fmt.Errorf("marshaling body: %w", err)
 		}
 		bodyBytes = b
 	}
@@ -139,12 +139,12 @@ func (c *Client) do(method, path string, params map[string]string, body any) (js
 
 		req, err := http.NewRequest(method, url, bodyReader)
 		if err != nil {
-			return nil, fmt.Errorf("creating request: %w", err)
+			return nil, 0, fmt.Errorf("creating request: %w", err)
 		}
 
 		authHeader, err := c.authHeader()
 		if err != nil {
-			return nil, err
+			return nil, 0, err
 		}
 		if authHeader != "" {
 {{- if and .Auth .Auth.In (eq .Auth.In "query")}}
@@ -180,12 +180,12 @@ func (c *Client) do(method, path string, params map[string]string, body any) (js
 		respBody, err := io.ReadAll(resp.Body)
 		resp.Body.Close()
 		if err != nil {
-			return nil, fmt.Errorf("reading response: %w", err)
+			return nil, 0, fmt.Errorf("reading response: %w", err)
 		}
 
 		// Success
 		if resp.StatusCode < 400 {
-			return json.RawMessage(respBody), nil
+			return json.RawMessage(respBody), resp.StatusCode, nil
 		}
 
 		apiErr := &APIError{
@@ -214,13 +214,13 @@ func (c *Client) do(method, path string, params map[string]string, body any) (js
 		}
 
 		// Client error or retries exhausted - return the error
-		return nil, apiErr
+		return nil, resp.StatusCode, apiErr
 	}
 
-	return nil, lastErr
+	return nil, 0, lastErr
 }
 
-func (c *Client) dryRun(method, url string, params map[string]string, body []byte) (json.RawMessage, error) {
+func (c *Client) dryRun(method, url string, params map[string]string, body []byte) (json.RawMessage, int, error) {
 	fmt.Fprintf(os.Stderr, "%s %s\n", method, url)
 	if params != nil {
 		for k, v := range params {
@@ -231,7 +231,7 @@ func (c *Client) dryRun(method, url string, params map[string]string, body []byt
 	}
 	authHeader, err := c.authHeader()
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	if authHeader != "" {
 		// Mask token for safety
@@ -251,7 +251,7 @@ func (c *Client) dryRun(method, url string, params map[string]string, body []byt
 		}
 	}
 	fmt.Fprintf(os.Stderr, "\n(dry run - no request sent)\n")
-	return json.RawMessage(`{"dry_run": true}`), nil
+	return json.RawMessage(`{"dry_run": true}`), 0, nil
 }
 
 func (c *Client) authHeader() (string, error) {
