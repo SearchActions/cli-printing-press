@@ -111,6 +111,7 @@ func newGenerateCmd() *cobra.Command {
 					return &ExitError{Code: ExitSpecError, Err: fmt.Errorf("parsing generated spec: %w", err)}
 				}
 
+				explicitOutput := outputDir != ""
 				if outputDir == "" {
 					outputDir = pipeline.DefaultOutputDir(parsed.Name)
 				}
@@ -118,7 +119,7 @@ func newGenerateCmd() *cobra.Command {
 				if err != nil {
 					return fmt.Errorf("resolving output path: %w", err)
 				}
-				absOut, err = claimOrForce(absOut, force, outputDir != "")
+				absOut, err = claimOrForce(absOut, force, explicitOutput)
 				if err != nil {
 					return &ExitError{Code: ExitInputError, Err: err}
 				}
@@ -204,6 +205,7 @@ func newGenerateCmd() *cobra.Command {
 				apiSpec = mergeSpecs(specs, cliName)
 			}
 
+			explicitOutput := outputDir != ""
 			if outputDir == "" {
 				outputDir = pipeline.DefaultOutputDir(apiSpec.Name)
 			}
@@ -215,7 +217,7 @@ func newGenerateCmd() *cobra.Command {
 			if dryRun {
 				return printDryRun(apiSpec, absOut, specFiles)
 			}
-			absOut, err = claimOrForce(absOut, force, outputDir != "")
+			absOut, err = claimOrForce(absOut, force, explicitOutput)
 			if err != nil {
 				return &ExitError{Code: ExitInputError, Err: err}
 			}
