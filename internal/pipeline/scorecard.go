@@ -674,6 +674,10 @@ func scoreWorkflows(dir string) int {
 		return 0
 	}
 
+	// Some prefixes overlap with insightPrefixes intentionally — per Steinberger,
+	// analytics/insights ARE compound commands (the visionary research plan lists
+	// "analytics" alongside "backup" and "moderate" as workflow examples). A command
+	// like stats.go correctly scores in both dimensions.
 	workflowPrefixes := []string{"stale", "orphan", "triage", "load", "overdue", "standup", "deps", "workflow",
 		"agenda", "free", "conflicts", "unconfirmed", "stats", "trends", "health",
 		"reconcile", "revenue", "archive", "search", "sync", "busy", "export",
