@@ -1889,16 +1889,19 @@ Tell the user: "Runtime verification: [X]% pass rate ([N]/[M] commands). Data pi
 
 The existing agent-native scorecard dimension checks for flags. This phase goes deeper — evaluating 7 principles (non-interactive automation, structured output, progressive help, actionable errors, safe retries, composability, bounded responses) with file-level fix recommendations.
 
-### Step 4.9a: Dispatch the Agent (MANDATORY)
+### Step 4.9a: Dispatch the Agent (MANDATORY — FOREGROUND ONLY)
 
-You MUST execute this Agent tool call:
+You MUST execute this Agent tool call **in the foreground** (NOT background). You need the results before you can proceed — do NOT use `run_in_background: true`.
 
 ```
 Agent tool:
   subagent_type: compound-engineering:review:cli-agent-readiness-reviewer
+  run_in_background: false
   prompt: "Run the compound-engineering:cli-agent-readiness-reviewer agent on the <api> CLI in <output-dir>.
            Do not look at code elsewhere in the repo outside of that folder."
 ```
+
+**WAIT for the agent to return results before moving on.** Do NOT proceed to Phase 5 while this is running.
 
 **If the dispatch succeeds:** proceed to Step 4.9b with the results.
 
@@ -1954,7 +1957,7 @@ All listed fixes are attempted — the reviewer already ranks by impact.
 
 ### Step 4.9d: Termination Check
 
-After implementing fixes, re-run the `compound-engineering:cli-agent-readiness-reviewer` agent on the same folder (same prompt as Step 4.9a). Evaluate the new scorecard:
+After implementing fixes, re-run the `compound-engineering:cli-agent-readiness-reviewer` agent on the same folder (same foreground dispatch as Step 4.9a — do NOT background). Evaluate the new scorecard:
 
 - **Zero Blockers AND zero Frictions:** Pass. Proceed to Phase 5.
 - **Blockers or Frictions remain, pass count < 2:** Return to Step 4.9c with the new fix list.
