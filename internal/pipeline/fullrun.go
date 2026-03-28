@@ -186,7 +186,7 @@ func MakeBestCLI(apiName, level, specFlag, specURL, outputDir, pressBinary strin
 	}
 
 	// Step 6: Scorecard
-	scorecard, scErr := RunScorecard(outputDir, pipelineDir, "")
+	scorecard, scErr := RunScorecard(outputDir, pipelineDir, "", nil)
 	if scErr != nil {
 		result.ScorecardError = scErr.Error()
 		result.Errors = append(result.Errors, fmt.Sprintf("scorecard: %v", scErr))

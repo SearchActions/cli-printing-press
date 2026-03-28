@@ -170,7 +170,7 @@ func runEmbossAudit(dir, specPath, apiKey, envVar, label string) EmbossSnapshot 
 		fmt.Fprintf(os.Stderr, "  verify error: %v (continuing with partial %s)\n", err, label)
 	}
 
-	scorecardReport, err := pipeline.RunScorecard(dir, "", specPath)
+	scorecardReport, err := pipeline.RunScorecard(dir, "", specPath, verifyReport)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "  scorecard error: %v (continuing with partial %s)\n", err, label)
 	}
