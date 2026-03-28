@@ -1,7 +1,10 @@
 package pipeline
 
 import (
+	"encoding/json"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -60,6 +63,156 @@ func TestFullRun(t *testing.T) {
 	// Also write results to file
 	os.WriteFile(filepath.Join(baseDir, "comparison-table.txt"), []byte(table), 0644)
 	fmt.Printf("Full results at: %s\n", baseDir)
+}
+
+func TestCopySpecToOutput(t *testing.T) {
+	tests := []struct {
+		name       string
+		specFlag   string
+		setup      func(t *testing.T, dir string) string // returns specURL
+		wantCopy   bool
+		wantJSON   bool // if true, verify output is valid JSON
+		wantError  bool
+	}{
+		{
+			name:     "copies local json spec",
+			specFlag: "--spec",
+			setup: func(t *testing.T, dir string) string {
+				specPath := filepath.Join(dir, "input-spec.json")
+				require.NoError(t, os.WriteFile(specPath, []byte(`{"openapi":"3.0.0"}`), 0o644))
+				return specPath
+			},
+			wantCopy: true,
+			wantJSON: true,
+		},
+		{
+			name:     "converts local yaml spec to json",
+			specFlag: "--spec",
+			setup: func(t *testing.T, dir string) string {
+				specPath := filepath.Join(dir, "openapi.yaml")
+				require.NoError(t, os.WriteFile(specPath, []byte("openapi: \"3.0.0\"\ninfo:\n  title: Test\n"), 0o644))
+				return specPath
+			},
+			wantCopy: true,
+			wantJSON: true,
+		},
+		{
+			name:     "converts local yml spec to json",
+			specFlag: "--spec",
+			setup: func(t *testing.T, dir string) string {
+				specPath := filepath.Join(dir, "api.yml")
+				require.NoError(t, os.WriteFile(specPath, []byte("openapi: \"3.0.0\"\n"), 0o644))
+				return specPath
+			},
+			wantCopy: true,
+			wantJSON: true,
+		},
+		{
+			name:     "skips when flag is --docs",
+			specFlag: "--docs",
+			setup: func(t *testing.T, dir string) string {
+				return "https://developers.notion.com/reference"
+			},
+		},
+		{
+			name:     "skips when flag is empty",
+			specFlag: "",
+			setup: func(t *testing.T, dir string) string {
+				return ""
+			},
+		},
+		{
+			name:     "skips when specURL is empty",
+			specFlag: "--spec",
+			setup: func(t *testing.T, dir string) string {
+				return ""
+			},
+		},
+		{
+			name:     "returns error when local spec file missing",
+			specFlag: "--spec",
+			setup: func(t *testing.T, dir string) string {
+				return filepath.Join(dir, "nonexistent.json")
+			},
+			wantError: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			outputDir := filepath.Join(dir, "output")
+			require.NoError(t, os.MkdirAll(outputDir, 0o755))
+
+			specURL := tt.setup(t, dir)
+			err := copySpecToOutput(tt.specFlag, specURL, outputDir)
+
+			if tt.wantError {
+				assert.Error(t, err)
+			} else {
+				assert.NoError(t, err)
+			}
+
+			dst := filepath.Join(outputDir, "spec.json")
+			if tt.wantCopy {
+				data, readErr := os.ReadFile(dst)
+				require.NoError(t, readErr, "spec.json should exist in output dir")
+				if tt.wantJSON {
+					assert.True(t, json.Valid(data), "spec.json should be valid JSON, got: %s", string(data))
+				}
+			} else if !tt.wantError {
+				_, readErr := os.ReadFile(dst)
+				assert.True(t, os.IsNotExist(readErr), "spec.json should not exist")
+			}
+		})
+	}
+}
+
+func TestCopySpecToOutput_RemoteURL(t *testing.T) {
+	// Test with a local HTTP server to verify remote URL handling
+	specJSON := `{"openapi":"3.0.0","info":{"title":"Test"}}`
+
+	ts := httpTestServer(t, specJSON)
+	defer ts.Close()
+
+	dir := t.TempDir()
+	outputDir := filepath.Join(dir, "output")
+	require.NoError(t, os.MkdirAll(outputDir, 0o755))
+
+	err := copySpecToOutput("--spec", ts.URL+"/spec.json", outputDir)
+	require.NoError(t, err)
+
+	data, err := os.ReadFile(filepath.Join(outputDir, "spec.json"))
+	require.NoError(t, err)
+	assert.True(t, json.Valid(data))
+	assert.Contains(t, string(data), "Test")
+}
+
+func TestCopySpecToOutput_RemoteYAML(t *testing.T) {
+	specYAML := "openapi: \"3.0.0\"\ninfo:\n  title: RemoteYAML\n"
+
+	ts := httpTestServer(t, specYAML)
+	defer ts.Close()
+
+	dir := t.TempDir()
+	outputDir := filepath.Join(dir, "output")
+	require.NoError(t, os.MkdirAll(outputDir, 0o755))
+
+	err := copySpecToOutput("--spec", ts.URL+"/spec.yaml", outputDir)
+	require.NoError(t, err)
+
+	data, err := os.ReadFile(filepath.Join(outputDir, "spec.json"))
+	require.NoError(t, err)
+	assert.True(t, json.Valid(data), "remote YAML should be converted to JSON")
+	assert.Contains(t, string(data), "RemoteYAML")
+}
+
+func httpTestServer(t *testing.T, body string) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(body))
+	}))
 }
 
 func findRepoRoot() string {
