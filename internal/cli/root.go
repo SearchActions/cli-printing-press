@@ -118,15 +118,9 @@ func newGenerateCmd() *cobra.Command {
 				if err != nil {
 					return fmt.Errorf("resolving output path: %w", err)
 				}
-				if force {
-					if err := os.RemoveAll(absOut); err != nil {
-						return fmt.Errorf("removing existing output dir: %w", err)
-					}
-				} else if info, err := os.Stat(absOut); err == nil && info.IsDir() {
-					entries, _ := os.ReadDir(absOut)
-					if len(entries) > 0 {
-						return fmt.Errorf("output directory %s already exists (use --force to overwrite)", absOut)
-					}
+				absOut, err = claimOrForce(absOut, force, outputDir != "")
+				if err != nil {
+					return &ExitError{Code: ExitInputError, Err: err}
 				}
 
 				gen := generator.New(parsed, absOut)
@@ -221,15 +215,9 @@ func newGenerateCmd() *cobra.Command {
 			if dryRun {
 				return printDryRun(apiSpec, absOut, specFiles)
 			}
-			if force {
-				if err := os.RemoveAll(absOut); err != nil {
-					return fmt.Errorf("removing existing output dir: %w", err)
-				}
-			} else if info, err := os.Stat(absOut); err == nil && info.IsDir() {
-				entries, _ := os.ReadDir(absOut)
-				if len(entries) > 0 {
-					return fmt.Errorf("output directory %s already exists (use --force to overwrite)", absOut)
-				}
+			absOut, err = claimOrForce(absOut, force, outputDir != "")
+			if err != nil {
+				return &ExitError{Code: ExitInputError, Err: err}
 			}
 
 			gen := generator.New(apiSpec, absOut)
@@ -340,6 +328,35 @@ func mergeSpecs(specs []*spec.APISpec, name string) *spec.APISpec {
 	}
 
 	return merged
+}
+
+// claimOrForce resolves the output directory based on --force and --output flags.
+//
+//   - force=true:  RemoveAll the target, then create it fresh (claims exact slot)
+//   - explicit output (--output set) without force: error if exists and non-empty
+//   - default (no --output, no --force): auto-increment via ClaimOutputDir
+func claimOrForce(absOut string, force bool, explicitOutput bool) (string, error) {
+	if force {
+		if err := os.RemoveAll(absOut); err != nil {
+			return "", fmt.Errorf("removing existing output dir: %w", err)
+		}
+		if err := os.MkdirAll(absOut, 0o755); err != nil {
+			return "", fmt.Errorf("creating output dir: %w", err)
+		}
+		return absOut, nil
+	}
+
+	if explicitOutput {
+		if info, err := os.Stat(absOut); err == nil && info.IsDir() {
+			entries, _ := os.ReadDir(absOut)
+			if len(entries) > 0 {
+				return "", fmt.Errorf("output directory %s already exists (use --force to overwrite)", absOut)
+			}
+		}
+		return absOut, nil
+	}
+
+	return pipeline.ClaimOutputDir(absOut)
 }
 
 func fetchOrCacheSpec(specURL string, refresh bool, skipCache bool) ([]byte, error) {
