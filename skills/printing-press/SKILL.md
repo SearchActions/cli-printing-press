@@ -179,9 +179,9 @@ Before new research:
    - `$PRESS_MANUSCRIPTS/<api>/*/research/*`
    - `$REPO_ROOT/docs/plans/*<api>*` (legacy fallback)
 3. Reuse good prior work instead of redoing it.
-4. Detect whether an API key is already available.
+4. **API Key Gate (MANDATORY STOP)** — Check for an API key and get explicit user consent before proceeding to Phase 1.
 
-Token detection:
+Token detection order:
 - GitHub: `GITHUB_TOKEN`, `GH_TOKEN`, or `gh auth token`
 - Discord: `DISCORD_TOKEN`, `DISCORD_BOT_TOKEN`
 - Linear: `LINEAR_API_KEY`
@@ -189,7 +189,21 @@ Token detection:
 - Stripe: `STRIPE_SECRET_KEY`
 - Generic: `API_KEY`, `API_TOKEN`
 
-If a token is available, ask once whether to use it for read-only live testing at the end. Do not block the build on token collection.
+**If a token IS found**, stop and explain:
+> Found `<ENV_VAR>` in your environment. This key will be used **only** for read-only live smoke testing in Phase 5 — listing, fetching, and health checks. It will never be used for write operations (create, update, delete). OK to use it?
+
+- If the user approves → proceed with the key available for Phase 5.
+- If the user declines → proceed without the key and display: "Live smoke testing (Phase 5) will be skipped. The CLI will still be generated and verified against mock responses."
+
+**If no token is found**, stop and ask:
+> No API key detected for `<API>`. You can provide one now for read-only live smoke testing in Phase 5, or continue without it.
+>
+> Set it with `export <ENV_VAR>=<your-key>` or paste the key here.
+
+- If the user provides a key → proceed with the key available for Phase 5.
+- If the user declines → proceed without the key and display: "Live smoke testing (Phase 5) will be skipped. The CLI will still be generated and verified against mock responses."
+
+Always resolve the API key gate before moving to Phase 1.
 
 ## Phase 1: Research Brief
 
