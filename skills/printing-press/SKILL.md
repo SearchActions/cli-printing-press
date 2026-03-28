@@ -1,7 +1,7 @@
 ---
 name: printing-press
 description: Generate the GOAT CLI for any API. 5-phase loop with Non-Obvious Insight Review and Ship Readiness Assessment, deep competitor research, complex body field handling, and before/after scoring delta.
-version: 1.1.0
+version: 1.2.0
 allowed-tools:
   - Bash
   - Read
@@ -233,17 +233,17 @@ The key insight: **detect first, ask permission second, WAIT for the answer.** D
 
 ## How This Works
 
-Every run produces the GOAT CLI through 8 mandatory phases + 7 comprehensive plan documents:
+Every run produces the GOAT CLI through 9 mandatory phases + 7 comprehensive plan documents:
 
 ```
-PHASE 0 -> PHASE 0.5 -> PHASE 0.7 -> PHASE 0.8 -> PHASE 0.9 -> PHASE 1 -> PHASE 2 -> PHASE 3 -> PHASE 4 -> PHASE 4.5 -> PHASE 4.6 -> PHASE 4.8 -> PHASE 5
-(3-5m)     (2-3m)       (15-25m)     (5-8m)     (1-2m)     (5-8m)     (5-10m)    (10-20m)      (2-3m)
-Visionary  Workflows    Prediction   Research   Generate   Audit      Build      Dogfood       Final
-Research   (commands)   Engine       (specs)    (code)     (review)   (fixes)    Emulation     Quality Score
-                        (data layer)                                             (spec-test)
+PHASE 0 -> PHASE 0.5 -> PHASE 0.7 -> PHASE 0.8 -> PHASE 0.9 -> PHASE 1 -> PHASE 2 -> PHASE 3 -> PHASE 4 -> PHASE 4.5 -> PHASE 4.6 -> PHASE 4.8 -> PHASE 4.9 -> PHASE 5
+(3-5m)     (2-3m)       (15-25m)     (5-8m)     (1-2m)     (5-8m)     (5-10m)    (10-20m)      (2-3m)       (5-10m)
+Visionary  Workflows    Prediction   Research   Generate   Audit      Build      Dogfood       Final        Agent
+Research   (commands)   Engine       (specs)    (code)     (review)   (fixes)    Emulation     Quality      Readiness
+                        (data layer)                                             (spec-test)   Score        Review
 ```
 
-Total expected time: 45-85 minutes. Phase 4.5 tests every command against spec-derived mocks.
+Total expected time: 50-95 minutes. Phase 4.5 tests every command against spec-derived mocks.
 
 **7 Plan Artifacts Per Run:**
 
@@ -1839,7 +1839,74 @@ For each failing command, the verifier reports which test failed (help/dry-run/e
 3. Data pipeline: sync populates tables, sql queries them, search finds results
 4. 0 critical failures
 
-Tell the user: "Runtime verification: [X]% pass rate ([N]/[M] commands). Data pipeline: [PASS/FAIL]. Mode: [live/mock]. Proceeding to final report."
+Tell the user: "Runtime verification: [X]% pass rate ([N]/[M] commands). Data pipeline: [PASS/FAIL]. Mode: [live/mock]. Proceeding to agent readiness review."
+
+---
+
+# PHASE 4.9: AGENT READINESS REVIEW LOOP
+
+## THIS PHASE IS MANDATORY. DO NOT SKIP IT.
+
+**Exception:** Skip ONLY if the `compound-engineering:cli-agent-readiness-reviewer` agent is unavailable (plugin not installed or marketplace not registered). If skipping, log this warning and proceed to Phase 5:
+
+> "Skipping Phase 4.9 (Agent Readiness) — compound-engineering plugin v2.55.0+ required. Register every-marketplace in ~/.claude/settings.json to enable."
+
+The existing agent-native scorecard dimension checks for flags. This phase goes deeper — evaluating 7 principles (non-interactive automation, structured output, progressive help, actionable errors, safe retries, composability, bounded responses) with file-level fix recommendations.
+
+### Step 4.9a: Check Agent Availability
+
+Before running the review, verify the `compound-engineering:cli-agent-readiness-reviewer` agent is reachable by attempting to dispatch it. If the agent is not found, log the warning above and skip to Phase 5. This is the ONLY valid reason to skip this phase.
+
+### Step 4.9b: Run Reviewer (Pass 1)
+
+Dispatch the `compound-engineering:cli-agent-readiness-reviewer` agent on the generated CLI:
+
+```
+Run the compound-engineering:cli-agent-readiness-reviewer agent on the <api> CLI in <output-dir>.
+Do not look at code elsewhere in the repo outside of that folder.
+```
+
+The reviewer produces:
+- A scorecard table (7 principles x severity: Blocker/Friction/Optimization/None)
+- A "What's Working Well" section
+- A ranked list of recommended fixes with file:line references
+
+If the reviewer returns output with no parseable fix list (malformed output, empty response, or error during evaluation), log a warning and proceed to Phase 5. Do not loop.
+
+### Step 4.9c: Implement Fixes
+
+For each fix in the reviewer's ranked recommended fixes list:
+
+1. Read the fix description and target file:line
+2. If the referenced file does not exist or the line is out of bounds: skip this fix, log a warning
+3. Make the code change
+4. Run `go build ./... && go vet ./...` to verify the change compiles and passes vet
+5. If build or vet fails: revert the change, skip this fix, continue to next
+6. Move to the next fix
+
+All listed fixes are attempted — the reviewer already ranks by impact.
+
+### Step 4.9d: Termination Check
+
+After implementing fixes, re-run the `compound-engineering:cli-agent-readiness-reviewer` agent on the same folder (same prompt as Step 4.9b). Evaluate the new scorecard:
+
+- **Zero Blockers AND zero Frictions:** Pass. Proceed to Phase 5.
+- **Blockers or Frictions remain, pass count < 2:** Return to Step 4.9c with the new fix list.
+- **Blockers or Frictions remain, pass count = 2:** Log remaining issues as known items. Proceed to Phase 5.
+
+If the reviewer agent becomes unavailable between passes (e.g., plugin timeout), log a warning and proceed to Phase 5. The pass count does not reset.
+
+### PHASE GATE 4.9
+
+**STOP.** Evaluate the result:
+
+| Verdict | Condition | Action |
+|---------|-----------|--------|
+| **Pass** | Zero Blockers and zero Frictions after ≤ 2 passes | Proceed to Phase 5 |
+| **Warn** | Frictions remain after 2 passes, zero Blockers | Log Frictions as known issues, proceed to Phase 5 |
+| **Degrade** | Blockers remain after 2 passes | Log Blockers as known issues, proceed to Phase 5 |
+
+Tell the user: "Agent readiness review: [PASS/WARN/DEGRADE]. Blockers: [N]. Frictions: [N]. Optimizations: [N]. Passes: [N]/2. Proceeding to final report."
 
 ---
 
