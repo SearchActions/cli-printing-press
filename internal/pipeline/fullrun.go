@@ -1,7 +1,10 @@
 package pipeline
 
 import (
+	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -9,6 +12,8 @@ import (
 	"time"
 
 	"github.com/mvanhorn/cli-printing-press/internal/llmpolish"
+	"github.com/mvanhorn/cli-printing-press/internal/naming"
+	"gopkg.in/yaml.v3"
 )
 
 // FullRunResult holds everything the press produced for one API.
@@ -59,17 +64,56 @@ type FullRunResult struct {
 // returns a result summarizing every phase.
 func MakeBestCLI(apiName, level, specFlag, specURL, outputDir, pressBinary string) *FullRunResult {
 	start := time.Now()
+	runID, err := newRunID(start)
+	if err != nil {
+		return &FullRunResult{
+			APIName: apiName,
+			Level:   level,
+			Errors:  []string{fmt.Sprintf("run id: %v", err)},
+		}
+	}
+	workingDir := WorkingCLIDir(apiName, runID)
+	state := NewStateWithRun(apiName, workingDir, runID, WorkspaceScope())
+	state.SpecURL = specURL
+	if specFlag == "--spec" {
+		state.SpecPath = specURL
+	}
+
 	result := &FullRunResult{
 		APIName:   apiName,
 		Level:     level,
-		OutputDir: outputDir,
+		OutputDir: state.EffectiveWorkingDir(),
 	}
 
-	pipelineDir := PipelineDir(apiName)
-	os.MkdirAll(pipelineDir, 0o755)
+	pipelineDir := state.PipelineDir()
+	researchDir := state.ResearchDir()
+	proofsDir := state.ProofsDir()
+	if err := os.MkdirAll(pipelineDir, 0o755); err != nil {
+		result.Errors = append(result.Errors, fmt.Sprintf("pipeline dir: %v", err))
+		result.Duration = time.Since(start)
+		return result
+	}
+	if err := os.MkdirAll(researchDir, 0o755); err != nil {
+		result.Errors = append(result.Errors, fmt.Sprintf("research dir: %v", err))
+		result.Duration = time.Since(start)
+		return result
+	}
+	if err := os.MkdirAll(proofsDir, 0o755); err != nil {
+		result.Errors = append(result.Errors, fmt.Sprintf("proofs dir: %v", err))
+		result.Duration = time.Since(start)
+		return result
+	}
+	if err := state.Save(); err != nil {
+		result.Errors = append(result.Errors, fmt.Sprintf("state save: %v", err))
+		result.Duration = time.Since(start)
+		return result
+	}
+	if err := WriteRunManifest(state); err != nil {
+		result.Errors = append(result.Errors, fmt.Sprintf("manifest: %v", err))
+	}
 
 	// Step 1: Research
-	research, err := RunResearch(apiName, "catalog", pipelineDir)
+	research, err := RunResearch(apiName, "catalog", researchDir)
 	if err != nil {
 		result.ResearchError = err.Error()
 		result.Errors = append(result.Errors, fmt.Sprintf("research: %v", err))
@@ -81,9 +125,9 @@ func MakeBestCLI(apiName, level, specFlag, specURL, outputDir, pressBinary strin
 	qualitySpecPath := fullRunQualitySpecPath(specFlag, specURL)
 	var genArgs []string
 	if specFlag == "--docs" {
-		genArgs = []string{"generate", "--docs", specURL, "--name", apiName, "--output", outputDir, "--force"}
+		genArgs = []string{"generate", "--docs", specURL, "--name", apiName, "--output", workingDir, "--force"}
 	} else {
-		genArgs = []string{"generate", "--spec", specURL, "--output", outputDir, "--force", "--lenient"}
+		genArgs = []string{"generate", "--spec", specURL, "--output", workingDir, "--force", "--lenient"}
 	}
 
 	cmd := exec.Command(pressBinary, genArgs...)
@@ -107,10 +151,14 @@ func MakeBestCLI(apiName, level, specFlag, specURL, outputDir, pressBinary strin
 		return result
 	}
 
+	// Step 2.1: Copy spec into output dir for standalone scoring
+	if err := copySpecToOutput(specFlag, specURL, workingDir); err != nil {
+		result.Errors = append(result.Errors, fmt.Sprintf("spec copy: %v", err))
+	}
 	// Step 2.5: LLM Polish
 	polishResult, polishErr := llmpolish.Polish(llmpolish.PolishRequest{
 		APIName:   apiName,
-		OutputDir: outputDir,
+		OutputDir: workingDir,
 	})
 	if polishErr != nil {
 		result.Errors = append(result.Errors, "polish: "+polishErr.Error())
@@ -119,7 +167,7 @@ func MakeBestCLI(apiName, level, specFlag, specURL, outputDir, pressBinary strin
 	}
 
 	// Step 3: Count commands and resources
-	resources := listResources(outputDir)
+	resources := listResources(workingDir)
 	result.ResourceCount = len(resources)
 	result.CommandCount = len(resources) + 4 // +4 for root, help, version, doctor
 
@@ -131,25 +179,26 @@ func MakeBestCLI(apiName, level, specFlag, specURL, outputDir, pressBinary strin
 	}
 
 	// Step 5: Dogfood
-	cliBinaryPath := filepath.Join(outputDir, apiName+"-cli")
+	cliBinaryPath := filepath.Join(workingDir, naming.CLI(apiName))
 	buildCmd := exec.Command("go", "build", "-o", cliBinaryPath, "./cmd/...")
-	buildCmd.Dir = outputDir
+	buildCmd.Dir = workingDir
 	if buildErr := buildCmd.Run(); buildErr != nil {
 		result.DogfoodError = fmt.Sprintf("build failed: %v", buildErr)
 		result.Errors = append(result.Errors, fmt.Sprintf("dogfood build: %v", buildErr))
 	} else {
-		dogfood, dogErr := RunDogfood(outputDir, qualitySpecPath)
+		defer os.Remove(cliBinaryPath)
+		dogfood, dogErr := RunDogfood(workingDir, qualitySpecPath)
 		if dogErr != nil {
 			result.DogfoodError = dogErr.Error()
 			result.Errors = append(result.Errors, fmt.Sprintf("dogfood: %v", dogErr))
-		} else if err := writeDogfoodResults(dogfood, pipelineDir); err != nil {
+		} else if err := writeDogfoodResults(dogfood, proofsDir); err != nil {
 			result.Errors = append(result.Errors, fmt.Sprintf("dogfood write: %v", err))
 		}
 		result.Dogfood = dogfood
 	}
 
 	// Step 5.5: Proof of Behavior Verification
-	verReport, verErr := RunVerification(outputDir, qualitySpecPath)
+	verReport, verErr := RunVerification(workingDir, qualitySpecPath)
 	if verErr != nil {
 		result.VerificationError = verErr.Error()
 		result.Errors = append(result.Errors, fmt.Sprintf("verification: %v", verErr))
@@ -158,14 +207,14 @@ func MakeBestCLI(apiName, level, specFlag, specURL, outputDir, pressBinary strin
 
 		// Auto-remediate if WARN or FAIL
 		if verReport.Verdict != "PASS" {
-			remResult, remErr := Remediate(outputDir, verReport)
+			remResult, remErr := Remediate(workingDir, verReport)
 			if remErr != nil {
 				result.Errors = append(result.Errors, fmt.Sprintf("remediation: %v", remErr))
 			} else {
 				result.Remediation = remResult
 
 				// Re-verify after remediation
-				reVerReport, reVerErr := RunVerification(outputDir, qualitySpecPath)
+				reVerReport, reVerErr := RunVerification(workingDir, qualitySpecPath)
 				if reVerErr == nil {
 					result.Verification = reVerReport
 				}
@@ -174,7 +223,7 @@ func MakeBestCLI(apiName, level, specFlag, specURL, outputDir, pressBinary strin
 	}
 
 	// Step 6: Scorecard
-	scorecard, scErr := RunScorecard(outputDir, pipelineDir, qualitySpecPath, nil)
+	scorecard, scErr := RunScorecard(workingDir, proofsDir, qualitySpecPath, nil)
 	if scErr != nil {
 		result.ScorecardError = scErr.Error()
 		result.Errors = append(result.Errors, fmt.Sprintf("scorecard: %v", scErr))
@@ -190,6 +239,16 @@ func MakeBestCLI(apiName, level, specFlag, specURL, outputDir, pressBinary strin
 		result.FixPlans = plans
 	}
 
+	publishedDir, publishErr := PublishWorkingCLI(state, outputDir)
+	if publishErr != nil {
+		result.Errors = append(result.Errors, fmt.Sprintf("publish: %v", publishErr))
+	} else {
+		result.OutputDir = publishedDir
+	}
+	if _, archiveErr := ArchiveRunArtifacts(state); archiveErr != nil {
+		result.Errors = append(result.Errors, fmt.Sprintf("archive: %v", archiveErr))
+	}
+
 	result.Duration = time.Since(start)
 	return result
 }
@@ -199,6 +258,57 @@ func fullRunQualitySpecPath(specFlag, specURL string) string {
 		return specURL
 	}
 	return ""
+}
+
+// copySpecToOutput reads the spec from a local path or remote URL, converts
+// YAML to JSON if needed, and writes it as <outputDir>/spec.json.
+// Only runs when specFlag is "--spec". Errors are non-fatal.
+func copySpecToOutput(specFlag, specURL, outputDir string) error {
+	if specFlag != "--spec" || specURL == "" {
+		return nil
+	}
+	data, err := readSpecBytes(specURL)
+	if err != nil {
+		return fmt.Errorf("reading spec %s: %w", specURL, err)
+	}
+	data, err = ensureJSON(data)
+	if err != nil {
+		return fmt.Errorf("converting spec to JSON: %w", err)
+	}
+	dst := filepath.Join(outputDir, "spec.json")
+	if err := os.WriteFile(dst, data, 0o644); err != nil {
+		return fmt.Errorf("writing %s: %w", dst, err)
+	}
+	return nil
+}
+
+// readSpecBytes fetches spec content from a URL or reads it from a local file.
+func readSpecBytes(specURL string) ([]byte, error) {
+	if strings.HasPrefix(specURL, "http://") || strings.HasPrefix(specURL, "https://") {
+		resp, err := http.Get(specURL) //nolint:gosec // spec URLs are operator-provided
+		if err != nil {
+			return nil, err
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			return nil, fmt.Errorf("HTTP %d fetching %s", resp.StatusCode, specURL)
+		}
+		return io.ReadAll(resp.Body)
+	}
+	return os.ReadFile(specURL)
+}
+
+// ensureJSON converts YAML content to JSON. If the input is already valid
+// JSON, it is returned as-is.
+func ensureJSON(data []byte) ([]byte, error) {
+	if json.Valid(data) {
+		return data, nil
+	}
+	var obj interface{}
+	if err := yaml.Unmarshal(data, &obj); err != nil {
+		return nil, fmt.Errorf("not valid JSON or YAML: %w", err)
+	}
+	return json.Marshal(obj)
 }
 
 // listResources returns the resource names found in the generated CLI's

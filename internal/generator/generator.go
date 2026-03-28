@@ -12,6 +12,7 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/mvanhorn/cli-printing-press/internal/naming"
 	"github.com/mvanhorn/cli-printing-press/internal/profiler"
 	"github.com/mvanhorn/cli-printing-press/internal/spec"
 )
@@ -85,7 +86,7 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 
 func (g *Generator) Generate() error {
 	dirs := []string{
-		filepath.Join("cmd", g.Spec.Name+"-cli"),
+		filepath.Join("cmd", naming.CLI(g.Spec.Name)),
 		filepath.Join("internal", "cli"),
 		filepath.Join("internal", "cache"),
 		filepath.Join("internal", "client"),
@@ -101,7 +102,7 @@ func (g *Generator) Generate() error {
 
 	// Generate single files
 	singleFiles := map[string]string{
-		"main.go.tmpl":      filepath.Join("cmd", g.Spec.Name+"-cli", "main.go"),
+		"main.go.tmpl":      filepath.Join("cmd", naming.CLI(g.Spec.Name), "main.go"),
 		"helpers.go.tmpl":   filepath.Join("internal", "cli", "helpers.go"),
 		"doctor.go.tmpl":    filepath.Join("internal", "cli", "doctor.go"),
 		"config.go.tmpl":    filepath.Join("internal", "config", "config.go"),
@@ -740,7 +741,7 @@ func exampleValue(p spec.Param) string {
 
 func (g *Generator) exampleLine(commandPath, endpointName string, endpoint spec.Endpoint) string {
 	var parts []string
-	parts = append(parts, g.Spec.Name+"-cli")
+	parts = append(parts, naming.CLI(g.Spec.Name))
 	parts = append(parts, strings.Fields(commandPath)...)
 	parts = append(parts, endpointName)
 

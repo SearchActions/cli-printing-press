@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/mvanhorn/cli-printing-press/internal/naming"
 	openapiparser "github.com/mvanhorn/cli-printing-press/internal/openapi"
 	apispec "github.com/mvanhorn/cli-printing-press/internal/spec"
 )
@@ -682,7 +683,7 @@ func findCLIName(dir string) string {
 		return ""
 	}
 	for _, entry := range entries {
-		if entry.IsDir() && strings.HasSuffix(entry.Name(), "-cli") {
+		if entry.IsDir() && naming.IsCLIDirName(entry.Name()) {
 			return entry.Name()
 		}
 	}

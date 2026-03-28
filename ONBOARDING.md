@@ -4,7 +4,7 @@ You give the printing press an API spec. It gives you back a Go CLI, an MCP serv
 
 The key idea: most API CLI generators stop at wrapping endpoints. The printing press goes further -- it profiles each API, detects its domain archetype (communication, project management, payments, etc.), and generates domain-specific "power user" commands like `sync`, `search`, `stale`, `health`, and `similar` on top of the standard CRUD wrappers.
 
-This is built as a Claude Code skill. You run `/printing-press Discord` inside Claude Code, and it now uses a lean brief -> generate -> build -> shipcheck loop for the normal fast path. The older multi-phase on-disk pipeline still exists behind `printing-press print` when you explicitly want resumable phase plans.
+This is built as a Claude Code skill. You run `/printing-press Discord` inside Claude Code, and it now uses a lean brief -> generate -> build -> shipcheck loop for the normal fast path. The older 9-phase pipeline still exists behind `printing-press print` when you explicitly want resumable phase plans.
 
 ---
 
@@ -40,7 +40,7 @@ cli-printing-press/
     printing-press/          # Main generation skill
     printing-press-catalog/  # Catalog browsing skill
   testdata/                  # Test fixtures
-  docs/plans/                # Phase plan templates
+  docs/plans/                # Project planning docs for this repo itself
 ```
 
 | Module | Responsibility |
@@ -58,7 +58,7 @@ cli-printing-press/
 
 Data flows through the system like this: a spec file (OpenAPI, GraphQL SDL, or internal YAML) gets parsed into an `APISpec` struct. The profiler analyzes that struct to detect domain signals and recommend features. The generator takes both the spec and the profile, selects the right templates, and renders a full Go project to disk.
 
-The pipeline module adds a higher-level orchestration layer on top. When you run `printing-press print Discord`, it creates an 8-phase plan directory with seed documents for a resumable run. The normal skill flow does not require all 8 phases; it uses the faster direct loop unless you explicitly ask for resumable phase plans.
+The pipeline module adds a higher-level orchestration layer on top. When you run `printing-press print Discord`, it creates a 9-phase managed run under `~/printing-press/.runstate/<scope>/runs/<run-id>/` with seed documents and `state.json` for resumability. The normal skill flow does not require all 9 phases; it uses the faster direct loop unless you explicitly ask for resumable phase plans.
 
 This project has no external service dependencies. It's a pure Go binary that reads spec files and writes generated code.
 
@@ -76,7 +76,7 @@ This project has no external service dependencies. It's a pure Go binary that re
 | Quality gates | 7 mechanical checks every generated CLI must pass: `go mod tidy`, `go vet`, `go build`, binary build, `--help`, `version`, `doctor`. |
 | Two-tier scoring | Infrastructure scoring (50 pts: output modes, auth, errors, agent-native flags) + Domain correctness scoring (50 pts: path validity, auth protocol, data pipeline, dead code). |
 | Dogfood validator | Catches dead flags, dead functions, invalid API paths, and auth mismatches by cross-referencing generated code against the source spec. |
-| Pipeline phases | Optional 8-phase resumable pipeline: preflight, research, scaffold, enrich, regenerate, review, comparative, ship. |
+| Pipeline phases | Optional 9-phase resumable pipeline: preflight, research, scaffold, enrich, regenerate, review, agent-readiness, comparative, ship. |
 | Catalog entry | A YAML file in `catalog/` that maps an API name to its spec URL, format, category, and tier. Used by `DiscoverSpec()` to auto-resolve API names. |
 | Creativity ladder | Rung 1-2: API wrappers + output formatting (always generated). Rung 3: local persistence. Rung 4: domain analytics. Rung 5: behavioral insights. |
 
@@ -97,7 +97,7 @@ This is the normal user journey:
    - `printing-press scorecard`
 5. If a token is available and the user opted in, the skill runs a small read-only live smoke test
 
-The important part: the default path does not require creating an 8-phase resumable pipeline.
+The important part: the default path does not require creating a 9-phase resumable pipeline.
 
 ### Flow 2: Direct Generation (`printing-press generate`)
 
@@ -124,8 +124,8 @@ internal/generator/generator.go (New + Generate)
   renders 30+ .tmpl files to output dir
   |
   v
-Generated CLI project at ./library/<name>-cli/
-  cmd/<name>-cli/main.go
+Generated CLI project published at ~/printing-press/library/<name>-pp-cli/
+  cmd/<name>-pp-cli/main.go
   cmd/<name>-mcp/main.go
   internal/cli/   (per-resource commands)
   internal/client/ (HTTP client)
@@ -143,9 +143,9 @@ Use this only when you explicitly want on-disk phase seeds and resumable state:
 
 1. `internal/cli/root.go` (`newPrintCmd`) calls `pipeline.Init()` with the API name
 2. `pipeline.Init()` calls `DiscoverSpec()` which looks up the API in `catalog/` entries
-3. Seeds are written for each of the 8 phases into `docs/plans/<api>-pipeline/`
-4. `state.json` is created to track progress across sessions
-5. The user runs phase work from the generated plan files
+3. A managed run is created under `~/printing-press/.runstate/<scope>/runs/<run-id>/`
+4. Seeds are written into `pipeline/`, research artifacts into `research/`, and scorecard/dogfood evidence into `proofs/`
+5. `state.json` tracks progress across sessions, and completed runs archive to `~/printing-press/manuscripts/<api>/<run-id>/`
 
 ### Flow 4: Docs-to-Spec (`--docs`)
 

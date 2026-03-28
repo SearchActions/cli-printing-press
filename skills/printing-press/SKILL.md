@@ -23,7 +23,8 @@ Generate the best useful CLI for an API without burning an hour on phase theater
 /printing-press Notion
 /printing-press Discord codex
 /printing-press --spec ./openapi.yaml
-/printing-press emboss ./library/notion-cli
+/printing-press emboss ./discord-pp-cli
+/printing-press emboss ~/printing-press/library/notion-pp-cli
 ```
 
 ## What Changed In v2
@@ -70,13 +71,13 @@ If Codex fails 3 times in a row, stop delegating and finish locally.
 If the arguments start with `emboss`, this is a second-pass improvement cycle for an existing generated CLI.
 
 ```bash
-/printing-press emboss ./library/notion-cli
+/printing-press emboss ~/printing-press/library/notion-pp-cli
 ```
 
 Use the built-in audit command:
 
 ```bash
-cd ~/cli-printing-press && ./printing-press emboss --dir <cli-dir> --spec <spec-path> --audit-only
+cd "$REPO_ROOT" && ./printing-press emboss --dir <cli-dir> --spec <spec-path> --audit-only
 ```
 
 Emboss is:
@@ -100,14 +101,72 @@ Do not run emboss automatically.
 - YAML, JSON, local paths, and URLs are all valid spec inputs for the verification tools.
 - Maximum 2 verification fix loops unless the user explicitly asks for more.
 
+## Setup
+
+Before doing anything else:
+
+<!-- PRESS_SETUP_CONTRACT_START -->
+```bash
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+cd "$REPO_ROOT"
+
+PRESS_BASE="$(basename "$REPO_ROOT" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9_-]/-/g; s/^-+//; s/-+$//')"
+if [ -z "$PRESS_BASE" ]; then
+  PRESS_BASE="workspace"
+fi
+
+PRESS_SCOPE="$PRESS_BASE-$(printf '%s' "$REPO_ROOT" | shasum -a 256 | cut -c1-8)"
+PRESS_HOME="$HOME/printing-press"
+PRESS_RUNSTATE="$PRESS_HOME/.runstate/$PRESS_SCOPE"
+PRESS_LIBRARY="$PRESS_HOME/library"
+PRESS_MANUSCRIPTS="$PRESS_HOME/manuscripts"
+PRESS_CURRENT="$PRESS_RUNSTATE/current"
+
+mkdir -p "$PRESS_RUNSTATE" "$PRESS_LIBRARY" "$PRESS_MANUSCRIPTS" "$PRESS_CURRENT"
+```
+<!-- PRESS_SETUP_CONTRACT_END -->
+
+After you know `<api>`, initialize the run-scoped artifact paths:
+
+```bash
+RUN_ID="$(date +%Y%m%d-%H%M%S)"
+API_RUN_DIR="$PRESS_RUNSTATE/runs/$RUN_ID"
+RESEARCH_DIR="$API_RUN_DIR/research"
+PROOFS_DIR="$API_RUN_DIR/proofs"
+PIPELINE_DIR="$API_RUN_DIR/pipeline"
+STAMP="$(date +%Y-%m-%d-%H%M%S)"
+
+mkdir -p "$RESEARCH_DIR" "$PROOFS_DIR" "$PIPELINE_DIR"
+STATE_FILE="$API_RUN_DIR/state.json"
+```
+
+Maintain a lightweight state file at `$STATE_FILE` so `/printing-press-score` can rediscover the current run. It should always contain:
+
+```json
+{
+  "api_name": "<api>",
+  "working_dir": "<absolute cli dir>",
+  "output_dir": "<absolute cli dir>",
+  "spec_path": "<absolute spec path if known>"
+}
+```
+
+Active mutable work lives under `$PRESS_RUNSTATE/`. Published CLIs live under `$PRESS_LIBRARY/`. Archived research and verification evidence live under `$PRESS_MANUSCRIPTS/<api>/<run-id>/`. Do not write mutable run artifacts into the repo checkout.
+
+Examples of the current naming/layout to preserve:
+- `discord-pp-cli/internal/store/store.go`
+- `linear-pp-cli stale --days 30 --team ENG`
+- `github.com/mvanhorn/discord-pp-cli`
+
 ## Outputs
 
-Every run writes up to 4 concise artifacts in `~/cli-printing-press/docs/plans/`:
+Every run writes up to 5 concise artifacts under the current managed run and archives them to `$PRESS_MANUSCRIPTS/<api>/<run-id>/`:
 
-1. `<date>-feat-<api>-cli-brief.md`
-2. `<date>-fix-<api>-cli-build-log.md`
-3. `<date>-fix-<api>-cli-shipcheck.md`
-4. `<date>-fix-<api>-cli-live-smoke.md` (only if live testing runs)
+1. `research/<stamp>-feat-<api>-pp-cli-brief.md`
+2. `research/<stamp>-feat-<api>-pp-cli-absorb-manifest.md`
+3. `proofs/<stamp>-fix-<api>-pp-cli-build-log.md`
+4. `proofs/<stamp>-fix-<api>-pp-cli-shipcheck.md`
+5. `proofs/<stamp>-fix-<api>-pp-cli-live-smoke.md` (only if live testing runs)
 
 These do not need to be 200+ lines. Keep them dense, evidence-backed, and directly useful.
 
@@ -117,8 +176,8 @@ Before new research:
 
 1. Resolve the spec source.
 2. Check for prior research in:
-   - `~/cli-printing-press/docs/plans/*<api>*`
-   - `~/docs/plans/*<api>*`
+   - `$PRESS_MANUSCRIPTS/<api>/*/research/*`
+   - `$REPO_ROOT/docs/plans/*<api>*` (legacy fallback)
 3. Reuse good prior work instead of redoing it.
 4. Detect whether an API key is already available.
 
@@ -162,7 +221,7 @@ Put them in the one brief.
 
 Write:
 
-`~/cli-printing-press/docs/plans/<today>-feat-<api>-cli-brief.md`
+`$RESEARCH_DIR/<stamp>-feat-<api>-pp-cli-brief.md`
 
 Suggested shape:
 
@@ -248,7 +307,7 @@ Minimum 5 transcendence features. These are the NOI commands.
 
 ### Step 1.5d: Write the manifest artifact
 
-Write to `~/cli-printing-press/docs/plans/<today>-feat-<api>-cli-absorb-manifest.md`
+Write to `$RESEARCH_DIR/<stamp>-feat-<api>-pp-cli-absorb-manifest.md`
 
 ### Phase Gate 1.5
 
@@ -267,19 +326,19 @@ Use the resolved spec source and generate immediately.
 OpenAPI / internal YAML:
 
 ```bash
-cd ~/cli-printing-press && ./printing-press generate \
+cd "$REPO_ROOT" && ./printing-press generate \
   --spec <spec-path-or-url> \
-  --output ./library/<api>-cli \
+  --output "$PRESS_LIBRARY/<api>-pp-cli" \
   --force --lenient --validate
 ```
 
 Docs-only:
 
 ```bash
-cd ~/cli-printing-press && ./printing-press generate \
+cd "$REPO_ROOT" && ./printing-press generate \
   --docs <docs-url> \
   --name <api> \
-  --output ./library/<api>-cli \
+  --output "$PRESS_LIBRARY/<api>-pp-cli" \
   --force --validate
 ```
 
@@ -349,7 +408,7 @@ Get Priority 0 and 1 working first (the foundation and absorbed features), pass 
 
 Write:
 
-`~/cli-printing-press/docs/plans/<today>-fix-<api>-cli-build-log.md`
+`$PROOFS_DIR/<stamp>-fix-<api>-pp-cli-build-log.md`
 
 Include:
 - what was built
@@ -362,10 +421,10 @@ Include:
 Run one combined verification block.
 
 ```bash
-cd ~/cli-printing-press
-./printing-press dogfood   --dir ./library/<api>-cli --spec <same-spec>
-./printing-press verify    --dir ./library/<api>-cli --spec <same-spec> --fix
-./printing-press scorecard --dir ./library/<api>-cli --spec <same-spec>
+cd "$REPO_ROOT"
+./printing-press dogfood   --dir "$PRESS_LIBRARY/<api>-pp-cli" --spec <same-spec>
+./printing-press verify    --dir "$PRESS_LIBRARY/<api>-pp-cli" --spec <same-spec> --fix
+./printing-press scorecard --dir "$PRESS_LIBRARY/<api>-pp-cli" --spec <same-spec>
 ```
 
 Interpretation:
@@ -389,7 +448,7 @@ Maximum 2 shipcheck loops by default.
 
 Write:
 
-`~/cli-printing-press/docs/plans/<today>-fix-<api>-cli-shipcheck.md`
+`$PROOFS_DIR/<stamp>-fix-<api>-pp-cli-shipcheck.md`
 
 Include:
 - command outputs and scores
@@ -414,7 +473,7 @@ If live smoke finds bugs:
 
 Write:
 
-`~/cli-printing-press/docs/plans/<today>-fix-<api>-cli-live-smoke.md`
+`$PROOFS_DIR/<stamp>-fix-<api>-pp-cli-live-smoke.md`
 
 ## Fast Guidance
 
