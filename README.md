@@ -136,11 +136,11 @@ Phase 5.9   Offer Emboss              (prompt)     [NEW] Opt-in second pass to i
 ### Codex Mode (opt-in)
 
 ```bash
-/printing-press Discord codex    # Offload code generation to Codex CLI (~60% Opus token savings)
+/printing-press Discord codex    # Offload code generation + fix patches to Codex CLI (~60% Opus token savings)
 /printing-press Discord          # Standard Opus mode (default)
 ```
 
-When you add `codex`, Phase 4's code generation tasks are delegated to Codex CLI. Claude stays the brain (research, planning, scoring, review). Codex does the hands (writing Go code from scoped prompts). Same quality, 60% fewer Opus tokens.
+When you add `codex`, Phase 4's code generation tasks and later fix-application passes are delegated to Codex CLI. Claude stays the brain (research, planning, scoring, review). Codex does the hands (writing Go code from scoped prompts). Same quality, 60% fewer Opus tokens.
 
 ## What Gets Generated
 
