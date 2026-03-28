@@ -8,7 +8,7 @@ Just making a CLI is not hard. Making a CLI that understands the power user is e
 /printing-press Linear
 ```
 
-One command. 13 phases. ~1 hour. Produces a Go CLI + MCP server + 8 analysis documents. REST or GraphQL. Matches every competitor feature, then adds the data layer they don't have.
+One command. Lean 5-phase loop. Usually 15-35 minutes to first shipcheck instead of an hour of mandatory phase churn. Produces a Go CLI + MCP server plus the few artifacts that actually help the next step. REST or GraphQL. Matches core competitor features, then adds the data layer they don't have.
 
 ### Get it
 
@@ -113,35 +113,25 @@ The archetype is detected automatically from the spec. The entity mapper figures
 
 ## How It Works
 
-12 phases. Each writes a plan document. The artifacts are the product.
+The fast path is a lean loop. Artifacts still matter, but only when they directly improve the next phase.
 
 ```
-Phase 0     Visionary Research        (3-5 min)    NOI + domain identity + usage patterns
-Phase 0.1   API Key Prompt            (optional)   Offer live testing at end
-Phase 0.5   Power User Workflows      (2-3 min)    Compound commands power users want
-Phase 0.6   Feature Parity Audit      (5 min)      [NEW] Catalog competitor features, classify table stakes
-Phase 0.7   Prediction Engine         (15-25 min)  SQLite schema + FTS5 + sync strategy
-Phase 0.8   Product Thesis            (2 min)      Name (<api>-pp-cli), positioning, anti-scope with cost analysis
-Phase 1     Deep Research             (5-8 min)    Competitors, strategic justification
-Phase 2     Generate                  (1-2 min)    Go CLI + MCP server from spec + name/path/version validation
-Phase 3     Non-Obvious Insight Review(5-8 min)    Two-tier scoring + competitor feature matrix
-Phase 4     GOAT Build                (20-30 min)  7 priorities: data layer, table stakes, workflows, names, tests, distribution
-Phase 4.7   Proof of Behavior         (30 sec)     Verify data actually flows (no hallucinations)
-Phase 4.9   Agent Readiness           (auto)       CLI agent readiness reviewer loop (max 2 passes)
-Phase 5     Ship Readiness Assessment (2-3 min)    Three-benchmark gate: architecture + quality + features
-Phase 5.5   Live API Testing          (optional)   Read-only tests + data pipeline smoke test
-Phase 5.7   Ship Loop                 (auto)       Fix issues and re-score until PASS
-Phase 5.9   Offer Emboss              (prompt)     [NEW] Opt-in second pass to improve further
+Phase 0     Resolve + Reuse           (1-3 min)    Reuse prior research, detect tokens, lock the spec source
+Phase 1     Research Brief            (5-10 min)   API identity, top workflows, table stakes, data layer, thesis
+Phase 2     Generate                  (1-2 min)    Go CLI + MCP server from spec with validation
+Phase 3     Build                     (10-20 min)  Data layer + top workflows + highest-value gaps
+Phase 4     Shipcheck                 (3-8 min)    dogfood + verify --fix + scorecard as one verification block
+Phase 5     Live Smoke (optional)     (2-5 min)    Read-only API smoke + data-flow check
 ```
 
 ### Codex Mode (opt-in)
 
 ```bash
-/printing-press Discord codex    # Offload code generation + fix patches to Codex CLI (~60% Opus token savings)
+/printing-press Discord codex    # Offload code generation to Codex CLI (~60% Opus token savings)
 /printing-press Discord          # Standard Opus mode (default)
 ```
 
-When you add `codex`, Phase 4's code generation tasks and later fix-application passes are delegated to Codex CLI. Claude stays the brain (research, planning, scoring, review). Codex does the hands (writing Go code from scoped prompts). Same quality, 60% fewer Opus tokens.
+When you add `codex`, Phase 4's code generation tasks are delegated to Codex CLI. Claude stays the brain (research, planning, scoring, review). Codex does the hands (writing Go code from scoped prompts). Same quality, 60% fewer Opus tokens.
 
 ## What Gets Generated
 
@@ -222,24 +212,7 @@ printing-press dogfood --dir ./discord-cli --spec /tmp/discord-spec.json
 /install-skill https://github.com/mvanhorn/cli-printing-press
 ```
 
-### Install the Compound Engineering Plugin
-
-The printing press leverages agents from the [Compound Engineering plugin](https://github.com/EveryInc/compound-engineering-plugin) to improve generated CLI quality and agent readiness. Install it before running the press:
-
-```bash
-/plugin marketplace add EveryInc/compound-engineering-plugin
-/plugin install compound-engineering
-```
-
-After installing both the skill and plugin, reload:
-
-```bash
-/reload-plugins
-```
-
-### Build the Binary
-
-Build the binary (needed for scorecard, verify, and dogfood commands):
+Then build the binary (needed for scorecard, verify, and dogfood commands):
 
 ```bash
 cd ~/cli-printing-press

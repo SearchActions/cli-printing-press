@@ -25,6 +25,7 @@ type Generator struct {
 	VisionSet VisionTemplateSet
 	profile   *profiler.APIProfile
 	funcs     template.FuncMap
+	templates map[string]*template.Template
 }
 
 func New(s *spec.APISpec, outputDir string) *Generator {
@@ -46,7 +47,11 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 		}
 		return -1
 	}, s.Owner)
-	g := &Generator{Spec: s, OutputDir: outputDir}
+	g := &Generator{
+		Spec:      s,
+		OutputDir: outputDir,
+		templates: make(map[string]*template.Template),
+	}
 	g.funcs = template.FuncMap{
 		"title":              strings.Title,
 		"lower":              strings.ToLower,
@@ -96,17 +101,17 @@ func (g *Generator) Generate() error {
 
 	// Generate single files
 	singleFiles := map[string]string{
-		"main.go.tmpl":         filepath.Join("cmd", g.Spec.Name+"-cli", "main.go"),
-		"helpers.go.tmpl":      filepath.Join("internal", "cli", "helpers.go"),
-		"doctor.go.tmpl":       filepath.Join("internal", "cli", "doctor.go"),
-		"config.go.tmpl":       filepath.Join("internal", "config", "config.go"),
-		"cache.go.tmpl":        filepath.Join("internal", "cache", "cache.go"),
-		"client.go.tmpl":       filepath.Join("internal", "client", "client.go"),
-		"types.go.tmpl":        filepath.Join("internal", "types", "types.go"),
-		"golangci.yml.tmpl":    ".golangci.yml",
-		"readme.md.tmpl":       "README.md",
-		"LICENSE.tmpl":         "LICENSE",
-		"NOTICE.tmpl":          "NOTICE",
+		"main.go.tmpl":      filepath.Join("cmd", g.Spec.Name+"-cli", "main.go"),
+		"helpers.go.tmpl":   filepath.Join("internal", "cli", "helpers.go"),
+		"doctor.go.tmpl":    filepath.Join("internal", "cli", "doctor.go"),
+		"config.go.tmpl":    filepath.Join("internal", "config", "config.go"),
+		"cache.go.tmpl":     filepath.Join("internal", "cache", "cache.go"),
+		"client.go.tmpl":    filepath.Join("internal", "client", "client.go"),
+		"types.go.tmpl":     filepath.Join("internal", "types", "types.go"),
+		"golangci.yml.tmpl": ".golangci.yml",
+		"readme.md.tmpl":    "README.md",
+		"LICENSE.tmpl":      "LICENSE",
+		"NOTICE.tmpl":       "NOTICE",
 	}
 
 	for tmplName, outPath := range singleFiles {
@@ -319,21 +324,31 @@ func (g *Generator) Generate() error {
 		}
 	}
 
+	var renderedWorkflowConstructors []string
 	// Render domain-specific workflow templates
 	for _, tmpl := range g.VisionSet.Workflows {
 		outName := strings.TrimSuffix(filepath.Base(tmpl), ".tmpl")
 		outPath := filepath.Join("internal", "cli", outName)
 		if err := g.renderTemplate(tmpl, outPath, g.Spec); err != nil {
 			fmt.Fprintf(os.Stderr, "warning: skipping workflow template %s: %v\n", tmpl, err)
+			continue
+		}
+		if constructor := commandConstructorForTemplate(tmpl); constructor != "" {
+			renderedWorkflowConstructors = append(renderedWorkflowConstructors, constructor)
 		}
 	}
 
+	var renderedInsightConstructors []string
 	// Render insight templates
 	for _, tmpl := range g.VisionSet.Insights {
 		outName := strings.TrimSuffix(filepath.Base(tmpl), ".tmpl")
 		outPath := filepath.Join("internal", "cli", outName)
 		if err := g.renderTemplate(tmpl, outPath, g.Spec); err != nil {
 			fmt.Fprintf(os.Stderr, "warning: skipping insight template %s: %v\n", tmpl, err)
+			continue
+		}
+		if constructor := commandConstructorForTemplate(tmpl); constructor != "" {
+			renderedInsightConstructors = append(renderedInsightConstructors, constructor)
 		}
 	}
 
@@ -359,8 +374,15 @@ func (g *Generator) Generate() error {
 
 	rootData := struct {
 		*spec.APISpec
-		VisionSet VisionTemplateSet
-	}{g.Spec, g.VisionSet}
+		VisionSet            VisionTemplateSet
+		WorkflowConstructors []string
+		InsightConstructors  []string
+	}{
+		APISpec:              g.Spec,
+		VisionSet:            g.VisionSet,
+		WorkflowConstructors: renderedWorkflowConstructors,
+		InsightConstructors:  renderedInsightConstructors,
+	}
 	if err := g.renderTemplate("root.go.tmpl", filepath.Join("internal", "cli", "root.go"), rootData); err != nil {
 		return fmt.Errorf("rendering root: %w", err)
 	}
@@ -377,15 +399,27 @@ func (g *Generator) Generate() error {
 	return nil
 }
 
-func (g *Generator) renderTemplate(tmplName, outPath string, data any) error {
-	content, err := templateFS.ReadFile(filepath.Join("templates", tmplName))
-	if err != nil {
-		return fmt.Errorf("reading template %s: %w", tmplName, err)
+func commandConstructorForTemplate(tmpl string) string {
+	switch filepath.Base(tmpl) {
+	case "pm_stale.go.tmpl":
+		return "Stale"
+	case "pm_orphans.go.tmpl":
+		return "Orphans"
+	case "pm_load.go.tmpl":
+		return "Load"
+	case "health_score.go.tmpl":
+		return "Health"
+	case "similar.go.tmpl":
+		return "Similar"
+	default:
+		return ""
 	}
+}
 
-	tmpl, err := template.New(tmplName).Funcs(g.funcs).Parse(string(content))
+func (g *Generator) renderTemplate(tmplName, outPath string, data any) error {
+	tmpl, err := g.template(tmplName)
 	if err != nil {
-		return fmt.Errorf("parsing template %s: %w", tmplName, err)
+		return err
 	}
 
 	fullPath := filepath.Join(g.OutputDir, outPath)
@@ -400,6 +434,25 @@ func (g *Generator) renderTemplate(tmplName, outPath string, data any) error {
 	}
 
 	return nil
+}
+
+func (g *Generator) template(tmplName string) (*template.Template, error) {
+	if tmpl, ok := g.templates[tmplName]; ok {
+		return tmpl, nil
+	}
+
+	content, err := templateFS.ReadFile(filepath.Join("templates", tmplName))
+	if err != nil {
+		return nil, fmt.Errorf("reading template %s: %w", tmplName, err)
+	}
+
+	tmpl, err := template.New(tmplName).Funcs(g.funcs).Parse(string(content))
+	if err != nil {
+		return nil, fmt.Errorf("parsing template %s: %w", tmplName, err)
+	}
+
+	g.templates[tmplName] = tmpl
+	return tmpl, nil
 }
 
 // Template helper functions
