@@ -50,12 +50,12 @@ type SteinerScore struct {
 	Workflows     int `json:"workflows"`      // 0-10
 	Insight       int `json:"insight"`        // 0-10
 	// Tier 2: Domain Correctness (semantic checks)
-	PathValidity          int `json:"path_validity"`           // 0-10
-	AuthProtocol          int `json:"auth_protocol"`           // 0-10
-	DataPipelineIntegrity int `json:"data_pipeline_integrity"` // 0-10
-	SyncCorrectness       int `json:"sync_correctness"`        // 0-10
-	TypeFidelity          int `json:"type_fidelity"`           // 0-5
-	DeadCode              int `json:"dead_code"`               // 0-5
+	PathValidity          int    `json:"path_validity"`           // 0-10
+	AuthProtocol          int    `json:"auth_protocol"`           // 0-10
+	DataPipelineIntegrity int    `json:"data_pipeline_integrity"` // 0-10
+	SyncCorrectness       int    `json:"sync_correctness"`        // 0-10
+	TypeFidelity          int    `json:"type_fidelity"`           // 0-5
+	DeadCode              int    `json:"dead_code"`               // 0-5
 	Total                 int    `json:"total"`                   // 0-100 (weighted: 50% infrastructure + 50% domain)
 	Percentage            int    `json:"percentage"`              // 0-100
 	CalibrationNote       string `json:"calibration_note,omitempty"`
@@ -883,7 +883,7 @@ func scorePathValidity(dir, specPath string) int {
 		return 5
 	}
 
-	pathRe := regexp.MustCompile(`\bpath\s*[:=]\s*"([^"]+)"`)
+	pathRe := regexp.MustCompile(`\bpath\s*(?::=|=|:)\s*"([^"]+)"`)
 	cmdFiles := sampleCommandFiles(dir, 10)
 	if len(cmdFiles) == 0 {
 		return 0
