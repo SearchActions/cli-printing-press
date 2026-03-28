@@ -11,6 +11,21 @@ import (
 	"strings"
 )
 
+// infraCoreFiles are CLI infrastructure files excluded from workflow/insight scoring.
+// These contain shared helpers and framework code, not individual commands.
+var infraCoreFiles = map[string]bool{
+	"helpers.go": true, "root.go": true, "doctor.go": true, "auth.go": true,
+}
+
+// infraAllFiles extends infraCoreFiles with vision/data-layer commands that are
+// scored by their own dedicated dimensions (vision, sync_correctness, etc.)
+// and should not be double-counted by breadth or sampled as generic commands.
+var infraAllFiles = map[string]bool{
+	"helpers.go": true, "root.go": true, "doctor.go": true, "auth.go": true,
+	"export.go": true, "import.go": true, "search.go": true, "sync.go": true,
+	"tail.go": true, "analytics.go": true,
+}
+
 // Scorecard holds the auto-scored evaluation of a generated CLI against the Steinberger bar.
 type Scorecard struct {
 	APIName          string       `json:"api_name"`
@@ -496,18 +511,13 @@ func scoreBreadth(dir string) int {
 	if err != nil {
 		return 0
 	}
-	infra := map[string]bool{
-		"helpers.go": true, "root.go": true, "doctor.go": true, "auth.go": true,
-		"export.go": true, "import.go": true, "search.go": true, "sync.go": true,
-		"tail.go": true, "analytics.go": true,
-	}
 	commandFiles := 0
 	lazyDescs := 0
 	for _, e := range entries {
 		if e.IsDir() || !strings.HasSuffix(e.Name(), ".go") {
 			continue
 		}
-		if infra[e.Name()] {
+		if infraAllFiles[e.Name()] {
 			continue
 		}
 		commandFiles++
@@ -669,16 +679,12 @@ func scoreWorkflows(dir string) int {
 		"reconcile", "revenue", "archive", "search", "sync", "busy", "export",
 		"noshow", "reassign", "clone"}
 
-	infra := map[string]bool{
-		"helpers.go": true, "root.go": true, "doctor.go": true, "auth.go": true,
-	}
-
 	compoundCommands := 0
 	for _, e := range entries {
 		if e.IsDir() || !strings.HasSuffix(e.Name(), ".go") {
 			continue
 		}
-		if infra[e.Name()] {
+		if infraCoreFiles[e.Name()] {
 			continue
 		}
 
@@ -754,16 +760,12 @@ func scoreInsight(dir string) int {
 		"stats", "conflicts", "stale", "analytics", "busiest", "velocity",
 		"utilization", "coverage", "gaps", "noshow"}
 
-	infra := map[string]bool{
-		"helpers.go": true, "root.go": true, "doctor.go": true, "auth.go": true,
-	}
-
 	found := 0
 	for _, e := range entries {
 		if e.IsDir() || !strings.HasSuffix(e.Name(), ".go") {
 			continue
 		}
-		if infra[e.Name()] {
+		if infraCoreFiles[e.Name()] {
 			continue
 		}
 		name := strings.ToLower(e.Name())
@@ -1149,17 +1151,12 @@ func sampleCommandFiles(dir string, n int) []string {
 	if err != nil {
 		return nil
 	}
-	infra := map[string]bool{
-		"helpers.go": true, "root.go": true, "doctor.go": true, "auth.go": true,
-		"export.go": true, "import.go": true, "search.go": true, "sync.go": true,
-		"tail.go": true, "analytics.go": true,
-	}
 	var files []string
 	for _, e := range entries {
 		if e.IsDir() || !strings.HasSuffix(e.Name(), ".go") {
 			continue
 		}
-		if infra[e.Name()] {
+		if infraAllFiles[e.Name()] {
 			continue
 		}
 		content := readFileContent(filepath.Join(cliDir, e.Name()))

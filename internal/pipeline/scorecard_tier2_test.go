@@ -468,6 +468,126 @@ CREATE TABLE bookings (
 	})
 }
 
+func TestScoreWorkflows(t *testing.T) {
+	t.Run("counts files matching expanded prefixes", func(t *testing.T) {
+		dir := t.TempDir()
+
+		// 3 workflow files by prefix
+		writeScorecardFixture(t, dir, "internal/cli/stale_tasks.go", `package cli`)
+		writeScorecardFixture(t, dir, "internal/cli/agenda.go", `package cli`)
+		writeScorecardFixture(t, dir, "internal/cli/conflicts.go", `package cli`)
+
+		assert.GreaterOrEqual(t, scoreWorkflows(dir), 6) // 3 compound commands → 6
+	})
+
+	t.Run("skips infra files", func(t *testing.T) {
+		dir := t.TempDir()
+
+		// helpers.go should not count as a workflow
+		writeScorecardFixture(t, dir, "internal/cli/helpers.go", `package cli`)
+		writeScorecardFixture(t, dir, "internal/cli/root.go", `package cli`)
+
+		assert.Equal(t, 0, scoreWorkflows(dir))
+	})
+
+	t.Run("detects store-using commands structurally", func(t *testing.T) {
+		dir := t.TempDir()
+
+		// File doesn't match any prefix but imports store
+		writeScorecardFixture(t, dir, "internal/cli/bookings_report.go", `
+package cli
+
+import "example.com/project/internal/store"
+
+func runReport(db *store.DB) {}
+`)
+		writeScorecardFixture(t, dir, "internal/cli/availability.go", `
+package cli
+
+func runAvailability() {
+	db := store.Open()
+	_ = db
+}
+`)
+
+		assert.GreaterOrEqual(t, scoreWorkflows(dir), 4) // 2 compound → 4
+	})
+
+	t.Run("counts multi-API-call files", func(t *testing.T) {
+		dir := t.TempDir()
+
+		// File makes 2+ different API calls
+		writeScorecardFixture(t, dir, "internal/cli/transfer.go", `
+package cli
+
+func runTransfer() {
+	resp1 := c.Get("/source")
+	_ = c.Post("/destination", resp1)
+}
+`)
+
+		assert.GreaterOrEqual(t, scoreWorkflows(dir), 2) // 1 compound → 2
+	})
+}
+
+func TestScoreInsight(t *testing.T) {
+	t.Run("counts files matching expanded prefixes", func(t *testing.T) {
+		dir := t.TempDir()
+
+		writeScorecardFixture(t, dir, "internal/cli/stats.go", `package cli`)
+		writeScorecardFixture(t, dir, "internal/cli/health.go", `package cli`)
+		writeScorecardFixture(t, dir, "internal/cli/trends.go", `package cli`)
+
+		assert.GreaterOrEqual(t, scoreInsight(dir), 6) // 3 found → 6
+	})
+
+	t.Run("skips infra files", func(t *testing.T) {
+		dir := t.TempDir()
+
+		writeScorecardFixture(t, dir, "internal/cli/helpers.go", `package cli`)
+		writeScorecardFixture(t, dir, "internal/cli/root.go", `package cli`)
+		writeScorecardFixture(t, dir, "internal/cli/doctor.go", `package cli`)
+
+		assert.Equal(t, 0, scoreInsight(dir))
+	})
+
+	t.Run("detects store plus aggregation structurally", func(t *testing.T) {
+		dir := t.TempDir()
+
+		// File uses store AND aggregation — should count as insight
+		writeScorecardFixture(t, dir, "internal/cli/usage_report.go", `
+package cli
+
+import "example.com/project/internal/store"
+
+func runUsageReport(db *store.DB) {
+	rows := db.Query("SELECT COUNT(*) FROM bookings GROUP BY status")
+	_ = rows
+}
+`)
+
+		assert.GreaterOrEqual(t, scoreInsight(dir), 2) // 1 found → 2
+	})
+
+	t.Run("store without aggregation does not count", func(t *testing.T) {
+		dir := t.TempDir()
+
+		// File uses store but NO aggregation — should not count
+		writeScorecardFixture(t, dir, "internal/cli/lookup.go", `
+package cli
+
+import "example.com/project/internal/store"
+
+func runLookup(db *store.DB) {
+	row := db.Query("SELECT * FROM bookings WHERE id = ?")
+	_ = row
+}
+`)
+
+		assert.Equal(t, 0, scoreInsight(dir))
+	})
+}
+
 func writeScorecardFixture(t *testing.T, root, relPath, content string) {
 	t.Helper()
 
