@@ -1,0 +1,232 @@
+---
+name: printing-press-score
+description: Score a generated CLI against the Steinberger bar, compare two CLIs side-by-side
+version: 0.1.0
+allowed-tools:
+  - Bash
+  - Read
+  - Glob
+  - Grep
+  - AskUserQuestion
+---
+
+# /printing-press-score
+
+Score generated CLIs against the Steinberger bar. Supports rescoring, scoring by name/path, and comparing two CLIs.
+
+## Quick Start
+
+```
+/printing-press-score                              # rescore current CLI
+/printing-press-score notion-pp-cli-4              # score by name
+/printing-press-score ~/my-cli                     # score by path
+/printing-press-score notion-pp-cli-4 vs notion-pp-cli-2  # compare two
+```
+
+## Prerequisites
+
+- Go 1.21+ installed
+- The printing-press repo at ~/cli-printing-press
+
+## Step 1: Parse Arguments
+
+Read the user's input after `/printing-press-score`. The input is **free-form** — interpret intent, don't enforce syntax.
+
+**Noise words to strip:** `compare`, `vs`, `versus`, `and`, `against`, `with`, `to`
+
+After stripping noise words, count the remaining tokens:
+
+- **0 tokens** → Rescore Current mode
+- **1 token** → Score Single mode
+- **2 tokens** → Compare mode
+
+## Step 2: Resolve CLI Directories
+
+For each CLI identifier, resolve it to a directory path:
+
+### If the token contains `/` or `.`
+Treat it as a path (absolute or relative). Verify the directory exists.
+
+### If the token is a plain name
+Try these locations in order:
+1. `library/<name>/` — exact match
+2. `library/<name>-cli/` — with -cli suffix
+
+If neither exists, scan pipeline state files:
+3. Use Glob to find `docs/plans/*-pipeline/state.json` files
+4. Read each, look for an `output_dir` value whose basename contains the name
+5. If found and the directory exists, use it
+
+If nothing resolves, report the error: "Could not find CLI '<name>'. Provide a path or check the name."
+
+### Rescore Current (0 tokens)
+1. Use Glob to find all `docs/plans/*-pipeline/state.json` files
+2. Read each to get `api_name` and `output_dir`
+3. Filter to those whose `output_dir` actually exists on disk
+4. If exactly one → use it automatically
+5. If multiple → present a numbered menu using AskUserQuestion:
+   ```
+   Multiple CLIs found. Which one to score?
+   1. stripe-cli (library/stripe-cli)
+   2. notion-cli (library/notion-cli)
+   3. linear-cli (library/linear-cli)
+   ```
+6. If none found → report: "No generated CLIs found. Provide a name or path."
+
+## Step 3: Find Spec for Tier 2 Scoring
+
+For each resolved CLI directory, find the OpenAPI spec:
+
+1. Check `<cli-dir>/spec.json` — if it exists, use it
+2. If not found, scan `docs/plans/*-pipeline/state.json` files for one matching this CLI's directory. Read its `spec_path` field. If that file exists on disk, use it.
+3. If no spec found, **proceed without `--spec`**. Note to the user: "No spec found — Tier 2 (domain correctness) scores will be 0. Provide a spec path to get full scoring."
+
+## Step 4: Build the Binary
+
+Before running the scorecard, build the printing-press binary:
+
+```bash
+cd ~/cli-printing-press && go build -o ./printing-press ./cmd/printing-press
+```
+
+If the build fails, report the error and stop.
+
+## Step 5: Run Scorecard
+
+### Single Score Mode
+
+Run the scorecard command:
+
+```bash
+cd ~/cli-printing-press && ./printing-press scorecard --dir <resolved-path> --json
+```
+
+If a spec was found, add `--spec <spec-path>`.
+
+Parse the JSON output. The structure is:
+
+```json
+{
+  "api_name": "...",
+  "steinberger": {
+    "output_modes": 8,
+    "auth": 7,
+    "error_handling": 6,
+    "terminal_ux": 9,
+    "readme": 5,
+    "doctor": 10,
+    "agent_native": 7,
+    "local_cache": 4,
+    "breadth": 7,
+    "vision": 6,
+    "workflows": 3,
+    "insight": 5,
+    "path_validity": 9,
+    "auth_protocol": 8,
+    "data_pipeline_integrity": 7,
+    "sync_correctness": 6,
+    "type_fidelity": 4,
+    "dead_code": 3,
+    "total": 72,
+    "percentage": 72
+  },
+  "overall_grade": "B",
+  "gap_report": ["..."]
+}
+```
+
+### Compare Mode
+
+Run **both** scorecard commands in **parallel** using two simultaneous Bash tool calls:
+
+```bash
+# Call 1:
+cd ~/cli-printing-press && ./printing-press scorecard --dir <path1> --spec <spec1> --json
+
+# Call 2:
+cd ~/cli-printing-press && ./printing-press scorecard --dir <path2> --spec <spec2> --json
+```
+
+Parse both JSON outputs.
+
+## Step 6: Render Output
+
+### Single Score Table
+
+Render a rich markdown table. Note: Tier 1 dimensions are all /10. Tier 2 dimensions are /10 except TypeFidelity and DeadCode which are /5.
+
+```
+Scorecard: <api_name>
+
+Infrastructure (Tier 1)
+| Dimension      | Score |
+|----------------|-------|
+| Output Modes   | 8/10  |
+| Auth           | 7/10  |
+| Error Handling | 6/10  |
+| Terminal UX    | 9/10  |
+| README         | 5/10  |
+| Doctor         | 10/10 |
+| Agent Native   | 7/10  |
+| Local Cache    | 4/10  |
+| Breadth        | 7/10  |
+| Vision         | 6/10  |
+| Workflows      | 3/10  |
+| Insight        | 5/10  |
+
+Domain Correctness (Tier 2)
+| Dimension               | Score |
+|--------------------------|-------|
+| Path Validity            | 9/10  |
+| Auth Protocol            | 8/10  |
+| Data Pipeline Integrity  | 7/10  |
+| Sync Correctness         | 6/10  |
+| Type Fidelity            | 4/5   |
+| Dead Code                | 3/5   |
+
+**Total: 72/100 — Grade B**
+```
+
+If `gap_report` is non-empty, list the gaps:
+
+```
+Gaps:
+- <gap 1>
+- <gap 2>
+```
+
+If Tier 2 was skipped (no spec), add a note after the table:
+
+```
+Note: Tier 2 scores are 0 — no OpenAPI spec was found. Run with a spec path for full scoring.
+```
+
+### Compare Table
+
+Render a side-by-side table with a delta column. Show the first CLI name and second CLI name as column headers. Calculate delta as (CLI 1 score - CLI 2 score). Show `+N` for positive, `-N` for negative, `—` for zero.
+
+```
+Scorecard Comparison: <name1> vs <name2>
+
+Infrastructure (Tier 1)
+| Dimension      | <name1> | <name2> | Delta |
+|----------------|---------|---------|-------|
+| Output Modes   | 8/10    | 5/10    | +3    |
+| Auth           | 7/10    | 7/10    | —     |
+| ...            |         |         |       |
+
+Domain Correctness (Tier 2)
+| Dimension               | <name1> | <name2> | Delta |
+|--------------------------|---------|---------|-------|
+| Path Validity            | 9/10    | 6/10    | +3    |
+| ...                      |         |         |       |
+
+| **Total**  | **72/100 (B)** | **56/100 (C)** | **+16** |
+```
+
+## Error Handling
+
+- If the binary build fails → report build error, stop
+- If the scorecard command fails → report the error with the full stderr output
+- If a CLI directory doesn't exist → report which name couldn't be resolved
+- If JSON parsing fails → show the raw output and report the parsing error
