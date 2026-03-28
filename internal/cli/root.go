@@ -350,7 +350,10 @@ func claimOrForce(absOut string, force bool, explicitOutput bool) (string, error
 
 	if explicitOutput {
 		if info, err := os.Stat(absOut); err == nil && info.IsDir() {
-			entries, _ := os.ReadDir(absOut)
+			entries, readErr := os.ReadDir(absOut)
+			if readErr != nil {
+				return "", fmt.Errorf("reading output directory: %w", readErr)
+			}
 			if len(entries) > 0 {
 				return "", fmt.Errorf("output directory %s already exists (use --force to overwrite)", absOut)
 			}
