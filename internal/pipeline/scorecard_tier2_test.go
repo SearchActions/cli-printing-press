@@ -390,7 +390,7 @@ package cli
 
 		pipelineDir := t.TempDir()
 		verifyReport := &VerifyReport{
-			PassRate:     0.91,
+			PassRate:     91.0, // PassRate is 0-100, not 0.0-1.0
 			Total:        33,
 			Passed:       30,
 			DataPipeline: true,
@@ -399,7 +399,7 @@ package cli
 
 		sc, err := RunScorecard(dir, pipelineDir, "", verifyReport)
 		assert.NoError(t, err)
-		// 91% * 80 / 100 = 72 floor
+		// int(91.0) * 80 / 100 = 72 floor
 		assert.GreaterOrEqual(t, sc.Steinberger.Total, 72)
 		assert.Contains(t, sc.Steinberger.CalibrationNote, "verify pass rate")
 	})
@@ -445,7 +445,7 @@ CREATE TABLE bookings (
 
 		pipelineDir := t.TempDir()
 		verifyReport := &VerifyReport{
-			PassRate:     0.50,
+			PassRate:     50.0, // PassRate is 0-100
 			DataPipeline: false,
 			Verdict:      "FAIL",
 		}

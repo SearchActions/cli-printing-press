@@ -135,10 +135,11 @@ func RunScorecard(outputDir, pipelineDir, specPath string, verifyReport *VerifyR
 		sc.Steinberger.Percentage = sc.Steinberger.Total // Total IS the percentage (0-100)
 	}
 
-	// Calibrate: verify pass rate sets a floor on Total
+	// Calibrate: verify pass rate sets a floor on Total.
+	// PassRate is already 0-100 (e.g., 91.0 for 91%), not 0.0-1.0.
 	if verifyReport != nil {
-		verifyScore := int(verifyReport.PassRate * 100)
-		floor := (verifyScore * 80) / 100 // 90% verify → 72 floor
+		verifyScore := int(verifyReport.PassRate)
+		floor := (verifyScore * 80) / 100 // 91% verify → 72 floor
 		if sc.Steinberger.Total < floor {
 			originalTotal := sc.Steinberger.Total
 			sc.Steinberger.Total = floor
@@ -1027,10 +1028,6 @@ func scoreSyncCorrectness(dir string) int {
 	if hasNonEmptySyncResources(content) {
 		score += 2
 	}
-	// Detect URL path parameters like /{guild_id} or /{booking_id}
-	if strings.Contains(content, "/{") {
-		score += 3
-	}
 	if strings.Contains(content, "GetSyncState") || strings.Contains(content, "sync_state") {
 		score += 2
 	}
@@ -1039,6 +1036,11 @@ func scoreSyncCorrectness(dir string) int {
 	}
 	if strings.Contains(content, "paginatedGet") || strings.Contains(content, "hasNextPage") || strings.Contains(content, "endCursor") || strings.Contains(content, "cursor") {
 		score += 2
+	}
+	// URL path parameters only count when other sync signals are present,
+	// otherwise any CLI with parameterized routes gets free sync credit
+	if score > 0 && strings.Contains(content, "/{") {
+		score += 3
 	}
 	if score > 10 {
 		score = 10
@@ -1268,9 +1270,11 @@ func hasNonEmptySyncResources(content string) bool {
 			return true
 		}
 	}
-	// If defaultSyncResources is called but we can't find its definition here,
-	// assume it's non-empty (it's defined elsewhere)
-	if strings.Contains(content, "defaultSyncResources()") {
+	// If defaultSyncResources is called but its definition isn't in the content,
+	// assume it's non-empty (defined in a different package/file).
+	// If the definition IS here, the listRe above already checked all []string{} literals.
+	defRe := regexp.MustCompile(`func\s+defaultSyncResources\s*\(`)
+	if strings.Contains(content, "defaultSyncResources()") && !defRe.MatchString(content) {
 		return true
 	}
 	return false
