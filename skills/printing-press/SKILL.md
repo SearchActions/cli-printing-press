@@ -29,6 +29,12 @@ Generate the best CLI that has ever existed for any API. Five mandatory phases. 
 
 ## Emboss Mode (Second Pass)
 
+**Emboss is opt-in.** It NEVER runs automatically. It runs when:
+1. The user explicitly types `/printing-press emboss <dir>`
+2. The user selects "Yes, run emboss" from the Phase 5.9 prompt after a main run
+
+If the user did NOT request emboss, do NOT mention it, do NOT run it, do NOT show emboss reports.
+
 When the user's arguments start with `emboss`, this is NOT a from-scratch run. The CLI already exists. Run a 30-minute improvement cycle.
 
 ```
@@ -623,6 +629,53 @@ These will be built as real commands in Phase 4, alongside the API wrapper."
 
 ---
 
+# PHASE 0.6: FEATURE PARITY AUDIT
+
+## THIS PHASE IS MANDATORY. DO NOT SKIP IT.
+
+Before brainstorming novel features, catalog what the competition already ships. This is the missing link between research and build. Phase 0.5 brainstorms additive workflows. This phase checks if we can do what the incumbent already does.
+
+### Step 0.6a: Feature Matrix
+
+For the top 2 competitors by stars (from Phase 0/1 research):
+
+| Feature | Competitor A | Competitor B | Ours | Classification |
+|---------|-------------|-------------|------|----------------|
+
+List EVERY command and feature they offer. Read their README, --help output, and documentation.
+
+### Step 0.6b: Classify Each Feature
+
+- **TABLE STAKES**: >50% of users expect any CLI for this API to have it.
+  Examples: `issue create`, `page get`, git branch from issue, clean CRUD names (get/create/update/delete)
+- **NICE-TO-HAVE**: Useful but not expected. Won't lose users if missing.
+  Examples: interactive prompts, TUI mode, plugins
+- **ANTI-SCOPE**: Genuinely out of scope with justification.
+  Examples: full TUI, mobile app, GUI
+
+**Classification rules:**
+- If ANY competitor with >100 stars has it, it's TABLE STAKES unless you provide an explicit reason it's anti-scope.
+- If users mention it in issues/Reddit with >10 upvotes, it's TABLE STAKES.
+- "Complements the incumbent" is NOT a reason to skip a feature. Users don't want to install two CLIs.
+
+### Step 0.6c: Table Stakes Become Phase 4 Mandatory Work
+
+Every TABLE STAKES feature becomes a Phase 4 Priority 1 work item. They are built ALONGSIDE the data layer, not instead of it.
+
+### PHASE GATE 0.6
+
+**STOP.** Verify:
+1. Feature matrix complete for top 2 competitors
+2. Every feature classified as TABLE STAKES / NICE-TO-HAVE / ANTI-SCOPE
+3. TABLE STAKES list has at least 3 items
+4. Anti-scope items have explicit cost analysis ("What % of users need this? Does a competitor with >100 stars offer it?")
+
+Tell the user: "Feature parity audit: [N] table-stakes features identified from [competitor names]. Top gaps: [list]. These will be built in Phase 4."
+
+**Write Phase 0.6 Artifact:** Run the Artifact Writing plan generator with all Phase 0.6 analysis as input. Write to `~/cli-printing-press/docs/plans/<today>-feat-<api>-cli-feature-parity-audit.md`. Include: full feature matrix, classifications with justification, table stakes list for Phase 4.
+
+---
+
 # PHASE 0.7: POWER USER PREDICTION ENGINE
 
 ## THIS PHASE IS MANDATORY. DO NOT SKIP IT.
@@ -783,13 +836,22 @@ Before generating any code, articulate why someone would install this CLI. If yo
    - Bad: "A new CLI for the GitHub API"
    - Good: "I built a GitHub CLI that finds stale PRs and lets you SQL query your repos offline"
 
-4. **What's the name?** (short, memorable, not confused with the incumbent)
-   - Consider: trademark risk, existing tools with that name, domain clarity
-   - Test: can you `brew install <name>` without collision?
-   - The generator will use this name. Do NOT default to `<api>-cli`.
+4. **What's the name?**
+   - DEFAULT: `<api>-pp-cli` (e.g., `notion-pp-cli`, `linear-pp-cli`, `stripe-pp-cli`)
+   - The `-pp-` identifies it as a printing press product.
+   - This is discoverable (`brew search notion` finds `notion-pp-cli`).
+   - Creative names are allowed ONLY if the user explicitly requests one.
+   - The printing press is a code generator, not a branding agency.
 
-5. **What's the anti-scope?** (what we deliberately do NOT build)
-   - Example: "Not a TUI. Not a git replacement. Complements gh, doesn't replace it."
+5. **What's the anti-scope and what does it cost?**
+
+   For each anti-scope item, answer:
+   - What % of potential users need this feature?
+   - Does any competitor with >100 stars offer it?
+   - If yes: this is NOT anti-scope, it's a backlog item. Move to Phase 4 Priority 1.
+
+   VALID anti-scope: "Not a TUI" (no competitor offers one either)
+   INVALID anti-scope: "Not a git integration" (the top competitor's killer feature - you just excluded the #1 reason people install it)
 
 ### Step 0.8b: Write the Product Thesis
 
@@ -800,7 +862,7 @@ Write one paragraph that combines the answers above. This paragraph should make 
 **STOP.** Verify:
 1. All 5 questions answered with specific, non-generic answers
 2. Product thesis paragraph written
-3. Name chosen (not `<api>-cli`)
+3. Name set to `<api>-pp-cli` (default) unless user specified otherwise
 4. Comparison table has at least one row where we clearly win
 
 Tell the user: "Product thesis: [1-sentence pitch]. Name: [name]. Key differentiator: [comparison table winner]. Proceeding to deep research."
@@ -997,6 +1059,22 @@ Before generating, verify the spec matches the API:
 3. **If the spec describes REST endpoints but the API base URL contains `/graphql`** ->
    Warn: "The spec describes REST endpoints but the API appears to be GraphQL. Double-check which is authoritative. If the REST spec is valid, proceed with REST generation. If GraphQL is the real API, switch to GraphQL mode."
 
+### Step 2.0b: Validate Module Path
+
+Before running the generator, check the module path it will use:
+
+1. Run: `git config user.name` - this becomes the org in the module path
+2. If this doesn't match your actual GitHub username, note the correct one
+3. The module path should be: `github.com/<correct-github-username>/<product-name-from-phase-0.8>`
+4. After generation, verify: `head -1 <api>-pp-cli/go.mod`
+5. If wrong, fix with:
+   ```bash
+   cd <api>-pp-cli
+   go mod edit -module github.com/<org>/<name>
+   find . -name '*.go' -exec sed -i '' "s|<old-module>|<new-module>|g" {} +
+   go build ./...
+   ```
+
 ### Step 2.1: Get the spec ready
 
 **If OpenAPI spec found:**
@@ -1040,14 +1118,31 @@ Save the list of skipped fields. These are NOT acceptable limitations - they are
 
 Max 3 retries. Read errors carefully and fix spec issues.
 
+### Step 2.7: Validate API Version Header
+
+The generated client may pin to an outdated API version. Fix it:
+
+1. Check what version the API docs say to use (search the API's changelog or docs)
+2. Check the generated client's version header:
+   ```bash
+   grep -n "Version" <api>-pp-cli/internal/client/client.go
+   ```
+3. If the API uses date-based version headers (like Notion, Stripe), use the LATEST documented version, not the spec's version field or the generator's template default.
+4. Update the header in client.go.
+5. **Test with the live API** (if token available from Phase 0.1) to confirm the version header is accepted.
+
+**Anti-shortcut:** "The generator's default is fine" - NO. Check it.
+
 ### PHASE GATE 2
 
 **STOP.** Verify:
 1. CLI directory exists
 2. `go build ./...` succeeds
 3. List of skipped complex body fields is saved for Phase 3
+4. Module path is correct (Step 2.0b)
+5. API version header is current (Step 2.7)
 
-Tell the user: "Phase 2 complete: Generated <api>-cli with [N] resources, [M] endpoints. [K] complex body fields noted for Phase 4. Proceeding to Non-Obvious Insight Review."
+Tell the user: "Phase 2 complete: Generated <api>-pp-cli with [N] resources, [M] endpoints. [K] complex body fields noted for Phase 4. Proceeding to Non-Obvious Insight Review."
 
 ---
 
@@ -1134,14 +1229,32 @@ Score each dimension 0-10. For EACH dimension, provide THREE things:
 **Baseline Total: X/100 (Grade X)**
 ```
 
+### Step 3.7b: Head-to-Head Competitor Feature Matrix
+
+The 10-dimension score (above) measures code quality against gogcli. This step measures feature completeness against the ACTUAL competition.
+
+For the top 2 competitors (from Phase 1):
+
+| Feature | Competitor A | Competitor B | Ours | Status |
+|---------|-------------|-------------|------|--------|
+| (list every command they have) | Y/N | Y/N | Y/N | HAVE / MISSING / BETTER |
+
+MISSING features with >50% user need become Phase 4 Priority 1 work items.
+BETTER features are our differentiators - highlight in README comparison table.
+
+**The gogcli score tells you if the code is good.**
+**The competitor matrix tells you if the product is good.**
+**You need both.** A CLI that scores 10/10 on output modes but can't do what the top competitor does is a well-polished toy.
+
 ### Step 3.8: Write the GOAT improvement plan
 
-Based on the quality analysis, identify:
+Based on the quality analysis AND the competitor feature matrix, identify:
 
-1. **Top 5 highest-impact improvements** (will raise the score the most)
-2. **Commands to ADD** (not just rename - new functionality)
-3. **Complex body field examples** to add (top 3 endpoints where --stdin matters most)
-4. **What's achievable in Phase 4** vs what's future work
+1. **TABLE STAKES gaps** (from Phase 0.6 + Step 3.7b - highest priority)
+2. **Top 5 highest-impact quality improvements** (will raise the score the most)
+3. **Commands to ADD** (not just rename - new functionality)
+4. **Complex body field examples** to add (top 3 endpoints where --stdin matters most)
+5. **What's achievable in Phase 4** vs what's future work
 
 ### Step 3.9: Write the audit artifact
 
@@ -1267,7 +1380,19 @@ CONSTRAINTS:
    - If SSE: implement EventSource reader
    - If REST polling: keep current implementation but use domain-aware cursors
 
-### Priority 1: Power User Workflows (from Phase 0.5) - NOW powered by local DB
+### Priority 1: Table Stakes Features (from Phase 0.6)
+
+**Build every feature classified as TABLE STAKES in Phase 0.6.** These are features that the top competitor has and that >50% of users expect. This is NOT optional polish - these are the features that determine whether anyone would switch from the incumbent.
+
+For each table-stakes feature:
+1. Read how the competitor implements it (from Phase 1 research)
+2. Implement it - don't just match the competitor, make it BETTER
+3. Better means: works with --json, supports --dry-run, has --stdin, composes with our data layer where possible
+4. Register in root.go alongside the generated commands
+
+**Gate:** Every TABLE STAKES feature from Phase 0.6 must be implemented before proceeding to Priority 2. No exceptions.
+
+### Priority 2: Power User Workflows (from Phase 0.5) - NOW powered by local DB
 
 Implement the top 5-7 workflows identified in Phase 0.5 as real, hand-written Go commands. **Where possible, query the local SQLite database instead of making live API calls.** This makes workflows instant and avoids rate limits.
 
@@ -1279,48 +1404,92 @@ For each workflow:
 5. **Support --json output** for agent consumption
 6. **Register in root.go** alongside the generated commands
 
-Example for a "stale issues" workflow on a project management API:
-```go
-func newStaleCmd(flags *rootFlags) *cobra.Command {
-    var days int
-    var team string
-    cmd := &cobra.Command{
-        Use:   "stale",
-        Short: "Find issues with no updates in N days",
-        Example: `  linear-cli stale --days 30 --team ENG
-  linear-cli stale --days 14 --json --select identifier,title,updatedAt`,
-        RunE: func(cmd *cobra.Command, args []string) error {
-            c, err := flags.newClient()
-            // ... fetch issues, filter by updatedAt, group by team
-        },
-    }
-}
-```
+### Priority 3: Command Name Normalization + Apply Product Name
 
-### Priority 2: Scorecard-Gap Fixes
+**Step 3a: Normalize generated command names**
 
-Run the scorecard and fix dimensions below 10/10:
+The generator produces ugly operationId-derived names. Fix them:
+
+| Generated | Normalized | Rule |
+|-----------|-----------|------|
+| `retrieve-a*` | `get` | Strip "Retrieve a" prefix |
+| `delete-a*` | `delete` | Strip "Delete a" prefix |
+| `create-a*` | `create` | Strip "Create a" prefix |
+| `update-a*` | `update` | Strip "Update a" prefix |
+| `post` | `create` | HTTP method -> action |
+| `patch` | `update` | HTTP method -> action |
+| `get-self` | `me` | Special case |
+| `list-*` | `list` | Strip resource suffix |
+
+For each rename: update the `Use:` field, rename the file, verify `go build` passes.
+
+**Step 3b: Apply the product name everywhere**
+
+1. Rename `cmd/<generated-name>/` to `cmd/<product-name>/`
+2. Update root.go Use field and version template
+3. Update go.mod module path to `github.com/<org>/<product-name>`
+4. Update client.go User-Agent header
+5. `grep -r "<old-name>" . | grep -v "Generated by"` must return 0 hits
+6. Update README examples
+
+**Step 3c: Validate API version header**
+
+1. Check what API version the spec uses / the API docs recommend
+2. Check what the generated client sends (`grep "Version" client.go`)
+3. If they differ, update client.go to the latest documented version
+4. If the API uses date-based versions (Notion, Stripe), use the LATEST
+
+### Priority 4: Scorecard Gap Fixes (DEMOTED + ANTI-GAMING)
+
+Run the scorecard. Fix REAL gaps. DO NOT GAME IT.
 
 ```bash
 cd ~/cli-printing-press && ./printing-press scorecard --dir ./library/<api>-cli
 ```
 
-For each dimension below 10/10:
-1. **Read** the relevant file
-2. **Edit** with surgical changes
-3. Focus on changes that RAISE THE SCORECARD NUMBER
+**ANTI-GAMING RULES:**
+- If a function exists only because the scorecard checks for a string pattern, DELETE IT.
+- If a flag is registered but never checked in any RunE, DELETE IT.
+- If an import exists only to put "store." in the file, DELETE IT.
+- A CLI that scores 60 but has every table-stakes feature beats one that scores 80 with type aliases.
+- The scorecard measures proxies for quality. Optimize for actual quality.
 
 Also fix:
 - Complex body field --stdin examples for top 3 endpoints
 - Lazy descriptions (1-2 word Short fields)
 - Placeholder examples ("abc123" -> realistic domain values)
 
-### Priority 3: Polish
+### Priority 5: Write Tests
 
-Only after Priority 1 and 2 are complete:
-1. README cookbook section **showcasing workflow commands** (not just API calls)
-2. Command name cleanup
-3. FAQ section with domain-specific questions
+A CLI with 0 test files is not shippable.
+
+For each Primary entity in the data layer:
+1. Test UpsertX with valid data -> verify row in DB
+2. Test UpsertX with missing fields -> verify graceful handling
+3. Test SearchX with FTS5 -> verify results match
+
+For each workflow command:
+1. Seed DB with test fixtures
+2. Run the command's core query
+3. Verify result shape and counts
+
+Minimum: 1 test file per package (store, cli). Use table-driven tests matching Go conventions.
+
+### Priority 6: Distribution Scaffold
+
+1. Add `.goreleaser.yaml` for cross-platform binary builds
+2. Add Homebrew formula or tap
+3. Add install instructions for non-Go users to README
+4. Add `.github/workflows/ci.yml` (go test, go vet, goreleaser on tag)
+
+A CLI that can only be installed via `go install` is not a real CLI.
+
+### Priority 7: Polish
+
+Only after all above priorities are complete:
+1. README cookbook section **showcasing workflow commands AND table-stakes features** (not just API calls)
+2. FAQ section with domain-specific questions
+3. Comparison table in README showing where we beat each competitor
 
 ### Step 4.4: Verify compilation
 
@@ -1330,21 +1499,47 @@ cd ~/cli-printing-press/library/<api>-cli && go build ./... && go vet ./... && e
 
 ### PHASE GATE 4
 
-**STOP.** Verify:
-1. Data layer implemented: domain-specific SQLite tables (NOT generic JSON blobs)
+**STOP.** Verify ALL priorities:
+
+**Priority 0 (Data Layer):**
+1. Domain-specific SQLite tables (NOT generic JSON blobs)
 2. Sync command uses domain-aware cursors (validated in Phase 0.7)
 3. Search supports domain-specific filters (--channel, --author, --team, etc.)
 4. `sql` command exists for raw read-only queries
-5. At least 3 workflow commands implemented (from Phase 0.5)
-6. Workflow commands use local DB where possible (not just live API calls)
-7. Scorecard gaps addressed
-8. `go build ./...` and `go vet ./...` pass
-9. README cookbook includes data layer + workflow examples
-10. **Data Pipeline Trace (MANDATORY):** For each Primary entity from Phase 0.7, verify:
-    - WRITE path exists: sync.go calls `db.UpsertX()` for this entity (file:line)
-    - READ path exists: at least one command queries this entity's table (file:line)
-    - SEARCH path exists (if FTS5): at least one command calls `db.SearchX()` (file:line)
-    - If ANY Primary entity has no WRITE path, the data layer is broken. Fix before proceeding.
+
+**Priority 1 (Table Stakes):**
+5. Every TABLE STAKES feature from Phase 0.6 is implemented
+6. Table stakes features work with --json, --dry-run, --stdin where applicable
+
+**Priority 2 (Workflows):**
+7. At least 3 workflow commands implemented (from Phase 0.5)
+8. Workflow commands use local DB where possible (not just live API calls)
+
+**Priority 3 (Names):**
+9. Command names normalized (get/create/update/delete, not retrieve-a/post/patch)
+10. Binary name matches product name from Phase 0.8
+11. Module path is correct
+
+**Priority 4-7:**
+12. `go build ./...` and `go vet ./...` pass
+13. At least 1 test file per package (store, cli)
+14. README cookbook includes data layer + workflow + table-stakes examples
+
+**Data Pipeline Trace (MANDATORY):** For each Primary entity from Phase 0.7, verify:
+- WRITE path exists: sync.go calls `db.UpsertX()` for this entity (file:line)
+- READ path exists: at least one command queries this entity's table (file:line)
+- SEARCH path exists (if FTS5): at least one command calls `db.SearchX()` (file:line)
+- If ANY Primary entity has no WRITE path, the data layer is broken. Fix before proceeding.
+
+**Three-Benchmark Check (MANDATORY):**
+
+1. ARCHITECTURE (discrawl benchmark): "Does this CLI have a real data layer - domain-specific SQLite tables, FTS5 search, incremental sync, workflow commands that query local data?" If no, Priority 0 isn't done.
+
+2. QUALITY (gogcli benchmark): "Does the code have proper output modes, typed errors, agent-native flags, doctor command, README with cookbook?" If gaps, Priority 4 scorecard fixes address them.
+
+3. FEATURES (competitor benchmark): "Would a user of [top competitor from Phase 1] switch to this CLI?" If no: "What's the ONE feature that would flip them?" Build it now before proceeding.
+
+All three must pass. Architecture without features is a toy. Features without architecture is a thin wrapper. Quality without either is polished nothing.
 
 **Write Phase 4 Artifact:** Run the Artifact Writing plan generator with all Phase 4 work as input. Write to `~/cli-printing-press/docs/plans/<today>-fix-<api>-cli-goat-build-log.md`. Include: data layer implementation details, workflow commands built, scorecard fixes, what was skipped, before/after scorecard comparison.
 
@@ -1783,6 +1978,29 @@ Parsing:  N errors (list any JSON parsing failures)
 Verdict:  PASS/WARN/FAIL
 ```
 
+### Step 5.5g: Data Pipeline Smoke Test
+
+After sync, verify data actually flowed through:
+
+1. Query entity counts:
+   ```bash
+   <cli> sql "SELECT 'pages' as t, COUNT(*) as n FROM pages
+              UNION ALL SELECT 'blocks', COUNT(*) FROM blocks
+              UNION ALL SELECT 'users', COUNT(*) FROM users"
+   ```
+2. **If ANY primary entity (from Phase 0.7) has 0 rows:**
+   - Verdict: **WARN** (not PASS)
+   - Report: "Sync completed but [entity] has 0 rows. Possible causes: integration permissions, empty workspace, or sync bug."
+   - Suggest: "Share at least one resource with the integration and re-run sync."
+3. **If primary entities have rows, test the read path:**
+   - `<cli> search "a" --limit 1` should return results
+   - `<cli> stale --days 9999` should return all pages
+   - `<cli> health` should show non-zero totals
+4. **If search returns 0 results but rows exist:**
+   - FTS5 indexing is broken. This is a FAIL, not a WARN.
+
+**"0 rows synced" is NEVER a PASS.** A pipeline that moves no data is not tested.
+
 If ANY test fails (WARN or FAIL verdict), automatically enter Phase 5.7 Ship Loop:
 
 1. For each failure, classify the bug:
@@ -1837,6 +2055,21 @@ When the user asks "is this shippable?", "can we ship this?", "is it ready?", or
 
 ---
 
+# PHASE 5.9: OFFER EMBOSS
+
+After presenting the final report (Phase 5), ask the user:
+
+"The CLI scored [X]/100 (Grade [Y]). Want me to run an emboss pass to improve it further? This re-researches the landscape, finds the top 5 improvements, builds them, and re-scores."
+
+Options:
+- "Yes, run emboss" -> proceed to Emboss Mode (top of this skill)
+- "No, I'm done" -> end the run
+- "I'll emboss later" -> tell user they can run `/printing-press emboss ./<api>-pp-cli`
+
+**Emboss is a FOLLOW-UP, not an automatic step. The user decides.**
+
+---
+
 ## Writing Specs from Docs
 
 When no OpenAPI spec exists:
@@ -1874,7 +2107,7 @@ These phrases indicate a phase was shortcut. If you catch yourself writing them,
 - "The API is GraphQL-only so we can't use printing-press" (Wrong. Skip the REST generator, hand-write commands with a GraphQL client in Phase 4. Every other phase runs normally.)
 - "I'll polish the README instead of building workflows" (Phase 4 Priority 1 is workflows. README is Priority 3. Do not skip ahead.)
 - "The Phase 0.5 workflows are future work" (They are the product. Build them now or the CLI is just an API wrapper.)
-- "316 commands is better than 12" (discrawl has 12 commands and 539 stars. Depth beats breadth. Build the workflows.)
+- "316 commands is better than 12" (Depth beats breadth - discrawl proves this. But depth means building the RIGHT 12 commands, not the same 12 commands for every API. Check the competitor feature matrix from Phase 0.6.)
 - "The API doesn't need local persistence" (Check data gravity scores from Phase 0.7. If any entity scores >= 8, it needs SQLite with proper columns.)
 - "FTS5 is overkill for this API" (If any entity has 2+ text fields AND data gravity >= 8, it needs FTS5. That's how search works.)
 - "REST polling is fine for tail" (Check if the API has WebSocket/SSE/Gateway. If yes, use it. REST polling misses events and wastes rate limit budget.)
@@ -1892,19 +2125,30 @@ These phrases indicate a phase was shortcut. If you catch yourself writing them,
 - "The scorecard is 73 so it's good enough" (The scorecard measures files, not behavior. A 73 scorecard with 0% verify pass rate is a CLI that looks good on paper and crashes on first use. Run verify.)
 - "I tested 5 commands manually, that's enough" (5/127 is 3.9%. That's not testing. Run `printing-press verify` which tests every command automatically in under 60 seconds.)
 - "The CLI compiles so it's ready to ship" (Compilation proves syntax. `printing-press verify` proves behavior. A CLI that compiles but 404s on sync is not shippable.)
+- "The generated command names are fine" (They're machine names from operationIds. Normalize them: retrieve-a -> get, post -> create. Phase 4 Priority 3.)
+- "The module path is close enough" (It's a Go import path. It must be exact or `go install` fails for everyone.)
+- "0 rows synced is still a PASS" (A pipeline that moves no data is not tested. It's WARN at best.)
+- "Users can go install it" (Most users don't have the Go toolchain. Add goreleaser. Phase 4 Priority 6.)
+- "I chose the name in Phase 0.8" (Choosing isn't applying. Grep for the old name. If it appears, the rename is incomplete.)
+- "The scorecard is the objective" (The scorecard measures proxies. The objective is: would a user of the top competitor switch? Check the three-benchmark gate.)
+- "We complement the incumbent, we don't compete" (Users don't want two CLIs. If the incumbent has a feature, you need it too - Phase 0.6 table stakes.)
+- "That feature is anti-scope" (If a competitor with >100 stars has it, it's not anti-scope. It's a backlog item. Phase 0.6 classification rules.)
 
 **Module path rule:**
 - The go.mod module path MUST be a valid Go import path with a real org name (e.g., `github.com/mvanhorn/discord-cli`). The literal string `USER` is never acceptable. The generator auto-derives from git config.
 
 **Time Budget Guidance:**
-- Phase 0-1 (Research + Prediction): 25% of total time
-- Phase 2 (Generate): 5%
-- Phase 3 (Audit): 5%
-- **Phase 4 (GOAT Build): 35%** - THIS IS WHERE THE PRODUCT IS BUILT. Do not rush.
-- Phase 4.5 (Dogfood): 10%
-- Phase 4.6 (Hallucination Audit): 5%
-- **Phase 4.8 (Runtime Verification): 10%** - THIS IS WHERE YOU PROVE IT WORKS. Do not skip.
-- Phase 5 (Final Report): 5%
+- Phase 0-1 (Research + Parity Audit): 20% of total time
+- Phase 2 (Generate + Normalize Names): 5%
+- Phase 3 (Audit + Competitor Comparison): 5%
+- **Phase 4 Priority 0 (Data Layer): 15%** - The architecture foundation.
+- **Phase 4 Priority 1 (Table Stakes): 15%** - Match the competition. THIS IS THE PRODUCT.
+- Phase 4 Priority 2 (Workflows): 10%
+- Phase 4 Priority 3-7 (Names, Score, Tests, Distribution): 15%
+- Phase 4.5-4.8 (Dogfood + Verify): 10%
+- Phase 5 (Final Report + Emboss Offer): 5%
+
+Table stakes features get 15% - the same as the data layer. Because matching the competition IS the product.
 
 **Scorecard uses two tiers (100-point scale):**
 - Tier 1: Infrastructure (string-matching, 50 max) - does the skeleton have the right patterns?
