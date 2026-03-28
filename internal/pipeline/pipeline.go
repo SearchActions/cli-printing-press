@@ -1,15 +1,50 @@
 package pipeline
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 )
 
 // DefaultOutputDir returns the default output directory for a given API name.
 // All commands should use this when --output is not specified.
 func DefaultOutputDir(apiName string) string {
 	return filepath.Join("library", apiName+"-cli")
+}
+
+// ClaimOutputDir atomically claims an output directory. If base already exists,
+// it tries base-2, base-3, ... up to base-99. Uses os.Mkdir (not MkdirAll) for
+// the leaf directory so exactly one concurrent caller wins each slot.
+func ClaimOutputDir(base string) (string, error) {
+	parent := filepath.Dir(base)
+	if err := os.MkdirAll(parent, 0o755); err != nil {
+		return "", fmt.Errorf("creating parent directory: %w", err)
+	}
+
+	// Try the base name first
+	err := os.Mkdir(base, 0o755)
+	if err == nil {
+		return base, nil
+	}
+	if !errors.Is(err, os.ErrExist) {
+		return "", fmt.Errorf("creating output directory: %w", err)
+	}
+
+	// Base exists — try -2 through -99
+	for i := 2; i <= 99; i++ {
+		candidate := base + "-" + strconv.Itoa(i)
+		err := os.Mkdir(candidate, 0o755)
+		if err == nil {
+			return candidate, nil
+		}
+		if !errors.Is(err, os.ErrExist) {
+			return "", fmt.Errorf("creating output directory: %w", err)
+		}
+	}
+
+	return "", fmt.Errorf("could not claim output directory: all slots %s through %s-99 are taken", base, base)
 }
 
 // Options configures a pipeline run.
