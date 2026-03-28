@@ -62,6 +62,72 @@ func TestFullRun(t *testing.T) {
 	fmt.Printf("Full results at: %s\n", baseDir)
 }
 
+func TestCopySpecToOutput(t *testing.T) {
+	tests := []struct {
+		name      string
+		specFlag  string
+		setup     func(t *testing.T, dir string) string // returns specURL
+		wantCopy  bool
+		wantError bool
+	}{
+		{
+			name:     "copies spec when flag is --spec",
+			specFlag: "--spec",
+			setup: func(t *testing.T, dir string) string {
+				specPath := filepath.Join(dir, "input-spec.json")
+				require.NoError(t, os.WriteFile(specPath, []byte(`{"openapi":"3.0.0"}`), 0o644))
+				return specPath
+			},
+			wantCopy: true,
+		},
+		{
+			name:     "skips when flag is --docs",
+			specFlag: "--docs",
+			setup: func(t *testing.T, dir string) string {
+				return "https://developers.notion.com/reference"
+			},
+			wantCopy: false,
+		},
+		{
+			name:     "returns error when spec file missing",
+			specFlag: "--spec",
+			setup: func(t *testing.T, dir string) string {
+				return filepath.Join(dir, "nonexistent.json")
+			},
+			wantCopy:  false,
+			wantError: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			outputDir := filepath.Join(dir, "output")
+			require.NoError(t, os.MkdirAll(outputDir, 0o755))
+
+			specURL := tt.setup(t, dir)
+			err := copySpecToOutput(tt.specFlag, specURL, outputDir)
+
+			if tt.wantError {
+				assert.Error(t, err)
+			} else {
+				assert.NoError(t, err)
+			}
+
+			dst := filepath.Join(outputDir, "spec.json")
+			if tt.wantCopy {
+				data, readErr := os.ReadFile(dst)
+				require.NoError(t, readErr, "spec.json should exist in output dir")
+				expected, _ := os.ReadFile(specURL)
+				assert.Equal(t, expected, data, "spec.json content should match source")
+			} else if !tt.wantError {
+				_, readErr := os.ReadFile(dst)
+				assert.True(t, os.IsNotExist(readErr), "spec.json should not exist")
+			}
+		})
+	}
+}
+
 func findRepoRoot() string {
 	dir, _ := os.Getwd()
 	for {

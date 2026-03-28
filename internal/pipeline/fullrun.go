@@ -106,6 +106,11 @@ func MakeBestCLI(apiName, level, specFlag, specURL, outputDir, pressBinary strin
 		return result
 	}
 
+	// Step 2.1: Copy spec into output dir for standalone scoring
+	if err := copySpecToOutput(specFlag, specURL, outputDir); err != nil {
+		result.Errors = append(result.Errors, fmt.Sprintf("spec copy: %v", err))
+	}
+
 	// Step 2.5: LLM Polish
 	polishResult, polishErr := llmpolish.Polish(llmpolish.PolishRequest{
 		APIName:   apiName,
@@ -415,6 +420,24 @@ func PrintComparisonTable(results []*FullRunResult) string {
 
 	b.WriteString("\n")
 	return b.String()
+}
+
+// copySpecToOutput copies the source spec file into <outputDir>/spec.json
+// so that standalone scoring can find it without the original spec path.
+// Only copies when specFlag is "--spec" (local file). Errors are non-fatal.
+func copySpecToOutput(specFlag, specURL, outputDir string) error {
+	if specFlag != "--spec" {
+		return nil
+	}
+	data, err := os.ReadFile(specURL)
+	if err != nil {
+		return fmt.Errorf("reading spec %s: %w", specURL, err)
+	}
+	dst := filepath.Join(outputDir, "spec.json")
+	if err := os.WriteFile(dst, data, 0o644); err != nil {
+		return fmt.Errorf("writing %s: %w", dst, err)
+	}
+	return nil
 }
 
 func writeRow(b *strings.Builder, label string, results []*FullRunResult, fn func(*FullRunResult) string) {
