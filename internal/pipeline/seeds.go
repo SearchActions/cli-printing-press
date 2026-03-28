@@ -338,6 +338,7 @@ and implement its fixes in a severity-gated loop (max 2 passes) until no Blocker
 - Reviewer agent: compound-engineering:cli-agent-readiness-reviewer (external plugin)
 - Plugin dependency declared in .claude/settings.json
 - Phase 4.8 analog: SKILL.md Phase 4.8 (Runtime Verification)
+- If the run started in codex mode, preserve that mode here: reviewer runs in Claude, but each accepted fix patch is delegated to Codex and then verified in Claude
 `,
 	PhaseShip: `---
 title: "{{.APIName}} CLI Pipeline - Phase 5: Ship"

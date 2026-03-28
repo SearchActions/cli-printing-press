@@ -128,7 +128,7 @@ If verify pass rate DECREASED, something broke. Revert the last improvement and 
 
 ## Codex Mode (Opt-In)
 
-Add `codex` to the command to offload code generation (Phase 4, 4.5, 5.7) to Codex CLI. Claude stays the brain (research, planning, scoring, review). Codex does the hands (writing Go code). Saves ~60% Opus tokens per run.
+Add `codex` to the command to offload code generation and fix application (Phase 4, 4.5, 4.9, 5.7) to Codex CLI. Claude stays the brain (research, planning, scoring, review). Codex does the hands (writing Go code). Saves ~60% Opus tokens per run.
 
 **Default is OFF.** Standard Opus mode runs unless you explicitly type `codex`.
 
@@ -188,6 +188,7 @@ cd ~/cli-printing-press && echo "$CODEX_PROMPT" | codex exec --yolo -
 | Writing workflow commands (sync, search, sql, etc.) | Phase 0.7: Architecture decisions |
 | Writing insight commands (health, trends, etc.) | Phase 3: Non-Obvious Insight Review |
 | Applying scorecard fixes (dead code, wiring flags) | Phase 4.7: Proof of Behavior verification |
+| Applying reviewer fixes from Phase 4.9 | Reviewer dispatch, fix prioritization, acceptance decision |
 | README cookbook section | Phase 5: Ship Readiness Assessment |
 | Fix cycle patches (5-50 lines each) | Phase 5.5: Live API Testing |
 
@@ -1948,12 +1949,19 @@ For each fix in the reviewer's ranked recommended fixes list:
 
 1. Read the fix description and target file:line
 2. If the referenced file does not exist or the line is out of bounds: skip this fix, log a warning
-3. Make the code change
-4. Run `go build ./... && go vet ./...` to verify the change compiles and passes vet
-5. If build or vet fails: revert the change, skip this fix, continue to next
-6. Move to the next fix
+3. If `CODEX_MODE` is true, treat this fix as a **separate Codex call** using the Codex Delegation Pattern from the top of this skill:
+   - Claude assembles a prompt with the exact reviewer finding, exact file:line, current code snippet, expected behavioral change, repo conventions, and the same constraints (`no git`, listed files only, `go build ./... && go vet ./...` at the end)
+   - Scope the call to the smallest possible patch, ideally 1 file and under 100 lines
+   - After Codex returns, immediately verify the target file still exists and is non-empty before reviewing the diff
+   - If Codex fails, empties/deletes the file, edits outside scope, or fails verification: revert that attempted change and apply the fix directly in Claude as a fallback
+4. If `CODEX_MODE` is false, make the code change directly in Claude
+5. Run `go build ./... && go vet ./...` to verify the change compiles and passes vet
+6. If build or vet fails: revert the change, skip this fix, continue to next
+7. Move to the next fix
 
 All listed fixes are attempted — the reviewer already ranks by impact.
+
+**Important:** The reviewer agent itself always runs inside Claude Code. Only the code-writing step is delegated. This preserves the same split as Phase 4: Claude reviews, prioritizes, and verifies; Codex writes the patch when the run started in Codex mode.
 
 ### Step 4.9d: Termination Check
 
@@ -2158,7 +2166,7 @@ If ANY test fails (WARN or FAIL verdict), automatically enter Phase 5.7 Ship Loo
 
 2. Write a targeted fix plan listing each bug with file:line and proposed fix
 3. Present the plan to the user: "Live testing found N bugs. Here's the fix plan. Proceed?"
-4. If yes: fix all bugs, then re-run Phase 5.5 live tests to verify
+4. If yes: fix all bugs (delegate each code-writing patch to Codex if `CODEX_MODE` is true, otherwise fix directly in Claude), then re-run Phase 5.5 live tests to verify
 5. If all tests pass after fix: proceed to Final Report with PASS
 6. If still failing: report remaining issues, max 2 fix cycles for live test bugs
 
@@ -2186,13 +2194,15 @@ When the user asks "is this shippable?", "can we ship this?", "is it ready?", or
    - Present: "Not yet. Found N issues. Top 3:"
    - List each issue with severity, file, and proposed fix
    - Ask: "Want me to fix these and re-test?"
-   - If yes: write fix plan -> apply fixes -> re-run verification + live tests -> present updated score
+   - If yes: write fix plan -> apply fixes (delegate code-writing patches to Codex if `CODEX_MODE` is true) -> re-run verification + live tests -> present updated score
    - If no: present issues for manual review
 
 ## Fix Loop Rules
 
 - Max 3 fix-loop iterations per session
 - Each iteration targets only the top 3 highest-impact issues
+- If `CODEX_MODE` is true, each fix is a separate Codex call using the same Codex Delegation Pattern as Phase 4 and Phase 4.9
+- Claude still owns the bug triage, fix plan, verification, and go/no-go decision; Codex only writes the scoped patch
 - After each fix: `go build ./... && go vet ./...` must pass
 - After each fix: re-run Proof of Behavior verification
 - After each fix: if API key available, re-run live tests
