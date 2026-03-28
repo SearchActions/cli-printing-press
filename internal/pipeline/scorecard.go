@@ -96,6 +96,13 @@ func RunScorecard(outputDir, pipelineDir, specPath string, verifyReport *VerifyR
 		sc.Steinberger.Workflows +
 		sc.Steinberger.Insight
 
+	// Apply verify caps to dimensions BEFORE tier calculation so Total stays consistent
+	if verifyReport != nil {
+		if !verifyReport.DataPipeline && sc.Steinberger.DataPipelineIntegrity > 5 {
+			sc.Steinberger.DataPipelineIntegrity = 5
+		}
+	}
+
 	// Tier 2: Domain Correctness (semantic, 50 max)
 	tier2Raw := sc.Steinberger.PathValidity +
 		sc.Steinberger.AuthProtocol +
@@ -113,11 +120,10 @@ func RunScorecard(outputDir, pipelineDir, specPath string, verifyReport *VerifyR
 		sc.Steinberger.Percentage = sc.Steinberger.Total // Total IS the percentage (0-100)
 	}
 
-	// Calibrate against verify results when available
+	// Calibrate: verify pass rate sets a floor on Total
 	if verifyReport != nil {
 		verifyScore := int(verifyReport.PassRate * 100)
-		// Verify pass rate sets a floor: 90% verify → 72 floor
-		floor := (verifyScore * 80) / 100
+		floor := (verifyScore * 80) / 100 // 90% verify → 72 floor
 		if sc.Steinberger.Total < floor {
 			originalTotal := sc.Steinberger.Total
 			sc.Steinberger.Total = floor
@@ -125,10 +131,6 @@ func RunScorecard(outputDir, pipelineDir, specPath string, verifyReport *VerifyR
 			sc.Steinberger.CalibrationNote = fmt.Sprintf(
 				"Score raised from %d to %d based on %d%% verify pass rate",
 				originalTotal, floor, verifyScore)
-		}
-		// Verify failures cap data pipeline dimension
-		if !verifyReport.DataPipeline && sc.Steinberger.DataPipelineIntegrity > 5 {
-			sc.Steinberger.DataPipelineIntegrity = 5
 		}
 	}
 
@@ -783,9 +785,10 @@ func scoreInsight(dir string) int {
 		// aggregated/computed output (COUNT, SUM, GROUP BY, etc.) are insights
 		content := readFileContent(filepath.Join(cliDir, e.Name()))
 		usesStore := strings.Contains(content, "/store") || strings.Contains(content, "store.Open") || strings.Contains(content, "store.New")
+		rateRe := regexp.MustCompile(`\brate\b|\bRate\b`)
 		hasAggregation := strings.Contains(content, "COUNT(") || strings.Contains(content, "SUM(") ||
 			strings.Contains(content, "GROUP BY") || strings.Contains(content, "AVG(") ||
-			strings.Contains(content, "rate") || strings.Contains(content, "Rate")
+			rateRe.MatchString(content)
 		if usesStore && hasAggregation {
 			found++
 		}
@@ -977,27 +980,26 @@ func scoreAuthProtocol(dir, specPath string) int {
 func scoreDataPipelineIntegrity(dir string) int {
 	score := 0
 	cliDir := filepath.Join(dir, "internal", "cli")
-	syncContent := readAllGoFiles(cliDir)
-	searchContent := syncContent // search patterns also live in any CLI file
+	allCLIContent := readAllGoFiles(cliDir)
 	storeContent := readFileContent(filepath.Join(dir, "internal", "store", "store.go"))
 
-	if syncContent != "" && (strings.Contains(syncContent, "/store") || strings.Contains(syncContent, "store.")) {
+	if allCLIContent != "" && (strings.Contains(allCLIContent, "/store") || strings.Contains(allCLIContent, "store.")) {
 		score++
 	}
 
 	domainUpsertRe := regexp.MustCompile(`\.Upsert[A-Z]\w*\(`)
 	genericUpsertRe := regexp.MustCompile(`\.Upsert\(`)
-	if domainUpsertRe.MatchString(syncContent) {
+	if domainUpsertRe.MatchString(allCLIContent) {
 		score += 3
-	} else if genericUpsertRe.MatchString(syncContent) {
+	} else if genericUpsertRe.MatchString(allCLIContent) {
 		score += 0
 	}
 
 	domainSearchRe := regexp.MustCompile(`\.Search[A-Z]\w*\(`)
 	genericSearchRe := regexp.MustCompile(`\.Search\(`)
-	if domainSearchRe.MatchString(searchContent) {
+	if domainSearchRe.MatchString(allCLIContent) {
 		score += 3
-	} else if genericSearchRe.MatchString(searchContent) {
+	} else if genericSearchRe.MatchString(allCLIContent) {
 		score += 0
 	}
 
@@ -1019,7 +1021,8 @@ func scoreSyncCorrectness(dir string) int {
 	if hasNonEmptySyncResources(content) {
 		score += 2
 	}
-	if strings.Contains(content, "{") {
+	// Detect URL path parameters like /{guild_id} or /{booking_id}
+	if strings.Contains(content, "/{") {
 		score += 3
 	}
 	if strings.Contains(content, "GetSyncState") || strings.Contains(content, "sync_state") {
@@ -1109,7 +1112,8 @@ func scoreDeadCode(dir string) int {
 	otherCLI := readOtherGoFiles(cliDir, map[string]bool{"root.go": true})
 
 	// If the flags struct is passed as a function argument, all fields are reachable
-	flagsPassedAsArg := strings.Contains(otherCLI, "flags,") || strings.Contains(otherCLI, "flags)")
+	flagsPassedRe := regexp.MustCompile(`\bflags[,)]`)
+	flagsPassedAsArg := flagsPassedRe.MatchString(otherCLI)
 	if !flagsPassedAsArg {
 		for _, name := range flagNames {
 			if !strings.Contains(otherCLI, "flags."+name) {
@@ -1121,10 +1125,11 @@ func scoreDeadCode(dir string) int {
 	funcRe := regexp.MustCompile(`(?m)^func\s+([A-Za-z_]\w*)\s*\(`)
 	funcNames := uniqueMatches(funcRe, helpersContent)
 	otherHelpers := readOtherGoFiles(cliDir, map[string]bool{"helpers.go": true})
-	// Check both other files AND helpers.go itself for intra-file calls
+	// Check both other files AND helpers.go itself for intra-file calls.
+	// Use Count >= 2 because the definition itself contributes 1 occurrence of name+"(".
 	allContent := helpersContent + "\n" + otherHelpers
 	for _, name := range funcNames {
-		if !strings.Contains(allContent, name+"(") {
+		if strings.Count(allContent, name+"(") < 2 {
 			deadFunctions++
 		}
 	}
@@ -1251,19 +1256,21 @@ func scoreDomainTables(storeContent string) int {
 }
 
 func hasNonEmptySyncResources(content string) bool {
-	if strings.Contains(content, "[]string{}") || strings.Contains(content, "return nil") {
+	if !strings.Contains(content, "defaultSyncResources") && !strings.Contains(content, "syncResources") {
 		return false
 	}
-	if strings.Contains(content, "defaultSyncResources()") || strings.Contains(content, "syncResources") {
-		listRe := regexp.MustCompile(`\[\]string\{([^}]*)\}`)
-		for _, match := range listRe.FindAllStringSubmatch(content, -1) {
-			if strings.TrimSpace(match[1]) != "" {
-				return true
-			}
-		}
-		if strings.Contains(content, "defaultSyncResources") {
+	// Look for non-empty []string{...} literals (sync resource lists)
+	listRe := regexp.MustCompile(`\[\]string\{([^}]*)\}`)
+	for _, match := range listRe.FindAllStringSubmatch(content, -1) {
+		items := strings.TrimSpace(match[1])
+		if items != "" {
 			return true
 		}
+	}
+	// If defaultSyncResources is called but we can't find its definition here,
+	// assume it's non-empty (it's defined elsewhere)
+	if strings.Contains(content, "defaultSyncResources()") {
+		return true
 	}
 	return false
 }
