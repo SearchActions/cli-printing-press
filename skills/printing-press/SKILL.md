@@ -1,7 +1,7 @@
 ---
 name: printing-press
 description: Generate the GOAT CLI for any API. 5-phase loop with Non-Obvious Insight Review and Ship Readiness Assessment, deep competitor research, complex body field handling, and before/after scoring delta.
-version: 1.1.0
+version: 1.2.0
 allowed-tools:
   - Bash
   - Read
@@ -176,9 +176,9 @@ VERIFY: After changes, run: go build ./... && go vet ./..."
 cd ~/cli-printing-press && echo "$CODEX_PROMPT" | codex exec --yolo -
 ```
 
-3. **Claude reviews the diff:** Verify non-empty, in-scope, compiles (`go build && go vet`). If lint/format fails, auto-fix.
+3. **Claude reviews the result:** Before anything else, verify the target file still exists and is non-empty (`wc -l <file>`). Codex can delete or empty files instead of rewriting them — if the file is gone or empty, that's an immediate failure. Then verify: in-scope changes, compiles (`go build && go vet`). If lint/format fails, auto-fix.
 
-4. **On failure:** Fall back to Claude for that task. Track consecutive failures - after 3, disable Codex for remaining tasks.
+4. **On failure:** Fall back to Claude for that task. A deleted/emptied file counts as a failure. Track consecutive failures — after 3, disable Codex for remaining tasks.
 
 ### What Gets Delegated vs What Stays on Claude
 
@@ -233,17 +233,17 @@ The key insight: **detect first, ask permission second, WAIT for the answer.** D
 
 ## How This Works
 
-Every run produces the GOAT CLI through 8 mandatory phases + 7 comprehensive plan documents:
+Every run produces the GOAT CLI through 9 mandatory phases + 7 comprehensive plan documents:
 
 ```
-PHASE 0 -> PHASE 0.5 -> PHASE 0.7 -> PHASE 0.8 -> PHASE 0.9 -> PHASE 1 -> PHASE 2 -> PHASE 3 -> PHASE 4 -> PHASE 4.5 -> PHASE 4.6 -> PHASE 4.8 -> PHASE 5
-(3-5m)     (2-3m)       (15-25m)     (5-8m)     (1-2m)     (5-8m)     (5-10m)    (10-20m)      (2-3m)
-Visionary  Workflows    Prediction   Research   Generate   Audit      Build      Dogfood       Final
-Research   (commands)   Engine       (specs)    (code)     (review)   (fixes)    Emulation     Quality Score
-                        (data layer)                                             (spec-test)
+PHASE 0 -> PHASE 0.5 -> PHASE 0.7 -> PHASE 0.8 -> PHASE 0.9 -> PHASE 1 -> PHASE 2 -> PHASE 3 -> PHASE 4 -> PHASE 4.5 -> PHASE 4.6 -> PHASE 4.8 -> PHASE 4.9 -> PHASE 5
+(3-5m)     (2-3m)       (15-25m)     (5-8m)     (1-2m)     (5-8m)     (5-10m)    (10-20m)      (2-3m)       (5-10m)
+Visionary  Workflows    Prediction   Research   Generate   Audit      Build      Dogfood       Final        Agent
+Research   (commands)   Engine       (specs)    (code)     (review)   (fixes)    Emulation     Quality      Readiness
+                        (data layer)                                             (spec-test)   Score        Review
 ```
 
-Total expected time: 45-85 minutes. Phase 4.5 tests every command against spec-derived mocks.
+Total expected time: 50-95 minutes. Phase 4.5 tests every command against spec-derived mocks.
 
 **7 Plan Artifacts Per Run:**
 
@@ -1128,10 +1128,39 @@ The generated client may pin to an outdated API version. Fix it:
    grep -n "Version" <api>-pp-cli/internal/client/client.go
    ```
 3. If the API uses date-based version headers (like Notion, Stripe), use the LATEST documented version, not the spec's version field or the generator's template default.
-4. Update the header in client.go.
-5. **Test with the live API** (if token available from Phase 0.1) to confirm the version header is accepted.
+4. **Check for per-endpoint versioning.** Some APIs (e.g., Cal.com) use different version headers per resource — bookings may require `2024-08-13` while event-types requires `2024-06-14`. Test at least 2 different resource endpoints with the same version header. If one returns 404 or errors while the other succeeds, the API uses per-endpoint versioning. Implement routing logic in client.go:
+   ```go
+   apiVersion := "2024-06-14" // default
+   if strings.Contains(path, "/bookings") || strings.Contains(path, "/slots") {
+       apiVersion = "2024-08-13"
+   }
+   req.Header.Set("cal-api-version", apiVersion)
+   ```
+5. Update the header in client.go.
+6. **Test with the live API** (if token available from Phase 0.1) to confirm the version header is accepted on at least 2 different resource types.
 
-**Anti-shortcut:** "The generator's default is fine" - NO. Check it.
+**Anti-shortcut:** "The generator's default is fine" - NO. Check it. "One version header works for all endpoints" — maybe not. Test two different resources.
+
+### Step 2.8: Validate Config Env Var Matches Phase 0.1
+
+The generator creates a config.go that looks for a specific env var name (e.g., `CAL_COM_USER_TOKEN`). This may not match the env var detected in Phase 0.1 (e.g., `CAL_COM_API_KEY`). If they don't match, live testing will fail with "auth: not configured" even though the user has the key set.
+
+1. Check what env var name(s) Phase 0.1 detected or the user provided
+2. Check what env var name config.go looks for: `grep "Getenv" <api>-pp-cli/internal/config/config.go`
+3. If they differ: patch config.go to accept both names (check the common one first)
+4. Also add any well-known env var names for this API (e.g., for Cal.com: `CAL_COM_API_KEY`, `CAL_API_KEY`, `CALCOM_API_KEY`)
+
+### Step 2.9: Smoke Test (if API key available)
+
+If an API key was provided in Phase 0.1, run a quick smoke test NOW — don't wait until Phase 5.5. This catches auth and version header issues before investing in Phase 3-4.
+
+1. Build the CLI: `go build -o ./<product-name> ./cmd/<product-name>`
+2. Run: `<product-name> doctor --json` — verify auth shows "configured"
+3. Run: `<product-name> me <get-subcommand> --json` or equivalent profile endpoint — verify HTTP 200
+4. Run one list endpoint for a different resource — verify no 404 (catches per-endpoint versioning issues)
+5. If any test fails: fix the issue (version header, env var, base URL) before proceeding
+
+This takes 30 seconds and can save hours of debugging in Phase 4.
 
 ### PHASE GATE 2
 
@@ -1141,6 +1170,8 @@ The generated client may pin to an outdated API version. Fix it:
 3. List of skipped complex body fields is saved for Phase 3
 4. Module path is correct (Step 2.0b)
 5. API version header is current (Step 2.7)
+6. Config env var matches Phase 0.1 detection (Step 2.8)
+7. Smoke test passes if API key available (Step 2.9)
 
 Tell the user: "Phase 2 complete: Generated <api>-pp-cli with [N] resources, [M] endpoints. [K] complex body fields noted for Phase 4. Proceeding to Non-Obvious Insight Review."
 
@@ -1429,7 +1460,7 @@ For each rename: update the `Use:` field, rename the file, verify `go build` pas
 2. Update root.go Use field and version template
 3. Update go.mod module path to `github.com/<org>/<product-name>`
 4. Update client.go User-Agent header
-5. `grep -r "<old-name>" . | grep -v "Generated by"` must return 0 hits
+5. `grep -r "<old-name>" . | grep -v "Generated by"` must return 0 hits — **pay special attention to DB path strings and config path strings** (e.g., `~/.local/share/<old-name>/data.db`, `~/.config/<old-name>/config.toml`). These are easy to miss and will cause the search/analytics/export commands to use a different database than the sync command. If the old name appears in any `filepath.Join` or `defaultDBPath` call, fix it.
 6. Update README examples
 
 **Step 3c: Validate API version header**
@@ -1839,7 +1870,119 @@ For each failing command, the verifier reports which test failed (help/dry-run/e
 3. Data pipeline: sync populates tables, sql queries them, search finds results
 4. 0 critical failures
 
-Tell the user: "Runtime verification: [X]% pass rate ([N]/[M] commands). Data pipeline: [PASS/FAIL]. Mode: [live/mock]. Proceeding to final report."
+Tell the user: "Runtime verification: [X]% pass rate ([N]/[M] commands). Data pipeline: [PASS/FAIL]. Mode: [live/mock]. Proceeding to agent readiness review."
+
+---
+
+# PHASE 4.9: AGENT READINESS REVIEW LOOP
+
+## THIS PHASE IS MANDATORY. YOU MUST ATTEMPT IT.
+
+**You MUST dispatch the `compound-engineering:cli-agent-readiness-reviewer` agent.** Do not skip this phase because "it's faster to move on" or "the CLI is already good." The user wants this review to run when the agent is available.
+
+**The only acceptable outcomes are:**
+1. The agent ran and produced results (proceed with fixes)
+2. The agent dispatch failed because the plugin is not installed (warn prominently, proceed to Phase 5)
+3. The agent ran but produced an error or empty output (warn prominently, proceed to Phase 5)
+
+**"I decided to skip it" is NOT an acceptable outcome.** If you catch yourself about to move to Phase 5 without having attempted the agent dispatch, STOP and go back.
+
+The existing agent-native scorecard dimension checks for flags. This phase goes deeper — evaluating 7 principles (non-interactive automation, structured output, progressive help, actionable errors, safe retries, composability, bounded responses) with file-level fix recommendations.
+
+### Step 4.9a: Dispatch the Agent (MANDATORY)
+
+You MUST execute this Agent tool call:
+
+```
+Agent tool:
+  subagent_type: compound-engineering:review:cli-agent-readiness-reviewer
+  prompt: "Run the compound-engineering:cli-agent-readiness-reviewer agent on the <api> CLI in <output-dir>.
+           Do not look at code elsewhere in the repo outside of that folder."
+```
+
+**If the dispatch succeeds:** proceed to Step 4.9b with the results.
+
+**If the dispatch fails** (agent not found, plugin not installed, tool rejected):
+1. Print this warning to the user in a visible block:
+
+```
+⚠️  PHASE 4.9 SKIPPED — REVIEWER NOT AVAILABLE
+    The Compound Engineering `cli-agent-readiness-reviewer` agent could not be dispatched.
+    This reviewer evaluates whether the generated CLI is usable by AI agents
+    (exit codes, output routing, alias correctness, delete safety gates, etc.).
+    Reason: [error message]
+    To enable: install the compound-engineering plugin (v2.55.0+)
+    and register every-marketplace in ~/.claude/settings.json.
+    The CLI was NOT reviewed for agent readiness.
+```
+
+2. Proceed to Phase 5. Do NOT silently continue.
+
+### Step 4.9b: Process Results (Pass 1)
+
+The reviewer produces:
+- A scorecard table (7 principles x severity: Blocker/Friction/Optimization/None)
+- A "What's Working Well" section
+- A ranked list of recommended fixes with file:line references
+
+**If the reviewer returned results but they are empty or unparseable:**
+1. Print this warning to the user:
+
+```
+⚠️  PHASE 4.9 INCOMPLETE — REVIEWER RETURNED NO ACTIONABLE RESULTS
+    The Compound Engineering `cli-agent-readiness-reviewer` agent ran but produced
+    no parseable fix list. The CLI was NOT fully reviewed for agent readiness
+    (exit codes, output routing, alias correctness, delete safety gates, etc.).
+```
+
+2. Proceed to Phase 5. Do not loop.
+
+**If the reviewer returned a valid scorecard and fix list:** proceed to Step 4.9c.
+
+### Step 4.9c: Implement Fixes
+
+For each fix in the reviewer's ranked recommended fixes list:
+
+1. Read the fix description and target file:line
+2. If the referenced file does not exist or the line is out of bounds: skip this fix, log a warning
+3. Make the code change
+4. Run `go build ./... && go vet ./...` to verify the change compiles and passes vet
+5. If build or vet fails: revert the change, skip this fix, continue to next
+6. Move to the next fix
+
+All listed fixes are attempted — the reviewer already ranks by impact.
+
+### Step 4.9d: Termination Check
+
+After implementing fixes, re-run the `compound-engineering:cli-agent-readiness-reviewer` agent on the same folder (same prompt as Step 4.9a). Evaluate the new scorecard:
+
+- **Zero Blockers AND zero Frictions:** Pass. Proceed to Phase 5.
+- **Blockers or Frictions remain, pass count < 2:** Return to Step 4.9c with the new fix list.
+- **Blockers or Frictions remain, pass count = 2:** Log remaining issues as known items. Proceed to Phase 5.
+
+**If the agent becomes unavailable between passes** (plugin timeout, tool error):
+1. Print this warning to the user:
+
+```
+⚠️  PHASE 4.9 INTERRUPTED — REVIEWER LOST BETWEEN PASSES
+    The Compound Engineering `cli-agent-readiness-reviewer` agent became unavailable
+    after pass [N]. Fixes from pass [N] were applied. No further review possible.
+```
+
+2. Proceed to Phase 5. The pass count does not reset.
+
+### PHASE GATE 4.9
+
+**STOP.** Evaluate the result:
+
+| Verdict | Condition | Action |
+|---------|-----------|--------|
+| **Pass** | Zero Blockers and zero Frictions after ≤ 2 passes | Proceed to Phase 5 |
+| **Warn** | Frictions remain after 2 passes, zero Blockers | Log Frictions as known issues, proceed to Phase 5 |
+| **Degrade** | Blockers remain after 2 passes | Log Blockers as known issues, proceed to Phase 5 |
+| **Skipped** | Agent unavailable (dispatch failed) | Warning already shown, proceed to Phase 5 |
+
+Tell the user: "Agent readiness review: [PASS/WARN/DEGRADE/SKIPPED]. Blockers: [N]. Frictions: [N]. Optimizations: [N]. Passes: [N]/2. Proceeding to final report."
 
 ---
 
@@ -2093,6 +2236,24 @@ You ARE the brain. Read the docs yourself and write the spec.
 - Untrusted specs: note if not from known-specs registry
 - Max 3 retries on quality gate failure
 
+## External Tool Interference
+
+Linters, formatters, and pre-commit hooks may modify files during the session. This is expected — but be aware:
+
+- **After any external modification to a file you depend on, re-read it before writing dependent code.** A linter may change method signatures (e.g., `GetSyncState` returning 2 values → 4 values), add imports, rename variables, or restructure functions. Code you write against the pre-linter version will fail to compile.
+- **Check the system-reminder after each tool call.** Claude Code shows diffs from external modifications in system reminders — read them.
+- **If a file was modified by a hook, the hook's version wins.** Don't fight it by reverting to your version. Adapt your dependent code to match the new signatures.
+
+## Scorecard Limitations
+
+The scorecard measures file patterns, not behavior. Known blind spots:
+
+- **sync_correctness** and **data_pipeline_integrity** hardcode the filename `sync.go` — sync logic in other files (e.g., `channel_workflow.go`, `sync_cmd.go`) scores 0.
+- **workflows** and **insight** use narrow prefix lists biased toward project-management APIs — scheduling, payment, and communication workflow commands may not match.
+- **dead_code** produces false positives when flags are passed via struct rather than accessed directly.
+
+**When the scorecard and verify disagree, verify is more authoritative.** A CLI that scores 57/100 on the scorecard but passes 91% of runtime tests is better than one that scores 80/100 but crashes on first use. Report both numbers. Don't chase scorecard points at the expense of actual behavior.
+
 ## Anti-Shortcut Rules
 
 These phrases indicate a phase was shortcut. If you catch yourself writing them, STOP and re-do the phase:
@@ -2133,6 +2294,8 @@ These phrases indicate a phase was shortcut. If you catch yourself writing them,
 - "The scorecard is the objective" (The scorecard measures proxies. The objective is: would a user of the top competitor switch? Check the three-benchmark gate.)
 - "We complement the incumbent, we don't compete" (Users don't want two CLIs. If the incumbent has a feature, you need it too - Phase 0.6 table stakes.)
 - "That feature is anti-scope" (If a competitor with >100 stars has it, it's not anti-scope. It's a backlog item. Phase 0.6 classification rules.)
+- "I'll skip the agent readiness review" (You MUST attempt the dispatch. If the agent isn't installed, the dispatch will fail and you warn the user. If it IS installed, it runs. You don't get to decide it's unnecessary.)
+- "The CLI is already agent-native enough" (The scorecard checks for flags. The agent readiness reviewer checks 7 deeper principles — alias correctness, output routing, delete safety gates, exit code semantics. These are different things. Dispatch it.)
 
 **Module path rule:**
 - The go.mod module path MUST be a valid Go import path with a real org name (e.g., `github.com/mvanhorn/discord-cli`). The literal string `USER` is never acceptable. The generator auto-derives from git config.

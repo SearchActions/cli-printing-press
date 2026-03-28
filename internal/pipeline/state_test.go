@@ -118,6 +118,102 @@ func TestDefaultOutputDir(t *testing.T) {
 	}
 }
 
+func TestPhaseAgentReadinessInPhaseOrder(t *testing.T) {
+	// PhaseAgentReadiness must be between PhaseReview and PhaseComparative.
+	var reviewIdx, agentIdx, compIdx int
+	for i, name := range PhaseOrder {
+		switch name {
+		case PhaseReview:
+			reviewIdx = i
+		case PhaseAgentReadiness:
+			agentIdx = i
+		case PhaseComparative:
+			compIdx = i
+		}
+	}
+	assert.Greater(t, agentIdx, reviewIdx, "agent-readiness must come after review")
+	assert.Less(t, agentIdx, compIdx, "agent-readiness must come before comparative")
+}
+
+func TestNextPhaseReturnsAgentReadiness(t *testing.T) {
+	s := NewState("ar-test", "/tmp/test")
+	// Complete through PhaseReview.
+	for _, name := range PhaseOrder {
+		if name == PhaseAgentReadiness {
+			break
+		}
+		s.Complete(name)
+	}
+	assert.Equal(t, PhaseAgentReadiness, s.NextPhase())
+}
+
+func TestNewStatePlanPathStableNumbered(t *testing.T) {
+	s := NewState("path-test", "/tmp/test")
+	for _, name := range PhaseOrder {
+		expected := "docs/plans/path-test-pipeline/" + PlanFilename(name)
+		assert.Equal(t, expected, s.Phases[name].PlanPath, "PlanPath for %s", name)
+	}
+	// Spot-check a few to verify the numbering scheme.
+	assert.Contains(t, s.Phases[PhasePreflight].PlanPath, "00-preflight-plan.md")
+	assert.Contains(t, s.Phases[PhaseAgentReadiness].PlanPath, "55-agent-readiness-plan.md")
+	assert.Contains(t, s.Phases[PhaseShip].PlanPath, "70-ship-plan.md")
+}
+
+func TestLoadStateMigratesV1ToV2(t *testing.T) {
+	apiName := "migrate-v1-test"
+	dir := PipelineDir(apiName)
+	require.NoError(t, os.MkdirAll(dir, 0o755))
+	defer os.RemoveAll(dir)
+
+	// Simulate a v1 state file without agent-readiness phase, with index-based
+	// paths, and some completed phases missing PlanStatus (pre-PlanStatus code).
+	v1State := PipelineState{
+		Version:   1,
+		APIName:   apiName,
+		OutputDir: "/tmp/migrate-cli",
+		Phases: map[string]PhaseState{
+			PhasePreflight:   {Status: StatusCompleted, PlanStatus: PlanStatusCompleted, PlanPath: dir + "/00-preflight-plan.md"},
+			PhaseResearch:    {Status: StatusCompleted, PlanPath: dir + "/01-research-plan.md"},  // no PlanStatus (pre-PlanStatus v1)
+			PhaseScaffold:    {Status: StatusCompleted, PlanPath: dir + "/02-scaffold-plan.md"},  // no PlanStatus
+			PhaseEnrich:      {Status: StatusCompleted, PlanStatus: PlanStatusCompleted, PlanPath: dir + "/03-enrich-plan.md"},
+			PhaseRegenerate:  {Status: StatusCompleted, PlanStatus: PlanStatusCompleted, PlanPath: dir + "/04-regenerate-plan.md"},
+			PhaseReview:      {Status: StatusCompleted, PlanStatus: PlanStatusCompleted, PlanPath: dir + "/05-review-plan.md"},
+			PhaseComparative: {Status: StatusPending, PlanPath: dir + "/06-comparative-plan.md"},
+			PhaseShip:        {Status: StatusPending, PlanPath: dir + "/07-ship-plan.md"},
+		},
+	}
+	data, err := json.MarshalIndent(v1State, "", "  ")
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(StatePath(apiName), data, 0o644))
+
+	loaded, err := LoadState(apiName)
+	require.NoError(t, err)
+
+	// Version bumped.
+	assert.Equal(t, 2, loaded.Version)
+
+	// New phase was backfilled as completed.
+	ar := loaded.Phases[PhaseAgentReadiness]
+	assert.Equal(t, StatusCompleted, ar.Status)
+	assert.Equal(t, PlanStatusCompleted, ar.PlanStatus)
+
+	// All phases have stable-numbered PlanPaths.
+	for _, name := range PhaseOrder {
+		expected := dir + "/" + PlanFilename(name)
+		assert.Equal(t, expected, loaded.Phases[name].PlanPath, "migrated PlanPath for %s", name)
+	}
+
+	// Completed phases with empty PlanStatus get backfilled.
+	assert.Equal(t, PlanStatusCompleted, loaded.Phases[PhaseResearch].PlanStatus, "PlanStatus backfilled for research")
+	assert.Equal(t, PlanStatusCompleted, loaded.Phases[PhaseScaffold].PlanStatus, "PlanStatus backfilled for scaffold")
+
+	// Existing phase statuses preserved (comparative was pending).
+	assert.Equal(t, StatusPending, loaded.Phases[PhaseComparative].Status)
+
+	// NextPhase() skips the backfilled agent-readiness and returns comparative.
+	assert.Equal(t, PhaseComparative, loaded.NextPhase())
+}
+
 func TestPhaseStateJSONIncludesPlanStatus(t *testing.T) {
 	state := PhaseState{
 		Status:     StatusPlanned,
