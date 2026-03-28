@@ -143,6 +143,7 @@ func TestGenerateWithNoAuth(t *testing.T) {
 	gen := New(apiSpec, outputDir)
 	require.NoError(t, gen.Generate())
 	require.NoError(t, gen.Validate())
+	assert.NoFileExists(t, filepath.Join(outputDir, "noauth-cli-validation"))
 }
 
 func TestGenerateWithOwnerField(t *testing.T) {

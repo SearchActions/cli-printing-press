@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/mvanhorn/cli-printing-press/internal/artifacts"
 )
 
 type validationGate struct {
@@ -18,6 +20,20 @@ type validationGate struct {
 
 func (g *Generator) Validate() error {
 	binPath := filepath.Join(g.OutputDir, g.Spec.Name+"-cli-validation")
+	if err := artifacts.CleanupGeneratedCLI(g.OutputDir, artifacts.CleanupOptions{
+		RemoveValidationBinaries: true,
+		RemoveRecursiveCopies:    true,
+		RemoveFinderMetadata:     true,
+	}); err != nil {
+		return fmt.Errorf("pre-validating cleanup: %w", err)
+	}
+	defer func() {
+		_ = artifacts.CleanupGeneratedCLI(g.OutputDir, artifacts.CleanupOptions{
+			RemoveValidationBinaries: true,
+			RemoveRecursiveCopies:    true,
+			RemoveFinderMetadata:     true,
+		})
+	}()
 
 	gates := []validationGate{
 		{

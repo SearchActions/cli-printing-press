@@ -4,7 +4,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 
+	"github.com/mvanhorn/cli-printing-press/internal/artifacts"
 	"github.com/mvanhorn/cli-printing-press/internal/pipeline"
 	"github.com/spf13/cobra"
 )
@@ -18,6 +20,7 @@ func newVerifyCmd() *cobra.Command {
 	var fix bool
 	var maxIterations int
 	var asJSON bool
+	var cleanup bool
 
 	cmd := &cobra.Command{
 		Use:   "verify",
@@ -38,6 +41,9 @@ Use --fix to auto-patch common failures and re-test (max 3 iterations).`,
 
   # Auto-fix failures and re-test
   printing-press verify --dir ./github-cli --spec /tmp/spec.json --fix
+
+  # Remove transient build artifacts after the final verification pass
+  printing-press verify --dir ./github-cli --spec /tmp/spec.json --cleanup
 
   # Set pass threshold and output JSON
   printing-press verify --dir ./github-cli --spec /tmp/spec.json --threshold 70 --json`,
@@ -66,6 +72,10 @@ Use --fix to auto-patch common failures and re-test (max 3 iterations).`,
 				} else if fixReport.FinalReport != nil {
 					report = fixReport.FinalReport
 				}
+			}
+
+			if err := cleanupVerifyArtifacts(dir, cleanup); err != nil {
+				return err
 			}
 
 			if asJSON {
@@ -103,6 +113,7 @@ Use --fix to auto-patch common failures and re-test (max 3 iterations).`,
 	cmd.Flags().BoolVar(&fix, "fix", false, "Auto-fix common failures and re-test")
 	cmd.Flags().IntVar(&maxIterations, "max-iterations", 3, "Maximum fix loop iterations")
 	cmd.Flags().BoolVar(&asJSON, "json", false, "Output as JSON")
+	cmd.Flags().BoolVar(&cleanup, "cleanup", false, "Remove transient build artifacts after verification")
 	_ = cmd.MarkFlagRequired("dir")
 	return cmd
 }
@@ -128,6 +139,31 @@ func printVerifyReport(report *pipeline.VerifyReport) {
 	fmt.Printf("Pass Rate: %.0f%% (%d/%d passed, %d critical)\n",
 		report.PassRate, report.Passed, report.Total, report.Critical)
 	fmt.Printf("Verdict: %s\n", report.Verdict)
+}
+
+func cleanupVerifyArtifacts(dir string, cleanup bool) error {
+	if !cleanup {
+		return nil
+	}
+	if dir == "" {
+		return fmt.Errorf("cleaning generated artifacts: empty dir")
+	}
+	if !filepath.IsAbs(dir) {
+		if absDir, err := filepath.Abs(dir); err == nil {
+			dir = absDir
+		}
+	}
+	if err := artifacts.CleanupGeneratedCLI(dir, artifacts.CleanupOptions{
+		RemoveCache:              true,
+		RemoveRuntimeBinary:      true,
+		RemoveValidationBinaries: true,
+		RemoveDogfoodBinaries:    true,
+		RemoveRecursiveCopies:    true,
+		RemoveFinderMetadata:     true,
+	}); err != nil {
+		return fmt.Errorf("cleaning generated artifacts: %w", err)
+	}
+	return nil
 }
 
 func passFail(b bool) string {
