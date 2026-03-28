@@ -8,7 +8,7 @@ Just making a CLI is not hard. Making a CLI that understands the power user is e
 /printing-press Linear
 ```
 
-One command. 10 phases. ~1 hour. Produces a Go CLI + MCP server + 7 analysis documents. REST or GraphQL.
+One command. 12 phases. ~1 hour. Produces a Go CLI + MCP server + 8 analysis documents. REST or GraphQL. Matches every competitor feature, then adds the data layer they don't have.
 
 ### Get it
 
@@ -22,7 +22,7 @@ Discord's API has 300+ endpoints. Most generators stop there - wrap every endpoi
 
 Why does the 11-command tool win? Because Steinberger saw something Discord's own API designers didn't: **conversations are institutional knowledge.** Every message thread is a document that should be archived, indexed, and searched locally. Those 11 commands embody that insight. The 300 endpoint wrappers don't.
 
-Until now, you had to choose: breadth (wrap every endpoint) or depth (understand the user). The printing press eliminates that choice. It generates the full API surface AND the discrawl-style intelligence layer AND an MCP server. One spec in. Everything out.
+Until now, you had to choose: breadth (wrap every endpoint) or depth (understand the user). The printing press eliminates that choice. It generates the full API surface AND matches every feature the top competitor has AND adds the discrawl-style intelligence layer AND an MCP server. One spec in. Everything out.
 
 ## The Non-Obvious Insight
 
@@ -80,8 +80,8 @@ The press generates the API wrapper in Phase 2 (Rung 1-2). Then it generates the
 
 The NOI is the creative intelligence. The printing press generates **both interfaces** from one spec:
 
-- **`api-cli`** - cobra CLI for humans + shell agents (Claude Code, Codex, Gemini CLI)
-- **`api-mcp`** - MCP server for Claude Desktop, Cursor, Windsurf, Cline
+- **`<api>-pp-cli`** - cobra CLI for humans + shell agents (Claude Code, Codex, Gemini CLI)
+- **`<api>-pp-mcp`** - MCP server for Claude Desktop, Cursor, Windsurf, Cline
 
 Same `internal/client`, same `internal/store`, same auth. Two binaries, zero code duplication.
 
@@ -90,8 +90,8 @@ Same `internal/client`, same `internal/store`, same auth. Two binaries, zero cod
 **MCP wins for IDE integration:** Claude Desktop and Cursor discover tools automatically via MCP. No shell needed. The MCP server exposes the same operations as the CLI - including the data layer (sync, search, sql).
 
 ```
-One spec  -->  printing-press generate  -->  api-cli (cobra)  +  api-mcp (MCP server)
-                                              |                     |
+One spec  -->  printing-press generate  -->  <api>-pp-cli (cobra)  +  <api>-pp-mcp (MCP server)
+                                              |                         |
                                               same internal/client, internal/store
 ```
 
@@ -113,21 +113,24 @@ The archetype is detected automatically from the spec. The entity mapper figures
 
 ## How It Works
 
-10 phases. Each writes a plan document. The artifacts are the product.
+12 phases. Each writes a plan document. The artifacts are the product.
 
 ```
 Phase 0     Visionary Research        (3-5 min)    NOI + domain identity + usage patterns
 Phase 0.1   API Key Prompt            (optional)   Offer live testing at end
 Phase 0.5   Power User Workflows      (2-3 min)    Compound commands power users want
+Phase 0.6   Feature Parity Audit      (5 min)      [NEW] Catalog competitor features, classify table stakes
 Phase 0.7   Prediction Engine         (15-25 min)  SQLite schema + FTS5 + sync strategy
+Phase 0.8   Product Thesis            (2 min)      Name (<api>-pp-cli), positioning, anti-scope with cost analysis
 Phase 1     Deep Research             (5-8 min)    Competitors, strategic justification
-Phase 2     Generate                  (1-2 min)    Go CLI + MCP server from spec
-Phase 3     Non-Obvious Insight Review(5-8 min)    Two-tier quality scoring (100 points)
-Phase 4     GOAT Build                (5-10 min)   Domain tables, workflow commands, insights
+Phase 2     Generate                  (1-2 min)    Go CLI + MCP server from spec + name/path/version validation
+Phase 3     Non-Obvious Insight Review(5-8 min)    Two-tier scoring + competitor feature matrix
+Phase 4     GOAT Build                (20-30 min)  7 priorities: data layer, table stakes, workflows, names, tests, distribution
 Phase 4.7   Proof of Behavior         (30 sec)     Verify data actually flows (no hallucinations)
-Phase 5     Ship Readiness Assessment (2-3 min)    Before/after delta + report
-Phase 5.5   Live API Testing          (optional)   Read-only tests against real API
+Phase 5     Ship Readiness Assessment (2-3 min)    Three-benchmark gate: architecture + quality + features
+Phase 5.5   Live API Testing          (optional)   Read-only tests + data pipeline smoke test
 Phase 5.7   Ship Loop                 (auto)       Fix issues and re-score until PASS
+Phase 5.9   Offer Emboss              (prompt)     [NEW] Opt-in second pass to improve further
 ```
 
 ### Codex Mode (opt-in)
@@ -147,11 +150,19 @@ When you add `codex`, Phase 4's code generation tasks are delegated to Codex CLI
 
 **Bounded output**: list commands show "Showing N results. To narrow: add --limit, --json --select, or filter flags." Token-conscious `--compact` mode returns only high-gravity fields (id, name, status, timestamps) - 60-80% fewer tokens.
 
+**Table stakes features** (from Phase 0.6): every feature the top competitor has, classified and built before novel features. If schpet/linear-cli has `start` (git branch from issue), you get it. If 4ier/notion-cli has human-friendly filters, you get it. Anti-gaming rules prevent scorecard optimization over real features.
+
 **Data layer** (high-gravity entities): domain-specific SQLite tables with proper columns (not JSON blobs), FTS5 full-text search, incremental sync with cursor tracking, `sql` command for raw queries, domain-specific `UpsertX()` and `SearchX()` methods.
 
 **Workflow commands** (from archetype): `stale`, `orphans`, `load`, `channel-health`, `reconcile`, etc.
 
 **Insight commands** (Rung 5): `health` (composite score), `similar` (duplicate detection), `trends`, `bottleneck`, `forecast`, `patterns`.
+
+**Command name normalization**: generated names like `retrieve-a` become `get`, `post` becomes `create`, `patch` becomes `update`. Clean names, not operationId garbage.
+
+**Tests**: minimum 1 test file per package (store, cli). Table-driven tests for data layer queries and workflow commands. No more shipping with 0 test files.
+
+**Distribution scaffold**: `.goreleaser.yaml`, Homebrew formula, GitHub Actions CI. A CLI that can only be `go install`'d is not a real CLI.
 
 **REST + GraphQL**: OpenAPI specs generate full CLIs. GraphQL SDL files are parsed with Relay pagination detection and produce the same domain-specific output.
 
@@ -159,7 +170,15 @@ When you add `codex`, Phase 4's code generation tasks are delegated to Codex CLI
 
 **Sync performance** (discrawl-inspired): Cursor-based pagination, batch SQLite transactions, tuned pragmas (`synchronous=NORMAL`, `mmap_size=256MB`), `--since` incremental sync, `--concurrency` parallel workers, progress reporting to stderr.
 
-## Quality Scoring (v2 - Honest Scoring)
+## Quality Scoring (v2 - Three Benchmarks)
+
+Three benchmarks, not one. All must pass:
+
+1. **Architecture** (discrawl benchmark): Does it have a real data layer - domain-specific SQLite, FTS5, incremental sync, workflow commands?
+2. **Quality** (gogcli benchmark): Does the code have proper output modes, typed errors, agent-native flags, doctor, README with cookbook?
+3. **Features** (competitor benchmark): Would a user of the top competitor switch to this CLI?
+
+Architecture without features is a toy. Features without architecture is a thin wrapper. Quality without either is polished nothing.
 
 Inspired by Peter Steinberger's [gogcli](https://github.com/steipete/gogcli). Two tiers, 100 points max, weighted 50/50. Grade A = 85+.
 
@@ -217,7 +236,7 @@ go build -o ./printing-press ./cmd/printing-press
 /printing-press --spec ./openapi.yaml    # From local spec file
 ```
 
-Each run produces two binaries (`api-cli` + `api-mcp`), 7 analysis documents, and a Quality Score.
+Each run produces two binaries (`<api>-pp-cli` + `<api>-pp-mcp`), 8 analysis documents, and a Quality Score.
 
 ## Verification Tools
 
@@ -264,6 +283,28 @@ Safety: GET only, --limit 1, 10s timeout, stops on 401. Never creates, posts, or
 ### Ship Loop (Phase 5.7)
 
 "Is this shippable?" triggers a fix cycle: identify top 3 issues, fix them, re-score. Max 3 iterations. No more dead-end assessments.
+
+## What's New in v2 (2026-03-27)
+
+Synthesized from post-mortems on Notion and Linear runs. 14 changes to the skill.
+
+**The problem:** v1 did excellent competitive research, then ignored it to chase scorecard numbers. Every CLI came out as a discrawl clone with cute names nobody asked for.
+
+**The fix:** Three root problems addressed:
+
+| Problem | v1 | v2 |
+|---------|----|----|
+| Scorecard-driven development | Priority 2: "raise the scorecard number" | Priority 4 with anti-gaming rules. Table stakes are Priority 1. |
+| Same architecture for every API | discrawl clone: SQLite + 8 insight commands regardless of domain | Phase 0.6 Feature Parity Audit: build what competitors have FIRST |
+| Names nobody asked for | "noto" (Notion), "lz" (Linear) | `<api>-pp-cli` by default. Discoverable, branded, no confusion. |
+
+**New phases:** 0.6 (Feature Parity Audit), 5.9 (Offer Emboss)
+
+**New Phase 4 priorities:** P0 Data Layer, P1 Table Stakes (NEW), P2 Workflows, P3 Command Name Normalization (NEW), P4 Scorecard with anti-gaming, P5 Tests (NEW), P6 Distribution (NEW), P7 Polish
+
+**New validations:** Module path (2.0b), API version header (2.7), data pipeline smoke test (5.5g), 8 new anti-shortcut rules
+
+**Emboss:** Now opt-in only. Offered at end of run, never triggered automatically.
 
 ## Credits
 
