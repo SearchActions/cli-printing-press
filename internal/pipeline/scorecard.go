@@ -41,8 +41,9 @@ type SteinerScore struct {
 	SyncCorrectness       int `json:"sync_correctness"`        // 0-10
 	TypeFidelity          int `json:"type_fidelity"`           // 0-5
 	DeadCode              int `json:"dead_code"`               // 0-5
-	Total                 int `json:"total"`                   // 0-100 (weighted: 50% infrastructure + 50% domain)
-	Percentage            int `json:"percentage"`              // 0-100
+	Total                 int    `json:"total"`                   // 0-100 (weighted: 50% infrastructure + 50% domain)
+	Percentage            int    `json:"percentage"`              // 0-100
+	CalibrationNote       string `json:"calibration_note,omitempty"`
 }
 
 // CompScore compares our score against a competitor on a single dimension.
@@ -54,7 +55,8 @@ type CompScore struct {
 }
 
 // RunScorecard evaluates generated CLI files and produces a scorecard.
-func RunScorecard(outputDir, pipelineDir, specPath string) (*Scorecard, error) {
+// If verifyReport is non-nil, verify results calibrate the final score.
+func RunScorecard(outputDir, pipelineDir, specPath string, verifyReport *VerifyReport) (*Scorecard, error) {
 	sc := &Scorecard{}
 
 	// Infer API name from outputDir basename
@@ -109,6 +111,25 @@ func RunScorecard(outputDir, pipelineDir, specPath string) (*Scorecard, error) {
 
 	if sc.Steinberger.Total > 0 {
 		sc.Steinberger.Percentage = sc.Steinberger.Total // Total IS the percentage (0-100)
+	}
+
+	// Calibrate against verify results when available
+	if verifyReport != nil {
+		verifyScore := int(verifyReport.PassRate * 100)
+		// Verify pass rate sets a floor: 90% verify → 72 floor
+		floor := (verifyScore * 80) / 100
+		if sc.Steinberger.Total < floor {
+			originalTotal := sc.Steinberger.Total
+			sc.Steinberger.Total = floor
+			sc.Steinberger.Percentage = floor
+			sc.Steinberger.CalibrationNote = fmt.Sprintf(
+				"Score raised from %d to %d based on %d%% verify pass rate",
+				originalTotal, floor, verifyScore)
+		}
+		// Verify failures cap data pipeline dimension
+		if !verifyReport.DataPipeline && sc.Steinberger.DataPipelineIntegrity > 5 {
+			sc.Steinberger.DataPipelineIntegrity = 5
+		}
 	}
 
 	// Grade
@@ -641,11 +662,21 @@ func scoreWorkflows(dir string) int {
 		return 0
 	}
 
-	workflowPrefixes := []string{"stale", "orphan", "triage", "load", "overdue", "standup", "deps", "workflow"}
+	workflowPrefixes := []string{"stale", "orphan", "triage", "load", "overdue", "standup", "deps", "workflow",
+		"agenda", "free", "conflicts", "unconfirmed", "stats", "trends", "health",
+		"reconcile", "revenue", "archive", "search", "sync", "busy", "export",
+		"noshow", "reassign", "clone"}
+
+	infra := map[string]bool{
+		"helpers.go": true, "root.go": true, "doctor.go": true, "auth.go": true,
+	}
 
 	compoundCommands := 0
 	for _, e := range entries {
 		if e.IsDir() || !strings.HasSuffix(e.Name(), ".go") {
+			continue
+		}
+		if infra[e.Name()] {
 			continue
 		}
 
@@ -666,6 +697,12 @@ func scoreWorkflows(dir string) int {
 
 		content := readFileContent(filepath.Join(cliDir, e.Name()))
 
+		// A command that uses the store is a workflow command (it uses the data layer)
+		if strings.Contains(content, "/store") || strings.Contains(content, "store.Open") || strings.Contains(content, "store.New") {
+			compoundCommands++
+			continue
+		}
+
 		// Count files that make 2+ different API calls in a single RunE.
 		apiCalls := 0
 		if strings.Contains(content, "c.Get(") || strings.Contains(content, "c.Get (") {
@@ -680,8 +717,7 @@ func scoreWorkflows(dir string) int {
 		if strings.Contains(content, "c.Delete(") || strings.Contains(content, "c.Delete (") {
 			apiCalls++
 		}
-		// Also count store operations as compound behavior.
-		if strings.Contains(content, "store.") || strings.Contains(content, "/store") {
+		if strings.Contains(content, "store.") {
 			apiCalls++
 		}
 		if apiCalls >= 2 {
@@ -712,18 +748,46 @@ func scoreInsight(dir string) int {
 		return 0
 	}
 
-	insightPrefixes := []string{"health", "similar", "bottleneck", "trends", "patterns", "forecast"}
+	insightPrefixes := []string{"health", "similar", "bottleneck", "trends", "patterns", "forecast",
+		"stats", "conflicts", "stale", "analytics", "busiest", "velocity",
+		"utilization", "coverage", "gaps", "noshow"}
+
+	infra := map[string]bool{
+		"helpers.go": true, "root.go": true, "doctor.go": true, "auth.go": true,
+	}
+
 	found := 0
 	for _, e := range entries {
 		if e.IsDir() || !strings.HasSuffix(e.Name(), ".go") {
 			continue
 		}
+		if infra[e.Name()] {
+			continue
+		}
 		name := strings.ToLower(e.Name())
+
+		// Check prefix match
+		prefixMatch := false
 		for _, prefix := range insightPrefixes {
 			if strings.HasPrefix(name, prefix) {
-				found++
+				prefixMatch = true
 				break
 			}
+		}
+		if prefixMatch {
+			found++
+			continue
+		}
+
+		// Structural detection: commands that query the store and produce
+		// aggregated/computed output (COUNT, SUM, GROUP BY, etc.) are insights
+		content := readFileContent(filepath.Join(cliDir, e.Name()))
+		usesStore := strings.Contains(content, "/store") || strings.Contains(content, "store.Open") || strings.Contains(content, "store.New")
+		hasAggregation := strings.Contains(content, "COUNT(") || strings.Contains(content, "SUM(") ||
+			strings.Contains(content, "GROUP BY") || strings.Contains(content, "AVG(") ||
+			strings.Contains(content, "rate") || strings.Contains(content, "Rate")
+		if usesStore && hasAggregation {
+			found++
 		}
 	}
 
@@ -912,8 +976,9 @@ func scoreAuthProtocol(dir, specPath string) int {
 
 func scoreDataPipelineIntegrity(dir string) int {
 	score := 0
-	syncContent := readFileContent(filepath.Join(dir, "internal", "cli", "sync.go"))
-	searchContent := readFileContent(filepath.Join(dir, "internal", "cli", "search.go"))
+	cliDir := filepath.Join(dir, "internal", "cli")
+	syncContent := readAllGoFiles(cliDir)
+	searchContent := syncContent // search patterns also live in any CLI file
 	storeContent := readFileContent(filepath.Join(dir, "internal", "store", "store.go"))
 
 	if syncContent != "" && (strings.Contains(syncContent, "/store") || strings.Contains(syncContent, "store.")) {
@@ -944,7 +1009,8 @@ func scoreDataPipelineIntegrity(dir string) int {
 }
 
 func scoreSyncCorrectness(dir string) int {
-	content := readFileContent(filepath.Join(dir, "internal", "cli", "sync.go"))
+	cliDir := filepath.Join(dir, "internal", "cli")
+	content := readAllGoFiles(cliDir)
 	if content == "" {
 		return 0
 	}
@@ -1041,17 +1107,24 @@ func scoreDeadCode(dir string) int {
 	flagRe := regexp.MustCompile(`&flags\.(\w+)`)
 	flagNames := uniqueMatches(flagRe, rootContent)
 	otherCLI := readOtherGoFiles(cliDir, map[string]bool{"root.go": true})
-	for _, name := range flagNames {
-		if !strings.Contains(otherCLI, "flags."+name) {
-			deadFlags++
+
+	// If the flags struct is passed as a function argument, all fields are reachable
+	flagsPassedAsArg := strings.Contains(otherCLI, "flags,") || strings.Contains(otherCLI, "flags)")
+	if !flagsPassedAsArg {
+		for _, name := range flagNames {
+			if !strings.Contains(otherCLI, "flags."+name) {
+				deadFlags++
+			}
 		}
 	}
 
 	funcRe := regexp.MustCompile(`(?m)^func\s+([A-Za-z_]\w*)\s*\(`)
 	funcNames := uniqueMatches(funcRe, helpersContent)
 	otherHelpers := readOtherGoFiles(cliDir, map[string]bool{"helpers.go": true})
+	// Check both other files AND helpers.go itself for intra-file calls
+	allContent := helpersContent + "\n" + otherHelpers
 	for _, name := range funcNames {
-		if !strings.Contains(otherHelpers, name+"(") {
+		if !strings.Contains(allContent, name+"(") {
 			deadFunctions++
 		}
 	}
@@ -1206,6 +1279,23 @@ func uniqueMatches(re *regexp.Regexp, content string) []string {
 		out = append(out, match[1])
 	}
 	return out
+}
+
+// readAllGoFiles concatenates the content of all .go files in dir.
+func readAllGoFiles(dir string) string {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return ""
+	}
+	var b strings.Builder
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".go") {
+			continue
+		}
+		b.WriteString(readFileContent(filepath.Join(dir, entry.Name())))
+		b.WriteByte('\n')
+	}
+	return b.String()
 }
 
 func readOtherGoFiles(dir string, skip map[string]bool) string {

@@ -44,7 +44,8 @@ func filterFields() {}
 func outputCSV() {}
 `)
 
-		assert.Equal(t, 1, scoreDeadCode(dir))
+		// 2 dead flags (csvOutput, stdinInput), 0 dead functions (intra-file calls now counted)
+		assert.Equal(t, 3, scoreDeadCode(dir))
 	})
 
 	t.Run("returns full score when nothing is dead", func(t *testing.T) {
@@ -242,6 +243,228 @@ func init() {
 `)
 
 		assert.GreaterOrEqual(t, scoreTypeFidelity(dir), 4)
+	})
+}
+
+func TestScoreSyncCorrectness_NonSyncFilename(t *testing.T) {
+	t.Run("finds sync patterns in non-sync.go files", func(t *testing.T) {
+		dir := t.TempDir()
+
+		// Sync logic lives in channel_workflow.go, not sync.go
+		writeScorecardFixture(t, dir, "internal/cli/channel_workflow.go", `
+package cli
+
+func defaultSyncResources() []string {
+	return []string{"bookings", "event_types"}
+}
+
+func runChannelSync(store interface {
+	GetSyncState(string) string
+	SaveSyncState(string, string)
+}) {
+	path := "/v2/bookings"
+	cursor := store.GetSyncState("bookings")
+	paginatedGet(path, cursor)
+	store.SaveSyncState("bookings", "next")
+}
+`)
+
+		score := scoreSyncCorrectness(dir)
+		assert.GreaterOrEqual(t, score, 8, "sync logic in non-sync.go should score high")
+	})
+}
+
+func TestScoreDataPipelineIntegrity_NonSyncFilename(t *testing.T) {
+	t.Run("finds upsert patterns in non-sync.go files", func(t *testing.T) {
+		dir := t.TempDir()
+
+		writeScorecardFixture(t, dir, "internal/cli/sync_cmd.go", `
+package cli
+
+import "example.com/project/internal/store"
+
+func runSync(db *store.DB) {
+	_ = db.UpsertBooking(nil)
+}
+`)
+		writeScorecardFixture(t, dir, "internal/cli/search_cmd.go", `
+package cli
+
+func runSearch(db interface{ SearchBookings(string) error }) {
+	_ = db.SearchBookings("term")
+}
+`)
+		writeScorecardFixture(t, dir, "internal/store/store.go", `
+package store
+
+const schema = `+"`"+`
+CREATE TABLE bookings (
+	id TEXT,
+	user_id TEXT,
+	event_type_id TEXT,
+	title TEXT,
+	start_time TEXT,
+	end_time TEXT
+);
+`+"`"+`
+`)
+
+		score := scoreDataPipelineIntegrity(dir)
+		assert.GreaterOrEqual(t, score, 7, "domain upserts in non-sync.go should score high")
+	})
+}
+
+func TestScoreDeadCode_FlagsPassedAsArg(t *testing.T) {
+	t.Run("flags struct passed to function counts all fields as used", func(t *testing.T) {
+		dir := t.TempDir()
+
+		writeScorecardFixture(t, dir, "internal/cli/root.go", `
+package cli
+
+var flags struct {
+	asJSON   bool
+	csvOutput bool
+	verbose  bool
+}
+
+func init() {
+	rootCmd.Flags().BoolVar(&flags.asJSON, "json", false, "JSON output")
+	rootCmd.Flags().BoolVar(&flags.csvOutput, "csv", false, "CSV output")
+	rootCmd.Flags().BoolVar(&flags.verbose, "verbose", false, "Verbose")
+}
+`)
+		writeScorecardFixture(t, dir, "internal/cli/messages.go", `
+package cli
+
+func runMessages() {
+	printOutput(cmd, flags, data, statusCode)
+}
+`)
+
+		assert.Equal(t, 5, scoreDeadCode(dir))
+	})
+}
+
+func TestScoreDeadCode_IntraFileHelperCalls(t *testing.T) {
+	t.Run("helpers calling other helpers are not dead", func(t *testing.T) {
+		dir := t.TempDir()
+
+		writeScorecardFixture(t, dir, "internal/cli/root.go", `
+package cli
+`)
+		writeScorecardFixture(t, dir, "internal/cli/helpers.go", `
+package cli
+
+func formatOutput(data interface{}) string {
+	return applyFormat(data)
+}
+
+func applyFormat(data interface{}) string {
+	return ""
+}
+`)
+		writeScorecardFixture(t, dir, "internal/cli/messages.go", `
+package cli
+
+func runMessages() {
+	formatOutput(data)
+}
+`)
+
+		assert.Equal(t, 5, scoreDeadCode(dir))
+	})
+}
+
+func TestScorecard_VerifyCalibration(t *testing.T) {
+	t.Run("verify pass rate sets floor on total score", func(t *testing.T) {
+		dir := t.TempDir()
+
+		// Minimal CLI that would score low on static analysis
+		writeScorecardFixture(t, dir, "internal/cli/root.go", `
+package cli
+`)
+		writeScorecardFixture(t, dir, "internal/cli/helpers.go", `
+package cli
+`)
+		writeScorecardFixture(t, dir, "README.md", `# Test CLI`)
+
+		pipelineDir := t.TempDir()
+		verifyReport := &VerifyReport{
+			PassRate:     0.91,
+			Total:        33,
+			Passed:       30,
+			DataPipeline: true,
+			Verdict:      "PASS",
+		}
+
+		sc, err := RunScorecard(dir, pipelineDir, "", verifyReport)
+		assert.NoError(t, err)
+		// 91% * 80 / 100 = 72 floor
+		assert.GreaterOrEqual(t, sc.Steinberger.Total, 72)
+		assert.Contains(t, sc.Steinberger.CalibrationNote, "verify pass rate")
+	})
+
+	t.Run("verify failure caps data pipeline dimension", func(t *testing.T) {
+		dir := t.TempDir()
+
+		writeScorecardFixture(t, dir, "internal/cli/root.go", `package cli`)
+		writeScorecardFixture(t, dir, "internal/cli/sync.go", `
+package cli
+
+import "example.com/project/internal/store"
+
+func runSync(db *store.DB) {
+	_ = db.UpsertBooking(nil)
+}
+
+func defaultSyncResources() []string {
+	return []string{"bookings"}
+}
+`)
+		writeScorecardFixture(t, dir, "internal/cli/search.go", `
+package cli
+
+func runSearch(db interface{ SearchBookings(string) error }) {
+	_ = db.SearchBookings("term")
+}
+`)
+		writeScorecardFixture(t, dir, "internal/store/store.go", `
+package store
+
+const schema = `+"`"+`
+CREATE TABLE bookings (
+	id TEXT,
+	user_id TEXT,
+	event_type_id TEXT,
+	title TEXT,
+	start_time TEXT,
+	end_time TEXT
+);
+`+"`"+`
+`)
+
+		pipelineDir := t.TempDir()
+		verifyReport := &VerifyReport{
+			PassRate:     0.50,
+			DataPipeline: false,
+			Verdict:      "FAIL",
+		}
+
+		sc, err := RunScorecard(dir, pipelineDir, "", verifyReport)
+		assert.NoError(t, err)
+		assert.LessOrEqual(t, sc.Steinberger.DataPipelineIntegrity, 5)
+	})
+
+	t.Run("nil verify report has no effect", func(t *testing.T) {
+		dir := t.TempDir()
+
+		writeScorecardFixture(t, dir, "internal/cli/root.go", `package cli`)
+		writeScorecardFixture(t, dir, "README.md", `# Test`)
+
+		pipelineDir := t.TempDir()
+		sc, err := RunScorecard(dir, pipelineDir, "", nil)
+		assert.NoError(t, err)
+		assert.Empty(t, sc.Steinberger.CalibrationNote)
 	})
 }
 

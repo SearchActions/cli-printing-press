@@ -34,7 +34,7 @@ func newScorecardCmd() *cobra.Command {
 			}
 			defer os.RemoveAll(pipelineDir)
 
-			sc, err := pipeline.RunScorecard(dir, pipelineDir, specPath)
+			sc, err := pipeline.RunScorecard(dir, pipelineDir, specPath, nil)
 			if err != nil {
 				return &ExitError{Code: ExitGenerationError, Err: fmt.Errorf("running scorecard: %w", err)}
 			}
