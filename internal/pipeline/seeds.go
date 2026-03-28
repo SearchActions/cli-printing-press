@@ -301,6 +301,44 @@ Evaluate the generated CLI with static scoring and dogfooding evidence that dete
 - Dogfood model uses three tiers: Tier 1 no credentials, Tier 2 read-only, Tier 3 sandbox write
 - Generated CLI binary and help surfaces in {{.OutputDir}}
 `,
+	PhaseAgentReadiness: `---
+title: "{{.APIName}} CLI Pipeline - Agent Readiness Review"
+type: feat
+status: seed
+pipeline_phase: agent-readiness
+pipeline_api: {{.APIName}}
+date: {{now}}
+---
+
+# Phase Goal
+
+Run the compound-engineering:cli-agent-readiness-reviewer agent on the generated {{.APIName}} CLI
+and implement its fixes in a severity-gated loop (max 2 passes) until no Blockers or Frictions remain.
+
+## Context
+
+- Pipeline directory: {{.PipelineDir}}
+- Output directory: {{.OutputDir}}
+- Spec URL: {{.SpecURL}}
+- Spec source: {{.SpecSource}}
+
+## What This Phase Must Produce
+
+- Agent readiness reviewer scorecard (7 principles x severity)
+- Fix implementation log (which fixes were applied, which were skipped/reverted)
+- Phase verdict: Pass (zero Blockers and Frictions), Warn (Frictions remain), or Degrade (Blockers remain)
+
+## Prior Phase Outputs
+
+- Runtime verification results from Phase 4.8 (pass rate, data pipeline status)
+- Working CLI binary in {{.OutputDir}}
+
+## Codebase Pointers
+
+- Reviewer agent: compound-engineering:cli-agent-readiness-reviewer (external plugin)
+- Plugin dependency declared in .claude/settings.json
+- Phase 4.8 analog: SKILL.md Phase 4.8 (Runtime Verification)
+`,
 	PhaseShip: `---
 title: "{{.APIName}} CLI Pipeline - Phase 5: Ship"
 type: feat

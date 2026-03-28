@@ -47,7 +47,7 @@ func GenerateNextPlan(state *PipelineState, nextPhase string) (string, error) {
 	case PhaseShip:
 		return generateShipPlan(ctx)
 	default:
-		// Preflight, Research use static seeds
+		// Preflight, Research, AgentReadiness use static seeds
 		return RenderSeed(nextPhase, ctx.SeedData)
 	}
 }

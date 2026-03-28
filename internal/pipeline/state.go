@@ -10,14 +10,15 @@ import (
 
 // Phase names in execution order.
 const (
-	PhasePreflight   = "preflight"
-	PhaseResearch    = "research"
-	PhaseScaffold    = "scaffold"
-	PhaseEnrich      = "enrich"
-	PhaseRegenerate  = "regenerate"
-	PhaseReview      = "review"
-	PhaseComparative = "comparative"
-	PhaseShip        = "ship"
+	PhasePreflight      = "preflight"
+	PhaseResearch       = "research"
+	PhaseScaffold       = "scaffold"
+	PhaseEnrich         = "enrich"
+	PhaseRegenerate     = "regenerate"
+	PhaseReview         = "review"
+	PhaseAgentReadiness = "agent-readiness"
+	PhaseComparative    = "comparative"
+	PhaseShip           = "ship"
 )
 
 // PhaseOrder defines execution order.
@@ -28,6 +29,7 @@ var PhaseOrder = []string{
 	PhaseEnrich,
 	PhaseRegenerate,
 	PhaseReview,
+	PhaseAgentReadiness,
 	PhaseComparative,
 	PhaseShip,
 }
@@ -59,7 +61,7 @@ type PipelineState struct {
 	DogfoodTier    int                   `json:"dogfood_tier,omitempty"`            // max tier to run (1-3, default 1)
 }
 
-const currentStateVersion = 1
+const currentStateVersion = 2
 
 // PhaseState tracks a single phase.
 type PhaseState struct {
@@ -81,10 +83,10 @@ func StatePath(apiName string) string {
 // NewState creates a fresh pipeline state.
 func NewState(apiName, outputDir string) *PipelineState {
 	phases := make(map[string]PhaseState, len(PhaseOrder))
-	for i, name := range PhaseOrder {
+	for _, name := range PhaseOrder {
 		phases[name] = PhaseState{
 			Status:   StatusPending,
-			PlanPath: filepath.Join(PipelineDir(apiName), fmt.Sprintf("%02d-%s-plan.md", i, name)),
+			PlanPath: filepath.Join(PipelineDir(apiName), fmt.Sprintf("%s-plan.md", name)),
 		}
 	}
 	state := &PipelineState{
@@ -122,14 +124,22 @@ func LoadState(apiName string) (*PipelineState, error) {
 	if err := json.Unmarshal(data, &s); err != nil {
 		return nil, fmt.Errorf("parsing state: %w", err)
 	}
-	// Migrate: add any missing phases from PhaseOrder (e.g., research, comparative).
+	// Migrate: add missing phases and update PlanPath from index-based to name-based format.
 	if s.Version < currentStateVersion {
-		for i, name := range PhaseOrder {
+		for _, name := range PhaseOrder {
 			if _, ok := s.Phases[name]; !ok {
+				// Backfill missing phases as completed (both Status and PlanStatus)
+				// so NextPhase() doesn't treat them as pending.
 				s.Phases[name] = PhaseState{
-					Status:   StatusCompleted,
-					PlanPath: filepath.Join(PipelineDir(apiName), fmt.Sprintf("%02d-%s-plan.md", i, name)),
+					Status:     StatusCompleted,
+					PlanStatus: PlanStatusCompleted,
+					PlanPath:   filepath.Join(PipelineDir(apiName), fmt.Sprintf("%s-plan.md", name)),
 				}
+			} else {
+				// Migrate existing phases from index-based to name-based PlanPath.
+				p := s.Phases[name]
+				p.PlanPath = filepath.Join(PipelineDir(apiName), fmt.Sprintf("%s-plan.md", name))
+				s.Phases[name] = p
 			}
 		}
 		s.Version = currentStateVersion
