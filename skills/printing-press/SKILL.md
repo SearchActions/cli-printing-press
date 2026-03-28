@@ -1013,7 +1013,7 @@ curl -sL -o /tmp/printing-press-spec-<api>.json "<spec-url>" && head -c 200 /tmp
 ### Step 2.2: Check for existing output, remove if exists
 
 ```bash
-cd ~/cli-printing-press && rm -rf <api>-cli 2>/dev/null; echo "CLEAN"
+cd ~/cli-printing-press && rm -rf library/<api>-cli 2>/dev/null; echo "CLEAN"
 ```
 
 ### Step 2.3: Run the generator
@@ -1021,7 +1021,7 @@ cd ~/cli-printing-press && rm -rf <api>-cli 2>/dev/null; echo "CLEAN"
 ```bash
 cd ~/cli-printing-press && ./printing-press generate \
   --spec /tmp/printing-press-spec-<api>.json \
-  --output ./<api>-cli \
+  --output ./library/<api>-cli \
   --force --lenient --validate 2>&1
 ```
 
@@ -1031,7 +1031,7 @@ cd ~/cli-printing-press && ./printing-press generate \
 
 Run:
 ```bash
-cd ~/cli-printing-press && ./printing-press generate --spec /tmp/printing-press-spec-<api>.json --output ./<api>-cli --force --lenient --validate 2>&1 | grep "skipping body field"
+cd ~/cli-printing-press && ./printing-press generate --spec /tmp/printing-press-spec-<api>.json --output ./library/<api>-cli --force --lenient --validate 2>&1 | grep "skipping body field"
 ```
 
 Save the list of skipped fields. These are NOT acceptable limitations - they are work items for Phase 4.
@@ -1063,14 +1063,14 @@ This phase has TWO parts: (A) code review for tactical fixes, and (B) Non-Obviou
 
 You MUST **Read** these files (not just check they exist):
 
-- `<api>-cli/internal/cli/root.go`
-- `<api>-cli/README.md`
+- `library/<api>-cli/internal/cli/root.go`
+- `library/<api>-cli/README.md`
 - At least 3 resource command files
 
 ### Step 3.2: Count commands and compare to target
 
 ```bash
-cd ~/cli-printing-press/<api>-cli && grep -r "Use:" internal/cli/*.go | grep -v "root.go" | wc -l
+cd ~/cli-printing-press/library/<api>-cli && grep -r "Use:" internal/cli/*.go | grep -v "root.go" | wc -l
 ```
 
 Compare against target from Phase 1 research.
@@ -1103,7 +1103,7 @@ For each field skipped by the generator (from Phase 2 Step 2.4):
 Before hand-scoring, run the automated scorecard to get objective baseline numbers:
 
 ```bash
-cd ~/cli-printing-press && ./printing-press scorecard --dir ./<api>-cli
+cd ~/cli-printing-press && ./printing-press scorecard --dir ./library/<api>-cli
 ```
 
 Use these numbers as the baseline. The hand-scoring in Step 3.7 should explain WHY each dimension got its score, not re-guess the number.
@@ -1302,7 +1302,7 @@ func newStaleCmd(flags *rootFlags) *cobra.Command {
 Run the scorecard and fix dimensions below 10/10:
 
 ```bash
-cd ~/cli-printing-press && ./printing-press scorecard --dir ./<api>-cli
+cd ~/cli-printing-press && ./printing-press scorecard --dir ./library/<api>-cli
 ```
 
 For each dimension below 10/10:
@@ -1325,7 +1325,7 @@ Only after Priority 1 and 2 are complete:
 ### Step 4.4: Verify compilation
 
 ```bash
-cd ~/cli-printing-press/<api>-cli && go build ./... && go vet ./... && echo "ALL FIXES VERIFIED"
+cd ~/cli-printing-press/library/<api>-cli && go build ./... && go vet ./... && echo "ALL FIXES VERIFIED"
 ```
 
 ### PHASE GATE 4
@@ -1602,7 +1602,7 @@ The scorecard measures files. This phase measures behavior. Build the CLI and te
 
 ```bash
 cd ~/cli-printing-press && ./printing-press verify \
-  --dir ./<api>-cli \
+  --dir ./library/<api>-cli \
   --spec /tmp/<api>-spec.json \
   --threshold 80
 ```
@@ -1611,7 +1611,7 @@ If you collected an API key in Phase 0.1, add it:
 
 ```bash
 cd ~/cli-printing-press && ./printing-press verify \
-  --dir ./<api>-cli \
+  --dir ./library/<api>-cli \
   --spec /tmp/<api>-spec.json \
   --api-key "$<API_ENV_VAR>" \
   --env-var <API_ENV_VAR> \
@@ -1657,7 +1657,7 @@ Tell the user: "Runtime verification: [X]% pass rate ([N]/[M] commands). Data pi
 Run the automated scorecard again to measure improvement:
 
 ```bash
-cd ~/cli-printing-press && ./printing-press scorecard --dir ./<api>-cli
+cd ~/cli-printing-press && ./printing-press scorecard --dir ./library/<api>-cli
 ```
 
 Re-score ALL 10 dimensions. Show the DELTA from the baseline:
@@ -1717,7 +1717,7 @@ Remaining gap: <what they have that we don't, or "none">
 
 **4. Example Commands (with complex body examples):**
 ```bash
-cd ~/cli-printing-press/<api>-cli
+cd ~/cli-printing-press/library/<api>-cli
 go install ./cmd/<api>-cli
 
 export <AUTH_ENV_VAR>="..."

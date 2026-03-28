@@ -102,6 +102,22 @@ func TestIsSeedBackwardCompatible(t *testing.T) {
 	assert.False(t, s.IsSeed(PhasePreflight))
 }
 
+func TestDefaultOutputDir(t *testing.T) {
+	tests := []struct {
+		name     string
+		apiName  string
+		expected string
+	}{
+		{"simple", "stripe", "library/stripe-cli"},
+		{"hyphenated", "my-api", "library/my-api-cli"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.expected, DefaultOutputDir(tt.apiName))
+		})
+	}
+}
+
 func TestPhaseStateJSONIncludesPlanStatus(t *testing.T) {
 	state := PhaseState{
 		Status:     StatusPlanned,
