@@ -1,7 +1,7 @@
 ---
 title: "feat: Add Phase 4.9 Agent Readiness Review Loop"
 type: feat
-status: active
+status: completed
 date: 2026-03-27
 origin: docs/brainstorms/2026-03-27-agent-readiness-review-loop-requirements.md
 ---
@@ -75,7 +75,7 @@ The printing-press pipeline scores CLIs on 17 dimensions, but its "agent-native"
 
 ## Implementation Units
 
-- [ ] **Unit 1: Create `.claude/settings.json`**
+- [x] **Unit 1: Create `.claude/settings.json`**
 
 **Goal:** Declare the compound-engineering plugin dependency so anyone cloning the repo gets it automatically
 
@@ -103,7 +103,7 @@ The printing-press pipeline scores CLIs on 17 dimensions, but its "agent-native"
 
 ---
 
-- [ ] **Unit 2: Add phase constant and fix PlanPath derivation in state.go**
+- [x] **Unit 2: Add phase constant and fix PlanPath derivation in state.go**
 
 **Goal:** Add `PhaseAgentReadiness` to the pipeline, fix index-based PlanPath to name-based, bump state version with migration fix
 
@@ -143,7 +143,7 @@ The printing-press pipeline scores CLIs on 17 dimensions, but its "agent-native"
 
 ---
 
-- [ ] **Unit 3: Add seed template in seeds.go**
+- [x] **Unit 3: Add seed template in seeds.go**
 
 **Goal:** Provide the seed template for `PhaseAgentReadiness` so `Init()` and tests don't crash
 
@@ -177,7 +177,7 @@ The printing-press pipeline scores CLIs on 17 dimensions, but its "agent-native"
 
 ---
 
-- [ ] **Unit 4: Verify planner.go default fallback**
+- [x] **Unit 4: Verify planner.go default fallback**
 
 **Goal:** Confirm the default fallback in `GenerateNextPlan()` handles `PhaseAgentReadiness` correctly
 
@@ -208,7 +208,7 @@ The printing-press pipeline scores CLIs on 17 dimensions, but its "agent-native"
 
 ---
 
-- [ ] **Unit 5: Add Phase 4.9 to SKILL.md**
+- [x] **Unit 5: Add Phase 4.9 to SKILL.md**
 
 **Goal:** Add LLM-agent instructions for Phase 4.9 between Phase 4.8 and Phase 5, plus update holistic references
 
