@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -64,4 +65,43 @@ func TestClaimOutputDir_PermissionError(t *testing.T) {
 	assert.Error(t, err)
 	// Should NOT contain "could not claim" — should be the underlying OS error
 	assert.NotContains(t, err.Error(), "could not claim")
+}
+
+func TestClaimOutputDir_ConcurrentClaims(t *testing.T) {
+	tmp := t.TempDir()
+	base := filepath.Join(tmp, "notion-pp-cli")
+
+	const goroutines = 20
+	var wg sync.WaitGroup
+	results := make(chan string, goroutines)
+	errs := make(chan error, goroutines)
+
+	wg.Add(goroutines)
+	for i := 0; i < goroutines; i++ {
+		go func() {
+			defer wg.Done()
+			claimed, err := ClaimOutputDir(base)
+			if err != nil {
+				errs <- err
+				return
+			}
+			results <- claimed
+		}()
+	}
+	wg.Wait()
+	close(results)
+	close(errs)
+
+	// No errors
+	for err := range errs {
+		t.Errorf("unexpected error: %v", err)
+	}
+
+	// All claimed paths must be unique
+	seen := map[string]bool{}
+	for path := range results {
+		assert.False(t, seen[path], "duplicate claim: %s", path)
+		seen[path] = true
+	}
+	assert.Len(t, seen, goroutines)
 }
