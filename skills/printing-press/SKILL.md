@@ -1845,33 +1845,68 @@ Tell the user: "Runtime verification: [X]% pass rate ([N]/[M] commands). Data pi
 
 # PHASE 4.9: AGENT READINESS REVIEW LOOP
 
-## THIS PHASE IS MANDATORY. DO NOT SKIP IT.
+## THIS PHASE IS MANDATORY. YOU MUST ATTEMPT IT.
 
-**Exception:** Skip ONLY if the `compound-engineering:cli-agent-readiness-reviewer` agent is unavailable (plugin not installed or marketplace not registered). If skipping, log this warning and proceed to Phase 5:
+**You MUST dispatch the `compound-engineering:cli-agent-readiness-reviewer` agent.** Do not skip this phase because "it's faster to move on" or "the CLI is already good." The user wants this review to run when the agent is available.
 
-> "Skipping Phase 4.9 (Agent Readiness) — compound-engineering plugin v2.55.0+ required. Register every-marketplace in ~/.claude/settings.json to enable."
+**The only acceptable outcomes are:**
+1. The agent ran and produced results (proceed with fixes)
+2. The agent dispatch failed because the plugin is not installed (warn prominently, proceed to Phase 5)
+3. The agent ran but produced an error or empty output (warn prominently, proceed to Phase 5)
+
+**"I decided to skip it" is NOT an acceptable outcome.** If you catch yourself about to move to Phase 5 without having attempted the agent dispatch, STOP and go back.
 
 The existing agent-native scorecard dimension checks for flags. This phase goes deeper — evaluating 7 principles (non-interactive automation, structured output, progressive help, actionable errors, safe retries, composability, bounded responses) with file-level fix recommendations.
 
-### Step 4.9a: Check Agent Availability
+### Step 4.9a: Dispatch the Agent (MANDATORY)
 
-Before running the review, verify the `compound-engineering:cli-agent-readiness-reviewer` agent is reachable by attempting to dispatch it. If the agent is not found, log the warning above and skip to Phase 5. This is the ONLY valid reason to skip this phase.
-
-### Step 4.9b: Run Reviewer (Pass 1)
-
-Dispatch the `compound-engineering:cli-agent-readiness-reviewer` agent on the generated CLI:
+You MUST execute this Agent tool call:
 
 ```
-Run the compound-engineering:cli-agent-readiness-reviewer agent on the <api> CLI in <output-dir>.
-Do not look at code elsewhere in the repo outside of that folder.
+Agent tool:
+  subagent_type: compound-engineering:review:cli-agent-readiness-reviewer
+  prompt: "Run the compound-engineering:cli-agent-readiness-reviewer agent on the <api> CLI in <output-dir>.
+           Do not look at code elsewhere in the repo outside of that folder."
 ```
+
+**If the dispatch succeeds:** proceed to Step 4.9b with the results.
+
+**If the dispatch fails** (agent not found, plugin not installed, tool rejected):
+1. Print this warning to the user in a visible block:
+
+```
+⚠️  PHASE 4.9 SKIPPED — REVIEWER NOT AVAILABLE
+    The Compound Engineering `cli-agent-readiness-reviewer` agent could not be dispatched.
+    This reviewer evaluates whether the generated CLI is usable by AI agents
+    (exit codes, output routing, alias correctness, delete safety gates, etc.).
+    Reason: [error message]
+    To enable: install the compound-engineering plugin (v2.55.0+)
+    and register every-marketplace in ~/.claude/settings.json.
+    The CLI was NOT reviewed for agent readiness.
+```
+
+2. Proceed to Phase 5. Do NOT silently continue.
+
+### Step 4.9b: Process Results (Pass 1)
 
 The reviewer produces:
 - A scorecard table (7 principles x severity: Blocker/Friction/Optimization/None)
 - A "What's Working Well" section
 - A ranked list of recommended fixes with file:line references
 
-If the reviewer returns output with no parseable fix list (malformed output, empty response, or error during evaluation), log a warning and proceed to Phase 5. Do not loop.
+**If the reviewer returned results but they are empty or unparseable:**
+1. Print this warning to the user:
+
+```
+⚠️  PHASE 4.9 INCOMPLETE — REVIEWER RETURNED NO ACTIONABLE RESULTS
+    The Compound Engineering `cli-agent-readiness-reviewer` agent ran but produced
+    no parseable fix list. The CLI was NOT fully reviewed for agent readiness
+    (exit codes, output routing, alias correctness, delete safety gates, etc.).
+```
+
+2. Proceed to Phase 5. Do not loop.
+
+**If the reviewer returned a valid scorecard and fix list:** proceed to Step 4.9c.
 
 ### Step 4.9c: Implement Fixes
 
@@ -1888,13 +1923,22 @@ All listed fixes are attempted — the reviewer already ranks by impact.
 
 ### Step 4.9d: Termination Check
 
-After implementing fixes, re-run the `compound-engineering:cli-agent-readiness-reviewer` agent on the same folder (same prompt as Step 4.9b). Evaluate the new scorecard:
+After implementing fixes, re-run the `compound-engineering:cli-agent-readiness-reviewer` agent on the same folder (same prompt as Step 4.9a). Evaluate the new scorecard:
 
 - **Zero Blockers AND zero Frictions:** Pass. Proceed to Phase 5.
 - **Blockers or Frictions remain, pass count < 2:** Return to Step 4.9c with the new fix list.
 - **Blockers or Frictions remain, pass count = 2:** Log remaining issues as known items. Proceed to Phase 5.
 
-If the reviewer agent becomes unavailable between passes (e.g., plugin timeout), log a warning and proceed to Phase 5. The pass count does not reset.
+**If the agent becomes unavailable between passes** (plugin timeout, tool error):
+1. Print this warning to the user:
+
+```
+⚠️  PHASE 4.9 INTERRUPTED — REVIEWER LOST BETWEEN PASSES
+    The Compound Engineering `cli-agent-readiness-reviewer` agent became unavailable
+    after pass [N]. Fixes from pass [N] were applied. No further review possible.
+```
+
+2. Proceed to Phase 5. The pass count does not reset.
 
 ### PHASE GATE 4.9
 
@@ -1905,8 +1949,9 @@ If the reviewer agent becomes unavailable between passes (e.g., plugin timeout),
 | **Pass** | Zero Blockers and zero Frictions after ≤ 2 passes | Proceed to Phase 5 |
 | **Warn** | Frictions remain after 2 passes, zero Blockers | Log Frictions as known issues, proceed to Phase 5 |
 | **Degrade** | Blockers remain after 2 passes | Log Blockers as known issues, proceed to Phase 5 |
+| **Skipped** | Agent unavailable (dispatch failed) | Warning already shown, proceed to Phase 5 |
 
-Tell the user: "Agent readiness review: [PASS/WARN/DEGRADE]. Blockers: [N]. Frictions: [N]. Optimizations: [N]. Passes: [N]/2. Proceeding to final report."
+Tell the user: "Agent readiness review: [PASS/WARN/DEGRADE/SKIPPED]. Blockers: [N]. Frictions: [N]. Optimizations: [N]. Passes: [N]/2. Proceeding to final report."
 
 ---
 
@@ -2200,6 +2245,8 @@ These phrases indicate a phase was shortcut. If you catch yourself writing them,
 - "The scorecard is the objective" (The scorecard measures proxies. The objective is: would a user of the top competitor switch? Check the three-benchmark gate.)
 - "We complement the incumbent, we don't compete" (Users don't want two CLIs. If the incumbent has a feature, you need it too - Phase 0.6 table stakes.)
 - "That feature is anti-scope" (If a competitor with >100 stars has it, it's not anti-scope. It's a backlog item. Phase 0.6 classification rules.)
+- "I'll skip the agent readiness review" (You MUST attempt the dispatch. If the agent isn't installed, the dispatch will fail and you warn the user. If it IS installed, it runs. You don't get to decide it's unnecessary.)
+- "The CLI is already agent-native enough" (The scorecard checks for flags. The agent readiness reviewer checks 7 deeper principles — alias correctness, output routing, delete safety gates, exit code semantics. These are different things. Dispatch it.)
 
 **Module path rule:**
 - The go.mod module path MUST be a valid Go import path with a real org name (e.g., `github.com/mvanhorn/discord-cli`). The literal string `USER` is never acceptable. The generator auto-derives from git config.
