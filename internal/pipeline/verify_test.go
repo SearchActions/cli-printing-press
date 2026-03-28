@@ -58,6 +58,48 @@ func bogusGet() {
 	assert.Equal(t, 1, invalidCount, "one path should be hallucinated")
 }
 
+func TestPathProof_DetectsShortDeclarationPaths(t *testing.T) {
+	dir := t.TempDir()
+	setupVerifierDirs(t, dir)
+
+	writeTestFile(t, filepath.Join(dir, "internal", "cli", "users_get.go"), `package cli
+func usersGet() {
+	path := "/users/{id}"
+}
+`)
+	writeTestFile(t, filepath.Join(dir, "internal", "cli", "bogus_get.go"), `package cli
+func bogusGet() {
+	path := "/bogus/endpoint"
+}
+`)
+
+	specPath := filepath.Join(dir, "spec.json")
+	writeTestFile(t, specPath, `{
+  "paths": {
+    "/users/{user_id}": {}
+  },
+  "components": { "securitySchemes": {} }
+}`)
+
+	v, err := NewVerifier(dir, specPath)
+	require.NoError(t, err)
+
+	results := v.PathProof()
+	require.Len(t, results, 2)
+
+	var validCount, invalidCount int
+	for _, r := range results {
+		if r.InSpec {
+			validCount++
+		} else {
+			invalidCount++
+			assert.Equal(t, "/bogus/endpoint", r.Path)
+		}
+	}
+	assert.Equal(t, 1, validCount, "one short-declared path should be in spec")
+	assert.Equal(t, 1, invalidCount, "one short-declared path should be hallucinated")
+}
+
 func TestPathProof_SkipsLocalCommands(t *testing.T) {
 	dir := t.TempDir()
 	setupVerifierDirs(t, dir)
@@ -490,9 +532,9 @@ func initFlags(flags *rootFlags) {
 
 func TestDeriveVerificationVerdict(t *testing.T) {
 	tests := []struct {
-		name    string
-		report  *VerificationReport
-		want    string
+		name   string
+		report *VerificationReport
+		want   string
 	}{
 		{
 			name: "hallucinated paths -> FAIL",
@@ -541,7 +583,7 @@ func TestDeriveVerificationVerdict(t *testing.T) {
 			want: "WARN",
 		},
 		{
-			name: "all clean -> PASS",
+			name:   "all clean -> PASS",
 			report: &VerificationReport{},
 			want:   "PASS",
 		},

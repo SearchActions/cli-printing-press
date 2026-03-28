@@ -205,6 +205,33 @@ func runSync(store interface {
 	})
 }
 
+func TestScorePathValidity(t *testing.T) {
+	t.Run("matches short variable path declarations used by generated commands", func(t *testing.T) {
+		dir := t.TempDir()
+
+		writeScorecardFixture(t, dir, "internal/cli/links.go", `
+package cli
+
+func runLinks() string {
+	path := "/links"
+	return path
+}
+`)
+
+		specPath := filepath.Join(dir, "spec.json")
+		writeScorecardFixture(t, dir, "spec.json", `{
+  "paths": {
+    "/links": {}
+  },
+  "components": {
+    "securitySchemes": {}
+  }
+}`)
+
+		assert.Equal(t, 10, scorePathValidity(dir, specPath))
+	})
+}
+
 func TestScoreTypeFidelity(t *testing.T) {
 	t.Run("scores wrong id flag types and dummy guards low", func(t *testing.T) {
 		dir := t.TempDir()

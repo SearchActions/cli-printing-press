@@ -104,7 +104,7 @@ func (v *Verifier) CompileGate() error {
 }
 
 var (
-	verifyPathAssignRe = regexp.MustCompile(`(?m)\bpath\s*[:=]\s*"([^"]+)"`)
+	verifyPathAssignRe = regexp.MustCompile(`(?m)\bpath\s*(?::=|=|:)\s*"([^"]+)"`)
 	verifyClientCallRe = regexp.MustCompile(`c\.(Get|Post|Patch|Delete|Put)\s*\(\s*"([^"]+)"`)
 )
 
