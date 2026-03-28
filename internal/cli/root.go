@@ -111,6 +111,7 @@ func newGenerateCmd() *cobra.Command {
 					return &ExitError{Code: ExitSpecError, Err: fmt.Errorf("parsing generated spec: %w", err)}
 				}
 
+				explicitOutput := outputDir != ""
 				if outputDir == "" {
 					outputDir = pipeline.DefaultOutputDir(parsed.Name)
 				}
@@ -118,15 +119,9 @@ func newGenerateCmd() *cobra.Command {
 				if err != nil {
 					return fmt.Errorf("resolving output path: %w", err)
 				}
-				if force {
-					if err := os.RemoveAll(absOut); err != nil {
-						return fmt.Errorf("removing existing output dir: %w", err)
-					}
-				} else if info, err := os.Stat(absOut); err == nil && info.IsDir() {
-					entries, _ := os.ReadDir(absOut)
-					if len(entries) > 0 {
-						return fmt.Errorf("output directory %s already exists (use --force to overwrite)", absOut)
-					}
+				absOut, err = claimOrForce(absOut, force, explicitOutput)
+				if err != nil {
+					return &ExitError{Code: ExitInputError, Err: err}
 				}
 
 				gen := generator.New(parsed, absOut)
@@ -210,6 +205,7 @@ func newGenerateCmd() *cobra.Command {
 				apiSpec = mergeSpecs(specs, cliName)
 			}
 
+			explicitOutput := outputDir != ""
 			if outputDir == "" {
 				outputDir = pipeline.DefaultOutputDir(apiSpec.Name)
 			}
@@ -221,15 +217,9 @@ func newGenerateCmd() *cobra.Command {
 			if dryRun {
 				return printDryRun(apiSpec, absOut, specFiles)
 			}
-			if force {
-				if err := os.RemoveAll(absOut); err != nil {
-					return fmt.Errorf("removing existing output dir: %w", err)
-				}
-			} else if info, err := os.Stat(absOut); err == nil && info.IsDir() {
-				entries, _ := os.ReadDir(absOut)
-				if len(entries) > 0 {
-					return fmt.Errorf("output directory %s already exists (use --force to overwrite)", absOut)
-				}
+			absOut, err = claimOrForce(absOut, force, explicitOutput)
+			if err != nil {
+				return &ExitError{Code: ExitInputError, Err: err}
 			}
 
 			gen := generator.New(apiSpec, absOut)
@@ -279,7 +269,7 @@ func newGenerateCmd() *cobra.Command {
 	cmd.Flags().StringVar(&outputDir, "output", "", "Output directory (default: library/<name>-cli)")
 	cmd.Flags().BoolVar(&validate, "validate", true, "Run quality gates on the generated project")
 	cmd.Flags().BoolVar(&refresh, "refresh", false, "Refresh cached remote spec before generating")
-	cmd.Flags().BoolVar(&force, "force", false, "Remove existing output directory before generating")
+	cmd.Flags().BoolVar(&force, "force", false, "Overwrite the base output directory (e.g. library/notion-pp-cli) instead of auto-incrementing")
 	cmd.Flags().BoolVar(&lenient, "lenient", false, "Skip validation errors from broken $refs in OpenAPI specs")
 	cmd.Flags().StringVar(&docsURL, "docs", "", "API documentation URL to generate spec from")
 	cmd.Flags().BoolVar(&polish, "polish", false, "Run LLM polish pass on generated CLI (requires claude or codex CLI)")
@@ -340,6 +330,38 @@ func mergeSpecs(specs []*spec.APISpec, name string) *spec.APISpec {
 	}
 
 	return merged
+}
+
+// claimOrForce resolves the output directory based on --force and --output flags.
+//
+//   - force=true:  RemoveAll the target, then create it fresh (claims exact slot)
+//   - explicit output (--output set) without force: error if exists and non-empty
+//   - default (no --output, no --force): auto-increment via ClaimOutputDir
+func claimOrForce(absOut string, force bool, explicitOutput bool) (string, error) {
+	if force {
+		if err := os.RemoveAll(absOut); err != nil {
+			return "", fmt.Errorf("removing existing output dir: %w", err)
+		}
+		if err := os.MkdirAll(absOut, 0o755); err != nil {
+			return "", fmt.Errorf("creating output dir: %w", err)
+		}
+		return absOut, nil
+	}
+
+	if explicitOutput {
+		if info, err := os.Stat(absOut); err == nil && info.IsDir() {
+			entries, readErr := os.ReadDir(absOut)
+			if readErr != nil {
+				return "", fmt.Errorf("reading output directory: %w", readErr)
+			}
+			if len(entries) > 0 {
+				return "", fmt.Errorf("output directory %s already exists (use --force to overwrite)", absOut)
+			}
+		}
+		return absOut, nil
+	}
+
+	return pipeline.ClaimOutputDir(absOut)
 }
 
 func fetchOrCacheSpec(specURL string, refresh bool, skipCache bool) ([]byte, error) {
