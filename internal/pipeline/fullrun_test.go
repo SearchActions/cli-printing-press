@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -67,18 +68,38 @@ func TestCopySpecToOutput(t *testing.T) {
 		name      string
 		specFlag  string
 		setup     func(t *testing.T, dir string) string // returns specURL
-		wantCopy  bool
+		wantFile  string                                 // expected output filename
 		wantError bool
 	}{
 		{
-			name:     "copies spec when flag is --spec",
+			name:     "copies json spec preserving extension",
 			specFlag: "--spec",
 			setup: func(t *testing.T, dir string) string {
 				specPath := filepath.Join(dir, "input-spec.json")
 				require.NoError(t, os.WriteFile(specPath, []byte(`{"openapi":"3.0.0"}`), 0o644))
 				return specPath
 			},
-			wantCopy: true,
+			wantFile: "spec.json",
+		},
+		{
+			name:     "copies yaml spec preserving extension",
+			specFlag: "--spec",
+			setup: func(t *testing.T, dir string) string {
+				specPath := filepath.Join(dir, "openapi.yaml")
+				require.NoError(t, os.WriteFile(specPath, []byte("openapi: 3.0.0\n"), 0o644))
+				return specPath
+			},
+			wantFile: "spec.yaml",
+		},
+		{
+			name:     "copies yml spec preserving extension",
+			specFlag: "--spec",
+			setup: func(t *testing.T, dir string) string {
+				specPath := filepath.Join(dir, "api.yml")
+				require.NoError(t, os.WriteFile(specPath, []byte("openapi: 3.0.0\n"), 0o644))
+				return specPath
+			},
+			wantFile: "spec.yml",
 		},
 		{
 			name:     "skips when flag is --docs",
@@ -86,7 +107,13 @@ func TestCopySpecToOutput(t *testing.T) {
 			setup: func(t *testing.T, dir string) string {
 				return "https://developers.notion.com/reference"
 			},
-			wantCopy: false,
+		},
+		{
+			name:     "skips when flag is empty",
+			specFlag: "",
+			setup: func(t *testing.T, dir string) string {
+				return ""
+			},
 		},
 		{
 			name:     "returns error when spec file missing",
@@ -94,7 +121,6 @@ func TestCopySpecToOutput(t *testing.T) {
 			setup: func(t *testing.T, dir string) string {
 				return filepath.Join(dir, "nonexistent.json")
 			},
-			wantCopy:  false,
 			wantError: true,
 		},
 	}
@@ -114,15 +140,18 @@ func TestCopySpecToOutput(t *testing.T) {
 				assert.NoError(t, err)
 			}
 
-			dst := filepath.Join(outputDir, "spec.json")
-			if tt.wantCopy {
+			if tt.wantFile != "" {
+				dst := filepath.Join(outputDir, tt.wantFile)
 				data, readErr := os.ReadFile(dst)
-				require.NoError(t, readErr, "spec.json should exist in output dir")
+				require.NoError(t, readErr, "%s should exist in output dir", tt.wantFile)
 				expected, _ := os.ReadFile(specURL)
-				assert.Equal(t, expected, data, "spec.json content should match source")
+				assert.Equal(t, expected, data, "content should match source")
 			} else if !tt.wantError {
-				_, readErr := os.ReadFile(dst)
-				assert.True(t, os.IsNotExist(readErr), "spec.json should not exist")
+				// Verify no spec file was created
+				entries, _ := os.ReadDir(outputDir)
+				for _, e := range entries {
+					assert.False(t, strings.HasPrefix(e.Name(), "spec."), "no spec file should exist, found %s", e.Name())
+				}
 			}
 		})
 	}

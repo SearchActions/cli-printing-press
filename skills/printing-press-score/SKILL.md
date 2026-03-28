@@ -26,7 +26,7 @@ Score generated CLIs against the Steinberger bar. Supports rescoring, scoring by
 ## Prerequisites
 
 - Go 1.21+ installed
-- The printing-press repo at ~/cli-printing-press
+- Running from inside the cli-printing-press repo (or a worktree of it)
 
 ## Step 1: Parse Arguments
 
@@ -77,7 +77,7 @@ If nothing resolves, report the error: "Could not find CLI '<name>'. Provide a p
 
 For each resolved CLI directory, find the OpenAPI spec:
 
-1. Check `<cli-dir>/spec.json` — if it exists, use it
+1. Check for a spec file in `<cli-dir>/` — look for `spec.json`, `spec.yaml`, or `spec.yml` (the extension is preserved from the original spec during generation)
 2. If not found, scan `docs/plans/*-pipeline/state.json` files for one matching this CLI's directory. Read its `spec_path` field. If that file exists on disk, use it.
 3. If no spec found, **proceed without `--spec`**. Note to the user: "No spec found — Tier 2 (domain correctness) scores will be 0. Provide a spec path to get full scoring."
 
@@ -86,7 +86,7 @@ For each resolved CLI directory, find the OpenAPI spec:
 Before running the scorecard, build the printing-press binary:
 
 ```bash
-cd ~/cli-printing-press && go build -o ./printing-press ./cmd/printing-press
+go build -o ./printing-press ./cmd/printing-press
 ```
 
 If the build fails, report the error and stop.
@@ -98,7 +98,7 @@ If the build fails, report the error and stop.
 Run the scorecard command:
 
 ```bash
-cd ~/cli-printing-press && ./printing-press scorecard --dir <resolved-path> --json
+./printing-press scorecard --dir <resolved-path> --json
 ```
 
 If a spec was found, add `--spec <spec-path>`.
@@ -141,10 +141,10 @@ Run **both** scorecard commands in **parallel** using two simultaneous Bash tool
 
 ```bash
 # Call 1:
-cd ~/cli-printing-press && ./printing-press scorecard --dir <path1> --spec <spec1> --json
+./printing-press scorecard --dir <path1> --spec <spec1> --json
 
 # Call 2:
-cd ~/cli-printing-press && ./printing-press scorecard --dir <path2> --spec <spec2> --json
+./printing-press scorecard --dir <path2> --spec <spec2> --json
 ```
 
 Parse both JSON outputs.

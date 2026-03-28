@@ -422,8 +422,8 @@ func PrintComparisonTable(results []*FullRunResult) string {
 	return b.String()
 }
 
-// copySpecToOutput copies the source spec file into <outputDir>/spec.json
-// so that standalone scoring can find it without the original spec path.
+// copySpecToOutput copies the source spec file into <outputDir>/spec.<ext>
+// preserving the original extension so YAML specs stay YAML and JSON stays JSON.
 // Only copies when specFlag is "--spec" (local file). Errors are non-fatal.
 func copySpecToOutput(specFlag, specURL, outputDir string) error {
 	if specFlag != "--spec" {
@@ -433,7 +433,11 @@ func copySpecToOutput(specFlag, specURL, outputDir string) error {
 	if err != nil {
 		return fmt.Errorf("reading spec %s: %w", specURL, err)
 	}
-	dst := filepath.Join(outputDir, "spec.json")
+	ext := filepath.Ext(specURL)
+	if ext == "" {
+		ext = ".json"
+	}
+	dst := filepath.Join(outputDir, "spec"+ext)
 	if err := os.WriteFile(dst, data, 0o644); err != nil {
 		return fmt.Errorf("writing %s: %w", dst, err)
 	}
