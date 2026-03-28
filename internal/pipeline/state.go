@@ -34,6 +34,26 @@ var PhaseOrder = []string{
 	PhaseShip,
 }
 
+// phaseNumber assigns a stable prefix for plan filenames. Numbers use
+// gaps (0, 10, 20 …) so future phases can be inserted without renaming
+// existing files.
+var phaseNumber = map[string]int{
+	PhasePreflight:      0,
+	PhaseResearch:       10,
+	PhaseScaffold:       20,
+	PhaseEnrich:         30,
+	PhaseRegenerate:     40,
+	PhaseReview:         50,
+	PhaseAgentReadiness: 55,
+	PhaseComparative:    60,
+	PhaseShip:           70,
+}
+
+// PlanFilename returns the stable plan filename for a phase.
+func PlanFilename(phase string) string {
+	return fmt.Sprintf("%02d-%s-plan.md", phaseNumber[phase], phase)
+}
+
 const (
 	StatusPending   = "pending"
 	StatusPlanned   = "planned"   // plan.md exists but not yet executed
@@ -86,7 +106,7 @@ func NewState(apiName, outputDir string) *PipelineState {
 	for _, name := range PhaseOrder {
 		phases[name] = PhaseState{
 			Status:   StatusPending,
-			PlanPath: filepath.Join(PipelineDir(apiName), fmt.Sprintf("%s-plan.md", name)),
+			PlanPath: filepath.Join(PipelineDir(apiName), PlanFilename(name)),
 		}
 	}
 	state := &PipelineState{
@@ -124,7 +144,8 @@ func LoadState(apiName string) (*PipelineState, error) {
 	if err := json.Unmarshal(data, &s); err != nil {
 		return nil, fmt.Errorf("parsing state: %w", err)
 	}
-	// Migrate: add missing phases and update PlanPath from index-based to name-based format.
+	// Migrate: add missing phases, update PlanPath to stable-numbered format,
+	// and backfill PlanStatus for completed phases that predate the field.
 	if s.Version < currentStateVersion {
 		for _, name := range PhaseOrder {
 			if _, ok := s.Phases[name]; !ok {
@@ -133,14 +154,13 @@ func LoadState(apiName string) (*PipelineState, error) {
 				s.Phases[name] = PhaseState{
 					Status:     StatusCompleted,
 					PlanStatus: PlanStatusCompleted,
-					PlanPath:   filepath.Join(PipelineDir(apiName), fmt.Sprintf("%s-plan.md", name)),
+					PlanPath:   filepath.Join(PipelineDir(apiName), PlanFilename(name)),
 				}
 			} else {
-				// Migrate existing phases: update PlanPath from index-based to
-				// name-based format, and backfill PlanStatus for completed phases
-				// that predate the PlanStatus field.
+				// Migrate existing phases to stable-numbered PlanPath and
+				// backfill PlanStatus for completed phases that predate the field.
 				p := s.Phases[name]
-				p.PlanPath = filepath.Join(PipelineDir(apiName), fmt.Sprintf("%s-plan.md", name))
+				p.PlanPath = filepath.Join(PipelineDir(apiName), PlanFilename(name))
 				if p.Status == StatusCompleted && p.PlanStatus == "" {
 					p.PlanStatus = PlanStatusCompleted
 				}
@@ -149,9 +169,9 @@ func LoadState(apiName string) (*PipelineState, error) {
 		}
 		s.Version = currentStateVersion
 		// Persist the migration so it doesn't re-run on every load.
-		// Note: plan files on disk keep their old index-based names.
-		// Completed phases' plans are not re-read; pending phases get
-		// new seeds written at the new paths by Init.
+		// Note: plan files on disk keep their old sequential-index names
+		// (00-, 01-, …). Completed phases' plans are not re-read; pending
+		// phases get new seeds written at the stable-numbered paths by Init.
 		if err := s.Save(); err != nil {
 			return nil, fmt.Errorf("saving migrated state: %w", err)
 		}

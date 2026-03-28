@@ -147,12 +147,16 @@ func TestNextPhaseReturnsAgentReadiness(t *testing.T) {
 	assert.Equal(t, PhaseAgentReadiness, s.NextPhase())
 }
 
-func TestNewStatePlanPathNameBased(t *testing.T) {
+func TestNewStatePlanPathStableNumbered(t *testing.T) {
 	s := NewState("path-test", "/tmp/test")
 	for _, name := range PhaseOrder {
-		expected := "docs/plans/path-test-pipeline/" + name + "-plan.md"
+		expected := "docs/plans/path-test-pipeline/" + PlanFilename(name)
 		assert.Equal(t, expected, s.Phases[name].PlanPath, "PlanPath for %s", name)
 	}
+	// Spot-check a few to verify the numbering scheme.
+	assert.Contains(t, s.Phases[PhasePreflight].PlanPath, "00-preflight-plan.md")
+	assert.Contains(t, s.Phases[PhaseAgentReadiness].PlanPath, "55-agent-readiness-plan.md")
+	assert.Contains(t, s.Phases[PhaseShip].PlanPath, "70-ship-plan.md")
 }
 
 func TestLoadStateMigratesV1ToV2(t *testing.T) {
@@ -193,9 +197,9 @@ func TestLoadStateMigratesV1ToV2(t *testing.T) {
 	assert.Equal(t, StatusCompleted, ar.Status)
 	assert.Equal(t, PlanStatusCompleted, ar.PlanStatus)
 
-	// All phases have name-based PlanPaths.
+	// All phases have stable-numbered PlanPaths.
 	for _, name := range PhaseOrder {
-		expected := dir + "/" + name + "-plan.md"
+		expected := dir + "/" + PlanFilename(name)
 		assert.Equal(t, expected, loaded.Phases[name].PlanPath, "migrated PlanPath for %s", name)
 	}
 
