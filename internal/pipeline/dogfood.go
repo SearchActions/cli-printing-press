@@ -14,14 +14,14 @@ import (
 )
 
 type DogfoodReport struct {
-	Dir           string          `json:"dir"`
-	SpecPath      string          `json:"spec_path,omitempty"`
-	Verdict       string          `json:"verdict"`
-	PathCheck     PathCheckResult `json:"path_check"`
-	AuthCheck     AuthCheckResult `json:"auth_check"`
-	DeadFlags     DeadCodeResult  `json:"dead_flags"`
-	DeadFuncs     DeadCodeResult  `json:"dead_functions"`
-	PipelineCheck PipelineResult    `json:"pipeline_check"`
+	Dir           string             `json:"dir"`
+	SpecPath      string             `json:"spec_path,omitempty"`
+	Verdict       string             `json:"verdict"`
+	PathCheck     PathCheckResult    `json:"path_check"`
+	AuthCheck     AuthCheckResult    `json:"auth_check"`
+	DeadFlags     DeadCodeResult     `json:"dead_flags"`
+	DeadFuncs     DeadCodeResult     `json:"dead_functions"`
+	PipelineCheck PipelineResult     `json:"pipeline_check"`
 	ExampleCheck  ExampleCheckResult `json:"example_check"`
 	Issues        []string           `json:"issues"`
 }
@@ -466,6 +466,7 @@ func checkExamples(dir string) ExampleCheckResult {
 		result.Detail = fmt.Sprintf("could not build CLI binary: %v", err)
 		return result
 	}
+	defer os.Remove(binaryPath)
 
 	// Get global flags from root --help
 	globalOut, err := runDogfoodCmd(binaryPath, 15*time.Second, "--help")

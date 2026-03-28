@@ -12,6 +12,8 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	"github.com/mvanhorn/cli-printing-press/internal/artifacts"
 )
 
 // VerifyConfig configures a runtime verification run.
@@ -25,33 +27,41 @@ type VerifyConfig struct {
 
 // VerifyReport is the output of a runtime verification run.
 type VerifyReport struct {
-	Mode         string         `json:"mode"` // "live" or "mock"
-	Total        int            `json:"total"`
-	Passed       int            `json:"passed"`
-	Failed       int            `json:"failed"`
-	Critical     int            `json:"critical"`
-	PassRate     float64        `json:"pass_rate"`
-	DataPipeline bool           `json:"data_pipeline"`
-	Verdict      string         `json:"verdict"` // PASS, WARN, FAIL
+	Mode         string          `json:"mode"` // "live" or "mock"
+	Total        int             `json:"total"`
+	Passed       int             `json:"passed"`
+	Failed       int             `json:"failed"`
+	Critical     int             `json:"critical"`
+	PassRate     float64         `json:"pass_rate"`
+	DataPipeline bool            `json:"data_pipeline"`
+	Verdict      string          `json:"verdict"` // PASS, WARN, FAIL
 	Results      []CommandResult `json:"results"`
-	Binary       string         `json:"binary"`
+	Binary       string          `json:"binary"`
 }
 
 // CommandResult is the test result for a single command.
 type CommandResult struct {
-	Command  string `json:"command"`
-	Kind     string `json:"kind"` // read, write, local, data-layer
-	Help     bool   `json:"help"`
-	DryRun   bool   `json:"dry_run"`
-	Execute  bool   `json:"execute"`
-	Score    int    `json:"score"` // 0-3
-	Error    string `json:"error,omitempty"`
+	Command string `json:"command"`
+	Kind    string `json:"kind"` // read, write, local, data-layer
+	Help    bool   `json:"help"`
+	DryRun  bool   `json:"dry_run"`
+	Execute bool   `json:"execute"`
+	Score   int    `json:"score"` // 0-3
+	Error   string `json:"error,omitempty"`
 }
 
 // RunVerify executes the runtime verification pipeline.
 func RunVerify(cfg VerifyConfig) (*VerifyReport, error) {
 	if cfg.Threshold == 0 {
 		cfg.Threshold = 80
+	}
+	if err := artifacts.CleanupGeneratedCLI(cfg.Dir, artifacts.CleanupOptions{
+		RemoveValidationBinaries: true,
+		RemoveDogfoodBinaries:    true,
+		RemoveRecursiveCopies:    true,
+		RemoveFinderMetadata:     true,
+	}); err != nil {
+		return nil, fmt.Errorf("pre-verify cleanup: %w", err)
 	}
 
 	report := &VerifyReport{}

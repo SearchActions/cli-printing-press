@@ -10,6 +10,8 @@ import (
 	"strings"
 	"time"
 	"unicode"
+
+	"github.com/mvanhorn/cli-printing-press/internal/artifacts"
 )
 
 type Verifier struct {
@@ -83,6 +85,14 @@ func NewVerifier(dir, specPath string) (*Verifier, error) {
 func (v *Verifier) CompileGate() error {
 	if v == nil {
 		return fmt.Errorf("nil verifier")
+	}
+	if err := artifacts.CleanupGeneratedCLI(v.Dir, artifacts.CleanupOptions{
+		RemoveValidationBinaries: true,
+		RemoveDogfoodBinaries:    true,
+		RemoveRecursiveCopies:    true,
+		RemoveFinderMetadata:     true,
+	}); err != nil {
+		return fmt.Errorf("pre-compile cleanup: %w", err)
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
