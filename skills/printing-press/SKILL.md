@@ -195,6 +195,71 @@ Suggested shape:
 3. ...
 ```
 
+## Phase 1.5: Ecosystem Absorb Gate
+
+THIS IS A MANDATORY STOP GATE. Do not generate until this is complete and approved.
+
+The GOAT CLI doesn't "find gaps." It absorbs EVERY feature from EVERY tool and then transcends with compound use cases nobody thought of. This phase builds the absorb manifest.
+
+### Step 1.5a: Search for every tool that touches this API
+
+Run these searches in parallel:
+
+1. **WebSearch**: `"<API name>" Claude Code plugin site:github.com`
+2. **WebSearch**: `"<API name>" MCP server model context protocol`
+3. **WebSearch**: `"<API name>" Claude skill SKILL.md site:github.com`
+4. **WebSearch**: `"<API name>" CLI tool site:github.com` (competing CLIs)
+5. **WebSearch**: `"<API name>" CLI site:npmjs.com` (npm packages)
+6. **WebFetch**: Check `github.com/anthropics/claude-plugins-official/tree/main/external_plugins` for official plugin
+7. **WebSearch**: `"<API name>" MCP site:lobehub.com OR site:mcpmarket.com OR site:fastmcp.me`
+8. **WebSearch**: `"<API name>" automation script workflow site:github.com`
+
+### Step 1.5b: Catalog every feature into the absorb manifest
+
+For EACH tool found, list EVERY feature/tool/command it provides. Then define how our CLI matches AND beats it:
+
+```markdown
+## Absorb Manifest
+
+### Absorbed (match or beat everything that exists)
+| # | Feature | Best Source | Our Implementation | Added Value |
+|---|---------|-----------|-------------------|-------------|
+| 1 | Search issues by text | Linear MCP search_issues | FTS5 offline search | Works offline, regex, SQL composable |
+| 2 | Create issue | Linear MCP create_issue | --stdin batch, --dry-run | Agent-native, scriptable, idempotent |
+| 3 | Sprint board view | jira-cli sprint view | SQLite-backed sprint query | Historical velocity, offline |
+```
+
+Every row = a feature we MUST build. No exceptions. If someone else has it, we have it AND it works offline, with --json, --dry-run, typed exit codes, and SQLite persistence.
+
+### Step 1.5c: Identify transcendence features
+
+What compound use cases become possible ONLY when ALL absorbed features live in SQLite together?
+
+```markdown
+### Transcendence (only possible with our local data layer)
+| # | Feature | Command | Why Only We Can Do This |
+|---|---------|---------|------------------------|
+| 1 | Bottleneck detection | bottleneck | Requires local join across issues + assignees + cycle data |
+| 2 | Velocity trends | velocity --weeks 4 | Requires historical cycle snapshots in SQLite |
+| 3 | Duplicate detection | similar "login bug" | Requires FTS5 across ALL issue text + comments |
+```
+
+Minimum 5 transcendence features. These are the NOI commands.
+
+### Step 1.5d: Write the manifest artifact
+
+Write to `~/cli-printing-press/docs/plans/<today>-feat-<api>-cli-absorb-manifest.md`
+
+### Phase Gate 1.5
+
+**STOP.** Present the absorb manifest to the user:
+
+"Found [N] features across [X] tools (MCPs, skills, CLIs, scripts). Our CLI will absorb all [N] and add [M] transcendence features. Total: [N+M] features. This is [Z]% more than the best existing tool. Approve to proceed to generation."
+
+Use AskUserQuestion. WAIT for approval. Do NOT generate until approved.
+
+---
+
 ## Phase 2: Generate
 
 Use the resolved spec source and generate immediately.
@@ -232,26 +297,30 @@ If generation fails:
 - retry at most 2 times
 - prefer generator fixes over manual generated-code surgery when the failure is systemic
 
-## Phase 3: Build The Highest-Value Gaps
+## Phase 3: Build The GOAT
 
-Build only the things most likely to change ship-readiness:
+Build comprehensively. The absorb manifest from Phase 1.5 IS the feature list.
 
-Priority 1:
-- data layer foundations for the primary entities
-- sync/search/SQL path if the API has real data gravity
+Priority 0 (foundation):
+- data layer for ALL primary entities from the manifest
+- sync/search/SQL path - this is what makes transcendence possible
 
-Priority 2:
-- top 3-5 power-user workflows from the brief
-- table-stakes competitor features users will notice immediately
+Priority 1 (absorb - match everything):
+- ALL absorbed features from the Phase 1.5 manifest
+- Every feature from every competing tool, matched and beaten with agent-native output
+- This is NOT "top 3-5" - it is the FULL manifest
 
-Priority 3:
+Priority 2 (transcend - build what nobody else has):
+- ALL transcendence features from Phase 1.5
+- The NOI commands that only work because everything is in SQLite
+- These are the commands that make someone say "I need this"
+
+Priority 3 (polish):
 - skipped complex request bodies that block important commands
 - naming cleanup for ugly operationId-derived commands
-
-Priority 4:
 - tests for non-trivial store/workflow logic
 
-Do not try to build every speculative workflow before verification. Get the high-signal surface working first, then verify.
+Get Priority 0 and 1 working first (the foundation and absorbed features), then build Priority 2 (transcendence), then verify.
 
 Write:
 
@@ -352,6 +421,10 @@ Do not:
 - treat scorecard alone as ship proof
 - discover YAML/URL spec incompatibility late and manually convert specs if the tools can already consume them
 - rerun the whole late-phase gauntlet for cosmetic README polish
+- skip features because “the MCP already handles that” (absorb everything, beat it with offline + agent-native)
+- build only “top 3-5 workflows” when the absorb manifest has 15+ (build them ALL, then transcend)
+- generate before the Phase 1.5 Ecosystem Absorb Gate is approved
+- call a CLI “GOAT” without matching every feature the best competitor has
 
 ### What counts as success
 
