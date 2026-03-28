@@ -50,12 +50,12 @@ The printing-press pipeline scores CLIs on 17 dimensions, but its "agent-native"
 ### Institutional Learnings
 
 - **Skill-within-skill invocation is fragile** — Past fix (`2026-03-25-fix-printing-press-skill-loop-enforcement-plan.md`) documents that Claude treats `Skill()` calls as suggestions and skips phases. Phase 4.9 must use "THIS PHASE IS MANDATORY. DO NOT SKIP IT." header with the single exception path (plugin unavailable) stated explicitly
-- **PlanPath uses index-based derivation** — `fmt.Sprintf("%02d-%s-plan.md", i, name)` means inserting a phase shifts all subsequent filenames. Changing to name-based derivation avoids migration complexity
+- **PlanPath uses index-based derivation** — `fmt.Sprintf("%02d-%s-plan.md", i, name)` means inserting a phase shifts all subsequent filenames. Switching to stable-numbered derivation with gaps (0, 10, 20, …) preserves visual ordering while avoiding renaming on insertion
 - **Migration bug** — `LoadState()` migration sets `Status: StatusCompleted` but not `PlanStatus: PlanStatusCompleted` for backfilled phases. `NextPhase()` checks `PlanStatus`, so backfilled phases appear pending. Must fix when bumping to version 2
 
 ## Key Technical Decisions
 
-- **PlanPath derivation: switch from index-based to name-based** — Current `%02d-%s-plan.md` format means every phase insertion shifts subsequent filenames and requires migration to rename existing files. Changing to `%s-plan.md` (phase name only) eliminates this coupling. The index prefix provides visual ordering in directory listings but is not used programmatically — sorting can rely on `PhaseOrder` instead. This is a minor but load-bearing change that prevents future phase insertions from needing file renames.
+- **PlanPath derivation: switch from sequential-index to stable-numbered** — Current `%02d-%s-plan.md` format uses the loop index, so inserting a phase shifts all subsequent filenames and requires migration to rename existing files. Switching to a `phaseNumber` map with gaps (0, 10, 20, …, 55 for agent-readiness, 60, 70) keeps visual scan order in directory listings (e.g., `00-preflight-plan.md`, `55-agent-readiness-plan.md`, `70-ship-plan.md`) while allowing future insertions without renaming. New phases slot into the gaps between existing numbers.
 
 - **Planner: use default fallback, no explicit case** — `GenerateNextPlan()` default branch calls `RenderSeed()`. Since Phase 4.9 is entirely LLM-orchestrated (the SKILL.md instructions drive execution, not Go code), the static seed is sufficient. No dynamic plan enrichment from scorecard or dogfood results is needed. If future iterations want to inject prior phase results into the agent-readiness plan, an explicit case can be added later.
 
@@ -66,7 +66,7 @@ The printing-press pipeline scores CLIs on 17 dimensions, but its "agent-native"
 ### Resolved During Planning
 
 - **Should we add a planner.go case?** No — the default fallback to `RenderSeed()` is sufficient. Phase 4.9 is LLM-orchestrated; the Go code only tracks state. (see origin requirement: "The Go code provides state tracking and phase ordering only")
-- **Should PlanPath use name-based or index-based naming?** Name-based. Avoids migration file renames and future insertion issues. Sorting in directory listings is a minor cosmetic loss offset by elimination of a maintenance hazard.
+- **Should PlanPath use name-based or index-based naming?** Stable-numbered with gaps (0, 10, 20, …). Preserves visual scan order in directory listings while avoiding migration file renames and future insertion issues.
 
 ### Deferred to Implementation
 
@@ -105,7 +105,7 @@ The printing-press pipeline scores CLIs on 17 dimensions, but its "agent-native"
 
 - [x] **Unit 2: Add phase constant and fix PlanPath derivation in state.go**
 
-**Goal:** Add `PhaseAgentReadiness` to the pipeline, fix index-based PlanPath to name-based, bump state version with migration fix
+**Goal:** Add `PhaseAgentReadiness` to the pipeline, switch PlanPath to stable-numbered format with gaps, bump state version with migration fix
 
 **Requirements:** R1, R5
 
@@ -118,10 +118,10 @@ The printing-press pipeline scores CLIs on 17 dimensions, but its "agent-native"
 **Approach:**
 - Add `PhaseAgentReadiness = "agent-readiness"` constant
 - Insert into `PhaseOrder` between `PhaseReview` and `PhaseComparative`: `[...PhaseReview, PhaseAgentReadiness, PhaseComparative, PhaseShip]`
-- Change PlanPath derivation in `NewState()` from `fmt.Sprintf("%02d-%s-plan.md", i, name)` to `fmt.Sprintf("%s-plan.md", name)` — both in `NewState()` (line 87) and `LoadState()` migration (line 131)
+- Add a `phaseNumber` map with stable gaps (0, 10, 20, …, 55, 60, 70) and a `PlanFilename()` helper. Use it in `NewState()` and `LoadState()` migration instead of the loop index
 - Bump `currentStateVersion` from 1 to 2
 - Fix migration block to set both `Status: StatusCompleted` AND `PlanStatus: PlanStatusCompleted` for backfilled phases (matching `Complete()` behavior)
-- Migration must also update `PlanPath` for all existing phases from `%02d-%s-plan.md` to `%s-plan.md` format
+- Migration must also update `PlanPath` for all existing phases to the stable-numbered format
 
 **Patterns to follow:**
 - Existing phase constant declarations at top of state.go
@@ -129,17 +129,17 @@ The printing-press pipeline scores CLIs on 17 dimensions, but its "agent-native"
 - Migration block structure in `LoadState()`
 
 **Test scenarios:**
-- Happy path: `NewState()` creates state with `PhaseAgentReadiness` at correct position in PhaseOrder, PlanPath uses name-based format (`agent-readiness-plan.md`)
+- Happy path: `NewState()` creates state with `PhaseAgentReadiness` at correct position in PhaseOrder, PlanPath uses stable-numbered format (`55-agent-readiness-plan.md`)
 - Happy path: `NextPhase()` returns `PhaseAgentReadiness` after `PhaseReview` is completed
 - Edge case: `LoadState()` with version 1 state file migrates to version 2 — adds `PhaseAgentReadiness` with both `Status: StatusCompleted` and `PlanStatus: PlanStatusCompleted`
-- Edge case: Migration updates PlanPath from old `%02d-name-plan.md` to `name-plan.md` for all phases
+- Edge case: Migration updates PlanPath from old sequential-index format to stable-numbered format for all phases
 - Edge case: Version 2 state file is loaded without migration running (idempotent)
 - Error path: State file with unknown phase name is preserved (not dropped)
 
 **Verification:**
 - `go test ./internal/pipeline/...` passes
 - `PhaseAgentReadiness` appears in `PhaseOrder` between `PhaseReview` and `PhaseComparative`
-- PlanPath for all phases uses name-based format
+- PlanPath for all phases uses stable-numbered format (e.g., `55-agent-readiness-plan.md`)
 
 ---
 
@@ -263,12 +263,12 @@ The SKILL.md changes are in three parts:
 
 - **Interaction graph:** Phase 4.9 invokes an external Claude Code plugin agent (`compound-engineering:cli-agent-readiness-reviewer`). The agent reads generated CLI files and produces a report. The SKILL.md instructions then drive fix implementation. No callbacks, middleware, or observers are affected.
 - **Error propagation:** Agent unavailability → graceful skip. Agent output unparseable → graceful skip. Individual fix build failure → revert + skip. These are all local to Phase 4.9 and don't affect other phases.
-- **State lifecycle risks:** PlanPath format change affects all phases, not just the new one. Migration must update paths for all existing phases. New pipelines get name-based paths from the start.
+- **State lifecycle risks:** PlanPath format change (sequential-index to stable-numbered) affects all phases, not just the new one. Migration updates paths for all existing phases. New pipelines get stable-numbered paths from the start.
 - **API surface parity:** The `printing-press` CLI itself is not affected. The emboss mode (second-pass improvement) could also benefit from agent-readiness review in the future but is explicitly out of scope.
 
 ## Risks & Dependencies
 
-- **PlanPath format change is broader than Phase 4.9** — While motivated by the new phase, switching from index-based to name-based PlanPath affects all existing and future pipelines. Mitigation: the change is straightforward (remove the `%02d-` prefix) and migration handles existing state files.
+- **PlanPath format change is broader than Phase 4.9** — While motivated by the new phase, switching from sequential-index to stable-numbered PlanPath affects all existing and future pipelines. Mitigation: the change uses a `phaseNumber` map with gaps; migration handles existing state files.
 - **External plugin dependency** — compound-engineering v2.55.0+ must be installed and `every-marketplace` registered. Mitigation: graceful skip with diagnostic warning message.
 - **LLM may skip the phase** — Past experience shows Claude treats phase gates as suggestions. Mitigation: "THIS PHASE IS MANDATORY" header with only one explicit exception path.
 
