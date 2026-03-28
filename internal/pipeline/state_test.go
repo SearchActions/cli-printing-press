@@ -161,15 +161,16 @@ func TestLoadStateMigratesV1ToV2(t *testing.T) {
 	require.NoError(t, os.MkdirAll(dir, 0o755))
 	defer os.RemoveAll(dir)
 
-	// Simulate a v1 state file without agent-readiness phase and with index-based paths.
+	// Simulate a v1 state file without agent-readiness phase, with index-based
+	// paths, and some completed phases missing PlanStatus (pre-PlanStatus code).
 	v1State := PipelineState{
 		Version:   1,
 		APIName:   apiName,
 		OutputDir: "/tmp/migrate-cli",
 		Phases: map[string]PhaseState{
 			PhasePreflight:   {Status: StatusCompleted, PlanStatus: PlanStatusCompleted, PlanPath: dir + "/00-preflight-plan.md"},
-			PhaseResearch:    {Status: StatusCompleted, PlanStatus: PlanStatusCompleted, PlanPath: dir + "/01-research-plan.md"},
-			PhaseScaffold:    {Status: StatusCompleted, PlanStatus: PlanStatusCompleted, PlanPath: dir + "/02-scaffold-plan.md"},
+			PhaseResearch:    {Status: StatusCompleted, PlanPath: dir + "/01-research-plan.md"},  // no PlanStatus (pre-PlanStatus v1)
+			PhaseScaffold:    {Status: StatusCompleted, PlanPath: dir + "/02-scaffold-plan.md"},  // no PlanStatus
 			PhaseEnrich:      {Status: StatusCompleted, PlanStatus: PlanStatusCompleted, PlanPath: dir + "/03-enrich-plan.md"},
 			PhaseRegenerate:  {Status: StatusCompleted, PlanStatus: PlanStatusCompleted, PlanPath: dir + "/04-regenerate-plan.md"},
 			PhaseReview:      {Status: StatusCompleted, PlanStatus: PlanStatusCompleted, PlanPath: dir + "/05-review-plan.md"},
@@ -198,8 +199,15 @@ func TestLoadStateMigratesV1ToV2(t *testing.T) {
 		assert.Equal(t, expected, loaded.Phases[name].PlanPath, "migrated PlanPath for %s", name)
 	}
 
+	// Completed phases with empty PlanStatus get backfilled.
+	assert.Equal(t, PlanStatusCompleted, loaded.Phases[PhaseResearch].PlanStatus, "PlanStatus backfilled for research")
+	assert.Equal(t, PlanStatusCompleted, loaded.Phases[PhaseScaffold].PlanStatus, "PlanStatus backfilled for scaffold")
+
 	// Existing phase statuses preserved (comparative was pending).
 	assert.Equal(t, StatusPending, loaded.Phases[PhaseComparative].Status)
+
+	// NextPhase() skips the backfilled agent-readiness and returns comparative.
+	assert.Equal(t, PhaseComparative, loaded.NextPhase())
 }
 
 func TestPhaseStateJSONIncludesPlanStatus(t *testing.T) {

@@ -136,13 +136,25 @@ func LoadState(apiName string) (*PipelineState, error) {
 					PlanPath:   filepath.Join(PipelineDir(apiName), fmt.Sprintf("%s-plan.md", name)),
 				}
 			} else {
-				// Migrate existing phases from index-based to name-based PlanPath.
+				// Migrate existing phases: update PlanPath from index-based to
+				// name-based format, and backfill PlanStatus for completed phases
+				// that predate the PlanStatus field.
 				p := s.Phases[name]
 				p.PlanPath = filepath.Join(PipelineDir(apiName), fmt.Sprintf("%s-plan.md", name))
+				if p.Status == StatusCompleted && p.PlanStatus == "" {
+					p.PlanStatus = PlanStatusCompleted
+				}
 				s.Phases[name] = p
 			}
 		}
 		s.Version = currentStateVersion
+		// Persist the migration so it doesn't re-run on every load.
+		// Note: plan files on disk keep their old index-based names.
+		// Completed phases' plans are not re-read; pending phases get
+		// new seeds written at the new paths by Init.
+		if err := s.Save(); err != nil {
+			return nil, fmt.Errorf("saving migrated state: %w", err)
+		}
 	}
 	return &s, nil
 }
