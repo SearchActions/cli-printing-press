@@ -2057,7 +2057,7 @@ When the user asks "is this shippable?", "can we ship this?", "is it ready?", or
 
 # PHASE 5.9: OFFER EMBOSS
 
-After presenting the final report (Phase 5), ask the user:
+After presenting the final report (Phase 5), use AskUserQuestion to ask:
 
 "The CLI scored [X]/100 (Grade [Y]). Want me to run an emboss pass to improve it further? This re-researches the landscape, finds the top 5 improvements, builds them, and re-scores."
 
@@ -2066,7 +2066,7 @@ Options:
 - "No, I'm done" -> end the run
 - "I'll emboss later" -> tell user they can run `/printing-press emboss ./<api>-pp-cli`
 
-**Emboss is a FOLLOW-UP, not an automatic step. The user decides.**
+**WAIT for the user's answer before proceeding.** Do NOT continue or end the run until answered. Emboss is a FOLLOW-UP, not an automatic step. The user decides.
 
 ---
 
