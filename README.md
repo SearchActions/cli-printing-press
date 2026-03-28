@@ -221,7 +221,24 @@ printing-press dogfood --dir ./discord-cli --spec /tmp/discord-spec.json
 /install-skill https://github.com/mvanhorn/cli-printing-press
 ```
 
-Then build the binary (needed for scorecard, verify, and dogfood commands):
+### Install the Compound Engineering Plugin
+
+The printing press leverages agents from the [Compound Engineering plugin](https://github.com/EveryInc/compound-engineering-plugin) to improve generated CLI quality and agent readiness. Install it before running the press:
+
+```bash
+/plugin marketplace add EveryInc/compound-engineering-plugin
+/plugin install compound-engineering
+```
+
+After installing both the skill and plugin, reload:
+
+```bash
+/reload-plugins
+```
+
+### Build the Binary
+
+Build the binary (needed for scorecard, verify, and dogfood commands):
 
 ```bash
 cd ~/cli-printing-press
