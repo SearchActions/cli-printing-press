@@ -320,7 +320,32 @@ Priority 3 (polish):
 - naming cleanup for ugly operationId-derived commands
 - tests for non-trivial store/workflow logic
 
-Get Priority 0 and 1 working first (the foundation and absorbed features), then build Priority 2 (transcendence), then verify.
+### Agent Build Checklist (per command)
+
+After building each command in Priority 1 and Priority 2, verify these 7 principles are met. These map 1:1 to what Phase 4.9's agent readiness reviewer will check - apply them now so the review becomes a confirmation, not a catch-all.
+
+1. **Non-interactive**: No TTY prompts, no `bufio.Scanner(os.Stdin)`, works in CI without a terminal
+2. **Structured output**: `--json` produces valid JSON, `--select` filters fields correctly
+3. **Progressive help**: `--help` shows realistic examples with domain-specific values (not "abc123")
+4. **Actionable errors**: Error messages name the specific flag/arg that's wrong and the correct usage
+5. **Safe retries**: Mutation commands support `--dry-run`, idempotent where possible
+6. **Composability**: Exit codes are typed (0/2/3/4/5/7), output pipes to `jq` cleanly
+7. **Bounded responses**: `--compact` returns only high-gravity fields, list commands have `--limit`
+
+### Priority 1 Review Gate
+
+After completing ALL Priority 1 (absorbed) features, BEFORE starting Priority 2 (transcendence):
+
+Pick 3 random commands from Priority 1. Run each with:
+```bash
+<cli> <command> --help          # Does it show realistic examples?
+<cli> <command> --dry-run       # Does it show the request without sending?
+<cli> <command> --json          # Does it produce valid JSON?
+```
+
+If any of the 3 fail, there's a systemic issue. Fix it across all commands before proceeding. This catches problems like "--dry-run not wired" or "--json outputs table instead of JSON" early, when they're cheap to fix.
+
+Get Priority 0 and 1 working first (the foundation and absorbed features), pass the review gate, then build Priority 2 (transcendence), then verify.
 
 Write:
 
