@@ -1,7 +1,10 @@
 package pipeline
 
 import (
+	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -9,6 +12,7 @@ import (
 	"time"
 
 	"github.com/mvanhorn/cli-printing-press/internal/llmpolish"
+	"gopkg.in/yaml.v3"
 )
 
 // FullRunResult holds everything the press produced for one API.
@@ -422,26 +426,55 @@ func PrintComparisonTable(results []*FullRunResult) string {
 	return b.String()
 }
 
-// copySpecToOutput copies the source spec file into <outputDir>/spec.<ext>
-// preserving the original extension so YAML specs stay YAML and JSON stays JSON.
-// Only copies when specFlag is "--spec" (local file). Errors are non-fatal.
+// copySpecToOutput reads the spec from a local path or remote URL, converts
+// YAML to JSON if needed, and writes it as <outputDir>/spec.json.
+// Only runs when specFlag is "--spec". Errors are non-fatal.
 func copySpecToOutput(specFlag, specURL, outputDir string) error {
-	if specFlag != "--spec" {
+	if specFlag != "--spec" || specURL == "" {
 		return nil
 	}
-	data, err := os.ReadFile(specURL)
+	data, err := readSpecBytes(specURL)
 	if err != nil {
 		return fmt.Errorf("reading spec %s: %w", specURL, err)
 	}
-	ext := filepath.Ext(specURL)
-	if ext == "" {
-		ext = ".json"
+	data, err = ensureJSON(data)
+	if err != nil {
+		return fmt.Errorf("converting spec to JSON: %w", err)
 	}
-	dst := filepath.Join(outputDir, "spec"+ext)
+	dst := filepath.Join(outputDir, "spec.json")
 	if err := os.WriteFile(dst, data, 0o644); err != nil {
 		return fmt.Errorf("writing %s: %w", dst, err)
 	}
 	return nil
+}
+
+// readSpecBytes fetches spec content from a URL or reads it from a local file.
+func readSpecBytes(specURL string) ([]byte, error) {
+	if strings.HasPrefix(specURL, "http://") || strings.HasPrefix(specURL, "https://") {
+		resp, err := http.Get(specURL) //nolint:gosec // spec URLs are operator-provided
+		if err != nil {
+			return nil, err
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			return nil, fmt.Errorf("HTTP %d fetching %s", resp.StatusCode, specURL)
+		}
+		return io.ReadAll(resp.Body)
+	}
+	return os.ReadFile(specURL)
+}
+
+// ensureJSON converts YAML content to JSON. If the input is already valid
+// JSON, it is returned as-is.
+func ensureJSON(data []byte) ([]byte, error) {
+	if json.Valid(data) {
+		return data, nil
+	}
+	var obj interface{}
+	if err := yaml.Unmarshal(data, &obj); err != nil {
+		return nil, fmt.Errorf("not valid JSON or YAML: %w", err)
+	}
+	return json.Marshal(obj)
 }
 
 func writeRow(b *strings.Builder, label string, results []*FullRunResult, fn func(*FullRunResult) string) {

@@ -77,7 +77,7 @@ If nothing resolves, report the error: "Could not find CLI '<name>'. Provide a p
 
 For each resolved CLI directory, find the OpenAPI spec:
 
-1. Check for a spec file in `<cli-dir>/` — look for `spec.json`, `spec.yaml`, or `spec.yml` (the extension is preserved from the original spec during generation)
+1. Check `<cli-dir>/spec.json` — the pipeline converts YAML specs to JSON during generation
 2. If not found, scan `docs/plans/*-pipeline/state.json` files for one matching this CLI's directory. Read its `spec_path` field. If that file exists on disk, use it.
 3. If no spec found, **proceed without `--spec`**. Note to the user: "No spec found — Tier 2 (domain correctness) scores will be 0. Provide a spec path to get full scoring."
 
