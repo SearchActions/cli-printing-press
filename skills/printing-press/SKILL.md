@@ -325,20 +325,20 @@ After Phase 1 research, evaluate whether sniffing the live site would improve th
 
 Present to the user via `AskUserQuestion`:
 
-> "Found a spec with **N endpoints**, but research shows the live API likely has more (competitors reference M+ features). Want me to sniff `<url>` to discover endpoints the spec missed?"
+> "Found a spec with **N endpoints**, but research shows the live API likely has more (competitors reference M+ features). Want me to sniff `<url>` to discover endpoints the spec missed? I'll check for browser-use or agent-browser and install if needed."
 >
 > Options:
-> 1. **Yes — sniff and merge** (browse the site, capture traffic, merge discovered endpoints with the existing spec)
+> 1. **Yes — sniff and merge** (browse the site, capture traffic, merge discovered endpoints with the existing spec. Installs capture tools if needed.)
 > 2. **No — use existing spec** (proceed with what we have)
 
 ### Sniff as primary (no spec found)
 
 Present to the user via `AskUserQuestion`:
 
-> "No OpenAPI spec found for `<API>`. Want me to sniff `<likely-url>` to discover the API from live traffic?"
+> "No OpenAPI spec found for `<API>`. Want me to sniff `<likely-url>` to discover the API from live traffic? I'll check for browser-use or agent-browser and install if needed."
 >
 > Options:
-> 1. **Yes — sniff the live site** (browse `<url>` via agent-browser, capture API calls, generate a spec)
+> 1. **Yes — sniff the live site** (browse `<url>`, capture API calls, generate a spec. Installs capture tools if needed.)
 > 2. **No — use docs instead** (attempt `--docs` generation from documentation pages)
 > 3. **No — I'll provide a spec or HAR** (user will supply input manually)
 
@@ -356,11 +356,56 @@ if command -v browser-use >/dev/null 2>&1 || uvx browser-use --version >/dev/nul
 elif command -v agent-browser >/dev/null 2>&1; then
   SNIFF_BACKEND="agent-browser"
 else
-  SNIFF_BACKEND="manual"
+  SNIFF_BACKEND="none"
 fi
 ```
 
-Report: "Using **<tool>** for traffic capture." If neither is found, ask the user for a manual HAR from browser DevTools and skip to step 4.
+If a tool is found, report: "Using **<tool>** for traffic capture." and proceed to Step 2.
+
+#### Step 1b: Install capture tool (if none found)
+
+If `SNIFF_BACKEND="none"`, neither capture tool is installed. Offer to install one via `AskUserQuestion`:
+
+> "No browser automation tool found. I need one to sniff the live site. Which would you like to install?"
+>
+> Options:
+> 1. **Install browser-use (Recommended)** — "Autonomous agent that explores sites on its own. HAR includes response bodies. Requires Python. ~2 min install."
+> 2. **Install agent-browser** — "Lighter install (~30s). I'll drive the browsing. Requires Node.js."
+> 3. **Skip — I'll provide a HAR manually** — "Export a HAR yourself from browser DevTools and provide the path."
+
+**If user picks browser-use:**
+
+```bash
+# Detect Python package manager
+if command -v uv >/dev/null 2>&1; then
+  uv pip install browser-use
+elif command -v pip >/dev/null 2>&1; then
+  pip install browser-use
+else
+  echo "Neither uv nor pip found. Install Python first: https://www.python.org/downloads/"
+  # Fall back to asking about agent-browser or manual HAR
+fi
+```
+
+After install, re-run detection. If `browser-use` is now available, set `SNIFF_BACKEND="browser-use"` and proceed to Step 2a. If install failed, show the error and offer agent-browser as alternative or fall back to manual HAR.
+
+**If user picks agent-browser:**
+
+```bash
+# Detect Node.js package manager
+if command -v brew >/dev/null 2>&1; then
+  brew install agent-browser
+elif command -v npm >/dev/null 2>&1; then
+  npm install -g agent-browser
+else
+  echo "Neither brew nor npm found. Install Node.js first: https://nodejs.org/"
+  # Fall back to manual HAR
+fi
+```
+
+After install, re-run detection. If `agent-browser` is now available, set `SNIFF_BACKEND="agent-browser"` and proceed to Step 2b. If install failed, show the error and fall back to manual HAR.
+
+**If user picks manual HAR**, ask the user for a HAR file path and skip to Step 3.
 
 #### Step 2a: browser-use capture (preferred)
 
