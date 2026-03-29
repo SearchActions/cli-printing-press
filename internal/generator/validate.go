@@ -3,8 +3,6 @@ package generator
 import (
 	"bytes"
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"fmt"
 	"os"
 	"os/exec"
@@ -20,6 +18,8 @@ type validationGate struct {
 	name string
 	run  func() error
 }
+
+const qualityGateTimeout = 5 * time.Minute
 
 func (g *Generator) Validate() error {
 	binPath := filepath.Join(g.OutputDir, naming.ValidationBinary(g.Spec.Name))
@@ -42,28 +42,28 @@ func (g *Generator) Validate() error {
 		{
 			name: "go mod tidy",
 			run: func() error {
-				_, err := runCommand(g.OutputDir, 2*time.Minute, "go", "mod", "tidy")
+				_, err := runCommand(g.OutputDir, qualityGateTimeout, "go", "mod", "tidy")
 				return err
 			},
 		},
 		{
 			name: "go vet ./...",
 			run: func() error {
-				_, err := runCommand(g.OutputDir, 2*time.Minute, "go", "vet", "./...")
+				_, err := runCommand(g.OutputDir, qualityGateTimeout, "go", "vet", "./...")
 				return err
 			},
 		},
 		{
 			name: "go build ./...",
 			run: func() error {
-				_, err := runCommand(g.OutputDir, 2*time.Minute, "go", "build", "./...")
+				_, err := runCommand(g.OutputDir, qualityGateTimeout, "go", "build", "./...")
 				return err
 			},
 		},
 		{
 			name: "build runnable binary",
 			run: func() error {
-				_, err := runCommand(g.OutputDir, 2*time.Minute, "go", "build", "-o", binPath, "./cmd/"+naming.CLI(g.Spec.Name))
+				_, err := runCommand(g.OutputDir, qualityGateTimeout, "go", "build", "-o", binPath, "./cmd/"+naming.CLI(g.Spec.Name))
 				return err
 			},
 		},
@@ -146,13 +146,12 @@ func runCommand(dir string, timeout time.Duration, name string, args ...string) 
 }
 
 func goBuildCacheDir(dir string) (string, error) {
-	absDir, err := filepath.Abs(dir)
-	if err != nil {
-		return "", fmt.Errorf("resolving build cache path: %w", err)
-	}
-
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
+		absDir, absErr := filepath.Abs(dir)
+		if absErr != nil {
+			return "", fmt.Errorf("resolving build cache path: %w", absErr)
+		}
 		fallback := filepath.Join(absDir, ".cache", "go-build")
 		if mkErr := os.MkdirAll(fallback, 0o755); mkErr != nil {
 			return "", fmt.Errorf("creating fallback build cache dir: %w", mkErr)
@@ -160,8 +159,10 @@ func goBuildCacheDir(dir string) (string, error) {
 		return fallback, nil
 	}
 
-	sum := sha256.Sum256([]byte(absDir))
-	cacheDir := filepath.Join(homeDir, ".cache", "printing-press", "go-build", hex.EncodeToString(sum[:]))
+	// Use a single shared cache for all generated CLIs.
+	// Per-project caches forced each parallel test to compile the Go
+	// standard library from scratch, causing CI timeouts.
+	cacheDir := filepath.Join(homeDir, ".cache", "printing-press", "go-build")
 	if err := os.MkdirAll(cacheDir, 0o755); err != nil {
 		return "", fmt.Errorf("creating build cache dir: %w", err)
 	}

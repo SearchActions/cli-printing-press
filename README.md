@@ -8,15 +8,23 @@ Claude Code, Codex, Gemini CLI, Cursor - they call CLIs thousands of times a day
 /printing-press Discord
 /printing-press Stripe
 /printing-press Linear
-/printing-press emboss ./library/notion-cli   # Second pass: improve an existing CLI
+/printing-press emboss ~/printing-press/library/notion-pp-cli   # Second pass: improve an existing CLI
 ```
 
 One command. Lean loop. Produces a Go CLI + MCP server that absorbs every feature from every competing tool, then transcends with compound use cases only possible with local data. REST or GraphQL.
 
 ### Get it
 
+Install the binary, then start a Claude Code session and run each command one after another:
+
 ```bash
-/install-skill https://github.com/mvanhorn/cli-printing-press
+go install github.com/mvanhorn/cli-printing-press/cmd/printing-press@latest
+```
+
+```
+/plugin marketplace add mvanhorn/cli-printing-press
+/plugin install cli-printing-press@cli-printing-press
+/reload-plugins
 ```
 
 ## Every Endpoint. Every Insight. One Command.
@@ -150,7 +158,7 @@ When you add `codex`, Phase 3's code generation tasks are delegated to Codex CLI
 ### Emboss Mode (second pass)
 
 ```bash
-/printing-press emboss ./library/notion-cli   # Improve an existing CLI
+/printing-press emboss ~/printing-press/library/notion-pp-cli   # Improve an existing CLI
 ```
 
 Already generated a CLI? Emboss runs a 30-minute improvement cycle: audit baseline (verify + scorecard), re-research what's changed, identify top 5 improvements, build them, re-verify, report the delta. The binary handles the bookkeeping (`printing-press emboss --audit-only`), the skill handles the creative work.
@@ -236,18 +244,23 @@ printing-press dogfood --dir ./discord-pp-cli --spec /tmp/discord-spec.json
 
 ## Quick Start
 
-### Install the Skill (Claude Code)
+### Install
+
+Install the binary (requires Go 1.22+):
 
 ```bash
-/install-skill https://github.com/mvanhorn/cli-printing-press
+go install github.com/mvanhorn/cli-printing-press/cmd/printing-press@latest
 ```
 
-Then build the binary (needed for scorecard, verify, and dogfood commands):
+Then start a Claude Code session and run each command one after another:
 
-```bash
-cd "$(git rev-parse --show-toplevel)"
-go build -o ./printing-press ./cmd/printing-press
 ```
+/plugin marketplace add mvanhorn/cli-printing-press
+/plugin install cli-printing-press@cli-printing-press
+/reload-plugins
+```
+
+No repo checkout needed. The binary embeds its own catalog data and the plugin provides the `/printing-press` skill.
 
 ### Run It
 
@@ -339,7 +352,7 @@ Synthesized from post-mortems on Notion and Linear runs. 14 changes to the skill
 ## Credits
 
 - **Peter Steinberger** ([@steipete](https://github.com/steipete)) - [discrawl](https://github.com/steipete/discrawl) and [gogcli](https://github.com/steipete/gogcli) set the bar. The quality scoring system is inspired by his work. discrawl v0.2.0's sync architecture directly influenced the printing press templates.
-- **Trevin Chow** ([@trevin](https://x.com/trevin)) - [7 Principles for Agent-Friendly CLIs](https://x.com/trevin) shaped the agent-first template design.
+- **Trevin Chow** ([@trevin](https://x.com/trevin)) - [7 Principles for Agent-Friendly CLIs](https://x.com/trevin/status/2037250000821059933) shaped the agent-first template design.
 - **Ramp** ([@tryramp](https://github.com/ramp-public/ramp-cli)) - Their agent-first CLI inspired auto-JSON piping, --no-input, and --compact output.
 ## License
 

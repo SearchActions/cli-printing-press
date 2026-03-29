@@ -9,6 +9,8 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
+	"runtime/debug"
 	"strings"
 	"time"
 
@@ -25,7 +27,25 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-var version = "0.1.0"
+var version = "0.4.0" // x-release-please-version
+
+func init() {
+	info, ok := debug.ReadBuildInfo()
+	if !ok {
+		return
+	}
+	v := info.Main.Version
+	// Only use the build info version when it's a real tagged release.
+	// Skip empty, "(devel)", and pseudo-versions like "v0.0.0-20260328...".
+	if v == "" || v == "(devel)" {
+		return
+	}
+	trimmed := strings.TrimPrefix(v, "v")
+	if strings.HasPrefix(trimmed, "0.0.0-") {
+		return
+	}
+	version = trimmed
+}
 
 func Execute() error {
 	rootCmd := &cobra.Command{
@@ -46,6 +66,7 @@ func Execute() error {
 	rootCmd.AddCommand(newVersionCmd())
 	rootCmd.AddCommand(newPrintCmd())
 	rootCmd.AddCommand(newSniffCmd())
+	rootCmd.AddCommand(newCatalogCmd())
 
 	return rootCmd.Execute()
 }
@@ -156,13 +177,15 @@ func newGenerateCmd() *cobra.Command {
 
 				fmt.Fprintf(os.Stderr, "Generated %s at %s (from docs)\n", naming.CLI(parsed.Name), absOut)
 				if asJSON {
-					json.NewEncoder(os.Stdout).Encode(map[string]interface{}{
+					if err := json.NewEncoder(os.Stdout).Encode(map[string]interface{}{
 						"name":       parsed.Name,
 						"output_dir": absOut,
 						"spec_files": specFiles,
 						"validated":  validate,
 						"polished":   polished,
-					})
+					}); err != nil {
+						return fmt.Errorf("encoding JSON: %w", err)
+					}
 				}
 				return nil
 			}
@@ -269,13 +292,15 @@ func newGenerateCmd() *cobra.Command {
 
 			fmt.Fprintf(os.Stderr, "Generated %s at %s\n", naming.CLI(apiSpec.Name), absOut)
 			if asJSON {
-				json.NewEncoder(os.Stdout).Encode(map[string]interface{}{
+				if err := json.NewEncoder(os.Stdout).Encode(map[string]interface{}{
 					"name":       apiSpec.Name,
 					"output_dir": absOut,
 					"spec_files": specFiles,
 					"validated":  validate,
 					"polished":   polished,
-				})
+				}); err != nil {
+					return fmt.Errorf("encoding JSON: %w", err)
+				}
 			}
 			return nil
 		},
@@ -414,7 +439,7 @@ func fetchOrCacheSpec(specURL string, refresh bool, skipCache bool) ([]byte, err
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
 		return nil, fmt.Errorf("unexpected response status: %s", resp.Status)
@@ -438,14 +463,27 @@ func fetchOrCacheSpec(specURL string, refresh bool, skipCache bool) ([]byte, err
 }
 
 func newVersionCmd() *cobra.Command {
-	return &cobra.Command{
+	var asJSON bool
+
+	cmd := &cobra.Command{
 		Use:     "version",
 		Short:   "Print version",
 		Example: `  printing-press version`,
-		Run: func(cmd *cobra.Command, args []string) {
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if asJSON {
+				return json.NewEncoder(os.Stdout).Encode(map[string]string{
+					"version": version,
+					"go":      runtime.Version(),
+				})
+			}
 			fmt.Printf("printing-press %s\n", version)
+			return nil
 		},
 	}
+
+	cmd.Flags().BoolVar(&asJSON, "json", false, "Output as JSON")
+
+	return cmd
 }
 
 func newPrintCmd() *cobra.Command {
@@ -497,14 +535,16 @@ func newPrintCmd() *cobra.Command {
 			fmt.Fprintf(os.Stderr, "\nStart with: /ce:work %s\n", state.PlanPath(pipeline.PhasePreflight))
 
 			if asJSON {
-				json.NewEncoder(os.Stdout).Encode(map[string]interface{}{
+				if err := json.NewEncoder(os.Stdout).Encode(map[string]interface{}{
 					"api_name":         apiName,
 					"pipeline_dir":     state.PipelineDir(),
 					"phases_completed": countCompletedPhases(state),
 					"state_file":       state.StatePath(),
 					"working_dir":      state.EffectiveWorkingDir(),
 					"run_id":           state.RunID,
-				})
+				}); err != nil {
+					return fmt.Errorf("encoding JSON: %w", err)
+				}
 			}
 			return nil
 		},

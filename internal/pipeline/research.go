@@ -13,20 +13,21 @@ import (
 	"strings"
 	"time"
 
+	catalogfs "github.com/mvanhorn/cli-printing-press/catalog"
 	"github.com/mvanhorn/cli-printing-press/internal/catalog"
 	"github.com/mvanhorn/cli-printing-press/internal/llm"
 )
 
 // ResearchResult holds the output of the research phase.
 type ResearchResult struct {
-	APIName             string              `json:"api_name"`
-	NoveltyScore        int                 `json:"novelty_score"` // 1-10
-	Alternatives        []Alternative       `json:"alternatives"`
-	Gaps                []string            `json:"gaps"`           // what alternatives miss
-	Patterns            []string            `json:"patterns"`       // what alternatives do well
-	Recommendation      string              `json:"recommendation"` // "proceed", "proceed-with-gaps", "skip"
-	ResearchedAt        time.Time           `json:"researched_at"`
-	CompetitorInsights  *CompetitorInsights `json:"competitor_insights,omitempty"`
+	APIName            string              `json:"api_name"`
+	NoveltyScore       int                 `json:"novelty_score"` // 1-10
+	Alternatives       []Alternative       `json:"alternatives"`
+	Gaps               []string            `json:"gaps"`           // what alternatives miss
+	Patterns           []string            `json:"patterns"`       // what alternatives do well
+	Recommendation     string              `json:"recommendation"` // "proceed", "proceed-with-gaps", "skip"
+	ResearchedAt       time.Time           `json:"researched_at"`
+	CompetitorInsights *CompetitorInsights `json:"competitor_insights,omitempty"`
 }
 
 // CompetitorAnalysis holds intelligence gathered from a single competitor repo.
@@ -63,14 +64,14 @@ type Alternative struct {
 // RunResearch executes the research phase for an API.
 // It checks the catalog for known alternatives, then optionally
 // queries the GitHub API for additional CLI tools.
-func RunResearch(apiName, catalogDir, pipelineDir string) (*ResearchResult, error) {
+func RunResearch(apiName, pipelineDir string) (*ResearchResult, error) {
 	result := &ResearchResult{
 		APIName:      apiName,
 		ResearchedAt: time.Now(),
 	}
 
 	// Step 1: Check catalog for known alternatives
-	catalogAlts := loadCatalogAlternatives(apiName, catalogDir)
+	catalogAlts := loadCatalogAlternatives(apiName)
 	for _, alt := range catalogAlts {
 		result.Alternatives = append(result.Alternatives, Alternative{
 			Name:     alt.Name,
@@ -167,16 +168,8 @@ func LoadResearch(pipelineDir string) (*ResearchResult, error) {
 	return &r, nil
 }
 
-func loadCatalogAlternatives(apiName, catalogDir string) []catalog.KnownAlt {
-	if catalogDir == "" {
-		catalogDir = "catalog"
-	}
-	path := filepath.Join(catalogDir, apiName+".yaml")
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil
-	}
-	entry, err := catalog.ParseEntry(data)
+func loadCatalogAlternatives(apiName string) []catalog.KnownAlt {
+	entry, err := catalog.LookupFS(catalogfs.FS, apiName)
 	if err != nil {
 		return nil
 	}
@@ -217,7 +210,7 @@ func searchGitHubCLIs(apiName string) ([]Alternative, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != 200 {
 		body, _ := io.ReadAll(resp.Body)
@@ -407,8 +400,8 @@ type ghIssue struct {
 
 // ghPull models a GitHub pull request from the API.
 type ghPull struct {
-	Title    string `json:"title"`
-	HTMLURL  string `json:"html_url"`
+	Title    string  `json:"title"`
+	HTMLURL  string  `json:"html_url"`
 	MergedAt *string `json:"merged_at"`
 }
 
@@ -495,7 +488,7 @@ func fetchIssues(client *http.Client, owner, repo, labels string) ([]ghIssue, er
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != 200 {
 		body, _ := io.ReadAll(resp.Body)
@@ -521,7 +514,7 @@ func fetchReadme(client *http.Client, owner, repo string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != 200 {
 		return "", fmt.Errorf("GitHub API returned %d", resp.StatusCode)
@@ -555,7 +548,7 @@ func fetchAbandonedPRs(client *http.Client, owner, repo string) ([]ghPull, error
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != 200 {
 		return nil, fmt.Errorf("GitHub API returned %d", resp.StatusCode)
