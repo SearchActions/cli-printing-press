@@ -51,6 +51,7 @@ func TestSkillSetupBlocksMatchWorkspaceContract(t *testing.T) {
 		{path: filepath.Join("..", "..", "skills", "printing-press", "SKILL.md"), expectsManuscripts: true},
 		{path: filepath.Join("..", "..", "skills", "printing-press-score", "SKILL.md"), expectsManuscripts: true},
 		{path: filepath.Join("..", "..", "skills", "printing-press-catalog", "SKILL.md"), expectsManuscripts: false},
+		{path: filepath.Join("..", "..", "skills", "printing-press-publish", "SKILL.md"), expectsManuscripts: true},
 	}
 
 	for _, tt := range tests {
@@ -106,6 +107,15 @@ func TestPrintingPressSkillExamplesUseCurrentCLINaming(t *testing.T) {
 	assert.NotContains(t, skill, "linear-cli stale --days 30 --team ENG")
 	assert.Contains(t, skill, "github.com/mvanhorn/discord-pp-cli")
 	assert.NotContains(t, skill, "github.com/mvanhorn/discord-cli")
+}
+
+func TestPublishSkillTracksCanonicalUpstreamAndOverwriteFlow(t *testing.T) {
+	skill := readContractFile(t, filepath.Join("..", "..", "skills", "printing-press-publish", "SKILL.md"))
+
+	assert.Contains(t, skill, "add `upstream` pointing at `mvanhorn/printing-press-library`")
+	assert.Contains(t, skill, "git fetch upstream 2>/dev/null || true")
+	assert.Contains(t, skill, "git reset --hard upstream/main")
+	assert.Contains(t, skill, "git push --force-with-lease -u origin feat/<cli-name>")
 }
 
 func TestREADMEOutputContract(t *testing.T) {
