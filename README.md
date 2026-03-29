@@ -8,7 +8,7 @@ Claude Code, Codex, Gemini CLI, Cursor - they call CLIs thousands of times a day
 /printing-press Discord
 /printing-press Stripe
 /printing-press Linear
-/printing-press emboss ~/printing-press/library/notion-pp-cli   # Second pass: improve an existing CLI
+/printing-press emboss notion                                   # Second pass: improve an existing CLI
 ```
 
 One command. Lean loop. Produces a Go CLI + MCP server that absorbs every feature from every competing tool, then transcends with compound use cases only possible with local data. REST or GraphQL.
@@ -158,7 +158,9 @@ When you add `codex`, Phase 3's code generation tasks are delegated to Codex CLI
 ### Emboss Mode (second pass)
 
 ```bash
-/printing-press emboss ~/printing-press/library/notion-pp-cli   # Improve an existing CLI
+/printing-press emboss notion              # By API name
+/printing-press emboss notion-pp-cli       # By CLI name
+/printing-press emboss ~/printing-press/library/notion-pp-cli   # By full path
 ```
 
 Already generated a CLI? Emboss runs a 30-minute improvement cycle: audit baseline (verify + scorecard), re-research what's changed, identify top 5 improvements, build them, re-verify, report the delta. The binary handles the bookkeeping (`printing-press emboss --audit-only`), the skill handles the creative work.
