@@ -14,12 +14,20 @@ import (
 )
 
 func Analyze(capturePath string) (*spec.APISpec, error) {
-	entries, targetURL, err := ParseCapture(capturePath)
+	capture, err := LoadCapture(capturePath)
 	if err != nil {
 		return nil, err
 	}
 
-	apiEntries, _ := ClassifyEntries(entries)
+	return AnalyzeCapture(capture)
+}
+
+func AnalyzeCapture(capture *EnrichedCapture) (*spec.APISpec, error) {
+	if capture == nil {
+		return nil, fmt.Errorf("capture is required")
+	}
+
+	apiEntries, _ := ClassifyEntries(capture.Entries)
 	groups := DeduplicateEndpoints(apiEntries)
 
 	resources := make(map[string]spec.Resource)
@@ -49,10 +57,10 @@ func Analyze(capturePath string) (*spec.APISpec, error) {
 
 	baseURL := mostCommonBaseURL(apiEntries)
 	if baseURL == "" {
-		baseURL = normalizeBaseURL(targetURL)
+		baseURL = normalizeBaseURL(capture.TargetURL)
 	}
 
-	nameSource := targetURL
+	nameSource := capture.TargetURL
 	if nameSource == "" {
 		nameSource = baseURL
 	}
@@ -63,7 +71,7 @@ func Analyze(capturePath string) (*spec.APISpec, error) {
 		Description: fmt.Sprintf("Discovered API spec for %s", name),
 		Version:     "0.1.0",
 		BaseURL:     baseURL,
-		Auth:        detectAuth(apiEntries, name),
+		Auth:        detectAuth(capture, apiEntries, name),
 		Config: spec.ConfigSpec{
 			Format: "toml",
 			Path:   fmt.Sprintf("~/.config/%s-pp-cli/config.toml", name),
@@ -130,7 +138,7 @@ func buildEndpoint(group EndpointGroup) spec.Endpoint {
 
 	body := inferRequestBody(group.Entries)
 	params := inferURLParams(group.Entries, group.NormalizedPath)
-	auth := detectAuth(group.Entries, "")
+	auth := detectAuth(nil, group.Entries, "")
 	if auth.Type == "api_key" && strings.EqualFold(auth.In, "query") && auth.Header != "" {
 		params = filterAuthQueryParam(params, auth.Header)
 	}
@@ -232,8 +240,15 @@ func inferURLParams(entries []EnrichedEntry, normalizedPath string) []spec.Param
 	return params
 }
 
-func detectAuth(entries []EnrichedEntry, name string) spec.AuthConfig {
+func detectAuth(capture *EnrichedCapture, entries []EnrichedEntry, name string) spec.AuthConfig {
 	envPrefix := strings.ToUpper(strings.ReplaceAll(name, "-", "_"))
+	if capture != nil && capture.Auth != nil {
+		auth := detectCapturedAuth(capture.Auth, envPrefix)
+		if auth.Type != "" {
+			return auth
+		}
+	}
+
 	for _, entry := range entries {
 		for headerName, value := range entry.RequestHeaders {
 			lowerHeader := strings.ToLower(headerName)
@@ -272,6 +287,68 @@ func detectAuth(entries []EnrichedEntry, name string) spec.AuthConfig {
 	}
 
 	return spec.AuthConfig{Type: "none"}
+}
+
+func detectCapturedAuth(capture *AuthCapture, envPrefix string) spec.AuthConfig {
+	if capture == nil {
+		return spec.AuthConfig{}
+	}
+
+	captureType := strings.ToLower(strings.TrimSpace(capture.Type))
+	switch {
+	case len(capture.Headers) > 0:
+		switch captureType {
+		case "bearer":
+			return spec.AuthConfig{
+				Type:    "bearer_token",
+				Header:  "Authorization",
+				EnvVars: envVarsOrNil(envPrefix, "TOKEN"),
+			}
+		case "api_key":
+			headerName := firstAuthHeader(capture.Headers)
+			if headerName == "" {
+				headerName = "X-API-Key"
+			}
+			return spec.AuthConfig{
+				Type:    "api_key",
+				Header:  headerName,
+				In:      "header",
+				EnvVars: envVarsOrNil(envPrefix, "API_KEY"),
+			}
+		case "cookie":
+			return spec.AuthConfig{
+				Type:   "cookie",
+				Header: "Cookie",
+				In:     "cookie",
+				Format: "informational only; no template support",
+			}
+		}
+	case captureType == "cookie" && len(capture.Cookies) > 0:
+		return spec.AuthConfig{
+			Type:   "cookie",
+			Header: "Cookie",
+			In:     "cookie",
+			Format: "informational only; no template support",
+		}
+	}
+
+	return spec.AuthConfig{}
+}
+
+func firstAuthHeader(headers map[string]string) string {
+	for _, preferred := range []string{"Authorization", "X-API-Key", "Api-Key", "X-Auth-Token"} {
+		for name := range headers {
+			if strings.EqualFold(name, preferred) {
+				return name
+			}
+		}
+	}
+
+	for name := range headers {
+		return name
+	}
+
+	return ""
 }
 
 func envVarsOrNil(prefix string, suffix string) []string {

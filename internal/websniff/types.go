@@ -45,7 +45,16 @@ type EnrichedCapture struct {
 	TargetURL         string          `json:"target_url"`
 	CapturedAt        string          `json:"captured_at"`
 	InteractionRounds int             `json:"interaction_rounds"`
+	Auth              *AuthCapture    `json:"auth,omitempty"`
 	Entries           []EnrichedEntry `json:"entries"`
+}
+
+type AuthCapture struct {
+	Headers     map[string]string `json:"headers"`
+	Cookies     []string          `json:"cookies"`
+	Type        string            `json:"type"`
+	BoundDomain string            `json:"bound_domain"`
+	ExpiresAt   string            `json:"expires_at"`
 }
 
 type EnrichedEntry struct {

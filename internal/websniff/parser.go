@@ -1,7 +1,6 @@
 package websniff
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -22,54 +21,21 @@ func ParseHAR(path string) (*HAR, error) {
 }
 
 func ParseEnriched(path string) (*EnrichedCapture, error) {
-	data, err := os.ReadFile(path)
+	capture, err := LoadCapture(path)
 	if err != nil {
-		return nil, fmt.Errorf("reading file: %w", err)
+		return nil, err
 	}
 
-	var capture EnrichedCapture
-	if err := json.Unmarshal(data, &capture); err != nil {
-		return nil, fmt.Errorf("parsing enriched json: %w", err)
-	}
-
-	return &capture, nil
+	return capture, nil
 }
 
 func ParseCapture(path string) ([]EnrichedEntry, string, error) {
-	data, err := os.ReadFile(path)
+	capture, err := LoadCapture(path)
 	if err != nil {
-		return nil, "", fmt.Errorf("reading file: %w", err)
+		return nil, "", err
 	}
 
-	if bytes.Contains(data, []byte(`"log"`)) {
-		var har HAR
-		if err := json.Unmarshal(data, &har); err != nil {
-			return nil, "", fmt.Errorf("parsing har json: %w", err)
-		}
-
-		entries := make([]EnrichedEntry, 0, len(har.Log.Entries))
-		for _, entry := range har.Log.Entries {
-			entries = append(entries, convertHAREntry(entry))
-		}
-
-		targetURL := ""
-		if len(har.Log.Entries) > 0 {
-			targetURL = har.Log.Entries[0].Request.URL
-		}
-
-		return entries, targetURL, nil
-	}
-
-	if bytes.Contains(data, []byte(`"target_url"`)) {
-		var capture EnrichedCapture
-		if err := json.Unmarshal(data, &capture); err != nil {
-			return nil, "", fmt.Errorf("parsing enriched json: %w", err)
-		}
-
-		return capture.Entries, capture.TargetURL, nil
-	}
-
-	return nil, "", fmt.Errorf("unknown capture format")
+	return capture.Entries, capture.TargetURL, nil
 }
 
 func convertHAREntry(entry HAREntry) EnrichedEntry {
