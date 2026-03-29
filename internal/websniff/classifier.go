@@ -15,16 +15,17 @@ type EndpointGroup struct {
 }
 
 var (
-	uuidSegmentPattern = regexp.MustCompile(`(?i)^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`)
-	hashSegmentPattern = regexp.MustCompile(`(?i)^[0-9a-f]{32,}$`)
-	numericPattern     = regexp.MustCompile(`^\d+$`)
+	uuidSegmentPattern  = regexp.MustCompile(`(?i)^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`)
+	hashSegmentPattern  = regexp.MustCompile(`(?i)^[0-9a-f]{32,}$`)
+	numericPattern      = regexp.MustCompile(`^\d+$`)
+	additionalBlocklist []string
 )
 
 func ClassifyEntries(entries []EnrichedEntry) (api []EnrichedEntry, noise []EnrichedEntry) {
 	api = make([]EnrichedEntry, 0, len(entries))
 	noise = make([]EnrichedEntry, 0, len(entries))
 
-	blocklist := DefaultBlocklist()
+	blocklist := append(DefaultBlocklist(), additionalBlocklist...)
 	for _, entry := range entries {
 		score := scoreEntry(entry, blocklist)
 		classified := entry
@@ -41,6 +42,10 @@ func ClassifyEntries(entries []EnrichedEntry) (api []EnrichedEntry, noise []Enri
 	}
 
 	return api, noise
+}
+
+func SetAdditionalBlocklist(domains []string) {
+	additionalBlocklist = append([]string(nil), domains...)
 }
 
 func DefaultBlocklist() []string {
