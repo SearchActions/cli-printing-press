@@ -234,9 +234,38 @@ If there are uncommitted changes, ask the user via AskUserQuestion:
 
 If reset, run `git checkout -- . && git clean -fd`.
 
-## Step 7: Branch, Commit, and PR
+## Step 7: Check for Existing PR
+
+Before creating a branch, check whether you have an open PR for this CLI. The `--author @me` filter ensures we only match PRs owned by the current user — if someone else published the same CLI name, we won't stomp their PR.
+
+```bash
+gh pr list --repo mvanhorn/printing-press-library --head "feat/<cli-name>" --state open --author @me --json number,title,url
+```
+
+Parse the result:
+- If the list is non-empty, store `EXISTING_PR_NUMBER` and `EXISTING_PR_URL` from the first entry
+- If the list is empty or the command fails (network, auth), set `EXISTING_PR_NUMBER=""` — proceed as if no PR exists
+
+If an existing open PR was found, inform the user:
+> "Found your open PR #N for `<cli-name>`. Will update it with the new version."
+
+This determines the flow in Step 8:
+- **Existing open PR:** Overwrite the branch automatically, force-push, update the PR description
+- **No open PR:** Standard flow — ask about branch conflicts if any, create a new PR
+
+## Step 8: Branch, Commit, and PR
 
 ### Create branch
+
+**If `EXISTING_PR_NUMBER` is set** (updating an existing PR):
+
+Always overwrite the branch — the intent is clearly to update:
+
+```bash
+git checkout -B feat/<cli-name>
+```
+
+**If `EXISTING_PR_NUMBER` is empty** (no open PR):
 
 Check for an existing branch:
 
@@ -245,11 +274,11 @@ git branch --list "feat/<cli-name>"
 git ls-remote --heads origin "feat/<cli-name>"
 ```
 
-If exists, ask via AskUserQuestion:
+If a branch exists (from a previously closed or merged PR), ask via AskUserQuestion:
 - "Overwrite existing branch"
 - "Create timestamped variant (feat/<cli-name>-YYYYMMDD)"
 
-Create the branch (use `-B` to force-create when overwriting an existing branch):
+Create the branch:
 
 ```bash
 # New branch:
@@ -259,9 +288,12 @@ git checkout -b feat/<cli-name>
 git checkout -B feat/<cli-name>
 ```
 
-### Copy staged package
+### Replace CLI package
+
+Remove any existing version of this CLI before copying. This prevents stale files from a previous generation persisting (e.g., deleted commands, renamed files). The glob also handles category changes — if the CLI moved from `productivity` to `developer-tools`, the old directory is cleaned up.
 
 ```bash
+rm -rf "$PUBLISH_REPO_DIR/library"/*/"<cli-name>"
 cp -r <staging-dir>/library/* "$PUBLISH_REPO_DIR/library/"
 ```
 
@@ -288,16 +320,27 @@ Write back with `jq` or via the Write tool.
 cd "$PUBLISH_REPO_DIR"
 git add library/ registry.json
 git commit -m "feat(<api-name>): add <cli-name>"
-git push -u origin feat/<cli-name>
 ```
 
-If you chose "Overwrite existing branch" earlier, replace the push command with:
+**If updating an existing PR** (`EXISTING_PR_NUMBER` is set):
 
 ```bash
 git push --force-with-lease -u origin feat/<cli-name>
 ```
 
-### Create PR
+**If creating a new PR** and you chose "Overwrite existing branch" earlier:
+
+```bash
+git push --force-with-lease -u origin feat/<cli-name>
+```
+
+**Otherwise** (new branch, no conflicts):
+
+```bash
+git push -u origin feat/<cli-name>
+```
+
+### Create or update PR
 
 Build the PR description from:
 - The manifest (`description`, `api_name`, `category`, `printing_press_version`, `spec_url`)
@@ -350,7 +393,17 @@ $ <cli-name> --help
 <List any missing manifest fields, or omit this section if everything is present>
 ```
 
-Create the PR:
+**If updating an existing PR** (`EXISTING_PR_NUMBER` is set):
+
+```bash
+gh pr edit "$EXISTING_PR_NUMBER" \
+  --repo mvanhorn/printing-press-library \
+  --body "<constructed PR body>"
+```
+
+Display: "Updated PR #N: <EXISTING_PR_URL>"
+
+**If creating a new PR:**
 
 ```bash
 gh pr create \
@@ -367,6 +420,7 @@ Display the PR URL prominently.
 - **CLI not found:** Show available CLIs in Step 2, let user pick
 - **Validation fails:** Show per-check results in Step 4, stop
 - **Repo unreachable:** Report clearly in Step 6
-- **Branch conflict:** Ask user in Step 7 (overwrite or timestamp)
+- **Existing PR check fails:** Fall back to standard branch-conflict flow (treat as no existing PR)
+- **Branch conflict (no existing PR):** Ask user in Step 8 (overwrite or timestamp)
 - **Push fails:** Report the error, suggest checking `gh auth status`
-- **Staging cleanup:** If any step after packaging (Steps 6-7) fails, remove the staging directory created in Step 5 before stopping. This prevents accumulation of full CLI copies in temp directories across retries
+- **Staging cleanup:** If any step after packaging (Steps 6-8) fails, remove the staging directory created in Step 5 before stopping. This prevents accumulation of full CLI copies in temp directories across retries
