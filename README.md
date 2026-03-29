@@ -351,6 +351,29 @@ Synthesized from post-mortems on Notion and Linear runs. 14 changes to the skill
 
 **Emboss:** Now opt-in only. Offered at end of run, never triggered automatically.
 
+## Development
+
+After cloning, install git hooks so lint errors are caught before they reach CI:
+
+```bash
+go install github.com/evilmartians/lefthook@latest
+~/go/bin/lefthook install
+```
+
+> **Note:** If `lefthook` isn't found after `go install`, your `$GOPATH/bin` (`~/go/bin` by default) may not be in your `PATH`. Either use the full path as shown above, or add `export PATH="$HOME/go/bin:$PATH"` to your `~/.zshrc`.
+
+This adds a pre-push hook that runs `golangci-lint` on changed files. The same linter config (`.golangci.yml`) runs in CI — lefthook just catches failures locally first.
+
+If you also want `golangci-lint` locally:
+
+```bash
+# macOS
+brew install golangci-lint
+
+# or via go
+go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
+```
+
 ## Credits
 
 - **Peter Steinberger** ([@steipete](https://github.com/steipete)) - [discrawl](https://github.com/steipete/discrawl) and [gogcli](https://github.com/steipete/gogcli) set the bar. The quality scoring system is inspired by his work. discrawl v0.2.0's sync architecture directly influenced the printing press templates.
