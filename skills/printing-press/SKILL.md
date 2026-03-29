@@ -258,6 +258,7 @@ The brief must answer:
 Research checklist:
 - Find the spec or docs source
 - Find the top 1-2 competitors
+- Find official and popular SDK wrappers on npm (`site:npmjs.com`) and PyPI (`site:pypi.org`)
 - Find 2-3 concrete user pain points
 - Identify the highest-gravity entities
 - Pick the top 3-5 commands that matter most
@@ -398,6 +399,8 @@ Run these searches in parallel:
 6. **WebFetch**: Check `github.com/anthropics/claude-plugins-official/tree/main/external_plugins` for official plugin
 7. **WebSearch**: `"<API name>" MCP site:lobehub.com OR site:mcpmarket.com OR site:fastmcp.me`
 8. **WebSearch**: `"<API name>" automation script workflow site:github.com`
+9. **WebSearch**: `"<API name>" SDK wrapper site:npmjs.com`
+10. **WebSearch**: `"<API name>" client library site:pypi.org`
 
 ### Step 1.5b: Catalog every feature into the absorb manifest
 
@@ -415,6 +418,8 @@ For EACH tool found, list EVERY feature/tool/command it provides. Then define ho
 ```
 
 Every row = a feature we MUST build. No exceptions. If someone else has it, we have it AND it works offline, with --json, --dry-run, typed exit codes, and SQLite persistence.
+
+SDK wrapper methods should be treated as features to absorb — each public method/function is a feature the CLI should match.
 
 ### Step 1.5c: Identify transcendence features
 
@@ -537,6 +542,10 @@ After building each command in Priority 1 and Priority 2, verify these 7 princip
 6. **Composability**: Exit codes are typed (0/2/3/4/5/7), output pipes to `jq` cleanly
 7. **Bounded responses**: `--compact` returns only high-gravity fields, list commands have `--limit`
 
+### Search Dedup Rule
+
+When building cross-entity search commands, use per-table FTS search methods individually. Do NOT combine per-table search with the generic `db.Search()` — this causes duplicate results because the same entities exist in both `resources_fts` and per-table FTS indexes.
+
 ### Priority 1 Review Gate
 
 After completing ALL Priority 1 (absorbed) features, BEFORE starting Priority 2 (transcendence):
@@ -645,15 +654,15 @@ If the next research step does not change those answers, stop and generate.
 
 Do not:
 - write 5 separate mandatory research documents
-- defer all workflows to “future work”
+- defer all workflows to "future work"
 - skip verification because the CLI compiles
 - treat scorecard alone as ship proof
 - discover YAML/URL spec incompatibility late and manually convert specs if the tools can already consume them
 - rerun the whole late-phase gauntlet for cosmetic README polish
-- skip features because “the MCP already handles that” (absorb everything, beat it with offline + agent-native)
-- build only “top 3-5 workflows” when the absorb manifest has 15+ (build them ALL, then transcend)
+- skip features because "the MCP already handles that" (absorb everything, beat it with offline + agent-native)
+- build only "top 3-5 workflows" when the absorb manifest has 15+ (build them ALL, then transcend)
 - generate before the Phase 1.5 Ecosystem Absorb Gate is approved
-- call a CLI “GOAT” without matching every feature the best competitor has
+- call a CLI "GOAT" without matching every feature the best competitor has
 
 ### What counts as success
 

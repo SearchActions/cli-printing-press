@@ -319,44 +319,63 @@ func printOutputWithFlags(w io.Writer, data json.RawMessage, flags *rootFlags) e
 }
 
 // compactFields keeps only the most important fields for agent consumption.
+// For arrays: allowlist of high-gravity fields (no descriptions).
+// For single objects: blocklist that strips known-verbose fields (descriptions, comments, etc.).
 func compactFields(data json.RawMessage) json.RawMessage {
+	// Try array first
+	var items []map[string]any
+	if err := json.Unmarshal(data, &items); err == nil {
+		return compactListFields(items)
+	}
+
+	// Single object — use blocklist
+	var obj map[string]any
+	if err := json.Unmarshal(data, &obj); err == nil {
+		return compactObjectFields(obj)
+	}
+
+	return data
+}
+
+// compactListFields keeps only high-gravity fields for array responses.
+func compactListFields(items []map[string]any) json.RawMessage {
 	keepFields := map[string]bool{
 		"id": true, "name": true, "title": true, "identifier": true,
 		"status": true, "state": true, "type": true, "priority": true,
 		"url": true, "email": true, "key": true,
 		"created_at": true, "updated_at": true, "createdAt": true, "updatedAt": true,
-		"description": true,
 	}
 
-	var items []map[string]any
-	if err := json.Unmarshal(data, &items); err == nil {
-		filtered := make([]map[string]any, 0, len(items))
-		for _, item := range items {
-			compact := map[string]any{}
-			for k, v := range item {
-				if keepFields[k] {
-					compact[k] = v
-				}
-			}
-			filtered = append(filtered, compact)
-		}
-		result, _ := json.Marshal(filtered)
-		return result
-	}
-
-	var obj map[string]any
-	if err := json.Unmarshal(data, &obj); err == nil {
+	filtered := make([]map[string]any, 0, len(items))
+	for _, item := range items {
 		compact := map[string]any{}
-		for k, v := range obj {
+		for k, v := range item {
 			if keepFields[k] {
 				compact[k] = v
 			}
 		}
-		result, _ := json.Marshal(compact)
-		return result
+		filtered = append(filtered, compact)
+	}
+	result, _ := json.Marshal(filtered)
+	return result
+}
+
+// compactObjectFields strips known-verbose fields from single-object responses.
+// Uses a blocklist so it works across all API domains (project management, payments, CRM, etc.).
+func compactObjectFields(obj map[string]any) json.RawMessage {
+	stripFields := map[string]bool{
+		"description": true, "body": true, "content": true,
+		"comments": true, "attachments": true, "html": true, "markdown": true,
 	}
 
-	return data
+	compact := map[string]any{}
+	for k, v := range obj {
+		if !stripFields[k] {
+			compact[k] = v
+		}
+	}
+	result, _ := json.Marshal(compact)
+	return result
 }
 
 // printCSV renders JSON arrays as CSV with header row.

@@ -16,6 +16,7 @@ import (
 
 func newOrphansCmd(flags *rootFlags) *cobra.Command {
 	var dbPath string
+	var limit int
 
 	cmd := &cobra.Command{
 		Use:   "orphans",
@@ -113,10 +114,20 @@ such as assignee, project, priority, or labels. Useful for triaging unowned work
 				})
 			}
 
+			totalCount := len(items)
+			if limit > 0 && len(items) > limit {
+				items = items[:limit]
+			}
+
 			if flags.asJSON {
+				result := map[string]any{
+					"total_count": totalCount,
+					"showing":     len(items),
+					"items":       items,
+				}
 				enc := json.NewEncoder(cmd.OutOrStdout())
 				enc.SetIndent("", "  ")
-				return enc.Encode(items)
+				return enc.Encode(result)
 			}
 
 			if len(items) == 0 {
@@ -124,7 +135,11 @@ such as assignee, project, priority, or labels. Useful for triaging unowned work
 				return nil
 			}
 
-			fmt.Fprintf(cmd.OutOrStdout(), "Found %d orphaned items:\n\n", len(items))
+			if totalCount > len(items) {
+				fmt.Fprintf(cmd.OutOrStdout(), "Found %d orphaned items (showing first %d):\n\n", totalCount, len(items))
+			} else {
+				fmt.Fprintf(cmd.OutOrStdout(), "Found %d orphaned items:\n\n", len(items))
+			}
 			fmt.Fprintf(cmd.OutOrStdout(), "%-20s %-15s %-30s %s\n", "ID", "TYPE", "MISSING", "TITLE")
 			fmt.Fprintf(cmd.OutOrStdout(), "%-20s %-15s %-30s %s\n", "----", "----", "-------", "-----")
 			for _, item := range items {
@@ -140,6 +155,7 @@ such as assignee, project, priority, or labels. Useful for triaging unowned work
 	}
 
 	cmd.Flags().StringVar(&dbPath, "db", "", "Database path (default: ~/.config/{{.Name}}-pp-cli/store.db)")
+	cmd.Flags().IntVar(&limit, "limit", 50, "Maximum items to show")
 
 	return cmd
 }

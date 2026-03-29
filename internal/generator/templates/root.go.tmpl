@@ -27,6 +27,7 @@ type rootFlags struct {
 	noCache      bool
 	noInput      bool
 	yes          bool
+	agent        bool
 	selectFields string
 	configPath   string
 	timeout      time.Duration
@@ -59,6 +60,28 @@ func Execute() error {
 	rootCmd.PersistentFlags().BoolVar(&flags.yes, "yes", false, "Skip confirmation prompts (for agents and scripts)")
 	rootCmd.PersistentFlags().BoolVar(&noColor, "no-color", false, "Disable colored output")
 	rootCmd.PersistentFlags().BoolVar(&humanFriendly, "human-friendly", false, "Enable colored output and rich formatting")
+	rootCmd.PersistentFlags().BoolVar(&flags.agent, "agent", false, "Set all agent-friendly defaults (--json --compact --no-input --no-color --yes)")
+
+	rootCmd.PersistentPreRunE = func(cmd *cobra.Command, args []string) error {
+		if flags.agent {
+			if !cmd.Flags().Changed("json") {
+				flags.asJSON = true
+			}
+			if !cmd.Flags().Changed("compact") {
+				flags.compact = true
+			}
+			if !cmd.Flags().Changed("no-input") {
+				flags.noInput = true
+			}
+			if !cmd.Flags().Changed("yes") {
+				flags.yes = true
+			}
+			if !cmd.Flags().Changed("no-color") {
+				noColor = true
+			}
+		}
+		return nil
+	}
 
 {{- range $name, $resource := .Resources}}
 	rootCmd.AddCommand(new{{camel $name}}Cmd(&flags)) {{/* FuncPrefix matches resource name for top-level */}}

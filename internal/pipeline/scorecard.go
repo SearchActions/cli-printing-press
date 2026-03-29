@@ -503,8 +503,25 @@ func scoreAgentNative(dir string) int {
 		}
 	}
 	if stdinExamples >= 3 {
-		score += 2
-	} else if stdinExamples >= 1 {
+		score++
+	}
+	// Token efficiency: --agent meta-flag
+	if strings.Contains(rootContent, `"agent"`) && strings.Contains(rootContent, "PersistentPreRun") {
+		score++
+	}
+	// Token efficiency: --compact strips verbose fields on single objects (blocklist approach)
+	if strings.Contains(helpersContent, "compactObjectFields") || strings.Contains(helpersContent, "stripVerboseFields") {
+		score++
+	}
+	// Token efficiency: analytics commands have --limit flag
+	staleContent := readFileContent(filepath.Join(dir, "internal", "cli", "pm_stale.go"))
+	loadContent := readFileContent(filepath.Join(dir, "internal", "cli", "pm_load.go"))
+	if (strings.Contains(staleContent, `"limit"`) || staleContent == "") && (strings.Contains(loadContent, `"limit"`) || loadContent == "") {
+		score++
+	}
+	// Token efficiency: store has ResolveByName for name-or-ID resolution
+	storeContent := readFileContent(filepath.Join(dir, "internal", "store", "store.go"))
+	if strings.Contains(storeContent, "ResolveByName") || strings.Contains(storeContent, "IsUUID") {
 		score++
 	}
 	if score > 10 {

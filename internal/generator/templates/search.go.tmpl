@@ -8,10 +8,35 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/{{.Owner}}/{{.Name}}-pp-cli/internal/store"
 	"github.com/spf13/cobra"
 )
+
+// isNilOrEmpty checks whether a JSON object has nil or empty values for
+// common identifier fields (title, name, identifier, id).
+func isNilOrEmpty(raw json.RawMessage) bool {
+	var obj map[string]interface{}
+	if err := json.Unmarshal(raw, &obj); err != nil {
+		return true
+	}
+	for _, key := range []string{"title", "name", "identifier", "id"} {
+		if v, ok := obj[key]; ok {
+			if v == nil {
+				continue
+			}
+			if s, ok := v.(string); ok && strings.TrimSpace(s) != "" {
+				return false
+			}
+			// Non-string, non-nil value (e.g. numeric ID) — keep it
+			if _, ok := v.(string); !ok {
+				return false
+			}
+		}
+	}
+	return true
+}
 
 func newSearchCmd(flags *rootFlags) *cobra.Command {
 	var resourceType string
@@ -55,11 +80,49 @@ Data must be synced first with the sync command. Searches are instant
 				results, err = db.Search{{pascal .Name}}(query, limit)
 {{- end}}
 {{- end}}
+			case "":
+				// Search all FTS-enabled tables individually to avoid duplicates.
+				// Do NOT use db.Search() here — it queries resources_fts which
+				// overlaps with per-table FTS indexes and causes duplicate results.
+				seen := make(map[string]bool)
+				_ = seen // prevent unused error when no FTS tables exist
+{{- range .Tables}}
+{{- if .FTS5}}
+				{
+					partial, searchErr := db.Search{{pascal .Name}}(query, limit)
+					if searchErr != nil {
+						return fmt.Errorf("search {{.Name}} failed: %w", searchErr)
+					}
+					for _, r := range partial {
+						key := string(r)
+						if !seen[key] {
+							seen[key] = true
+							results = append(results, r)
+						}
+					}
+				}
+{{- end}}
+{{- end}}
 			default:
+				// Unrecognized type — fall back to generic search
 				results, err = db.Search(query, limit)
 			}
 			if err != nil {
 				return fmt.Errorf("search failed: %w", err)
+			}
+
+			// Filter out entries with nil or empty identifier fields.
+			filtered := make([]json.RawMessage, 0, len(results))
+			for _, r := range results {
+				if !isNilOrEmpty(r) {
+					filtered = append(filtered, r)
+				}
+			}
+			results = filtered
+
+			// Enforce limit across aggregated results.
+			if len(results) > limit {
+				results = results[:limit]
 			}
 
 			if len(results) == 0 {

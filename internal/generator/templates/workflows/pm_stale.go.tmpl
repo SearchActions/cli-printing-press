@@ -18,6 +18,7 @@ func newStaleCmd(flags *rootFlags) *cobra.Command {
 	var days int
 	var team string
 	var dbPath string
+	var limit int
 
 	cmd := &cobra.Command{
 		Use:   "stale",
@@ -61,6 +62,20 @@ the specified number of days. Useful for identifying forgotten or blocked work.`
 			}
 
 			query += ` ORDER BY json_extract(data, '$.updatedAt') ASC, json_extract(data, '$.updated_at') ASC`
+
+			// Get total count first
+			countQuery := "SELECT COUNT(*) FROM (" + query + ")"
+			var totalCount int
+			countRow, countErr := db.Query(countQuery, qArgs...)
+			if countErr == nil {
+				defer countRow.Close()
+				if countRow.Next() {
+					countRow.Scan(&totalCount)
+				}
+			}
+
+			query += ` LIMIT ?`
+			qArgs = append(qArgs, limit)
 
 			rows, err := db.Query(query, qArgs...)
 			if err != nil {
@@ -119,9 +134,14 @@ the specified number of days. Useful for identifying forgotten or blocked work.`
 			}
 
 			if flags.asJSON {
+				result := map[string]any{
+					"total_count": totalCount,
+					"showing":     len(items),
+					"items":       items,
+				}
 				enc := json.NewEncoder(cmd.OutOrStdout())
 				enc.SetIndent("", "  ")
-				return enc.Encode(items)
+				return enc.Encode(result)
 			}
 
 			if len(items) == 0 {
@@ -129,7 +149,11 @@ the specified number of days. Useful for identifying forgotten or blocked work.`
 				return nil
 			}
 
-			fmt.Fprintf(cmd.OutOrStdout(), "Found %d stale items (no update in %d+ days):\n\n", len(items), days)
+			if totalCount > len(items) {
+				fmt.Fprintf(cmd.OutOrStdout(), "Found %d stale items (showing first %d, no update in %d+ days):\n\n", totalCount, len(items), days)
+			} else {
+				fmt.Fprintf(cmd.OutOrStdout(), "Found %d stale items (no update in %d+ days):\n\n", len(items), days)
+			}
 			fmt.Fprintf(cmd.OutOrStdout(), "%-20s %-15s %-8s %s\n", "ID", "TYPE", "DAYS", "TITLE")
 			fmt.Fprintf(cmd.OutOrStdout(), "%-20s %-15s %-8s %s\n", "----", "----", "----", "-----")
 			for _, item := range items {
@@ -146,6 +170,7 @@ the specified number of days. Useful for identifying forgotten or blocked work.`
 	cmd.Flags().IntVar(&days, "days", 30, "Number of days without update to consider stale")
 	cmd.Flags().StringVar(&team, "team", "", "Filter by team identifier")
 	cmd.Flags().StringVar(&dbPath, "db", "", "Database path (default: ~/.config/{{.Name}}-pp-cli/store.db)")
+	cmd.Flags().IntVar(&limit, "limit", 50, "Maximum items to show")
 
 	return cmd
 }
