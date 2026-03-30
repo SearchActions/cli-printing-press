@@ -5,11 +5,11 @@ Just making a CLI is not hard. Making a CLI that understands the power user is e
 Claude Code, Codex, Gemini CLI, Cursor - they call CLIs thousands of times a day. Every printing press CLI is designed for agents first: `--json` by default when piped, typed exit codes for self-correction, `--compact` for token efficiency, `--dry-run` for safe exploration. Humans get the same great experience, but agents are the primary design target.
 
 ```bash
-/printing-press Discord                              # From the catalog (18 APIs ready)
+/printing-press HubSpot                              # From the catalog (18 APIs ready)
 /printing-press --spec ./openapi.yaml                # From a local spec
 /printing-press --har ./capture.har --name ESPN      # From captured browser traffic
 /printing-press https://postman.com/explore          # From a URL (auto-detects intent)
-/printing-press Discord codex                        # Codex mode - 60% fewer Opus tokens
+/printing-press HubSpot codex                        # Codex mode - 60% fewer Opus tokens
 /printing-press emboss notion                        # Second pass: improve an existing CLI
 ```
 
@@ -83,6 +83,7 @@ The **Non-Obvious Insight (NOI)** is a one-sentence reframe:
 | Stripe | A payment processor | A **business health monitor**. Every failed charge and churn event is a signal about product-market fit. |
 | GitHub | A code host | An **engineering culture fingerprint**. Every review turnaround and merge pattern is a signal about how your team ships. |
 | Notion | A doc editor | A **knowledge decay detector**. Every stale page and orphaned database is a signal about what your team has forgotten. |
+| HubSpot | A CRM | Your company's **relationship memory**. Every deal stage transition, email open, and meeting log is a signal about pipeline health and rep performance. |
 | Slack | Messaging | An **organizational nervous system**. Every response time and channel silence is a signal about team health. |
 | ESPN | Sports data | A **betting intelligence terminal**. Every injury report, lineup change, and odds movement is a signal about game outcomes. |
 
@@ -173,8 +174,8 @@ Phase 5     Live Smoke (optional)     (2-5 min)    Read-only API smoke + data-fl
 ### Codex Mode (opt-in)
 
 ```bash
-/printing-press Discord codex    # Offload code generation to Codex CLI (~60% Opus token savings)
-/printing-press Discord          # Standard Opus mode (default)
+/printing-press HubSpot codex    # Offload code generation to Codex CLI (~60% Opus token savings)
+/printing-press HubSpot          # Standard Opus mode (default)
 ```
 
 When you add `codex`, Phase 3's code generation tasks are delegated to Codex CLI. Claude stays the brain (research, planning, scoring, review). Codex does the hands (writing Go code from scoped prompts). Same quality, 60% fewer Opus tokens. If Codex fails 3 times in a row, the press falls back to doing it locally - no manual intervention needed.
@@ -266,16 +267,16 @@ Anti-gaming rules prevent optimizing for score instead of features. Table stakes
 
 ```bash
 # Runtime verification: tests every command against real API or mock server
-printing-press verify --dir ./discord-pp-cli --spec /tmp/discord-spec.json --api-key $TOKEN
+printing-press verify --dir ./hubspot-pp-cli --spec ./hubspot-spec.json --api-key $TOKEN
 
 # Emboss audit: baseline snapshot for improvement cycle
-printing-press emboss --dir ./discord-pp-cli --spec /tmp/discord-spec.json --audit-only
+printing-press emboss --dir ./hubspot-pp-cli --spec ./hubspot-spec.json --audit-only
 
 # Quality scorecard: two-tier structural scoring
-printing-press scorecard --dir ./discord-pp-cli --spec /tmp/discord-spec.json
+printing-press scorecard --dir ./hubspot-pp-cli --spec ./hubspot-spec.json
 
 # Mechanical dogfood: catches dead flags, invalid paths, auth mismatches
-printing-press dogfood --dir ./discord-pp-cli --spec /tmp/discord-spec.json
+printing-press dogfood --dir ./hubspot-pp-cli --spec ./hubspot-spec.json
 ```
 
 ## Library
@@ -312,7 +313,7 @@ No repo checkout needed. The binary embeds its own catalog data and the plugin p
 ### Run It
 
 ```bash
-/printing-press Discord                              # From the catalog
+/printing-press HubSpot                              # From the catalog
 /printing-press --spec ./openapi.yaml                # From a local spec
 /printing-press --har ./capture.har --name ESPN      # From captured browser traffic
 /printing-press https://postman.com/explore          # From a URL (auto-detects intent)
