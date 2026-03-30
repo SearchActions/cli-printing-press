@@ -401,6 +401,18 @@ Present to the user via `AskUserQuestion`:
 
 ### If user approves sniff
 
+#### Sniff Pacing
+
+When making API calls during sniff (browser-use eval, fetch, or direct HTTP requests), apply adaptive pacing to avoid rate limits:
+
+1. **Start conservative**: Wait 1 second between API calls
+2. **Ramp up on success**: After 5 consecutive successful calls, reduce the delay by 20% (minimum 0.3 seconds)
+3. **Back off on 429**: If you get a rate-limited response (HTTP 429), immediately double the delay and log: "Rate limited — increasing delay to Xs"
+4. **Hard stop on repeated 429s**: If you hit 3 consecutive 429s, pause for 30 seconds before continuing
+5. **Never abort**: Rate limiting during sniff is recoverable. Always continue after the backoff — do not abort discovery due to rate limits
+
+Track the current delay mentally. Report the effective rate when summarizing sniff results: "Sniffed N endpoints at ~X req/s effective rate."
+
 #### Step 1: Detect capture tools
 
 Check which browser automation tools are available:
@@ -499,9 +511,11 @@ SNIFF_URLS="$API_RUN_DIR/sniff-urls.txt"
 
 # For EACH target page (run this loop in foreground — do NOT use run_in_background):
 browser-use open "<target-page-url>"
-sleep 4  # Wait for API calls to complete
+sleep 4  # Wait for initial page load API calls to complete
+# Apply sniff pacing delay (starting at 1s, adapts per Sniff Pacing rules above)
 browser-use scroll down  # Trigger lazy-loaded content
 sleep 1
+# Apply sniff pacing delay before next eval call
 
 # Collect API URLs via Performance API (browser-native, no injection needed)
 browser-use eval "var e=performance.getEntriesByType('resource');var u=[];for(var i=0;i<e.length;i++){var n=e[i].name;if(n.indexOf('<api-domain-1>')>-1||n.indexOf('<api-domain-2>')>-1)u.push(n);}u.join('|||');"
@@ -530,6 +544,9 @@ The Performance API gives us URLs but not response bodies. To feed `printing-pre
 ```bash
 # For each unique API URL, fetch it and build a simple capture file
 # printing-press sniff accepts HAR or enriched capture JSON
+# When fetching each unique API URL to build enriched capture:
+# Apply sniff pacing between requests (1s initial, adaptive per Sniff Pacing rules)
+# On 429: double delay, log, continue with remaining URLs
 ```
 
 Alternatively, if the URL count is small enough, the unique path patterns alone are sufficient to identify what the existing spec is missing — compare against the spec and report the gap without needing full HAR capture.
@@ -558,6 +575,7 @@ If browser-use is not available, use agent-browser with Claude driving the explo
    - Fill forms with realistic sample data based on the domain
    - `agent-browser wait --network-idle` after each interaction
    - Repeat for up to 5 rounds or until no new API endpoints appear for 2 consecutive rounds
+   - Apply sniff pacing between interactions (1s initial, adaptive per Sniff Pacing rules)
 
 3. **Capture response bodies** (agent-browser HAR omits them):
    ```bash
@@ -566,6 +584,8 @@ If browser-use is not available, use agent-browser with Claude driving the explo
    For each API request (filter by JSON content-type, skip analytics domains):
    ```bash
    agent-browser network request <request-id> --json
+   # Apply sniff pacing between response body fetches
+   # These are direct API calls and most likely to trigger rate limits
    ```
    Combine HAR metadata + response bodies into an enriched capture JSON at `$API_RUN_DIR/sniff-capture.json`.
 

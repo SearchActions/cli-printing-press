@@ -65,6 +65,7 @@ func newGenerateCmd() *cobra.Command {
 	var polish bool
 	var asJSON bool
 	var dryRun bool
+	var specSource string
 
 	cmd := &cobra.Command{
 		Use:   "generate",
@@ -114,6 +115,16 @@ func newGenerateCmd() *cobra.Command {
 				parsed, err := spec.ParseBytes(docYAML)
 				if err != nil {
 					return &ExitError{Code: ExitSpecError, Err: fmt.Errorf("parsing generated spec: %w", err)}
+				}
+				if specSource != "" {
+					switch specSource {
+					case "official", "community", "sniffed", "docs":
+						parsed.SpecSource = specSource
+					default:
+						return &ExitError{Code: ExitInputError, Err: fmt.Errorf("--spec-source must be one of: official, community, sniffed, docs (got %q)", specSource)}
+					}
+				} else {
+					parsed.SpecSource = "docs"
 				}
 
 				explicitOutput := outputDir != ""
@@ -212,6 +223,15 @@ func newGenerateCmd() *cobra.Command {
 				apiSpec = mergeSpecs(specs, cliName)
 			}
 
+			if specSource != "" {
+				switch specSource {
+				case "official", "community", "sniffed", "docs":
+					apiSpec.SpecSource = specSource
+				default:
+					return &ExitError{Code: ExitInputError, Err: fmt.Errorf("--spec-source must be one of: official, community, sniffed, docs (got %q)", specSource)}
+				}
+			}
+
 			explicitOutput := outputDir != ""
 			if outputDir == "" {
 				outputDir = pipeline.DefaultOutputDir(apiSpec.Name)
@@ -299,6 +319,7 @@ func newGenerateCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&polish, "polish", false, "Run LLM polish pass on generated CLI (requires claude or codex CLI)")
 	cmd.Flags().BoolVar(&asJSON, "json", false, "Output as JSON")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Parse spec and show what would be generated without writing files (remote specs are still fetched)")
+	cmd.Flags().StringVar(&specSource, "spec-source", "", "Spec provenance: official, community, sniffed, docs (affects generated client defaults like rate limiting)")
 
 	return cmd
 }

@@ -167,6 +167,7 @@ Once synced, use the 'search' command for instant full-text search.`,
 // It resumes from the last cursor unless sinceTS or full mode overrides it.
 func syncResource(c interface {
 	Get(string, map[string]string) (json.RawMessage, error)
+	RateLimit() float64
 }, db *store.Store, resource, sinceTS string, full bool) syncResult {
 	started := time.Now()
 
@@ -245,11 +246,20 @@ func syncResource(c interface {
 		totalCount += len(items)
 		atomic.AddInt64(&progressCount, int64(len(items)))
 
-		// Progress reporting
+		// Progress reporting (include rate limit info when active)
+		currentRate := c.RateLimit()
 		if humanFriendly {
-			fmt.Fprintf(os.Stderr, "\r  %s: %d synced", resource, atomic.LoadInt64(&progressCount))
+			if currentRate > 0 {
+				fmt.Fprintf(os.Stderr, "\r  %s: %d synced [%.1f req/s]", resource, atomic.LoadInt64(&progressCount), currentRate)
+			} else {
+				fmt.Fprintf(os.Stderr, "\r  %s: %d synced", resource, atomic.LoadInt64(&progressCount))
+			}
 		} else {
-			fmt.Fprintf(os.Stderr, `{"event":"sync_progress","resource":"%s","fetched":%d}`+"\n", resource, atomic.LoadInt64(&progressCount))
+			if currentRate > 0 {
+				fmt.Fprintf(os.Stderr, `{"event":"sync_progress","resource":"%s","fetched":%d,"rate_rps":%.1f}`+"\n", resource, atomic.LoadInt64(&progressCount), currentRate)
+			} else {
+				fmt.Fprintf(os.Stderr, `{"event":"sync_progress","resource":"%s","fetched":%d}`+"\n", resource, atomic.LoadInt64(&progressCount))
+			}
 		}
 
 		// Save cursor after each page for resumability

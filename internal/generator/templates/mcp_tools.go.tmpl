@@ -194,7 +194,11 @@ func newMCPClient() (*client.Client, error) {
 	if err != nil {
 		return nil, fmt.Errorf("loading config: %w", err)
 	}
-	return client.New(cfg, 30*time.Second), nil
+{{- if eq .SpecSource "sniffed"}}
+	return client.New(cfg, 30*time.Second, 2), nil
+{{- else}}
+	return client.New(cfg, 30*time.Second, 0), nil
+{{- end}}
 }
 
 func dbPath() string {

@@ -13,7 +13,8 @@ type APISpec struct {
 	Version     string              `yaml:"version"`
 	BaseURL     string              `yaml:"base_url"`
 	BasePath    string              `yaml:"base_path,omitempty"`
-	Owner       string              `yaml:"owner,omitempty"` // GitHub owner for import paths and Homebrew tap
+	Owner       string              `yaml:"owner,omitempty"`       // GitHub owner for import paths and Homebrew tap
+	SpecSource  string              `yaml:"spec_source,omitempty"` // official, community, sniffed, docs — affects generated client defaults
 	Auth        AuthConfig          `yaml:"auth"`
 	Config      ConfigSpec          `yaml:"config"`
 	Resources   map[string]Resource `yaml:"resources"`

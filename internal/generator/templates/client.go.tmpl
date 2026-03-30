@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/{{.Owner}}/{{.Name}}-pp-cli/internal/config"
@@ -28,6 +29,92 @@ type Client struct {
 	DryRun     bool
 	NoCache    bool
 	cacheDir   string
+	limiter    *adaptiveLimiter
+}
+
+// adaptiveLimiter provides proactive rate limiting with adaptive ceiling discovery.
+// Starts at a conservative floor rate and ramps up after consecutive successes.
+// On 429, halves the rate and records a ceiling. Per-session only — not persisted.
+// Thread-safe: all methods are guarded by a mutex for concurrent sync workers.
+type adaptiveLimiter struct {
+	mu          sync.Mutex
+	rate        float64   // current requests per second
+	floor       float64   // starting/minimum rate
+	ceiling     float64   // discovered ceiling (0 = unknown)
+	successes   int       // consecutive successes since last 429
+	rampAfter   int       // successes needed before increasing rate
+	lastRequest time.Time // zero-value on init — first call skips wait (intentional)
+}
+
+func newAdaptiveLimiter(ratePerSec float64) *adaptiveLimiter {
+	if ratePerSec <= 0 {
+		return nil
+	}
+	return &adaptiveLimiter{
+		rate:      ratePerSec,
+		floor:     ratePerSec,
+		rampAfter: 10,
+	}
+}
+
+// Wait blocks until the rate limiter allows the next request.
+func (l *adaptiveLimiter) Wait() {
+	if l == nil {
+		return
+	}
+	l.mu.Lock()
+	delay := time.Duration(float64(time.Second) / l.rate)
+	elapsed := time.Since(l.lastRequest)
+	l.mu.Unlock()
+	if elapsed < delay {
+		time.Sleep(delay - elapsed)
+	}
+	l.mu.Lock()
+	l.lastRequest = time.Now()
+	l.mu.Unlock()
+}
+
+// OnSuccess records a successful request and ramps up the rate after enough consecutive successes.
+func (l *adaptiveLimiter) OnSuccess() {
+	if l == nil {
+		return
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.successes++
+	if l.successes >= l.rampAfter {
+		newRate := l.rate * 1.25
+		if l.ceiling > 0 && newRate > l.ceiling*0.9 {
+			newRate = l.ceiling * 0.9
+		}
+		l.rate = newRate
+		l.successes = 0
+	}
+}
+
+// OnRateLimit records a 429 response — halves the rate and discovers the ceiling.
+func (l *adaptiveLimiter) OnRateLimit() {
+	if l == nil {
+		return
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.ceiling = l.rate
+	l.rate = l.rate / 2
+	if l.rate < 0.5 {
+		l.rate = 0.5 // absolute minimum: 1 request per 2 seconds
+	}
+	l.successes = 0
+}
+
+// Rate returns the current rate in requests per second. Returns 0 if the limiter is nil.
+func (l *adaptiveLimiter) Rate() float64 {
+	if l == nil {
+		return 0
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.rate
 }
 
 // APIError carries HTTP status information for structured exit codes.
@@ -42,7 +129,7 @@ func (e *APIError) Error() string {
 	return fmt.Sprintf("%s %s returned HTTP %d: %s", e.Method, e.Path, e.StatusCode, e.Body)
 }
 
-func New(cfg *config.Config, timeout time.Duration) *Client {
+func New(cfg *config.Config, timeout time.Duration, rateLimit float64) *Client {
 	homeDir, _ := os.UserHomeDir()
 	cacheDir := filepath.Join(homeDir, ".cache", "{{.Name}}-pp-cli")
 	return &Client{
@@ -50,7 +137,13 @@ func New(cfg *config.Config, timeout time.Duration) *Client {
 		Config:     cfg,
 		HTTPClient: &http.Client{Timeout: timeout},
 		cacheDir:   cacheDir,
+		limiter:    newAdaptiveLimiter(rateLimit),
 	}
+}
+
+// RateLimit returns the current effective rate limit in req/s. Returns 0 if disabled.
+func (c *Client) RateLimit() float64 {
+	return c.limiter.Rate()
 }
 
 func (c *Client) Get(path string, params map[string]string) (json.RawMessage, error) {
@@ -132,6 +225,9 @@ func (c *Client) do(method, path string, params map[string]string, body any) (js
 	var lastErr error
 
 	for attempt := 0; attempt <= maxRetries; attempt++ {
+		// Proactive rate limiting — wait before sending
+		c.limiter.Wait()
+
 		var bodyReader io.Reader
 		if bodyBytes != nil {
 			bodyReader = strings.NewReader(string(bodyBytes))
@@ -185,6 +281,7 @@ func (c *Client) do(method, path string, params map[string]string, body any) (js
 
 		// Success
 		if resp.StatusCode < 400 {
+			c.limiter.OnSuccess()
 			return json.RawMessage(respBody), resp.StatusCode, nil
 		}
 
@@ -195,10 +292,11 @@ func (c *Client) do(method, path string, params map[string]string, body any) (js
 			Body:       truncateBody(respBody),
 		}
 
-		// Rate limited - wait and retry
+		// Rate limited - adjust adaptive limiter and retry
 		if resp.StatusCode == 429 && attempt < maxRetries {
+			c.limiter.OnRateLimit()
 			wait := retryAfter(resp)
-			fmt.Fprintf(os.Stderr, "rate limited, waiting %s (attempt %d/%d)\n", wait, attempt+1, maxRetries)
+			fmt.Fprintf(os.Stderr, "rate limited, waiting %s (attempt %d/%d, rate adjusted to %.1f req/s)\n", wait, attempt+1, maxRetries, c.limiter.Rate())
 			time.Sleep(wait)
 			lastErr = apiErr
 			continue
