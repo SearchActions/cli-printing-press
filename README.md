@@ -57,7 +57,7 @@ Until now, you had to choose: breadth (wrap every endpoint) or depth (understand
 
 ## Absorb & Transcend
 
-The GOAT CLI isn't built by finding gaps. It's built by stealing every good idea and compounding on top.
+The GOAT CLI isn't built by finding gaps. It's built by absorbing every good idea and compounding on top.
 
 **Layer 1 - Absorb:** Before generating, the ecosystem absorb gate catalogs every feature from every Claude Code plugin, MCP server, community skill, competing CLI, and automation script for your API. Every feature becomes a row in the absorb manifest - something our CLI must match AND beat with offline support, agent-native output, and SQLite persistence. The system even auto-suggests novel features it thinks are missing from the ecosystem before you approve the manifest.
 
