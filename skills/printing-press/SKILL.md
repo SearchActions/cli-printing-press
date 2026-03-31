@@ -1483,21 +1483,16 @@ Write:
 
 `$PROOFS_DIR/<stamp>-fix-<api>-pp-cli-live-smoke.md`
 
-## Phase 6: Publish
+## Phase 5.5: Archive Manuscripts
 
-After the final phase completes (Phase 4 if no live smoke, Phase 5 if it ran), archive the run artifacts and offer to publish the CLI to the library repo.
+Archive the run's research, proofs, and discovery artifacts to `$PRESS_MANUSCRIPTS/`
+**unconditionally** after shipcheck completes (or after live smoke if it ran). This
+happens regardless of the shipcheck verdict — even a `hold` run produces research
+and proofs that future runs should be able to reuse.
 
-### Gate
-
-Use the most recent shipcheck verdict:
-- if Phase 5 reran shipcheck after a live-smoke fix, use that rerun verdict
-- otherwise use the Phase 4 verdict
-
-Skip this phase entirely if the final shipcheck verdict is `hold`. Only proceed for `ship` or `ship-with-gaps`.
-
-### Archive manuscripts
-
-The run's research, proofs, and discovery artifacts are in `$API_RUN_DIR/` (runstate). The `publish package` command looks for them at `$PRESS_MANUSCRIPTS/<api>/<run-id>/`. Archive them now so they're available whether the user publishes immediately or later.
+Archiving and publishing are separate concerns. Archiving preserves research for
+future `/printing-press` runs on the same API. Publishing ships the CLI to the
+library repo. A run that isn't ready to publish still produces valuable research.
 
 ```bash
 mkdir -p "$PRESS_MANUSCRIPTS/<api>/$RUN_ID"
@@ -1515,6 +1510,18 @@ if [ -d "$DISCOVERY_DIR" ]; then
   cp -r "$DISCOVERY_DIR" "$PRESS_MANUSCRIPTS/<api>/$RUN_ID/discovery" 2>/dev/null || true
 fi
 ```
+
+## Phase 6: Publish
+
+After archiving, offer to publish the CLI to the library repo.
+
+### Gate
+
+Use the most recent shipcheck verdict:
+- if Phase 5 reran shipcheck after a live-smoke fix, use that rerun verdict
+- otherwise use the Phase 4 verdict
+
+Skip this phase entirely if the final shipcheck verdict is `hold`. Only proceed for `ship` or `ship-with-gaps`.
 
 ### Check for existing PR
 
