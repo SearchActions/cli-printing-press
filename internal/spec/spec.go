@@ -29,8 +29,9 @@ type AuthConfig struct {
 	Header           string   `yaml:"header" json:"header"`
 	Format           string   `yaml:"format" json:"format"`
 	EnvVars          []string `yaml:"env_vars" json:"env_vars"`
-	Scheme           string   `yaml:"scheme,omitempty" json:"scheme,omitempty"` // OpenAPI security scheme name
-	In               string   `yaml:"in,omitempty" json:"in,omitempty"`         // header, query, cookie
+	Scheme           string   `yaml:"scheme,omitempty" json:"scheme,omitempty"`   // OpenAPI security scheme name
+	In               string   `yaml:"in,omitempty" json:"in,omitempty"`           // header, query, cookie
+	KeyURL           string   `yaml:"key_url,omitempty" json:"key_url,omitempty"` // URL where users can register for an API key
 	AuthorizationURL string   `yaml:"authorization_url,omitempty" json:"authorization_url,omitempty"`
 	TokenURL         string   `yaml:"token_url,omitempty" json:"token_url,omitempty"`
 	Scopes           []string `yaml:"scopes,omitempty" json:"scopes,omitempty"`

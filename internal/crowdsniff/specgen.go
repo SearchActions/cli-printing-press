@@ -211,6 +211,10 @@ func buildAuthConfig(apiName string, auth *DiscoveredAuth) spec.AuthConfig {
 		cfg.EnvVars = []string{envVar}
 	}
 
+	if auth.KeyURLHint != "" {
+		cfg.KeyURL = auth.KeyURLHint
+	}
+
 	return cfg
 }
 

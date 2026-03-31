@@ -102,6 +102,109 @@ func TestBuildSpec(t *testing.T) {
 	})
 }
 
+func TestBuildSpec_KeyURL(t *testing.T) {
+	t.Parallel()
+
+	endpoints := []AggregatedEndpoint{
+		{Method: "GET", Path: "/v1/users", SourceTier: TierOfficialSDK, SourceCount: 1},
+	}
+
+	t.Run("KeyURLHint propagates to spec.Auth.KeyURL", func(t *testing.T) {
+		t.Parallel()
+
+		auth := &DiscoveredAuth{
+			Type:       "api_key",
+			Header:     "X-Api-Key",
+			In:         "header",
+			EnvVarHint: "EXAMPLE_API_KEY",
+			KeyURLHint: "https://example.com/developers/keys",
+			SourceTier: TierOfficialSDK,
+		}
+
+		apiSpec, err := BuildSpec("example", "https://api.example.com", endpoints, auth)
+		require.NoError(t, err)
+
+		assert.Equal(t, "https://example.com/developers/keys", apiSpec.Auth.KeyURL)
+	})
+
+	t.Run("empty KeyURLHint leaves spec.Auth.KeyURL empty", func(t *testing.T) {
+		t.Parallel()
+
+		auth := &DiscoveredAuth{
+			Type:       "bearer_token",
+			Header:     "Authorization",
+			In:         "header",
+			Format:     "Bearer {token}",
+			SourceTier: TierOfficialSDK,
+		}
+
+		apiSpec, err := BuildSpec("example", "https://api.example.com", endpoints, auth)
+		require.NoError(t, err)
+
+		assert.Empty(t, apiSpec.Auth.KeyURL)
+	})
+
+	t.Run("nil auth leaves spec.Auth.KeyURL empty", func(t *testing.T) {
+		t.Parallel()
+
+		apiSpec, err := BuildSpec("example", "https://api.example.com", endpoints, nil)
+		require.NoError(t, err)
+
+		assert.Empty(t, apiSpec.Auth.KeyURL)
+	})
+}
+
+func TestAuthConfig_KeyURL_RoundTrip(t *testing.T) {
+	t.Parallel()
+
+	// A spec without key_url should still parse correctly (backward compat).
+	yamlWithout := `
+name: test
+base_url: https://api.example.com
+auth:
+  type: api_key
+  header: X-Api-Key
+  format: "{api_key}"
+  env_vars:
+    - TEST_API_KEY
+resources:
+  users:
+    description: User operations
+    endpoints:
+      list:
+        method: GET
+        path: /users
+        description: List users
+`
+	specWithout, err := spec.ParseBytes([]byte(yamlWithout))
+	require.NoError(t, err)
+	assert.Empty(t, specWithout.Auth.KeyURL)
+
+	// A spec with key_url should round-trip correctly.
+	yamlWith := `
+name: test
+base_url: https://api.example.com
+auth:
+  type: api_key
+  header: X-Api-Key
+  format: "{api_key}"
+  env_vars:
+    - TEST_API_KEY
+  key_url: https://example.com/keys
+resources:
+  users:
+    description: User operations
+    endpoints:
+      list:
+        method: GET
+        path: /users
+        description: List users
+`
+	specWith, err := spec.ParseBytes([]byte(yamlWith))
+	require.NoError(t, err)
+	assert.Equal(t, "https://example.com/keys", specWith.Auth.KeyURL)
+}
+
 func TestResolveBaseURL(t *testing.T) {
 	t.Parallel()
 

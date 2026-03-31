@@ -32,6 +32,7 @@ type DiscoveredAuth struct {
 	In         string // "header" or "query"
 	Format     string // e.g., "Bearer {token}", "{api_key}"
 	EnvVarHint string // detected env var name if visible (e.g., "STEAM_API_KEY")
+	KeyURLHint string // URL to get an API key, extracted from SDK README
 	SourceTier string // tier of the source that found this auth pattern
 }
 
