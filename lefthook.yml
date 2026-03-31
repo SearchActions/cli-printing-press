@@ -1,3 +1,10 @@
+pre-commit:
+  commands:
+    fmt:
+      glob: "*.go"
+      run: gofmt -w {staged_files} && git add {staged_files}
+      stage_fixed: true
+
 pre-push:
   commands:
     fmt:
@@ -6,5 +13,5 @@ pre-push:
       fail_text: "gofmt failed. Run 'gofmt -w .' to fix."
     lint:
       glob: "*.go"
-      run: golangci-lint run --new-from-rev=origin/main ./...
+      run: golangci-lint run {push_files}
       fail_text: "golangci-lint failed. Fix lint errors before pushing."
