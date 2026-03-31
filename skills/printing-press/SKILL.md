@@ -781,6 +781,94 @@ Proceed with whatever spec source exists. If no spec was found, fall back to `--
 
 ---
 
+## Phase 1.8: Crowd Sniff Gate
+
+After Phase 1.7 (Sniff Gate), evaluate whether mining community signals (npm SDKs and GitHub code search) would improve the spec. Skip this gate entirely if the user already passed `--spec` (spec source is already resolved and appears complete).
+
+**Time budget:** The crowd sniff gate should complete within 5 minutes. If `printing-press crowd-sniff` fails or times out, fall back immediately:
+- If a spec already exists: "Crowd sniff failed — proceeding with existing spec."
+- If no spec exists: "Crowd sniff failed — falling back to --docs generation."
+
+### When to offer crowd sniff
+
+| Spec found? | Research shows gaps? | Action |
+|-------------|---------------------|--------|
+| Yes | Yes — competitors or community projects reference more endpoints | **Offer crowd sniff as enrichment** |
+| Yes | No — spec appears complete | Skip silently |
+| No | Community SDKs exist on npm | **Offer crowd sniff as primary discovery** |
+| No | No SDKs or code found | Skip — fall back to `--docs` |
+
+### Crowd sniff as enrichment (spec exists but has gaps)
+
+Present to the user via `AskUserQuestion`:
+
+> "Found a spec with **N endpoints**, but research shows the live API likely has more. Want me to search npm packages and GitHub code for `<api>` to discover additional endpoints? This typically takes 2-4 minutes."
+>
+> Options:
+> 1. **Yes — crowd sniff and merge** (search npm SDKs and GitHub code, merge discovered endpoints with the existing spec)
+> 2. **No — use existing spec** (proceed with what we have)
+
+### Crowd sniff as primary (no spec found)
+
+Present to the user via `AskUserQuestion`:
+
+> "No OpenAPI spec found for `<API>`. Want me to search npm packages and GitHub code to discover the API from community usage? This typically takes 2-4 minutes."
+>
+> Options:
+> 1. **Yes — crowd sniff the community** (search npm SDKs and GitHub code, generate a spec from discovered endpoints)
+> 2. **No — use docs instead** (attempt `--docs` generation from documentation pages)
+> 3. **No — I'll provide a spec or HAR** (user will supply input manually)
+
+### If user approves crowd sniff
+
+Ensure the discovery directory exists:
+
+```bash
+mkdir -p "$DISCOVERY_DIR"
+```
+
+Run the crowd-sniff command and capture both the spec and JSON provenance:
+
+```bash
+printing-press crowd-sniff --api <api> --output "$RESEARCH_DIR/<api>-crowd-spec.yaml" --json > "$DISCOVERY_DIR/crowd-sniff-provenance.json"
+```
+
+If the API has a known base URL from Phase 1 research, pass it:
+
+```bash
+printing-press crowd-sniff --api <api> --base-url <known-base-url> --output "$RESEARCH_DIR/<api>-crowd-spec.yaml" --json > "$DISCOVERY_DIR/crowd-sniff-provenance.json"
+```
+
+Report the results: "Crowd sniff discovered **N endpoints** across **M resources** (X from npm, Y from GitHub)."
+
+**Feed into Phase 2:**
+- **Enrichment mode**: Phase 2 will use `--spec <original> --spec <crowd-spec> --name <api>` to merge both
+- **Primary mode**: Phase 2 will use `--spec <crowd-spec>` directly
+
+#### Write crowd-sniff discovery report
+
+Write a structured crowd-sniff provenance report to `$DISCOVERY_DIR/crowd-sniff-report.md`. This report preserves the discovery evidence so a future maintainer can see what community sources informed the spec.
+
+The report must contain these sections:
+
+1. **npm Packages Analyzed** — List each SDK package examined: name, version, download count, recency. Note which packages yielded endpoints and which were empty/irrelevant.
+
+2. **GitHub Repos Searched** — The search queries used, repos matched, and freshness of each repo. Note the GitHub token status (authenticated with broader results, or unauthenticated with rate-limited results).
+
+3. **Endpoints Discovered** — A markdown table with columns: Method, Path, Source Tier (official-sdk / community-sdk / code-search), Source Count (seen in N independent sources). Sorted by source tier then frequency.
+
+4. **Base URL Resolution** — Candidates discovered and which was selected, with rationale (e.g., "Found in 3 npm packages: https://api.notion.com").
+
+5. **Auth Patterns Detected** — Authentication patterns found in SDK code (API key headers, bearer tokens, OAuth flows). Include the header name or env variable convention when visible.
+
+6. **Coverage Summary** — Total endpoints found, breakdown by source tier, and any gaps compared to the Phase 1 research brief (e.g., "Brief mentions webhooks but no webhook endpoints found in community code").
+
+### If user declines crowd sniff
+
+Proceed with whatever spec source exists. If no spec was found, fall back to `--docs` or ask the user to provide a spec/HAR manually.
+
+---
+
 ## Phase 1.5: Ecosystem Absorb Gate
 
 THIS IS A MANDATORY STOP GATE. Do not generate until this is complete and approved.
@@ -974,6 +1062,38 @@ printing-press generate \
   --force --lenient --validate
 # If proxy pattern was detected during sniff, add:
 #   --client-pattern proxy-envelope
+```
+
+Crowd-sniff-enriched (original spec + crowd-discovered spec):
+
+```bash
+printing-press generate \
+  --spec <original-spec-path-or-url> \
+  --spec "$RESEARCH_DIR/<api>-crowd-spec.yaml" \
+  --name <api> \
+  --output "$PRESS_LIBRARY/<api>-pp-cli" \
+  --force --lenient --validate
+```
+
+Crowd-sniff-only (no original spec, crowd sniff was the primary source):
+
+```bash
+printing-press generate \
+  --spec "$RESEARCH_DIR/<api>-crowd-spec.yaml" \
+  --output "$PRESS_LIBRARY/<api>-pp-cli" \
+  --force --lenient --validate
+```
+
+Both sniff + crowd-sniff (merged with original):
+
+```bash
+printing-press generate \
+  --spec <original-spec-path-or-url> \
+  --spec "$RESEARCH_DIR/<api>-sniff-spec.yaml" \
+  --spec "$RESEARCH_DIR/<api>-crowd-spec.yaml" \
+  --name <api> \
+  --output "$PRESS_LIBRARY/<api>-pp-cli" \
+  --force --lenient --validate
 ```
 
 Docs-only:

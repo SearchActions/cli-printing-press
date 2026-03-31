@@ -46,6 +46,7 @@ func Execute() error {
 	rootCmd.AddCommand(newVersionCmd())
 	rootCmd.AddCommand(newPrintCmd())
 	rootCmd.AddCommand(newSniffCmd())
+	rootCmd.AddCommand(newCrowdSniffCmd())
 	rootCmd.AddCommand(newCatalogCmd())
 	rootCmd.AddCommand(newLibraryCmd())
 	rootCmd.AddCommand(newPublishCmd())
