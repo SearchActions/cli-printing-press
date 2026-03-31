@@ -92,6 +92,8 @@ See the `printing-press-polish` skill for details. It runs diagnostics, fixes ve
 
 ## Setup
 
+Read and apply [references/voice.md](references/voice.md) for this session.
+
 Before doing anything else:
 
 <!-- PRESS_SETUP_CONTRACT_START -->
