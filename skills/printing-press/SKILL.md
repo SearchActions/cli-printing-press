@@ -100,7 +100,7 @@ If the user typed `/printing-press` with no arguments (no API name, no `--spec`,
 
 > The Printing Press generates a fully functional CLI for any API. You give it an API name, a spec file, or a URL. It researches the landscape, catalogs every feature that exists in any competing tool, invents novel features of its own, then generates a Go CLI that matches and beats everything out there — with offline search, agent-native output, and a local SQLite data layer.
 >
-> By the end, you'll have a working CLI in `~/printing-press/library/` that you can use for yourself, distribute within your company, or publish to the printing-press library.
+> By the end, you'll have a working CLI in `~/printing-press/library/` that you can use for yourself, ship on your own, or apply to add to the printing-press library.
 >
 > The process takes 10-40 minutes depending on API complexity. Simple APIs with official specs (Stripe, GitHub) are faster. Undocumented APIs that need discovery (ESPN, Domino's) take longer.
 
@@ -136,7 +136,7 @@ Print as prose (in Victorian voice):
 > 3. I shall present what I found and what I invented — you will have a chance to add your own ideas or adjust the plan before I build
 > 4. I shall generate a Go CLI, build every feature from the plan, then verify quality through dogfood, runtime verification, and scoring
 >
-> **What you will have at the end:** A fully functional CLI at `~/printing-press/library/<api>-pp-cli` that you can use yourself, share within your company, or publish to the printing-press library.
+> **What you will have at the end:** A fully functional CLI at `~/printing-press/library/<api>-pp-cli` that you can use yourself, ship on your own, or apply to add to the printing-press library.
 >
 > **Time:** 10-40 minutes depending on API complexity.
 >
