@@ -3,6 +3,11 @@ post-checkout:
     build:
       run: go build -o ./printing-press ./cmd/printing-press 2>/dev/null && echo "printing-press binary rebuilt" || true
 
+post-merge:
+  commands:
+    build:
+      run: go build -o ./printing-press ./cmd/printing-press 2>/dev/null && echo "printing-press binary rebuilt" || true
+
 pre-commit:
   commands:
     fmt:
