@@ -44,6 +44,12 @@ type PaginationProfile struct {
 	DefaultPageSize int    `json:"default_page_size"` // detected or default 100
 }
 
+// SyncableResource describes a resource that supports paginated list sync.
+type SyncableResource struct {
+	Name string
+	Path string
+}
+
 // APIProfile describes the shape of an API and what power-user features it warrants.
 type APIProfile struct {
 	HighVolume       bool
@@ -60,7 +66,7 @@ type APIProfile struct {
 	TotalEndpoints   int
 	ReadRatio        float64
 
-	SyncableResources []string
+	SyncableResources []SyncableResource
 	SearchableFields  map[string][]string
 
 	Domain     DomainSignals
@@ -79,7 +85,7 @@ func Profile(s *spec.APISpec) *APIProfile {
 	}
 
 	resourceNames := collectResourceNames(s.Resources)
-	syncable := make(map[string]struct{})
+	syncable := make(map[string]string) // resource name -> list endpoint path
 	searchable := make(map[string]map[string]struct{})
 	listResources := make(map[string]struct{})
 
@@ -138,7 +144,12 @@ func Profile(s *spec.APISpec) *APIProfile {
 				listResources[resourceName] = struct{}{}
 				if endpoint.Pagination != nil {
 					p.ListEndpoints++
-					syncable[resourceName] = struct{}{}
+					// Pick the shortest path for determinism when multiple
+					// paginated list endpoints exist for the same resource.
+					// Shorter paths are typically the primary list endpoint.
+					if existing, ok := syncable[resourceName]; !ok || len(endpoint.Path) < len(existing) {
+						syncable[resourceName] = endpoint.Path
+					}
 				}
 			}
 
@@ -210,7 +221,7 @@ func Profile(s *spec.APISpec) *APIProfile {
 	}
 	p.NeedsSearch = len(listResources) >= 3 && float64(searchEndpointCount)/float64(len(listResources)) < 0.5
 
-	p.SyncableResources = sortedKeys(syncable)
+	p.SyncableResources = sortedSyncableResources(syncable)
 	for resource, fields := range searchable {
 		p.SearchableFields[resource] = sortedKeys(fields)
 	}
@@ -236,7 +247,7 @@ func (p *APIProfile) ToVisionaryPlan(apiName string) *vision.VisionaryPlan {
 	plan := &vision.VisionaryPlan{
 		APIName: apiName,
 		Identity: vision.APIIdentity{
-			CoreEntities: p.SyncableResources,
+			CoreEntities: syncableResourceNames(p.SyncableResources),
 			DataProfile: vision.DataProfile{
 				Volume:     lowHigh(p.HighVolume),
 				SearchNeed: lowHigh(p.NeedsSearch),
@@ -314,6 +325,11 @@ func (p *APIProfile) RecommendedFeatures() []string {
 	}
 
 	return features
+}
+
+// SyncableResourceNames returns the names of the syncable resources.
+func (p *APIProfile) SyncableResourceNames() []string {
+	return syncableResourceNames(p.SyncableResources)
 }
 
 func featureIdeaFor(name string, p *APIProfile) vision.FeatureIdea {
@@ -585,6 +601,29 @@ func sortedKeys[V any](m map[string]V) []string {
 	}
 	sort.Strings(keys)
 	return keys
+}
+
+// sortedSyncableResources converts a name->path map into a sorted slice of SyncableResource.
+func sortedSyncableResources(m map[string]string) []SyncableResource {
+	names := make([]string, 0, len(m))
+	for k := range m {
+		names = append(names, k)
+	}
+	sort.Strings(names)
+	resources := make([]SyncableResource, len(names))
+	for i, name := range names {
+		resources[i] = SyncableResource{Name: name, Path: m[name]}
+	}
+	return resources
+}
+
+// syncableResourceNames extracts just the names from a slice of SyncableResource.
+func syncableResourceNames(resources []SyncableResource) []string {
+	names := make([]string, len(resources))
+	for i, r := range resources {
+		names[i] = r.Name
+	}
+	return names
 }
 
 func detectDomainSignals(s *spec.APISpec) DomainSignals {

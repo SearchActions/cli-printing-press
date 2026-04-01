@@ -26,7 +26,11 @@ func TestProfileDiscord(t *testing.T) {
 	assert.True(t, profile.HasChronological)
 	assert.True(t, profile.HasDependencies)
 	assert.ElementsMatch(t, []string{"sync", "search", "store", "export", "import", "tail", "analytics"}, profile.RecommendedFeatures())
-	assert.Contains(t, profile.SyncableResources, "messages")
+	syncNames := make([]string, len(profile.SyncableResources))
+	for i, sr := range profile.SyncableResources {
+		syncNames[i] = sr.Name
+	}
+	assert.Contains(t, syncNames, "messages")
 	assert.Contains(t, profile.SearchableFields["messages"], "content")
 }
 

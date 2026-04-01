@@ -369,7 +369,7 @@ func (g *Generator) Generate() error {
 		}
 		storeData := struct {
 			*spec.APISpec
-			SyncableResources []string
+			SyncableResources []profiler.SyncableResource
 			SearchableFields  map[string][]string
 			Tables            []TableDef
 		}{
@@ -395,7 +395,7 @@ func (g *Generator) Generate() error {
 
 	visionData := struct {
 		*spec.APISpec
-		SyncableResources []string
+		SyncableResources []profiler.SyncableResource
 		SearchableFields  map[string][]string
 		Tables            []TableDef
 	}{
@@ -426,7 +426,7 @@ func (g *Generator) Generate() error {
 	if g.VisionSet.Store {
 		workflowData := struct {
 			*spec.APISpec
-			SyncableResources []string
+			SyncableResources []profiler.SyncableResource
 			SearchableFields  map[string][]string
 		}{
 			APISpec:           g.Spec,
@@ -470,7 +470,7 @@ func (g *Generator) Generate() error {
 	if g.VisionSet.MCP {
 		mcpData := struct {
 			*spec.APISpec
-			SyncableResources []string
+			SyncableResources []profiler.SyncableResource
 			SearchableFields  map[string][]string
 			Tables            []TableDef
 			VisionSet         VisionTemplateSet

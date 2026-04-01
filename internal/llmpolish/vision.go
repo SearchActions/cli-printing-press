@@ -68,7 +68,11 @@ func buildVisionPrompt(profile *profiler.APIProfile, apiSpec *spec.APISpec) stri
 	fmt.Fprintf(&builder, "- Needs local search: %t\n", profile.NeedsSearch)
 	fmt.Fprintf(&builder, "- Has real-time events: %t\n", profile.HasRealtime)
 	fmt.Fprintf(&builder, "- Has chronological data: %t\n", profile.HasChronological)
-	fmt.Fprintf(&builder, "- Syncable resources: %s\n", formatStringSlice(profile.SyncableResources))
+	syncNames := make([]string, len(profile.SyncableResources))
+	for i, sr := range profile.SyncableResources {
+		syncNames[i] = sr.Name
+	}
+	fmt.Fprintf(&builder, "- Syncable resources: %s\n", formatStringSlice(syncNames))
 	fmt.Fprintf(&builder, "- Searchable fields per resource: %s\n", formatSearchableFields(profile.SearchableFields))
 	if apiSpec.Description != "" {
 		fmt.Fprintf(&builder, "\nAPI description: %s\n", apiSpec.Description)

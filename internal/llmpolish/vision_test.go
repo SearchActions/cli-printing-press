@@ -36,9 +36,12 @@ func TestParseVisionCustomization(t *testing.T) {
 
 func TestBuildVisionPrompt(t *testing.T) {
 	profile := &profiler.APIProfile{
-		HighVolume:        true,
-		NeedsSearch:       true,
-		SyncableResources: []string{"messages", "channels"},
+		HighVolume:  true,
+		NeedsSearch: true,
+		SyncableResources: []profiler.SyncableResource{
+			{Name: "messages", Path: "/channels/{channel_id}/messages"},
+			{Name: "channels", Path: "/guilds/{guild_id}/channels"},
+		},
 		SearchableFields: map[string][]string{
 			"messages": {"content", "author"},
 		},
