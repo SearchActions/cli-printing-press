@@ -769,6 +769,36 @@ Write to `$RESEARCH_DIR/<stamp>-feat-<api>-pp-cli-absorb-manifest.md`
 
 The manifest now includes compound use cases (Step 1.5c) and auto-suggested + auto-brainstormed features (Step 1.5c.5) in the transcendence table.
 
+### Step 1.5e: Write research.json for README credits
+
+After writing the absorb manifest, also write `$API_RUN_DIR/research.json` so the generator can credit community projects in the README. This file MUST match the `ResearchResult` JSON schema that `loadResearchSources()` expects.
+
+Populate the `alternatives` array from the absorb manifest's source tools list. Include only tools that:
+1. Have a GitHub URL (not npm/PyPI landing pages)
+2. Actually contributed features to the absorb manifest
+3. Are capped at 8 entries, ordered by number of absorbed features (then by stars)
+
+```bash
+cat > "$API_RUN_DIR/research.json" <<REOF
+{
+  "api_name": "<api>",
+  "novelty_score": 0,
+  "alternatives": [
+    {"name": "<tool1>", "url": "<github-url>", "language": "<Go|JavaScript|Python|etc>", "stars": <N>, "command_count": <N>},
+    ...
+  ],
+  "gaps": [],
+  "patterns": [],
+  "recommendation": "proceed",
+  "researched_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+}
+REOF
+```
+
+For each tool, fill in what you know from the research. Stars and command_count are optional (use 0 if unknown). The `language` field should match the primary implementation language. Skip tools that were found during search but contributed zero features to the manifest.
+
+Also write discovery pages if sniff was used. The generator reads these from `$API_RUN_DIR/discovery/sniff-report.md` (which the sniff gate already writes there). No additional action needed for discovery pages -- they are already in the right location.
+
 ### Phase Gate 1.5
 
 **STOP.** Present the absorb manifest to the user in two parts: a prose showcase, then a question.
@@ -881,6 +911,7 @@ OpenAPI / internal YAML:
 printing-press generate \
   --spec <spec-path-or-url> \
   --output "$PRESS_LIBRARY/<api>-pp-cli" \
+  --research-dir "$API_RUN_DIR" \
   --force --lenient --validate
 ```
 
@@ -892,6 +923,7 @@ printing-press generate \
   --spec "$RESEARCH_DIR/<api>-sniff-spec.yaml" \
   --name <api> \
   --output "$PRESS_LIBRARY/<api>-pp-cli" \
+  --research-dir "$API_RUN_DIR" \
   --spec-source sniffed \
   --force --lenient --validate
 # If proxy pattern was detected during sniff, add:
@@ -904,6 +936,7 @@ Sniff-only (no original spec, sniff was the primary source):
 printing-press generate \
   --spec "$RESEARCH_DIR/<api>-sniff-spec.yaml" \
   --output "$PRESS_LIBRARY/<api>-pp-cli" \
+  --research-dir "$API_RUN_DIR" \
   --spec-source sniffed \
   --force --lenient --validate
 # If proxy pattern was detected during sniff, add:
@@ -918,6 +951,7 @@ printing-press generate \
   --spec "$RESEARCH_DIR/<api>-crowd-spec.yaml" \
   --name <api> \
   --output "$PRESS_LIBRARY/<api>-pp-cli" \
+  --research-dir "$API_RUN_DIR" \
   --force --lenient --validate
 ```
 
@@ -927,6 +961,7 @@ Crowd-sniff-only (no original spec, crowd sniff was the primary source):
 printing-press generate \
   --spec "$RESEARCH_DIR/<api>-crowd-spec.yaml" \
   --output "$PRESS_LIBRARY/<api>-pp-cli" \
+  --research-dir "$API_RUN_DIR" \
   --force --lenient --validate
 ```
 
@@ -939,6 +974,7 @@ printing-press generate \
   --spec "$RESEARCH_DIR/<api>-crowd-spec.yaml" \
   --name <api> \
   --output "$PRESS_LIBRARY/<api>-pp-cli" \
+  --research-dir "$API_RUN_DIR" \
   --force --lenient --validate
 ```
 
@@ -949,6 +985,7 @@ printing-press generate \
   --docs <docs-url> \
   --name <api> \
   --output "$PRESS_LIBRARY/<api>-pp-cli" \
+  --research-dir "$API_RUN_DIR" \
   --force --validate
 ```
 
