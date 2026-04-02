@@ -163,30 +163,7 @@ If `"passed": false`, report the failing checks and **stop**. Do not create a pa
 
 Save the `help_output` field from the result — it's used in the PR description.
 
-## Step 5: Package
-
-Read `$PUBLISH_CONFIG` to get `module_path_base`. Construct the full module path:
-
-```
-MODULE_PATH="<module_path_base>/<category>/<cli-name>"
-```
-
-For example: `github.com/mvanhorn/printing-press-library/library/productivity/notion-pp-cli`
-
-Create a temporary staging directory and run:
-
-```bash
-printing-press publish package \
-  --dir <cli-dir> \
-  --category <category> \
-  --target <staging-dir> \
-  --module-path "$MODULE_PATH" \
-  --json
-```
-
-Parse the JSON result. Note the `staged_dir`, `module_path`, `manuscripts_included`, and `run_id`. The `module_path` field confirms the Go module path that was set in the packaged CLI's `go.mod` and import paths.
-
-## Step 6: Managed Clone
+## Step 5: Managed Clone
 
 The publish skill manages its own clone of the library repo at `$PUBLISH_REPO_DIR`.
 
@@ -260,6 +237,31 @@ If there are uncommitted changes, ask the user via AskUserQuestion:
 
 If reset, run `git checkout -- . && git clean -fd`.
 
+## Step 6: Package
+
+Read `$PUBLISH_CONFIG` to get `module_path_base`. Construct the full module path:
+
+```
+MODULE_PATH="<module_path_base>/<category>/<cli-name>"
+```
+
+For example: `github.com/mvanhorn/printing-press-library/library/productivity/notion-pp-cli`
+
+Run `publish package` with `--dest` to write directly into the publish repo:
+
+```bash
+printing-press publish package \
+  --dir <cli-dir> \
+  --category <category> \
+  --dest "$PUBLISH_REPO_DIR" \
+  --module-path "$MODULE_PATH" \
+  --json
+```
+
+This removes any existing version of the CLI (handling category changes), copies the CLI source and `.manuscripts` directly into `$PUBLISH_REPO_DIR/library/<category>/<cli-name>/`, and rewrites the Go module path.
+
+Parse the JSON result. Note the `staged_dir`, `module_path`, `manuscripts_included`, and `run_id`. The `module_path` field confirms the Go module path that was set in the packaged CLI's `go.mod` and import paths.
+
 ## Step 7: Check for Existing PR
 
 Before creating a branch, check whether you have an open PR for this CLI. The `--author @me` filter ensures we only match PRs owned by the current user — if someone else published the same CLI name, we won't stomp their PR.
@@ -312,15 +314,6 @@ git checkout -b feat/<cli-name>
 
 # Overwrite existing:
 git checkout -B feat/<cli-name>
-```
-
-### Replace CLI package
-
-Remove any existing version of this CLI before copying. This prevents stale files from a previous generation persisting (e.g., deleted commands, renamed files). The glob also handles category changes — if the CLI moved from `productivity` to `developer-tools`, the old directory is cleaned up.
-
-```bash
-rm -rf "$PUBLISH_REPO_DIR/library"/*/"<cli-name>"
-cp -r <staging-dir>/library/* "$PUBLISH_REPO_DIR/library/"
 ```
 
 ### Update registry.json
@@ -497,8 +490,7 @@ flagged (e.g., a test fixture with a fake key). Don't block silently.
 - **`gh` not authenticated:** Detect in Step 1, tell user to run `gh auth login`
 - **CLI not found:** Show available CLIs in Step 2, let user pick
 - **Validation fails:** Show per-check results in Step 4, stop
-- **Repo unreachable:** Report clearly in Step 6
+- **Repo unreachable:** Report clearly in Step 5
 - **Existing PR check fails:** Fall back to standard branch-conflict flow (treat as no existing PR)
 - **Branch conflict (no existing PR):** Ask user in Step 8 (overwrite or timestamp)
 - **Push fails:** Report the error, suggest checking `gh auth status`
-- **Staging cleanup:** If any step after packaging (Steps 6-8) fails, remove the staging directory created in Step 5 before stopping. This prevents accumulation of full CLI copies in temp directories across retries

@@ -178,12 +178,20 @@ func TestPublishPackageMissingCategoryFlag(t *testing.T) {
 	assert.Contains(t, err.Error(), "--category is required")
 }
 
-func TestPublishPackageMissingTargetFlag(t *testing.T) {
+func TestPublishPackageMissingTargetAndDestFlags(t *testing.T) {
 	cmd := newPublishCmd()
 	cmd.SetArgs([]string{"package", "--dir", "/tmp/fake", "--category", "ai", "--json"})
 	err := cmd.Execute()
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "--target is required")
+	assert.Contains(t, err.Error(), "--target or --dest is required")
+}
+
+func TestPublishPackageTargetAndDestMutuallyExclusive(t *testing.T) {
+	cmd := newPublishCmd()
+	cmd.SetArgs([]string{"package", "--dir", "/tmp/fake", "--category", "ai", "--target", "/tmp/a", "--dest", "/tmp/b", "--json"})
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "mutually exclusive")
 }
 
 func TestPublishPackageTargetExists(t *testing.T) {
@@ -397,6 +405,129 @@ func TestFindMostRecentRunEmpty(t *testing.T) {
 func TestFindMostRecentRunNonexistentDir(t *testing.T) {
 	_, err := findMostRecentRun("/nonexistent/path")
 	assert.Error(t, err)
+}
+
+func TestPublishPackageDestWritesDirectly(t *testing.T) {
+	home := setLibraryTestEnv(t)
+	cliDir := filepath.Join(home, "library", "test-pp-cli")
+	writePublishableTestCLI(t, cliDir)
+
+	// Create manuscripts
+	runID := "20260329-100000"
+	researchDir := filepath.Join(home, "manuscripts", "test", runID, "research")
+	require.NoError(t, os.MkdirAll(researchDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(researchDir, "brief.md"), []byte("# Brief"), 0o644))
+
+	// Create a dest directory (simulating the publish repo)
+	destDir := filepath.Join(t.TempDir(), "publish-repo")
+	require.NoError(t, os.MkdirAll(destDir, 0o755))
+
+	cmd := newPublishCmd()
+	cmd.SetArgs([]string{"package", "--dir", cliDir, "--category", "other", "--dest", destDir, "--json"})
+
+	output, err := runWithCapturedStdout(t, cmd.Execute)
+	require.NoError(t, err)
+
+	var result PackageResult
+	require.NoError(t, json.Unmarshal([]byte(output), &result))
+	assert.True(t, result.ManuscriptsIncluded, "manuscripts should be included")
+	assert.Equal(t, runID, result.RunID)
+
+	// Verify CLI is at dest/library/<category>/<cli-name>/
+	cliOut := filepath.Join(destDir, "library", "other", "test-pp-cli")
+	assert.Equal(t, cliOut, result.StagedDir)
+
+	_, err = os.Stat(filepath.Join(cliOut, "go.mod"))
+	assert.NoError(t, err, "go.mod should exist in dest")
+
+	// Verify .manuscripts is written directly (not in a staging dir)
+	msPath := filepath.Join(cliOut, ".manuscripts", runID, "research", "brief.md")
+	_, err = os.Stat(msPath)
+	assert.NoError(t, err, ".manuscripts should be written into dest")
+}
+
+func TestPublishPackageDestRemovesOldCLI(t *testing.T) {
+	home := setLibraryTestEnv(t)
+	cliDir := filepath.Join(home, "library", "test-pp-cli")
+	writePublishableTestCLI(t, cliDir)
+
+	// Create a dest with an existing CLI in a different category
+	destDir := filepath.Join(t.TempDir(), "publish-repo")
+	oldCLIDir := filepath.Join(destDir, "library", "productivity", "test-pp-cli")
+	require.NoError(t, os.MkdirAll(oldCLIDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(oldCLIDir, "old-file.go"), []byte("old"), 0o644))
+
+	cmd := newPublishCmd()
+	cmd.SetArgs([]string{"package", "--dir", cliDir, "--category", "other", "--dest", destDir, "--json"})
+
+	output, err := runWithCapturedStdout(t, cmd.Execute)
+	require.NoError(t, err)
+
+	var result PackageResult
+	require.NoError(t, json.Unmarshal([]byte(output), &result))
+
+	// Old CLI directory should be gone (both original and .old stash)
+	_, err = os.Stat(oldCLIDir)
+	assert.ErrorIs(t, err, os.ErrNotExist, "old CLI in different category should be removed")
+	_, err = os.Stat(oldCLIDir + ".old")
+	assert.ErrorIs(t, err, os.ErrNotExist, "stash dir should be cleaned up after success")
+
+	// New CLI should exist at new category
+	newCLIDir := filepath.Join(destDir, "library", "other", "test-pp-cli")
+	_, err = os.Stat(filepath.Join(newCLIDir, "go.mod"))
+	assert.NoError(t, err, "new CLI should exist at new category")
+}
+
+func TestPublishPackageDestRestoresOldCLIOnFailure(t *testing.T) {
+	home := setLibraryTestEnv(t)
+	cliDir := filepath.Join(home, "library", "test-pp-cli")
+	writePublishableTestCLI(t, cliDir)
+
+	// Create manuscripts with an unreadable file to trigger copy failure
+	runID := "20260329-100000"
+	manuscriptFile := filepath.Join(home, "manuscripts", "test", runID, "research", "brief.md")
+	require.NoError(t, os.MkdirAll(filepath.Dir(manuscriptFile), 0o755))
+	require.NoError(t, os.WriteFile(manuscriptFile, []byte("brief"), 0o600))
+	require.NoError(t, os.Chmod(manuscriptFile, 0))
+	defer func() { _ = os.Chmod(manuscriptFile, 0o600) }()
+
+	// Create dest with existing CLI in a different category
+	destDir := filepath.Join(t.TempDir(), "publish-repo")
+	oldCLIDir := filepath.Join(destDir, "library", "productivity", "test-pp-cli")
+	require.NoError(t, os.MkdirAll(oldCLIDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(oldCLIDir, "old-file.go"), []byte("old"), 0o644))
+
+	cmd := newPublishCmd()
+	cmd.SetArgs([]string{"package", "--dir", cliDir, "--category", "other", "--dest", destDir, "--json"})
+
+	err := cmd.Execute()
+	require.Error(t, err, "should fail due to unreadable manuscript")
+
+	// Old CLI should be restored to its original location
+	_, err = os.Stat(filepath.Join(oldCLIDir, "old-file.go"))
+	assert.NoError(t, err, "old CLI should be restored after failure")
+
+	// No stash leftovers
+	_, err = os.Stat(oldCLIDir + ".old")
+	assert.ErrorIs(t, err, os.ErrNotExist, "stash dir should not remain after restore")
+
+	// New CLI dir should be cleaned up
+	newCLIDir := filepath.Join(destDir, "library", "other", "test-pp-cli")
+	_, err = os.Stat(newCLIDir)
+	assert.ErrorIs(t, err, os.ErrNotExist, "failed new CLI dir should be cleaned up")
+}
+
+func TestPublishPackageDestNonexistent(t *testing.T) {
+	home := setLibraryTestEnv(t)
+	cliDir := filepath.Join(home, "library", "test-pp-cli")
+	writePublishableTestCLI(t, cliDir)
+
+	cmd := newPublishCmd()
+	cmd.SetArgs([]string{"package", "--dir", cliDir, "--category", "other", "--dest", "/nonexistent/path", "--json"})
+
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "does not exist")
 }
 
 func writePublishableTestCLI(t *testing.T, dir string) {

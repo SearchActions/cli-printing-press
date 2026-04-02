@@ -132,13 +132,18 @@ func newPublishPackageCmd() *cobra.Command {
 	var dir string
 	var category string
 	var target string
+	var dest string
 	var modulePath string
 	var asJSON bool
 
 	cmd := &cobra.Command{
-		Use:     "package",
-		Short:   "Package a CLI for publishing to the library repo",
-		Example: `  printing-press publish package --dir ~/printing-press/library/notion-pp-cli --category productivity --target /tmp/staging --json`,
+		Use:   "package",
+		Short: "Package a CLI for publishing to the library repo",
+		Example: `  # Stage into a new directory (for inspection)
+  printing-press publish package --dir ~/printing-press/library/notion-pp-cli --category productivity --target /tmp/staging --json
+
+  # Write directly into the publish repo (replaces old CLI, includes manuscripts)
+  printing-press publish package --dir ~/printing-press/library/notion-pp-cli --category productivity --dest ~/printing-press/.publish-repo --json`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if dir == "" {
 				return &ExitError{Code: ExitInputError, Err: fmt.Errorf("--dir is required")}
@@ -155,13 +160,23 @@ func newPublishPackageCmd() *cobra.Command {
 					Err:  fmt.Errorf("--category must be one of: %s", strings.Join(catalogpkg.PublicCategories(), ", ")),
 				}
 			}
-			if target == "" {
-				return &ExitError{Code: ExitInputError, Err: fmt.Errorf("--target is required")}
+			if target == "" && dest == "" {
+				return &ExitError{Code: ExitInputError, Err: fmt.Errorf("--target or --dest is required")}
+			}
+			if target != "" && dest != "" {
+				return &ExitError{Code: ExitInputError, Err: fmt.Errorf("--target and --dest are mutually exclusive")}
 			}
 
-			// Check target doesn't exist (before expensive validation)
-			if _, err := os.Stat(target); err == nil {
-				return &ExitError{Code: ExitInputError, Err: fmt.Errorf("target directory already exists: %s", target)}
+			// Cheap existence checks before expensive validation
+			if target != "" {
+				if _, err := os.Stat(target); err == nil {
+					return &ExitError{Code: ExitInputError, Err: fmt.Errorf("target directory already exists: %s", target)}
+				}
+			}
+			if dest != "" {
+				if info, err := os.Stat(dest); err != nil || !info.IsDir() {
+					return &ExitError{Code: ExitInputError, Err: fmt.Errorf("--dest directory does not exist: %s", dest)}
+				}
 			}
 
 			// Re-validate before packaging
@@ -183,81 +198,80 @@ func newPublishPackageCmd() *cobra.Command {
 				cliName = filepath.Base(dir)
 			}
 
-			// Build staging structure: target/library/<category>/<cli-name>/
-			stagingCLIDir := filepath.Join(target, "library", category, cliName)
+			// Choose output mode: --dest writes directly, --target stages
+			var outCLIDir string
+			var rootDir string // root to clean up on failure
+			// stashedDirs holds old CLI dirs moved aside in --dest mode.
+			// Restored on failure, deleted on success.
+			var stashedDirs []stashedDir
+			if dest != "" {
+				rootDir = dest
+				outCLIDir = filepath.Join(dest, "library", category, cliName)
 
-			// Verify the resolved path is actually under target (defense in depth)
-			absTarget, _ := filepath.Abs(target)
-			absStaging, _ := filepath.Abs(stagingCLIDir)
-			if !strings.HasPrefix(absStaging, absTarget+string(filepath.Separator)) {
-				return &ExitError{Code: ExitInputError, Err: fmt.Errorf("resolved staging path %s escapes target directory %s", absStaging, absTarget)}
+				// Move existing CLI dirs aside (don't delete yet — restore on failure)
+				var err error
+				stashedDirs, err = stashExistingCLI(dest, cliName)
+				if err != nil {
+					return &ExitError{Code: ExitPublishError, Err: fmt.Errorf("stashing old CLI: %w", err)}
+				}
+			} else {
+				rootDir = target
+				outCLIDir = filepath.Join(target, "library", category, cliName)
 			}
 
-			cleanupTarget := func() {
-				_ = os.RemoveAll(target)
+			// Verify the resolved path is actually under rootDir (defense in depth)
+			absRoot, _ := filepath.Abs(rootDir)
+			absOut, _ := filepath.Abs(outCLIDir)
+			if !strings.HasPrefix(absOut, absRoot+string(filepath.Separator)) {
+				restoreStashedDirs(stashedDirs)
+				return &ExitError{Code: ExitInputError, Err: fmt.Errorf("resolved output path %s escapes root directory %s", absOut, absRoot)}
 			}
 
-			if err := os.MkdirAll(filepath.Dir(stagingCLIDir), 0o755); err != nil {
-				return &ExitError{Code: ExitPublishError, Err: fmt.Errorf("creating staging dir: %w", err)}
+			cleanupOnFailure := func() {
+				if dest != "" {
+					_ = os.RemoveAll(outCLIDir)
+					restoreStashedDirs(stashedDirs)
+				} else {
+					_ = os.RemoveAll(target)
+				}
+			}
+
+			if err := os.MkdirAll(filepath.Dir(outCLIDir), 0o755); err != nil {
+				cleanupOnFailure()
+				return &ExitError{Code: ExitPublishError, Err: fmt.Errorf("creating output dir: %w", err)}
 			}
 
 			// Copy CLI source
-			if err := pipeline.CopyDir(dir, stagingCLIDir); err != nil {
-				cleanupTarget()
+			if err := pipeline.CopyDir(dir, outCLIDir); err != nil {
+				cleanupOnFailure()
 				return &ExitError{Code: ExitPublishError, Err: fmt.Errorf("copying CLI: %w", err)}
 			}
 
 			// Rewrite go.mod module path if --module-path is set
 			if modulePath != "" {
 				oldModPath := cliName // generated CLIs use bare CLI name as module path
-				if err := pipeline.RewriteModulePath(stagingCLIDir, oldModPath, modulePath); err != nil {
-					cleanupTarget()
+				if err := pipeline.RewriteModulePath(outCLIDir, oldModPath, modulePath); err != nil {
+					cleanupOnFailure()
 					return &ExitError{Code: ExitPublishError, Err: fmt.Errorf("rewriting module path: %w", err)}
 				}
 			}
 
 			// Resolve and copy manuscripts
 			result := PackageResult{
-				StagedDir:  stagingCLIDir,
+				StagedDir:  outCLIDir,
 				CLIName:    cliName,
 				APIName:    vResult.APIName,
 				Category:   category,
 				ModulePath: modulePath,
 			}
 
-			// Look for manuscripts: try CLI name first (new convention),
-			// then API name, then fuzzy resolve (backwards compatibility).
-			apiName := vResult.APIName
-			if apiName == "" {
-				apiName = naming.TrimCLISuffix(cliName)
-			}
-
-			msRoot := pipeline.PublishedManuscriptsRoot()
-			var msDir string
-			var runID string
-
-			// 1. Try CLI name (new convention: manuscripts/<cli-name>/<run>/)
-			cliMsDir := filepath.Join(msRoot, cliName)
-			if rid, err := findMostRecentRun(cliMsDir); err == nil && rid != "" {
-				msDir, runID = cliMsDir, rid
-			}
-			// 2. Try API name (old convention: manuscripts/<api-name>/<run>/)
-			if runID == "" {
-				apiMsDir := filepath.Join(msRoot, apiName)
-				if rid, err := findMostRecentRun(apiMsDir); err == nil && rid != "" {
-					msDir, runID = apiMsDir, rid
-				}
-			}
-			// 3. Fuzzy resolve (strip suffixes, prefix match)
-			if runID == "" {
-				msDir, runID = resolveManuscriptDir(msRoot, apiName)
-			}
+			msDir, runID := resolveManuscripts(cliName, vResult.APIName)
 			if runID != "" {
 				result.RunID = runID
 				srcMsDir := filepath.Join(msDir, runID)
-				dstMsDir := filepath.Join(stagingCLIDir, ".manuscripts", runID)
+				dstMsDir := filepath.Join(outCLIDir, ".manuscripts", runID)
 				if err := pipeline.CopyDir(srcMsDir, dstMsDir); err != nil {
-					cleanupTarget()
+					cleanupOnFailure()
 					return &ExitError{Code: ExitPublishError, Err: fmt.Errorf("copying manuscripts: %w", err)}
 				} else {
 					result.ManuscriptsIncluded = true
@@ -266,13 +280,16 @@ func newPublishPackageCmd() *cobra.Command {
 				fmt.Fprintln(os.Stderr, "warning: no manuscripts found, packaging without them")
 			}
 
+			// Success — remove stashed old CLI dirs
+			removeStashedDirs(stashedDirs)
+
 			if asJSON {
 				enc := json.NewEncoder(os.Stdout)
 				enc.SetIndent("", "  ")
 				return enc.Encode(result)
 			}
 
-			fmt.Fprintf(os.Stderr, "Packaged %s at %s\n", cliName, stagingCLIDir)
+			fmt.Fprintf(os.Stderr, "Packaged %s at %s\n", cliName, outCLIDir)
 			if result.ManuscriptsIncluded {
 				fmt.Fprintf(os.Stderr, "  Manuscripts: %s (run %s)\n", ".manuscripts/"+runID, runID)
 			} else {
@@ -284,11 +301,87 @@ func newPublishPackageCmd() *cobra.Command {
 
 	cmd.Flags().StringVar(&dir, "dir", "", "CLI directory to package (required)")
 	cmd.Flags().StringVar(&category, "category", "", "Category for the CLI (required)")
-	cmd.Flags().StringVar(&target, "target", "", "Staging directory to create (required)")
+	cmd.Flags().StringVar(&target, "target", "", "Staging directory to create (mutually exclusive with --dest)")
+	cmd.Flags().StringVar(&dest, "dest", "", "Publish repo to write into directly (mutually exclusive with --target)")
 	cmd.Flags().StringVar(&modulePath, "module-path", "", "Go module path to set (e.g., github.com/org/repo/library/category/cli-name)")
 	cmd.Flags().BoolVar(&asJSON, "json", false, "Output as JSON")
 
 	return cmd
+}
+
+// stashedDir records an old CLI directory that was moved aside during --dest mode.
+type stashedDir struct {
+	original string // where it was (e.g., library/productivity/notion-pp-cli)
+	stashed  string // where it was moved to (e.g., library/productivity/notion-pp-cli.old-XXXXX)
+}
+
+// stashExistingCLI moves any existing version of a CLI aside (rename, not delete).
+// This handles category changes — if a CLI moved from one category to another,
+// all old dirs across categories are stashed. On success the caller removes
+// the stashed dirs; on failure the caller restores them.
+func stashExistingCLI(repoDir, cliName string) ([]stashedDir, error) {
+	libDir := filepath.Join(repoDir, "library")
+	entries, err := os.ReadDir(libDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	var stashed []stashedDir
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		candidate := filepath.Join(libDir, e.Name(), cliName)
+		if _, statErr := os.Stat(candidate); statErr == nil {
+			tmpName := candidate + ".old"
+			if err := os.Rename(candidate, tmpName); err != nil {
+				// Restore any already-stashed dirs before returning
+				restoreStashedDirs(stashed)
+				return nil, fmt.Errorf("stashing %s: %w", candidate, err)
+			}
+			stashed = append(stashed, stashedDir{original: candidate, stashed: tmpName})
+		}
+	}
+	return stashed, nil
+}
+
+// restoreStashedDirs moves stashed dirs back to their original locations.
+func restoreStashedDirs(dirs []stashedDir) {
+	for _, d := range dirs {
+		_ = os.Rename(d.stashed, d.original)
+	}
+}
+
+// removeStashedDirs permanently deletes stashed dirs after a successful package.
+func removeStashedDirs(dirs []stashedDir) {
+	for _, d := range dirs {
+		_ = os.RemoveAll(d.stashed)
+	}
+}
+
+// resolveManuscripts finds the manuscripts directory and most recent run ID
+// for a CLI. Tries CLI name first (new convention), then API name, then fuzzy.
+func resolveManuscripts(cliName, apiName string) (msDir string, runID string) {
+	if apiName == "" {
+		apiName = naming.TrimCLISuffix(cliName)
+	}
+
+	msRoot := pipeline.PublishedManuscriptsRoot()
+
+	// 1. Try CLI name (new convention: manuscripts/<cli-name>/<run>/)
+	cliMsDir := filepath.Join(msRoot, cliName)
+	if rid, err := findMostRecentRun(cliMsDir); err == nil && rid != "" {
+		return cliMsDir, rid
+	}
+	// 2. Try API name (old convention: manuscripts/<api-name>/<run>/)
+	apiMsDir := filepath.Join(msRoot, apiName)
+	if rid, err := findMostRecentRun(apiMsDir); err == nil && rid != "" {
+		return apiMsDir, rid
+	}
+	// 3. Fuzzy resolve (strip suffixes, prefix match)
+	return resolveManuscriptDir(msRoot, apiName)
 }
 
 func runValidation(dir string) ValidateResult {
