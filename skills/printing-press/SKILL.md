@@ -286,7 +286,7 @@ Maintain a lightweight state file at `$STATE_FILE` so `/printing-press-score` ca
 }
 ```
 
-Active mutable work lives under `$PRESS_RUNSTATE/`. Published CLIs live under `$PRESS_LIBRARY/`. Archived research and verification evidence live under `$PRESS_MANUSCRIPTS/<api>/<run-id>/`. Do not write mutable run artifacts into the repo checkout.
+Active mutable work lives under `$PRESS_RUNSTATE/`. Published CLIs live under `$PRESS_LIBRARY/`. Archived research and verification evidence live under `$PRESS_MANUSCRIPTS/<cli-name>/<run-id>/` (keyed by CLI name, e.g., `steam-web-pp-cli`, not the API slug). Do not write mutable run artifacts into the repo checkout.
 
 Examples of the current naming/layout to preserve:
 - `discord-pp-cli/internal/store/store.go`
@@ -295,7 +295,7 @@ Examples of the current naming/layout to preserve:
 
 ## Outputs
 
-Every run writes up to 5 concise artifacts under the current managed run and archives them to `$PRESS_MANUSCRIPTS/<api>/<run-id>/`:
+Every run writes up to 5 concise artifacts under the current managed run and archives them to `$PRESS_MANUSCRIPTS/<cli-name>/<run-id>/`:
 
 1. `research/<stamp>-feat-<api>-pp-cli-brief.md`
 2. `research/<stamp>-feat-<api>-pp-cli-absorb-manifest.md`
@@ -344,7 +344,7 @@ Before new research:
    - If the user passed `--spec`, use it directly (existing behavior).
    - Otherwise, proceed with normal discovery (catalog, KnownSpecs, apis-guru, web search).
 2. Check for prior research in:
-   - `$PRESS_MANUSCRIPTS/<api>/*/research/*`
+   - `$PRESS_MANUSCRIPTS/<cli-name>/*/research/*` (also check `$PRESS_MANUSCRIPTS/<api>/*/research/*` for backwards compatibility)
    - `$REPO_ROOT/docs/plans/*<api>*` (legacy fallback)
 3. Reuse good prior work instead of redoing it.
 4. **Library Check** — Check if a CLI for this API already exists in the library and present the user with context and options.
@@ -1844,9 +1844,12 @@ future `/printing-press` runs on the same API. Publishing ships the CLI to the
 library repo. A run that isn't ready to publish still produces valuable research.
 
 ```bash
-mkdir -p "$PRESS_MANUSCRIPTS/<api>/$RUN_ID"
-cp -r "$RESEARCH_DIR" "$PRESS_MANUSCRIPTS/<api>/$RUN_ID/research" 2>/dev/null || true
-cp -r "$PROOFS_DIR" "$PRESS_MANUSCRIPTS/<api>/$RUN_ID/proofs" 2>/dev/null || true
+# Archive under CLI name (e.g., steam-web-pp-cli), not API slug (e.g., steam).
+# The CLI name is unambiguous and matches what publish expects.
+CLI_NAME="$(basename "$PRESS_LIBRARY/<api>-pp-cli")"
+mkdir -p "$PRESS_MANUSCRIPTS/$CLI_NAME/$RUN_ID"
+cp -r "$RESEARCH_DIR" "$PRESS_MANUSCRIPTS/$CLI_NAME/$RUN_ID/research" 2>/dev/null || true
+cp -r "$PROOFS_DIR" "$PRESS_MANUSCRIPTS/$CLI_NAME/$RUN_ID/proofs" 2>/dev/null || true
 
 # Archive discovery artifacts (sniff captures, URL lists, sniff report).
 # Remove session state before archiving — contains authentication cookies/tokens.
@@ -1859,7 +1862,7 @@ if [ -d "$DISCOVERY_DIR" ]; then
       jq 'del(.log.entries[].response.content.text)' "$har" > "${har}.stripped" 2>/dev/null && mv "${har}.stripped" "$har" || rm -f "${har}.stripped"
     fi
   done
-  cp -r "$DISCOVERY_DIR" "$PRESS_MANUSCRIPTS/<api>/$RUN_ID/discovery" 2>/dev/null || true
+  cp -r "$DISCOVERY_DIR" "$PRESS_MANUSCRIPTS/$CLI_NAME/$RUN_ID/discovery" 2>/dev/null || true
 fi
 ```
 

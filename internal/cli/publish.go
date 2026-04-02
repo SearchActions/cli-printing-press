@@ -225,17 +225,36 @@ func newPublishPackageCmd() *cobra.Command {
 				ModulePath: modulePath,
 			}
 
+			// Look for manuscripts: try CLI name first (new convention),
+			// then API name, then fuzzy resolve (backwards compatibility).
 			apiName := vResult.APIName
 			if apiName == "" {
 				apiName = naming.TrimCLISuffix(cliName)
 			}
 
 			msRoot := pipeline.PublishedManuscriptsRoot()
-			msAPIDir := filepath.Join(msRoot, apiName)
-			runID, err := findMostRecentRun(msAPIDir)
-			if err == nil && runID != "" {
+			var msDir string
+			var runID string
+
+			// 1. Try CLI name (new convention: manuscripts/<cli-name>/<run>/)
+			cliMsDir := filepath.Join(msRoot, cliName)
+			if rid, err := findMostRecentRun(cliMsDir); err == nil && rid != "" {
+				msDir, runID = cliMsDir, rid
+			}
+			// 2. Try API name (old convention: manuscripts/<api-name>/<run>/)
+			if runID == "" {
+				apiMsDir := filepath.Join(msRoot, apiName)
+				if rid, err := findMostRecentRun(apiMsDir); err == nil && rid != "" {
+					msDir, runID = apiMsDir, rid
+				}
+			}
+			// 3. Fuzzy resolve (strip suffixes, prefix match)
+			if runID == "" {
+				msDir, runID = resolveManuscriptDir(msRoot, apiName)
+			}
+			if runID != "" {
 				result.RunID = runID
-				srcMsDir := filepath.Join(msAPIDir, runID)
+				srcMsDir := filepath.Join(msDir, runID)
 				dstMsDir := filepath.Join(stagingCLIDir, ".manuscripts", runID)
 				if err := pipeline.CopyDir(srcMsDir, dstMsDir); err != nil {
 					cleanupTarget()
@@ -374,11 +393,19 @@ func runValidation(dir string) ValidateResult {
 	}
 
 	// 7. Manuscripts check (warn-only)
+	// Try CLI name first (new convention), then API name, then fuzzy resolve
 	apiName := result.APIName
 	if apiName == "" {
 		apiName = naming.TrimCLISuffix(cliName)
 	}
-	msDir := filepath.Join(pipeline.PublishedManuscriptsRoot(), apiName)
+	msRoot := pipeline.PublishedManuscriptsRoot()
+	msDir := filepath.Join(msRoot, cliName)
+	if _, err := os.Stat(msDir); os.IsNotExist(err) {
+		msDir = filepath.Join(msRoot, apiName)
+	}
+	if _, err := os.Stat(msDir); os.IsNotExist(err) {
+		msDir, _ = resolveManuscriptDir(msRoot, apiName)
+	}
 	if _, err := os.Stat(msDir); os.IsNotExist(err) {
 		result.Checks = append(result.Checks, CheckResult{Name: "manuscripts", Passed: true, Warning: "no manuscripts found"})
 	} else {
@@ -563,6 +590,50 @@ func findMostRecentRun(msAPIDir string) (string, error) {
 	// Lexicographic sort (run-ids are timestamp-prefixed)
 	sort.Strings(runs)
 	return runs[len(runs)-1], nil
+}
+
+// resolveManuscriptDir attempts to find the manuscripts directory for an API
+// when the exact apiName doesn't match a directory. The generator and the skill
+// may use different slugs (e.g., "steam-web" vs "steam"). This function tries:
+//  1. Strip common suffixes: -web, -api, -service
+//  2. Scan directories for prefix matches (e.g., "steam" is a prefix of "steam-web")
+//
+// Returns the resolved directory path and the run ID, or empty strings if not found.
+func resolveManuscriptDir(msRoot, apiName string) (string, string) {
+	// Try stripping common suffixes
+	suffixes := []string{"-web", "-api", "-service", "-public", "-v2", "-v3"}
+	for _, suffix := range suffixes {
+		candidate := strings.TrimSuffix(apiName, suffix)
+		if candidate != apiName {
+			dir := filepath.Join(msRoot, candidate)
+			if runID, err := findMostRecentRun(dir); err == nil && runID != "" {
+				return dir, runID
+			}
+		}
+	}
+
+	// Scan directories for prefix/substring matches
+	entries, err := os.ReadDir(msRoot)
+	if err != nil {
+		return "", ""
+	}
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		name := e.Name()
+		// Check if either is a prefix of the other WITH a hyphen boundary.
+		// "steam" matches "steam-web" (prefix + hyphen) but NOT "steamgames" (no hyphen).
+		if (strings.HasPrefix(apiName, name+"-") || apiName == name) ||
+			(strings.HasPrefix(name, apiName+"-") || name == apiName) {
+			dir := filepath.Join(msRoot, name)
+			if runID, err := findMostRecentRun(dir); err == nil && runID != "" {
+				return dir, runID
+			}
+		}
+	}
+
+	return "", ""
 }
 
 // hasContent checks if a directory contains at least one non-directory entry,

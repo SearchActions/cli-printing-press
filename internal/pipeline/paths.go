@@ -105,8 +105,11 @@ func PublishedManuscriptsRoot() string {
 	return filepath.Join(PressHome(), "manuscripts")
 }
 
-func ArchivedManuscriptDir(apiName, runID string) string {
-	return filepath.Join(PublishedManuscriptsRoot(), apiName, runID)
+// ArchivedManuscriptDir returns the path to a manuscript archive.
+// The key is typically the CLI name (e.g., "steam-web-pp-cli") but may be
+// an API slug (e.g., "steam") for backwards compatibility with older archives.
+func ArchivedManuscriptDir(key, runID string) string {
+	return filepath.Join(PublishedManuscriptsRoot(), key, runID)
 }
 
 func ArchivedResearchDir(apiName, runID string) string {
