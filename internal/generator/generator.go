@@ -106,7 +106,11 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 		"currentYear":        func() string { return strconv.Itoa(time.Now().Year()) },
 		"modulePath":         func() string { return naming.CLI(s.Name) },
 		"kebab":              toKebab,
-		"envName":            func(s string) string { return strings.ToUpper(strings.ReplaceAll(s, "-", "_")) },
+		"humanName": func(s string) string {
+			// "steam-web" → "Steam Web", "notion" → "Notion"
+			return cases.Title(language.English).String(strings.ReplaceAll(s, "-", " "))
+		},
+		"envName": func(s string) string { return strings.ToUpper(strings.ReplaceAll(s, "-", "_")) },
 		"firstResource": func(resources map[string]spec.Resource) string {
 			var names []string
 			for name := range resources {

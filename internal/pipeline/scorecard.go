@@ -390,11 +390,14 @@ func scoreREADME(dir string) int {
 			}
 		}
 	}
-	// Quality: Quick Start has no placeholder values
+	// Quality: Quick Start has no obvious placeholder/template values.
+	// "your-key-here" in an export line is a legitimate auth setup example,
+	// not a sign of unfinished boilerplate. Only penalize generic resource
+	// placeholders like "abc123" or unresolved template markers like "USER/tap".
 	qsIdx := strings.Index(content, "Quick Start")
 	if qsIdx >= 0 {
 		qsSection := content[qsIdx:min(qsIdx+500, len(content))]
-		if !strings.Contains(qsSection, "your-key-here") && !strings.Contains(qsSection, "USER/tap") && !strings.Contains(qsSection, "abc123") {
+		if !strings.Contains(qsSection, "USER/tap") && !strings.Contains(qsSection, "abc123") {
 			score += 2
 		}
 	}

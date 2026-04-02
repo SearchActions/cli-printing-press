@@ -1,4 +1,4 @@
-# {{.Name}}-pp-cli
+# {{humanName .Name}} CLI
 
 {{.Description}}
 
@@ -102,20 +102,20 @@ This checks your configuration{{if and (ne .Auth.Type "") (ne .Auth.Type "none")
 ## Output Formats
 
 ```bash
-# Human-readable table (default)
+# Human-readable table (default in terminal, JSON when piped)
 {{.Name}}-pp-cli {{range $name, $_ := .Resources}}{{$name}}{{break}}{{end}} list
 
 # JSON for scripting and agents
 {{.Name}}-pp-cli {{range $name, $_ := .Resources}}{{$name}}{{break}}{{end}} list --json
 
-# Filter specific fields
+# Filter to specific fields
 {{.Name}}-pp-cli {{range $name, $_ := .Resources}}{{$name}}{{break}}{{end}} list --json --select id,name,status
 
-# Plain tab-separated for piping
-{{.Name}}-pp-cli {{range $name, $_ := .Resources}}{{$name}}{{break}}{{end}} list --plain
-
-# Dry run (show request without sending)
+# Dry run — show the request without sending
 {{.Name}}-pp-cli {{range $name, $_ := .Resources}}{{$name}}{{break}}{{end}} list --dry-run
+
+# Agent mode — JSON + compact + no prompts in one flag
+{{.Name}}-pp-cli {{range $name, $_ := .Resources}}{{$name}}{{break}}{{end}} list --agent
 ```
 
 ## Agent Usage
@@ -151,6 +151,8 @@ Common workflows and recipes:
 
 # Sync data locally for offline search
 {{.Name}}-pp-cli sync
+
+# Search synced data
 {{.Name}}-pp-cli search "query"
 
 # Export for backup
