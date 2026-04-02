@@ -33,7 +33,7 @@ Get your API key from your API provider's developer portal. The key typically lo
 {{- if .Auth.EnvVars}}
 
 ```bash
-export {{index .Auth.EnvVars 0}}="your-key-here"
+export {{index .Auth.EnvVars 0}}="<paste-your-key>"
 ```
 
 You can also persist this in your config file at `{{.Config.Path}}`.

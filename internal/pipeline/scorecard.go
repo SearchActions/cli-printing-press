@@ -381,9 +381,13 @@ func scoreREADME(dir string) int {
 	content := readFileContent(filepath.Join(dir, "README.md"))
 	score := 0
 	// Presence: key sections exist (1pt each, max 4)
-	for _, section := range []string{"Quick Start", "Agent Usage", "Doctor", "Troubleshooting"} {
-		if strings.Contains(content, section) {
-			score++
+	// Each entry can have aliases (e.g., "Doctor" and "Health Check" mean the same thing)
+	for _, aliases := range [][]string{{"Quick Start"}, {"Agent Usage"}, {"Doctor", "Health Check"}, {"Troubleshooting"}} {
+		for _, section := range aliases {
+			if strings.Contains(content, section) {
+				score++
+				break
+			}
 		}
 	}
 	// Quality: Quick Start has no placeholder values

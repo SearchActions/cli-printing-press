@@ -119,10 +119,30 @@ func RunVerify(cfg VerifyConfig) (*VerifyReport, error) {
 		classifyCommandKind(&commands[i], spec)
 	}
 
-	// Collect auth env var names from the spec, falling back to the derived name.
+	// Collect auth env var names. Priority:
+	// 1. Spec's declared env vars (from securitySchemes or auth inference)
+	// 2. Env vars actually read by the CLI's config.go (ground truth)
+	// 3. Derived patterns from the API name (fallback)
 	authEnvVars := []string{envVarName}
 	if spec != nil && len(spec.Auth.EnvVars) > 0 {
 		authEnvVars = spec.Auth.EnvVars
+	}
+	// Read the CLI's config.go to discover what env vars it actually reads.
+	// This catches cases where Claude wired a different env var name than
+	// what the spec declares or the API name implies.
+	if discovered := discoverCLIEnvVars(cfg.Dir); len(discovered) > 0 {
+		for _, ev := range discovered {
+			found := false
+			for _, existing := range authEnvVars {
+				if ev == existing {
+					found = true
+					break
+				}
+			}
+			if !found {
+				authEnvVars = append(authEnvVars, ev)
+			}
+		}
 	}
 
 	// buildEnv constructs the environment for test subprocesses, passing
@@ -603,6 +623,33 @@ func startMockServer(spec *openAPISpec) (*httptest.Server, string) {
 
 	server := httptest.NewServer(mux)
 	return server, server.URL
+}
+
+// discoverCLIEnvVars reads the CLI's config.go and extracts env var names
+// from os.Getenv() calls. This discovers what the CLI actually reads, which
+// may differ from what the spec declares or the API name implies.
+func discoverCLIEnvVars(dir string) []string {
+	configPath := filepath.Join(dir, "internal", "config", "config.go")
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		return nil
+	}
+	re := regexp.MustCompile(`os\.Getenv\("([^"]+)"\)`)
+	matches := re.FindAllStringSubmatch(string(data), -1)
+	seen := map[string]bool{}
+	var envVars []string
+	for _, m := range matches {
+		name := m[1]
+		// Skip base URL and config path env vars — only want auth-related ones
+		if strings.HasSuffix(name, "_BASE_URL") || strings.HasSuffix(name, "_CONFIG") {
+			continue
+		}
+		if !seen[name] {
+			seen[name] = true
+			envVars = append(envVars, name)
+		}
+	}
+	return envVars
 }
 
 // camelToKebab is defined in verify.go
