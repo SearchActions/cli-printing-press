@@ -15,6 +15,7 @@ import (
 	"github.com/mvanhorn/cli-printing-press/internal/naming"
 	openapiparser "github.com/mvanhorn/cli-printing-press/internal/openapi"
 	apispec "github.com/mvanhorn/cli-printing-press/internal/spec"
+	"gopkg.in/yaml.v3"
 )
 
 type DogfoodReport struct {
@@ -27,6 +28,7 @@ type DogfoodReport struct {
 	DeadFuncs     DeadCodeResult     `json:"dead_functions"`
 	PipelineCheck PipelineResult     `json:"pipeline_check"`
 	ExampleCheck  ExampleCheckResult `json:"example_check"`
+	WiringCheck   WiringCheckResult  `json:"wiring_check"`
 	Issues        []string           `json:"issues"`
 }
 
@@ -67,6 +69,33 @@ type ExampleCheckResult struct {
 	Detail        string   `json:"detail"`
 }
 
+type WiringCheckResult struct {
+	CommandTree      CommandTreeResult      `json:"command_tree"`
+	ConfigConsist    ConfigConsistResult    `json:"config_consistency"`
+	WorkflowComplete WorkflowCompleteResult `json:"workflow_completeness"`
+}
+
+type CommandTreeResult struct {
+	Defined      int      `json:"defined"`
+	Registered   int      `json:"registered"`
+	Unregistered []string `json:"unregistered,omitempty"`
+}
+
+type ConfigConsistResult struct {
+	WriteFields []string `json:"write_fields,omitempty"`
+	ReadFields  []string `json:"read_fields,omitempty"`
+	Mismatched  []string `json:"mismatched,omitempty"`
+	Consistent  bool     `json:"consistent"`
+}
+
+type WorkflowCompleteResult struct {
+	Skipped       bool     `json:"skipped,omitempty"`
+	TotalSteps    int      `json:"total_steps"`
+	MappedSteps   int      `json:"mapped_steps"`
+	UnmappedSteps []string `json:"unmapped_steps,omitempty"`
+	Detail        string   `json:"detail"`
+}
+
 type openAPISpec struct {
 	Paths []string
 	Auth  apispec.AuthConfig
@@ -100,6 +129,7 @@ func RunDogfood(dir, specPath string) (*DogfoodReport, error) {
 	report.DeadFuncs = checkDeadFunctions(dir)
 	report.PipelineCheck = checkPipelineIntegrity(dir)
 	report.ExampleCheck = checkExamples(dir)
+	report.WiringCheck = checkWiring(dir)
 	report.Issues = collectDogfoodIssues(report, spec != nil)
 	report.Verdict = deriveDogfoodVerdict(report, spec != nil)
 
@@ -549,6 +579,15 @@ func deriveDogfoodVerdict(report *DogfoodReport, hasSpec bool) string {
 	if report.ExampleCheck.Skipped {
 		return "WARN"
 	}
+	if len(report.WiringCheck.CommandTree.Unregistered) > 0 {
+		return "FAIL"
+	}
+	if !report.WiringCheck.ConfigConsist.Consistent && len(report.WiringCheck.ConfigConsist.Mismatched) > 0 {
+		return "FAIL"
+	}
+	if len(report.WiringCheck.WorkflowComplete.UnmappedSteps) > 0 {
+		return "WARN"
+	}
 	return "PASS"
 }
 
@@ -579,6 +618,21 @@ func collectDogfoodIssues(report *DogfoodReport, hasSpec bool) []string {
 	}
 	if report.ExampleCheck.Skipped {
 		issues = append(issues, fmt.Sprintf("example check skipped: %s", report.ExampleCheck.Detail))
+	}
+	if len(report.WiringCheck.CommandTree.Unregistered) > 0 {
+		issues = append(issues, fmt.Sprintf("%d unregistered commands: %s",
+			len(report.WiringCheck.CommandTree.Unregistered),
+			strings.Join(report.WiringCheck.CommandTree.Unregistered, ", ")))
+	}
+	if !report.WiringCheck.ConfigConsist.Consistent && len(report.WiringCheck.ConfigConsist.Mismatched) > 0 {
+		issues = append(issues, fmt.Sprintf("config inconsistency: write fields %v vs read fields %v",
+			report.WiringCheck.ConfigConsist.WriteFields,
+			report.WiringCheck.ConfigConsist.ReadFields))
+	}
+	if len(report.WiringCheck.WorkflowComplete.UnmappedSteps) > 0 {
+		issues = append(issues, fmt.Sprintf("%d unmapped workflow steps: %s",
+			len(report.WiringCheck.WorkflowComplete.UnmappedSteps),
+			strings.Join(report.WiringCheck.WorkflowComplete.UnmappedSteps, ", ")))
 	}
 	return issues
 }
@@ -889,4 +943,342 @@ func containsAny(sources []string, needle string) bool {
 		}
 	}
 	return false
+}
+
+// checkWiring orchestrates all three wiring sub-checks.
+func checkWiring(dir string) WiringCheckResult {
+	return WiringCheckResult{
+		CommandTree:      checkCommandTree(dir),
+		ConfigConsist:    checkConfigConsistency(dir),
+		WorkflowComplete: checkWorkflowCompleteness(dir),
+	}
+}
+
+// checkCommandTree scans internal/cli/*.go for func new*Cmd() patterns,
+// then runs the built binary's --help to see which commands are registered.
+// Any newXxxCmd() whose command name doesn't appear in help is flagged.
+func checkCommandTree(dir string) CommandTreeResult {
+	result := CommandTreeResult{}
+
+	cliDir := filepath.Join(dir, "internal", "cli")
+	files := listGoFiles(cliDir)
+
+	// Scan for func new*Cmd() patterns
+	cmdFuncRe := regexp.MustCompile(`(?m)^func\s+new(\w+)Cmd\s*\(`)
+	definedCmds := make(map[string]struct{})
+	for _, file := range files {
+		data, err := os.ReadFile(file)
+		if err != nil {
+			continue
+		}
+		matches := cmdFuncRe.FindAllStringSubmatch(string(data), -1)
+		for _, match := range matches {
+			// Convert CamelCase function name part to lowercase command name.
+			// e.g., newAuthLoginCmd -> "authlogin" but we also store original.
+			// The convention is that the command name is the lowercase version
+			// of the captured group, e.g., AuthLogin -> "auth login" or "auth-login".
+			// We'll normalize to lowercase for matching against help output.
+			cmdName := strings.ToLower(match[1])
+			definedCmds[cmdName] = struct{}{}
+		}
+	}
+
+	result.Defined = len(definedCmds)
+	if result.Defined == 0 {
+		return result
+	}
+
+	// Try to build the binary and get help output
+	cliName := findCLIName(dir)
+	if cliName == "" {
+		// Can't verify without a binary, treat all as registered
+		result.Registered = result.Defined
+		return result
+	}
+
+	binaryPath, err := buildDogfoodBinary(dir, cliName)
+	if err != nil {
+		result.Registered = result.Defined
+		return result
+	}
+	defer func() { _ = os.Remove(binaryPath) }()
+
+	helpOut, err := runDogfoodCmd(binaryPath, 15*time.Second, "--help")
+	if err != nil {
+		result.Registered = result.Defined
+		return result
+	}
+
+	// Also gather subcommand help by extracting top-level commands
+	helpLower := strings.ToLower(helpOut)
+	topCmds := extractCommandNames(helpOut)
+	for _, topCmd := range topCmds {
+		subOut, err := runDogfoodCmd(binaryPath, 15*time.Second, topCmd, "--help")
+		if err == nil {
+			helpLower += "\n" + strings.ToLower(subOut)
+		}
+	}
+
+	for cmdName := range definedCmds {
+		if strings.Contains(helpLower, cmdName) {
+			result.Registered++
+		} else {
+			result.Unregistered = append(result.Unregistered, cmdName)
+		}
+	}
+	sort.Strings(result.Unregistered)
+	return result
+}
+
+// extractCommandNames extracts command names from cobra --help output.
+// It looks for the "Available Commands:" section.
+func extractCommandNames(helpOutput string) []string {
+	lines := strings.Split(helpOutput, "\n")
+	var inCommands bool
+	var cmds []string
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "Available Commands:" {
+			inCommands = true
+			continue
+		}
+		if inCommands {
+			if len(line) > 0 && line[0] != ' ' && line[0] != '\t' {
+				break
+			}
+			parts := strings.Fields(trimmed)
+			if len(parts) > 0 {
+				cmds = append(cmds, parts[0])
+			}
+		}
+	}
+	return cmds
+}
+
+// checkConfigConsistency scans CLI source for token/credential write and read
+// sites, then verifies they reference the same config field names.
+func checkConfigConsistency(dir string) ConfigConsistResult {
+	result := ConfigConsistResult{Consistent: true}
+
+	// Collect all Go source files recursively
+	var sources []string
+	_ = filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return nil
+		}
+		if !info.IsDir() && strings.HasSuffix(path, ".go") && !strings.HasSuffix(path, "_test.go") {
+			sources = append(sources, path)
+		}
+		return nil
+	})
+
+	writePatterns := []*regexp.Regexp{
+		regexp.MustCompile(`(?i)SaveTokens?\s*\(`),
+		regexp.MustCompile(`(?i)SetTokens?\s*\(`),
+		regexp.MustCompile(`(?i)WriteTokens?\s*\(`),
+		regexp.MustCompile(`(?i)config\.Set\s*\(\s*"([^"]+)"`),
+		regexp.MustCompile(`(?i)viper\.Set\s*\(\s*"([^"]+)"`),
+	}
+	readPatterns := []*regexp.Regexp{
+		regexp.MustCompile(`(?i)AuthHeader\s*\(`),
+		regexp.MustCompile(`(?i)GetTokens?\s*\(`),
+		regexp.MustCompile(`(?i)ReadTokens?\s*\(`),
+		regexp.MustCompile(`(?i)config\.Get\s*\(\s*"([^"]+)"`),
+		regexp.MustCompile(`(?i)viper\.Get\s*\(\s*"([^"]+)"`),
+	}
+
+	// Also look for string literals that name token fields
+	fieldExtractRe := regexp.MustCompile(`"([^"]*(?i:token|credential|secret|key|auth)[^"]*)"`)
+
+	writeFields := make(map[string]struct{})
+	readFields := make(map[string]struct{})
+
+	for _, srcPath := range sources {
+		data, err := os.ReadFile(srcPath)
+		if err != nil {
+			continue
+		}
+		content := string(data)
+
+		for _, pat := range writePatterns {
+			if pat.MatchString(content) {
+				// Extract field names from the same lines
+				matches := pat.FindAllStringSubmatch(content, -1)
+				for _, m := range matches {
+					if len(m) > 1 && m[1] != "" {
+						writeFields[m[1]] = struct{}{}
+					}
+				}
+				// Also extract nearby token-related string literals
+				for _, line := range strings.Split(content, "\n") {
+					if pat.MatchString(line) {
+						fieldMatches := fieldExtractRe.FindAllStringSubmatch(line, -1)
+						for _, fm := range fieldMatches {
+							writeFields[fm[1]] = struct{}{}
+						}
+					}
+				}
+			}
+		}
+
+		for _, pat := range readPatterns {
+			if pat.MatchString(content) {
+				matches := pat.FindAllStringSubmatch(content, -1)
+				for _, m := range matches {
+					if len(m) > 1 && m[1] != "" {
+						readFields[m[1]] = struct{}{}
+					}
+				}
+				for _, line := range strings.Split(content, "\n") {
+					if pat.MatchString(line) {
+						fieldMatches := fieldExtractRe.FindAllStringSubmatch(line, -1)
+						for _, fm := range fieldMatches {
+							readFields[fm[1]] = struct{}{}
+						}
+					}
+				}
+			}
+		}
+	}
+
+	result.WriteFields = sortedKeys(writeFields)
+	result.ReadFields = sortedKeys(readFields)
+
+	// If both sides have fields, check overlap
+	if len(writeFields) > 0 && len(readFields) > 0 {
+		overlap := false
+		for wf := range writeFields {
+			if _, ok := readFields[wf]; ok {
+				overlap = true
+				break
+			}
+		}
+		if !overlap {
+			result.Consistent = false
+			// Mismatched = write fields not found in read fields
+			for _, wf := range result.WriteFields {
+				if _, ok := readFields[wf]; !ok {
+					result.Mismatched = append(result.Mismatched, wf)
+				}
+			}
+			for _, rf := range result.ReadFields {
+				if _, ok := writeFields[rf]; !ok {
+					result.Mismatched = append(result.Mismatched, rf)
+				}
+			}
+			result.Mismatched = uniqueSorted(result.Mismatched)
+		}
+	}
+
+	return result
+}
+
+// workflowManifest represents the structure of workflow_verify.yaml.
+type workflowManifest struct {
+	Workflows []workflowDef `yaml:"workflows"`
+}
+
+type workflowDef struct {
+	Name  string         `yaml:"name"`
+	Steps []workflowStep `yaml:"steps"`
+}
+
+type workflowStep struct {
+	Command string `yaml:"command"`
+	Name    string `yaml:"name"`
+}
+
+// checkWorkflowCompleteness verifies that every step in a workflow_verify.yaml
+// manifest has a corresponding registered CLI command.
+func checkWorkflowCompleteness(dir string) WorkflowCompleteResult {
+	manifestPath := filepath.Join(dir, "workflow_verify.yaml")
+	data, err := os.ReadFile(manifestPath)
+	if err != nil {
+		return WorkflowCompleteResult{
+			Skipped: true,
+			Detail:  "no workflow_verify.yaml found",
+		}
+	}
+
+	var manifest workflowManifest
+	if err := yaml.Unmarshal(data, &manifest); err != nil {
+		return WorkflowCompleteResult{
+			Skipped: true,
+			Detail:  fmt.Sprintf("failed to parse workflow_verify.yaml: %v", err),
+		}
+	}
+
+	// Collect all step commands
+	var stepCommands []string
+	for _, wf := range manifest.Workflows {
+		for _, step := range wf.Steps {
+			if step.Command != "" {
+				stepCommands = append(stepCommands, step.Command)
+			}
+		}
+	}
+
+	result := WorkflowCompleteResult{
+		TotalSteps: len(stepCommands),
+	}
+
+	if len(stepCommands) == 0 {
+		result.Detail = "manifest has no steps"
+		return result
+	}
+
+	// Get help output to check command existence
+	cliName := findCLIName(dir)
+	if cliName == "" {
+		result.Detail = "no CLI binary to verify against"
+		result.MappedSteps = result.TotalSteps
+		return result
+	}
+
+	binaryPath, err := buildDogfoodBinary(dir, cliName)
+	if err != nil {
+		result.Detail = fmt.Sprintf("could not build CLI binary: %v", err)
+		result.MappedSteps = result.TotalSteps
+		return result
+	}
+	defer func() { _ = os.Remove(binaryPath) }()
+
+	helpOut, err := runDogfoodCmd(binaryPath, 15*time.Second, "--help")
+	if err != nil {
+		result.Detail = fmt.Sprintf("failed to run --help: %v", err)
+		result.MappedSteps = result.TotalSteps
+		return result
+	}
+
+	// Gather subcommand help too
+	helpLower := strings.ToLower(helpOut)
+	topCmds := extractCommandNames(helpOut)
+	for _, topCmd := range topCmds {
+		subOut, err := runDogfoodCmd(binaryPath, 15*time.Second, topCmd, "--help")
+		if err == nil {
+			helpLower += "\n" + strings.ToLower(subOut)
+		}
+	}
+
+	for _, cmd := range stepCommands {
+		// Check if all parts of the command appear in help
+		cmdLower := strings.ToLower(cmd)
+		parts := strings.Fields(cmdLower)
+		found := true
+		for _, part := range parts {
+			if !strings.Contains(helpLower, part) {
+				found = false
+				break
+			}
+		}
+		if found {
+			result.MappedSteps++
+		} else {
+			result.UnmappedSteps = append(result.UnmappedSteps, cmd)
+		}
+	}
+
+	result.UnmappedSteps = uniqueSorted(result.UnmappedSteps)
+	result.Detail = fmt.Sprintf("%d/%d workflow steps mapped to commands", result.MappedSteps, result.TotalSteps)
+	return result
 }

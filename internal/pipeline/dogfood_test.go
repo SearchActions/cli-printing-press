@@ -325,6 +325,183 @@ func TestExtractFlagNames(t *testing.T) {
 	}
 }
 
+func TestCheckCommandTree(t *testing.T) {
+	dir := t.TempDir()
+	cliDir := filepath.Join(dir, "internal", "cli")
+	require.NoError(t, os.MkdirAll(cliDir, 0o755))
+
+	// Define two commands via newXxxCmd() functions
+	writeTestFile(t, filepath.Join(cliDir, "foo.go"), `package cli
+func newFooCmd() {}
+`)
+	writeTestFile(t, filepath.Join(cliDir, "bar.go"), `package cli
+func newBarCmd() {}
+`)
+
+	// Without a buildable binary, checkCommandTree can't verify registration,
+	// so it treats all as registered. We test the scanning logic directly.
+	result := checkCommandTree(dir)
+	assert.Equal(t, 2, result.Defined)
+	// No cmd/ directory means no binary, so all treated as registered
+	assert.Equal(t, 2, result.Registered)
+	assert.Empty(t, result.Unregistered)
+}
+
+func TestCheckConfigConsistency(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "internal", "cli"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "internal", "client"), 0o755))
+
+	// Write site uses "AccessToken"
+	writeTestFile(t, filepath.Join(dir, "internal", "cli", "auth.go"), `package cli
+func saveAuth() {
+	config.Set("AccessToken", token)
+}
+`)
+	// Read site uses "DominosToken" - a mismatch
+	writeTestFile(t, filepath.Join(dir, "internal", "client", "client.go"), `package client
+func getAuth() string {
+	return config.Get("DominosToken")
+}
+`)
+
+	result := checkConfigConsistency(dir)
+	assert.False(t, result.Consistent)
+	assert.Contains(t, result.WriteFields, "AccessToken")
+	assert.Contains(t, result.ReadFields, "DominosToken")
+	assert.NotEmpty(t, result.Mismatched)
+}
+
+func TestCheckConfigConsistency_Consistent(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "internal", "cli"), 0o755))
+
+	// Both write and read use the same field
+	writeTestFile(t, filepath.Join(dir, "internal", "cli", "auth.go"), `package cli
+func saveAuth() {
+	config.Set("AccessToken", token)
+}
+func getAuth() string {
+	return config.Get("AccessToken")
+}
+`)
+
+	result := checkConfigConsistency(dir)
+	assert.True(t, result.Consistent)
+}
+
+func TestCheckWorkflowCompleteness_NoManifest(t *testing.T) {
+	dir := t.TempDir()
+	result := checkWorkflowCompleteness(dir)
+	assert.True(t, result.Skipped)
+	assert.Contains(t, result.Detail, "no workflow_verify.yaml found")
+}
+
+func TestCheckWorkflowCompleteness_HappyPath(t *testing.T) {
+	dir := t.TempDir()
+
+	// Create a manifest with commands that "exist"
+	// Since there's no cmd/ dir, the check will treat all as mapped (can't build binary)
+	writeTestFile(t, filepath.Join(dir, "workflow_verify.yaml"), `workflows:
+  - name: order flow
+    steps:
+      - command: auth login
+        name: login
+      - command: menu list
+        name: browse menu
+`)
+
+	result := checkWorkflowCompleteness(dir)
+	assert.False(t, result.Skipped)
+	assert.Equal(t, 2, result.TotalSteps)
+	// No cmd/ dir means no binary, so all steps treated as mapped
+	assert.Equal(t, 2, result.MappedSteps)
+	assert.Empty(t, result.UnmappedSteps)
+}
+
+func TestCheckWorkflowCompleteness_MissingCommand(t *testing.T) {
+	// This test verifies parsing works correctly for a manifest with steps.
+	// Without a buildable binary, the check can't actually verify commands,
+	// so we test that the YAML parsing and step counting work.
+	dir := t.TempDir()
+
+	writeTestFile(t, filepath.Join(dir, "workflow_verify.yaml"), `workflows:
+  - name: order flow
+    steps:
+      - command: cart checkout
+        name: checkout
+      - command: auth login
+        name: login
+`)
+
+	result := checkWorkflowCompleteness(dir)
+	assert.False(t, result.Skipped)
+	assert.Equal(t, 2, result.TotalSteps)
+}
+
+func TestWiringCheckIntegration(t *testing.T) {
+	dir := t.TempDir()
+
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "internal", "cli"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "internal", "client"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "internal", "store"), 0o755))
+
+	writeTestFile(t, filepath.Join(dir, "internal", "cli", "root.go"), `package cli
+type rootFlags struct{}
+func initFlags(flags *rootFlags) { _ = flags }
+`)
+	writeTestFile(t, filepath.Join(dir, "internal", "client", "client.go"), `package client
+func authHeader(token string) string {
+	return "Bearer " + token
+}
+`)
+	writeTestFile(t, filepath.Join(dir, "internal", "store", "store.go"), "package store\n")
+
+	report, err := RunDogfood(dir, "")
+	require.NoError(t, err)
+
+	// WiringCheck should be populated in the report
+	assert.True(t, report.WiringCheck.ConfigConsist.Consistent)
+	assert.True(t, report.WiringCheck.WorkflowComplete.Skipped)
+	assert.Equal(t, 0, report.WiringCheck.CommandTree.Defined)
+}
+
+func TestDeriveDogfoodVerdict_WiringChecks(t *testing.T) {
+	// Test that unregistered commands cause FAIL
+	report := &DogfoodReport{
+		PathCheck:     PathCheckResult{Tested: 10, Valid: 10, Pct: 100},
+		AuthCheck:     AuthCheckResult{Match: true},
+		DeadFlags:     DeadCodeResult{Dead: 0},
+		DeadFuncs:     DeadCodeResult{Dead: 0},
+		PipelineCheck: PipelineResult{SyncCallsDomain: true},
+		WiringCheck: WiringCheckResult{
+			CommandTree:      CommandTreeResult{Defined: 2, Registered: 1, Unregistered: []string{"bar"}},
+			ConfigConsist:    ConfigConsistResult{Consistent: true},
+			WorkflowComplete: WorkflowCompleteResult{Skipped: true},
+		},
+	}
+	assert.Equal(t, "FAIL", deriveDogfoodVerdict(report, true))
+
+	// Test that config inconsistency causes FAIL
+	report.WiringCheck.CommandTree.Unregistered = nil
+	report.WiringCheck.ConfigConsist.Consistent = false
+	report.WiringCheck.ConfigConsist.Mismatched = []string{"AccessToken", "DominosToken"}
+	assert.Equal(t, "FAIL", deriveDogfoodVerdict(report, true))
+
+	// Test that unmapped workflow steps cause WARN
+	report.WiringCheck.ConfigConsist.Consistent = true
+	report.WiringCheck.WorkflowComplete = WorkflowCompleteResult{
+		TotalSteps:    2,
+		MappedSteps:   1,
+		UnmappedSteps: []string{"cart checkout"},
+	}
+	assert.Equal(t, "WARN", deriveDogfoodVerdict(report, true))
+
+	// Test that clean wiring passes
+	report.WiringCheck.WorkflowComplete = WorkflowCompleteResult{Skipped: true}
+	assert.Equal(t, "PASS", deriveDogfoodVerdict(report, true))
+}
+
 func writeTestFile(t *testing.T, path string, content string) {
 	t.Helper()
 	require.NoError(t, os.WriteFile(path, []byte(content), 0o644))
