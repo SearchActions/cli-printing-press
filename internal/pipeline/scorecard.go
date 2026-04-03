@@ -1056,6 +1056,7 @@ func evaluateAuthProtocol(dir string, spec *openAPISpecInfo) dimensionScore {
 
 	clientContent := readFileContent(filepath.Join(dir, "internal", "client", "client.go"))
 	configContent := readFileContent(filepath.Join(dir, "internal", "config", "config.go"))
+	authContent := readFileContent(filepath.Join(dir, "internal", "cli", "auth.go"))
 	if clientContent == "" {
 		return dimensionScore{scored: true}
 	}
@@ -1070,7 +1071,7 @@ func evaluateAuthProtocol(dir string, spec *openAPISpecInfo) dimensionScore {
 		bestScore := -1
 		scoreable := false
 		for _, alternative := range requirementSet.Alternatives {
-			score, ok := scoreAuthAlternative(clientContent, configContent, spec.SecuritySchemes, alternative)
+			score, ok := scoreAuthAlternative(clientContent, configContent, authContent, spec.SecuritySchemes, alternative)
 			if !ok {
 				continue
 			}
@@ -1141,7 +1142,7 @@ func parseSecurityRequirementSet(value any) (securityRequirementSet, bool) {
 	return set, true
 }
 
-func scoreAuthAlternative(clientContent, configContent string, schemes map[string]openAPISecurityScheme, alternative []string) (int, bool) {
+func scoreAuthAlternative(clientContent, configContent, authContent string, schemes map[string]openAPISecurityScheme, alternative []string) (int, bool) {
 	if len(alternative) == 0 {
 		return 0, false
 	}
@@ -1153,7 +1154,7 @@ func scoreAuthAlternative(clientContent, configContent string, schemes map[strin
 		if !ok {
 			continue
 		}
-		score, scoreable := scoreAuthScheme(clientContent, configContent, scheme)
+		score, scoreable := scoreAuthScheme(clientContent, configContent, authContent, scheme)
 		if !scoreable {
 			continue
 		}
@@ -1166,7 +1167,7 @@ func scoreAuthAlternative(clientContent, configContent string, schemes map[strin
 	return total / scoreableSchemes, true
 }
 
-func scoreAuthScheme(clientContent, configContent string, scheme openAPISecurityScheme) (int, bool) {
+func scoreAuthScheme(clientContent, configContent, authContent string, scheme openAPISecurityScheme) (int, bool) {
 	nameLower := strings.ToLower(scheme.Key)
 	headerName := "Authorization"
 	authHeaderMatched := false
@@ -1197,6 +1198,15 @@ func scoreAuthScheme(clientContent, configContent string, scheme openAPISecurity
 		}
 	case strings.EqualFold(scheme.Type, "apikey"):
 		scoreable = true
+		// For apiKey schemes, the header value format varies (Bearer, Bot, custom).
+		// Credit authHeaderMatched if the client sets the correct header name,
+		// since that proves the auth plumbing is wired correctly regardless of format.
+		if scheme.In == "header" && headerName != "" {
+			if strings.Contains(clientContent, `Header.Set("`+headerName+`"`) ||
+				strings.Contains(clientContent, `Header.Add("`+headerName+`"`) {
+				authHeaderMatched = true
+			}
+		}
 	case strings.EqualFold(scheme.Type, "oauth2"), strings.EqualFold(scheme.Type, "openidconnect"):
 		scoreable = true
 		if strings.Contains(clientContent, `"Bearer "`) || strings.Contains(clientContent, "`Bearer `") {
@@ -1218,6 +1228,14 @@ func scoreAuthScheme(clientContent, configContent string, scheme openAPISecurity
 
 	envNeedle := sanitizeEnvName(scheme.Key)
 	if envNeedle != "" && strings.Contains(strings.ToUpper(configContent), envNeedle) {
+		envMatched = true
+	}
+	// Browser cookie auth (composed or cookie type) uses Chrome cookie extraction
+	// instead of env vars. Credit envMatched if the auth code has cookie tooling.
+	if !envMatched && (strings.Contains(authContent, "detectCookieTool") ||
+		strings.Contains(authContent, "--chrome") ||
+		strings.Contains(configContent, "chrome-composed") ||
+		strings.Contains(configContent, `"browser"`)) {
 		envMatched = true
 	}
 

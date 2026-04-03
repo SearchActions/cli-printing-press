@@ -13,6 +13,8 @@ This repo contains **the machine** (generator, templates, binary, skills) that p
 
 **When iterating on a printed CLI to discover issues**, note which problems are systemic (retro findings) vs specific. The retro → plan → implement loop exists to feed discoveries from individual CLIs back into the machine.
 
+**When adding a capability that affects scoring**, update the scorer in the same change. The goal is not to inflate scores — it's to ensure the scorer accurately reflects the capability. If you add composed cookie auth but the scorer only recognizes Bearer/Basic, it will penalize a correctly-implemented CLI. Fix the scorer to recognize the new pattern, not to give it a free pass.
+
 ## Build, Test & Lint
 
 ```bash
