@@ -52,6 +52,7 @@ func Execute() error {
 	rootCmd.AddCommand(newPublishCmd())
 	rootCmd.AddCommand(newPolishCmd())
 	rootCmd.AddCommand(newWorkflowVerifyCmd())
+	rootCmd.AddCommand(newLockCmd())
 
 	return rootCmd.Execute()
 }
