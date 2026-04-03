@@ -187,6 +187,21 @@ profile by name when the installed backend supports it.`,
 				composed = strings.ReplaceAll(composed, "{"+name+"}", cookieMap[name])
 			}
 
+			// Validate the composed auth before saving — catch stale/expired sessions
+			fmt.Fprintf(w, "Validating session...")
+			if err := validateComposedAuth(composed); err != nil {
+				loginURL := "https://" + strings.TrimPrefix(domain, ".")
+				fmt.Fprintf(w, " %s\n", red("expired"))
+				fmt.Fprintln(w, "")
+				fmt.Fprintln(w, "Found cookies but the session has expired.")
+				fmt.Fprintln(w, "Log in again at:")
+				fmt.Fprintf(w, "\n  %s\n\n", loginURL)
+				fmt.Fprintln(w, "Then run this command again:")
+				fmt.Fprintf(w, "\n  {{.Name}}-pp-cli auth login --chrome\n")
+				return authErr(fmt.Errorf("session expired for %s", domain))
+			}
+			fmt.Fprintf(w, " %s\n", green("valid"))
+
 			cfg, err := config.Load(flags.configPath)
 			if err != nil {
 				return configErr(err)
@@ -477,7 +492,17 @@ func resolveChromeProfile(w io.Writer, r io.Reader, domain, profileFlag string) 
 		fmt.Fprintf(w, "Auto-detected Chrome profile: %s (%s)\n", withCookies[0].DisplayName, withCookies[0].Dir)
 		return withCookies[0].Dir, nil
 	default:
-		// Multiple profiles have cookies — ask the user
+		// Multiple profiles have cookies.
+		// Non-interactive: pick the profile with the most cookies (already sorted).
+		// Interactive: ask the user.
+		if !isTerminal(w) {
+			// Non-interactive — auto-select the best profile (most cookies, first in sorted list)
+			selected := withCookies[0]
+			fmt.Fprintf(w, "Auto-selected Chrome profile: %s (%s, %d cookies)\n", selected.DisplayName, selected.Dir, selected.CookieCount)
+			fmt.Fprintf(w, "Use --profile to select a different profile.\n")
+			return selected.Dir, nil
+		}
+
 		fmt.Fprintf(w, "Multiple Chrome profiles have cookies for %s:\n", domain)
 		for i, p := range withCookies {
 			fmt.Fprintf(w, "  %d. %s (%s, %d cookies)\n", i+1, p.DisplayName, p.Dir, p.CookieCount)
@@ -664,6 +689,34 @@ func extractViaCookieScoop(domain, profileDir string) (string, error) {
 	return result, nil
 }
 
+{{- if eq .Auth.Type "composed"}}
+// validateComposedAuth makes a lightweight test request to verify the session is still active.
+// Uses the API base URL — any authenticated endpoint returning 401/403 indicates expiry.
+// A non-auth error (404, 500, timeout) is treated as "can't validate, assume OK" to avoid
+// blocking auth on unrelated API issues.
+func validateComposedAuth(authHeader string) error {
+	testURL := "{{.BaseURL}}"
+	req, err := http.NewRequest("HEAD", testURL, nil)
+	if err != nil {
+		return nil // can't validate, assume OK
+	}
+	req.Header.Set("{{if .Auth.Header}}{{.Auth.Header}}{{else}}Authorization{{end}}", authHeader)
+	req.Header.Set("User-Agent", "{{.Name}}-pp-cli/{{.Version}}")
+
+	client := &http.Client{Timeout: 5 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil // network error, assume OK — don't block auth on connectivity
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == 401 || resp.StatusCode == 403 {
+		return fmt.Errorf("HTTP %d", resp.StatusCode)
+	}
+	return nil
+}
+{{- end}}
+
 // --- Live browser cookie extraction (session cookies fallback) ---
 
 // extractLiveCookies reads document.cookie from a live Chrome session.
@@ -671,17 +724,17 @@ func extractViaCookieScoop(domain, profileDir string) (string, error) {
 func extractLiveCookies(domain string) (string, error) {
 	targetURL := "https://" + strings.TrimPrefix(domain, ".")
 
-	// 1. Try agent-browser --auto-connect
-	if _, err := exec.LookPath("agent-browser"); err == nil {
-		cookies, err := extractViaAgentBrowser(targetURL)
+	// 1. Try browser-use --connect (preferred — has full DOM/cookie access)
+	if _, err := exec.LookPath("browser-use"); err == nil {
+		cookies, err := extractViaBrowserUse(targetURL)
 		if err == nil && cookies != "" {
 			return cookies, nil
 		}
 	}
 
-	// 2. Try browser-use --connect
-	if _, err := exec.LookPath("browser-use"); err == nil {
-		cookies, err := extractViaBrowserUse(targetURL)
+	// 2. Try agent-browser --auto-connect (fallback — limited eval in auto-connect mode)
+	if _, err := exec.LookPath("agent-browser"); err == nil {
+		cookies, err := extractViaAgentBrowser(targetURL)
 		if err == nil && cookies != "" {
 			return cookies, nil
 		}

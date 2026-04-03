@@ -323,6 +323,18 @@ func detectCapturedAuth(capture *AuthCapture, envPrefix string) spec.AuthConfig 
 				CookieDomain: capture.BoundDomain,
 				EnvVars:      envVarsOrNil(envPrefix, "COOKIES"),
 			}
+		case "composed":
+			headerName := firstAuthHeader(capture.Headers)
+			if headerName == "" {
+				headerName = "Authorization"
+			}
+			return spec.AuthConfig{
+				Type:         "composed",
+				Header:       headerName,
+				Format:       capture.Format,
+				CookieDomain: capture.BoundDomain,
+				Cookies:      capture.Cookies,
+			}
 		}
 	case captureType == "cookie" && len(capture.Cookies) > 0:
 		return spec.AuthConfig{

@@ -52,7 +52,8 @@ type EnrichedCapture struct {
 type AuthCapture struct {
 	Headers     map[string]string `json:"headers"`
 	Cookies     []string          `json:"cookies"`
-	Type        string            `json:"type"`
+	Type        string            `json:"type"`   // bearer, api_key, cookie, composed
+	Format      string            `json:"format"` // for composed: header template with {cookieName} placeholders
 	BoundDomain string            `json:"bound_domain"`
 	ExpiresAt   string            `json:"expires_at"`
 }
