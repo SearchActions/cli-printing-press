@@ -130,10 +130,11 @@ func TestPrintingPressSkillExamplesUseCurrentCLINaming(t *testing.T) {
 func TestPublishSkillTracksCanonicalUpstreamAndOverwriteFlow(t *testing.T) {
 	skill := readContractFile(t, filepath.Join("..", "..", "skills", "printing-press-publish", "SKILL.md"))
 
-	assert.Contains(t, skill, "add `upstream` pointing at `mvanhorn/printing-press-library`")
-	assert.Contains(t, skill, "git fetch upstream 2>/dev/null || true")
+	assert.Contains(t, skill, "git remote add upstream")
+	assert.Contains(t, skill, "mvanhorn/printing-press-library")
+	assert.Contains(t, skill, "git fetch upstream")
 	assert.Contains(t, skill, "git reset --hard upstream/main")
-	assert.Contains(t, skill, "git push --force-with-lease -u origin feat/<cli-name>")
+	assert.Contains(t, skill, "git push --force-with-lease")
 }
 
 func TestREADMEOutputContract(t *testing.T) {

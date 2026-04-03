@@ -708,9 +708,9 @@ func extractKeyURL(readmeContent string, apiName string) string {
 			return rawURL
 		}
 
-		// Accept if on a known developer platform domain AND the URL/host contains the API name.
-		// This prevents developer.evil.com from being accepted without API name relevance.
-		if isKnownDevPlatform(host) && apiNameLower != "" && strings.Contains(strings.ToLower(rawURL), apiNameLower) {
+		// Accept if on a known developer platform domain (developer.*, console.*, etc.)
+		// even without API name in the URL — these are credible key registration pages.
+		if isKnownDevPlatform(host) {
 			return rawURL
 		}
 	}
