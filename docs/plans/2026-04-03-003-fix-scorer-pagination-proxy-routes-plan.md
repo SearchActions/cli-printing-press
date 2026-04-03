@@ -1,7 +1,7 @@
 ---
 title: "fix: Scorer false positives, pagination param plumbing, and catalog proxy_routes"
 type: fix
-status: active
+status: completed
 date: 2026-04-03
 origin: docs/retros/2026-04-03-postman-explore-run2-retro.md
 ---
