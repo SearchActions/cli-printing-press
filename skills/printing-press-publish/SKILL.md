@@ -176,50 +176,113 @@ The publish skill manages its own clone of the library repo at `$PUBLISH_REPO_DI
 
 If `$PUBLISH_REPO_DIR` does not exist:
 
-1. Detect push access:
+1. **Detect push access:**
    ```bash
-   gh api repos/mvanhorn/printing-press-library --jq '.permissions.push'
+   GH_USER=$(gh api user --jq '.login')
+   HAS_PUSH=$(gh api repos/mvanhorn/printing-press-library --jq '.permissions.push' 2>/dev/null || echo "false")
    ```
 
-2. Detect git protocol:
+2. **Detect git protocol:**
    ```bash
-   ssh -T git@github.com 2>&1 | grep -q "successfully authenticated"
+   USE_SSH=false
+   if ssh -T git@github.com 2>&1 | grep -q "successfully authenticated"; then
+     USE_SSH=true
+   fi
    ```
-   If SSH works, use SSH URLs. Otherwise use HTTPS.
 
-3. Clone based on access:
-   - **Push access:** Clone directly
-   - **No push access:** Fork first with `gh repo fork mvanhorn/printing-press-library --clone=false`, then clone the fork and add `upstream` pointing at `mvanhorn/printing-press-library`
+3. **Clone based on access:**
 
-4. Cache the config:
+   **Push access** (`HAS_PUSH` is `true`):
+   ```bash
+   # Clone directly — origin IS the upstream
+   if [ "$USE_SSH" = "true" ]; then
+     REPO_URL="git@github.com:mvanhorn/printing-press-library.git"
+   else
+     REPO_URL="https://github.com/mvanhorn/printing-press-library.git"
+   fi
+   git clone --depth 50 "$REPO_URL" "$PUBLISH_REPO_DIR"
+   ```
+
+   **No push access** (`HAS_PUSH` is `false`):
+   ```bash
+   # Fork first — fail explicitly if forking is blocked
+   if ! gh repo fork mvanhorn/printing-press-library --clone=false 2>&1; then
+     echo "ERROR: Could not fork mvanhorn/printing-press-library."
+     echo "The repo may restrict forking, or you may already have a fork with a different name."
+     echo "Fork manually at https://github.com/mvanhorn/printing-press-library/fork"
+     exit 1
+   fi
+   FORK="$GH_USER/printing-press-library"
+
+   # Build URLs based on protocol preference
+   if [ "$USE_SSH" = "true" ]; then
+     FORK_URL="git@github.com:$FORK.git"
+     UPSTREAM_URL="git@github.com:mvanhorn/printing-press-library.git"
+   else
+     FORK_URL="https://github.com/$FORK.git"
+     UPSTREAM_URL="https://github.com/mvanhorn/printing-press-library.git"
+   fi
+
+   git clone --depth 50 "$FORK_URL" "$PUBLISH_REPO_DIR"
+   cd "$PUBLISH_REPO_DIR"
+   git remote add upstream "$UPSTREAM_URL"
+   git fetch upstream
+   ```
+
+4. **Cache the config:**
    ```json
    {
      "repo_url": "https://github.com/mvanhorn/printing-press-library",
-     "access": "push",
-     "protocol": "ssh",
+     "access": "push or fork",
+     "gh_user": "<gh username>",
+     "protocol": "ssh or https",
      "clone_path": "~/printing-press/.publish-repo",
      "module_path_base": "github.com/mvanhorn/printing-press-library/library"
    }
    ```
-   Write to `$PUBLISH_CONFIG`.
+   Write to `$PUBLISH_CONFIG`. The `access` field determines the flow for all subsequent steps. The `gh_user` field is used for cross-repo PR heads. The `module_path_base` always references the upstream repo (PRs land there).
 
 ### Subsequent publishes
 
-Read `$PUBLISH_CONFIG`, then freshen. Use `git reset --hard` instead of `git pull` because this is a managed clone, not a user working tree — it should always match the canonical upstream exactly:
+Read `$PUBLISH_CONFIG`, then re-check access in case it changed (user was granted push access, or access was revoked):
 
 ```bash
-cd "$PUBLISH_REPO_DIR"
-git fetch origin
-git fetch upstream 2>/dev/null || true
-git checkout main
-if git rev-parse --verify upstream/main >/dev/null 2>&1; then
-  git reset --hard upstream/main
-else
-  git reset --hard origin/main
+CURRENT_ACCESS=$(gh api repos/mvanhorn/printing-press-library --jq '.permissions.push' 2>/dev/null || echo "false")
+CACHED_ACCESS=$(jq -r .access "$PUBLISH_CONFIG")
+
+if [ "$CURRENT_ACCESS" = "true" ] && [ "$CACHED_ACCESS" = "fork" ]; then
+  echo "Access upgraded to push. Reconfiguring clone..."
+  rm -rf "$PUBLISH_REPO_DIR"
+  # Re-run first-time setup with push access
+fi
+if [ "$CURRENT_ACCESS" = "false" ] && [ "$CACHED_ACCESS" = "push" ]; then
+  echo "Push access revoked. Reconfiguring clone with fork..."
+  rm -rf "$PUBLISH_REPO_DIR"
+  # Re-run first-time setup with fork access
 fi
 ```
 
-Also verify the clone is healthy:
+If the clone was removed due to an access change, re-run first-time setup above. Otherwise, freshen the clone to match the canonical upstream:
+
+```bash
+cd "$PUBLISH_REPO_DIR"
+
+if [ "$(jq -r .access $PUBLISH_CONFIG)" = "push" ]; then
+  # Push access: origin IS the upstream
+  git fetch origin
+  git checkout main
+  git reset --hard origin/main
+else
+  # Fork: origin is the fork, upstream is canonical
+  git fetch upstream
+  git checkout main
+  git reset --hard upstream/main
+  # Also sync origin (fork) so git push works cleanly
+  git push origin main --force-with-lease 2>/dev/null || true
+fi
+```
+
+Verify the clone is healthy:
 
 ```bash
 git rev-parse --is-inside-work-tree
@@ -271,8 +334,19 @@ Parse the JSON result. Note the `staged_dir`, `module_path`, `manuscripts_includ
 
 Before creating a branch, check whether you have an open PR for this CLI. The `--author @me` filter ensures we only match PRs owned by the current user — if someone else published the same CLI name, we won't stomp their PR.
 
+For fork-based PRs, the head includes the username prefix:
+
 ```bash
-gh pr list --repo mvanhorn/printing-press-library --head "feat/<cli-name>" --state open --author @me --json number,title,url
+ACCESS=$(jq -r .access "$PUBLISH_CONFIG")
+GH_USER=$(jq -r .gh_user "$PUBLISH_CONFIG")
+
+if [ "$ACCESS" = "fork" ]; then
+  HEAD_REF="$GH_USER:feat/<cli-name>"
+else
+  HEAD_REF="feat/<cli-name>"
+fi
+
+gh pr list --repo mvanhorn/printing-press-library --head "$HEAD_REF" --state open --author @me --json number,title,url
 ```
 
 Parse the result:
@@ -300,18 +374,34 @@ git checkout -B feat/<cli-name>
 
 **If `EXISTING_PR_NUMBER` is empty** (no open PR):
 
-Check for an existing branch:
+Check for stale branches and competing PRs:
 
 ```bash
-git branch --list "feat/<cli-name>"
-git ls-remote --heads origin "feat/<cli-name>"
+# Check local and remote branches
+LOCAL_BRANCH=$(git branch --list "feat/<cli-name>" | head -1)
+REMOTE_BRANCH=$(git ls-remote --heads origin "feat/<cli-name>" 2>/dev/null | head -1)
+
+# If a remote branch exists, check who owns it
+if [ -n "$REMOTE_BRANCH" ]; then
+  # Check for ANY open PR on this branch (not just ours)
+  OTHER_PR=$(gh pr list --repo mvanhorn/printing-press-library --head "feat/<cli-name>" --state open --json number,author --jq '.[0]' 2>/dev/null)
+fi
 ```
 
-If a branch exists (from a previously closed or merged PR), ask via AskUserQuestion:
-- "Overwrite existing branch"
+**If another user's open PR exists on this branch** (`OTHER_PR` is non-empty and author is not `@me`):
+> "Someone else has an open PR for `<cli-name>` (PR #N by @author). Creating a timestamped branch to avoid conflicts."
+
+Auto-create a timestamped branch: `feat/<cli-name>-YYYYMMDD`. Do NOT offer to overwrite — that would stomp their work.
+
+**If the branch exists but no competing PR** (stale branch from a previously closed/merged PR):
+
+Ask via AskUserQuestion:
+> "Found a stale branch `feat/<cli-name>` (likely from a previous publish). Overwrite it?"
+
+- "Overwrite existing branch" — reuse the branch name
 - "Create timestamped variant (feat/<cli-name>-YYYYMMDD)"
 
-Create the branch:
+**If no branch exists:** Create normally.
 
 ```bash
 # New branch:
@@ -352,6 +442,8 @@ git add library/ registry.json
 git commit -m "feat(<api-name>): add <cli-name>"
 ```
 
+Push to origin (which is the fork for non-push users, or the upstream for push users):
+
 **If updating an existing PR** (`EXISTING_PR_NUMBER` is set):
 
 ```bash
@@ -371,6 +463,12 @@ git push -u origin feat/<cli-name>
 ```
 
 ### Create or update PR
+
+Read `access` and `gh_user` from `$PUBLISH_CONFIG`. These determine how `gh pr create` is called.
+
+**For fork-based PRs** (`access` is `fork`): use `--head <gh_user>:feat/<cli-name>` so GitHub creates a cross-repo PR from the fork to the upstream. Without `--head`, `gh pr create` would try to find the branch on the upstream repo (where the user can't push) and fail.
+
+**For push-access PRs** (`access` is `push`): no `--head` needed — the branch is on the same repo.
 
 Build the PR description from:
 - The manifest (`description`, `api_name`, `category`, `printing_press_version`, `spec_url`)
@@ -438,10 +536,25 @@ Display: "Updated PR #N: <EXISTING_PR_URL>"
 
 ```bash
 cd "$PUBLISH_REPO_DIR"
-gh pr create \
-  --repo mvanhorn/printing-press-library \
-  --title "feat(<api-name>): add <cli-name>" \
-  --body "<constructed PR body>"
+
+# Read access mode from config
+ACCESS=$(jq -r .access "$PUBLISH_CONFIG")
+GH_USER=$(jq -r .gh_user "$PUBLISH_CONFIG")
+
+if [ "$ACCESS" = "fork" ]; then
+  gh pr create \
+    --repo mvanhorn/printing-press-library \
+    --head "$GH_USER:feat/<cli-name>" \
+    --base main \
+    --title "feat(<api-name>): add <cli-name>" \
+    --body "<constructed PR body>"
+else
+  gh pr create \
+    --repo mvanhorn/printing-press-library \
+    --base main \
+    --title "feat(<api-name>): add <cli-name>" \
+    --body "<constructed PR body>"
+fi
 ```
 
 Display the PR URL prominently.
@@ -496,6 +609,8 @@ flagged (e.g., a test fixture with a fake key). Don't block silently.
 - **CLI not found:** Show available CLIs in Step 2, let user pick
 - **Validation fails:** Show per-check results in Step 4, stop
 - **Repo unreachable:** Report clearly in Step 5
+- **Fork creation fails:** `gh repo fork` may fail if the user already has a fork with a different name, or if the org restricts forking. Report the error and suggest the user fork manually via the GitHub web UI.
 - **Existing PR check fails:** Fall back to standard branch-conflict flow (treat as no existing PR)
 - **Branch conflict (no existing PR):** Ask user in Step 8 (overwrite or timestamp)
-- **Push fails:** Report the error, suggest checking `gh auth status`
+- **Push fails:** For fork users, ensure they're pushing to their fork (origin), not upstream. Report the error, suggest checking `gh auth status` and `git remote -v`
+- **Cross-repo PR creation fails:** If `gh pr create --head user:branch` fails with "head not found", the branch wasn't pushed to the fork. Verify with `git ls-remote origin feat/<cli-name>`
