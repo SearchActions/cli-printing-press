@@ -194,7 +194,18 @@ Before doing anything else:
 <!-- PRESS_SETUP_CONTRACT_START -->
 ```bash
 # min-binary-version: 0.3.0
-if ! command -v printing-press >/dev/null 2>&1; then
+
+# Derive scope first — needed for local build detection
+_scope_dir="$(git rev-parse --show-toplevel 2>/dev/null || echo "$PWD")"
+_scope_dir="$(cd "$_scope_dir" && pwd -P)"
+
+# Prefer local build when running from inside the printing-press repo.
+# The lefthook build hook keeps ./printing-press current after every commit/pull,
+# so it's always newer than the go-install version.
+if [ -x "$_scope_dir/printing-press" ] && [ -d "$_scope_dir/cmd/printing-press" ]; then
+  export PATH="$_scope_dir:$PATH"
+  echo "Using local build: $_scope_dir/printing-press"
+elif ! command -v printing-press >/dev/null 2>&1; then
   if [ -x "$HOME/go/bin/printing-press" ]; then
     export PATH="$HOME/go/bin:$PATH"
     echo "Added ~/go/bin to PATH"
@@ -208,10 +219,6 @@ if ! command -v printing-press >/dev/null 2>&1; then
     return 1 2>/dev/null || exit 1
   fi
 fi
-
-# Derive scope: prefer git repo root, fall back to CWD
-_scope_dir="$(git rev-parse --show-toplevel 2>/dev/null || echo "$PWD")"
-_scope_dir="$(cd "$_scope_dir" && pwd -P)"
 
 PRESS_BASE="$(basename "$_scope_dir" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9_-]/-/g; s/^-+//; s/-+$//')"
 if [ -z "$PRESS_BASE" ]; then
@@ -575,13 +582,13 @@ After Phase 1 research completes, analyze findings to proactively assess what au
 If the user provides a key, set it in `AUTH_CONTEXT` so the API Key Gate (Phase 0.5) does not re-ask.
 
 **For browser session auth:** Present via `AskUserQuestion`:
-> "`<API>` has authenticated endpoints ([list features]). Are you logged in to `<site>` in your browser? The sniff will discover more endpoints if you are."
+> "`<API>` has authenticated endpoints ([list features]). Are you logged in to `<site>` in your browser? If so, the generated CLI will support `auth login --chrome` — you'll be able to authenticate just by being logged into the site in Chrome. No API key needed."
 >
-> 1. **Yes, I'm logged in** — I'll use your session during sniff
+> 1. **Yes, I'm logged in** — I'll use your session during sniff and enable browser auth in the CLI
 > 2. **No, but I can log in** — I'll help you log in before sniffing
 > 3. **No, skip authenticated endpoints** — sniff only public endpoints
 
-Set `AUTH_SESSION_AVAILABLE=true` if the user selects option 1 or 2. The Sniff Gate (Phase 1.7) will use this flag.
+Set `AUTH_SESSION_AVAILABLE=true` if the user selects option 1 or 2. The Sniff Gate (Phase 1.7) will use this flag. After traffic capture, Step 2d in [references/sniff-capture.md](references/sniff-capture.md) validates that cookie replay works before enabling browser auth in the generated CLI.
 
 **For dual auth:** Ask about both in sequence — API key first (simple env var check), then browser session.
 

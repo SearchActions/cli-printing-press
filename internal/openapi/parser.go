@@ -264,6 +264,32 @@ func mapAuth(doc *openapi3.T, name string) spec.AuthConfig {
 			auth.Header = "Authorization"
 		}
 		auth.In = strings.TrimSpace(scheme.In)
+		// Detect composed cookie auth via x-auth-type extension
+		if xType, ok := scheme.Extensions["x-auth-type"]; ok {
+			if typeStr, ok := xType.(string); ok && typeStr == "composed" {
+				auth.Type = "composed"
+				if xFmt, ok := scheme.Extensions["x-auth-format"]; ok {
+					if fmtStr, ok := xFmt.(string); ok {
+						auth.Format = fmtStr
+					}
+				}
+				if xDomain, ok := scheme.Extensions["x-auth-cookie-domain"]; ok {
+					if domainStr, ok := xDomain.(string); ok {
+						auth.CookieDomain = domainStr
+					}
+				}
+				if xCookies, ok := scheme.Extensions["x-auth-cookies"]; ok {
+					if cookieList, ok := xCookies.([]interface{}); ok {
+						for _, c := range cookieList {
+							if s, ok := c.(string); ok {
+								auth.Cookies = append(auth.Cookies, s)
+							}
+						}
+					}
+				}
+				break
+			}
+		}
 		// Detect bot token pattern from scheme name (e.g. "BotToken")
 		if strings.Contains(strings.ToLower(schemeName), "bot") && strings.EqualFold(auth.Header, "Authorization") {
 			auth.Format = "Bot {bot_token}"
@@ -949,7 +975,84 @@ func mapParameters(pathItem *openapi3.PathItem, op *openapi3.Operation) []spec.P
 		}
 		params = append(params, param)
 	}
+
+	// Reclassify path params that are modifiers (not entity identifiers) as flags.
+	// This improves CLI UX: pagination/filter/date params become --flags with defaults
+	// instead of required positional args.
+	reclassifyPathParamModifiers(params)
+
 	return params
+}
+
+// reclassifyPathParamModifiers converts path params that are modifiers (pagination,
+// filters, dates) from positional args to flags with sensible defaults. This improves
+// CLI UX — users type `order-list --page 2` instead of `order-list 2 10`.
+//
+// Classification priority (first match wins):
+//  1. Has an enum → flag (user picks from a set)
+//  2. Has a spec-declared default → flag with that default
+//  3. Known pagination name → flag with sensible default
+//  4. Date/time format → flag (defaults to empty, meaning "latest" or "today")
+//  5. Anything left → stays positional (likely an entity identifier)
+func reclassifyPathParamModifiers(params []spec.Param) {
+	paginationDefaults := map[string]int{
+		"page": 1, "pagenumber": 1, "page_number": 1,
+		"pagesize": 10, "page_size": 10, "per_page": 10,
+		"perpage": 10, "limit": 10, "count": 10,
+		"maxresults": 10, "max_results": 10,
+		"offset": 0, "skip": 0,
+	}
+
+	for i := range params {
+		p := &params[i]
+		if !p.Positional {
+			continue // only reclassify path params
+		}
+		lowerName := strings.ToLower(p.Name)
+
+		// Decide whether this path param should be a flag instead of positional.
+		// Classification priority (first match wins):
+		reclassify := false
+
+		// 1. Has an enum → flag (user picks from a set)
+		if len(p.Enum) > 0 {
+			reclassify = true
+			if p.Default == nil {
+				p.Default = p.Enum[0]
+			}
+		}
+
+		// 2. Has a spec-declared default → flag
+		if !reclassify && p.Default != nil {
+			reclassify = true
+		}
+
+		// 3. Known pagination name → flag with default
+		if !reclassify {
+			if def, ok := paginationDefaults[lowerName]; ok {
+				reclassify = true
+				p.Default = def
+			}
+		}
+
+		// 4. Date/time format or name → flag
+		if !reclassify {
+			if p.Format == "date" || p.Format == "date-time" ||
+				strings.Contains(lowerName, "date") ||
+				strings.Contains(lowerName, "year") ||
+				strings.Contains(lowerName, "month") {
+				reclassify = true
+			}
+		}
+
+		if reclassify {
+			p.Positional = false
+			p.PathParam = true
+			// A path param is a URL segment — it can only be optional if a default
+			// value can fill its slot. No default → the user must provide a value.
+			p.Required = p.Default == nil
+		}
+	}
 }
 
 func mergeParameters(pathItem *openapi3.PathItem, op *openapi3.Operation) []*openapi3.Parameter {
@@ -1902,6 +2005,10 @@ func cleanSpecName(title string) string {
 	}
 
 	title = strings.ReplaceAll(title, "open api", " ")
+
+	// Strip apostrophes so brand names like "Domino's" become "dominos" not "domino-s"
+	title = strings.ReplaceAll(title, "'", "")
+	title = strings.ReplaceAll(title, "\u2019", "") // Unicode right single quotation mark
 
 	var normalized strings.Builder
 	lastSpace := true

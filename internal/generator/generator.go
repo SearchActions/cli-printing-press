@@ -339,11 +339,13 @@ func (g *Generator) Generate() error {
 	}
 
 	// Always render auth command - use full OAuth2 template when authorization URL is present,
-	// otherwise use simple token-management template
+	// browser cookie template for cookie-auth APIs, otherwise simple token-management template
 	authPath := filepath.Join("internal", "cli", "auth.go")
 	authTmpl := "auth_simple.go.tmpl"
 	if g.Spec.Auth.AuthorizationURL != "" {
 		authTmpl = "auth.go.tmpl"
+	} else if g.Spec.Auth.Type == "cookie" || g.Spec.Auth.Type == "composed" {
+		authTmpl = "auth_browser.go.tmpl"
 	}
 	if err := g.renderTemplate(authTmpl, authPath, g.Spec); err != nil {
 		return fmt.Errorf("rendering auth: %w", err)
@@ -969,19 +971,36 @@ func (g *Generator) exampleLine(commandPath, endpointName string, endpoint spec.
 
 func flagName(name string) string {
 	name = strings.TrimLeft(name, "$")
-	// Replace common separators with hyphens, strip anything not alphanumeric or hyphen
+	// Convert camelCase/PascalCase and separators to kebab-case.
+	// "pageSize" → "page-size", "storeID" → "store-id", "per_page" → "per-page"
 	var b strings.Builder
-	lastHyphen := true
-	for _, r := range name {
-		if unicode.IsLetter(r) || unicode.IsDigit(r) {
-			b.WriteRune(unicode.ToLower(r))
-			lastHyphen = false
-		} else if !lastHyphen && b.Len() > 0 {
-			b.WriteByte('-')
-			lastHyphen = true
+	runes := []rune(name)
+	for i, r := range runes {
+		if !unicode.IsLetter(r) && !unicode.IsDigit(r) {
+			// Non-alphanumeric → hyphen (dedup'd below)
+			if b.Len() > 0 {
+				b.WriteByte('-')
+			}
+			continue
 		}
+		// Insert hyphen at camelCase boundaries: lowercase→uppercase
+		if i > 0 && unicode.IsUpper(r) {
+			prev := runes[i-1]
+			if unicode.IsLower(prev) || unicode.IsDigit(prev) {
+				b.WriteByte('-')
+			} else if unicode.IsUpper(prev) && i+1 < len(runes) && unicode.IsLower(runes[i+1]) {
+				// Handle acronyms: "storeID" → "store-id" (not "store-i-d")
+				b.WriteByte('-')
+			}
+		}
+		b.WriteRune(unicode.ToLower(r))
 	}
-	return strings.Trim(b.String(), "-")
+	// Collapse multiple hyphens and trim
+	result := b.String()
+	for strings.Contains(result, "--") {
+		result = strings.ReplaceAll(result, "--", "-")
+	}
+	return strings.Trim(result, "-")
 }
 
 func safeTypeName(name string) string {
