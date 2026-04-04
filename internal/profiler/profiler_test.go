@@ -46,6 +46,96 @@ func TestProfileMinimal(t *testing.T) {
 	assert.Equal(t, []string{"export", "import"}, profile.RecommendedFeatures())
 }
 
+func TestProfileEnumExpansion(t *testing.T) {
+	// Simulates the postman-explore pattern: one list endpoint serves multiple
+	// entity types via an enum query param (entityType=collection|workspace|api|flow).
+	// The profiler should expand this into separate sync resources.
+	// Uses distinct resource names to test enum expansion independently of naming.
+	s := &spec.APISpec{
+		Name: "postman-explore",
+		Resources: map[string]spec.Resource{
+			"networkentity": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method: "GET",
+						Path:   "/v1/api/networkentity",
+						Params: []spec.Param{
+							{
+								Name:     "entityType",
+								Type:     "string",
+								Required: true,
+								Enum:     []string{"collection", "workspace", "api", "flow"},
+							},
+							{Name: "limit", Type: "integer"},
+							{Name: "offset", Type: "integer"},
+						},
+						Pagination: &spec.Pagination{
+							CursorParam: "offset",
+							LimitParam:  "limit",
+						},
+						Response: spec.ResponseDef{Type: "array"},
+					},
+				},
+			},
+			"team": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method: "GET",
+						Path:   "/v1/api/team",
+						Params: []spec.Param{
+							{Name: "limit", Type: "integer"},
+						},
+						Pagination: &spec.Pagination{
+							CursorParam: "offset",
+							LimitParam:  "limit",
+						},
+						Response: spec.ResponseDef{Type: "array"},
+					},
+				},
+			},
+		},
+	}
+
+	profile := Profile(s)
+
+	syncNames := make([]string, len(profile.SyncableResources))
+	syncPaths := make(map[string]string)
+	for i, sr := range profile.SyncableResources {
+		syncNames[i] = sr.Name
+		syncPaths[sr.Name] = sr.Path
+	}
+
+	// 5 resources: 4 from enum expansion + 1 from teams
+	assert.Len(t, profile.SyncableResources, 5)
+	assert.Contains(t, syncNames, "collection")
+	assert.Contains(t, syncNames, "workspace")
+	assert.Contains(t, syncNames, "api")
+	assert.Contains(t, syncNames, "flow")
+	assert.Contains(t, syncNames, "team")
+
+	// Expanded paths include the enum value as a query param
+	assert.Equal(t, "/v1/api/networkentity?entityType=collection", syncPaths["collection"])
+	assert.Equal(t, "/v1/api/networkentity?entityType=workspace", syncPaths["workspace"])
+	assert.Equal(t, "/v1/api/networkentity?entityType=api", syncPaths["api"])
+	// Teams endpoint keeps its own resource
+	assert.Equal(t, "/v1/api/team", syncPaths["team"])
+}
+
+func TestProfileEnumExpansion_NoExpansionForNonEnum(t *testing.T) {
+	// Standard API without enum params should not be affected
+	profile := Profile(petstoreSpec())
+
+	syncNames := make([]string, len(profile.SyncableResources))
+	for i, sr := range profile.SyncableResources {
+		syncNames[i] = sr.Name
+	}
+
+	// Petstore has no enum query params — should NOT expand
+	assert.NotContains(t, syncNames, "available")
+	assert.NotContains(t, syncNames, "pending")
+	assert.NotContains(t, syncNames, "sold")
+}
+
 func TestToVisionaryPlan(t *testing.T) {
 	profile := Profile(discordSpec())
 	plan := profile.ToVisionaryPlan("discord")

@@ -144,11 +144,27 @@ func Profile(s *spec.APISpec) *APIProfile {
 				listResources[resourceName] = struct{}{}
 				if endpoint.Pagination != nil {
 					p.ListEndpoints++
-					// Pick the shortest path for determinism when multiple
-					// paginated list endpoints exist for the same resource.
-					// Shorter paths are typically the primary list endpoint.
-					if existing, ok := syncable[resourceName]; !ok || len(endpoint.Path) < len(existing) {
-						syncable[resourceName] = endpoint.Path
+
+					// Check for enum-parameterized list endpoints: when a required
+					// query param has enum values, each value represents a distinct
+					// entity type that should sync independently. Example:
+					// GET /v1/api/networkentity?entityType=collection|workspace|api|flow
+					// → sync resources: collection, workspace, api, flow
+					if enumParam := findEntityTypeEnum(endpoint); enumParam != nil && len(enumParam.Enum) >= 2 {
+						for _, val := range enumParam.Enum {
+							expandedName := strings.ToLower(val)
+							expandedPath := endpoint.Path + "?" + enumParam.Name + "=" + val
+							// Enum-expanded paths are more specific than generic resource
+							// paths, so they always win on name collision. This ensures
+							// deterministic output regardless of Go map iteration order.
+							syncable[expandedName] = expandedPath
+						}
+					} else {
+						// Standard: pick the shortest path for determinism when
+						// multiple paginated list endpoints exist for the same resource.
+						if existing, ok := syncable[resourceName]; !ok || len(endpoint.Path) < len(existing) {
+							syncable[resourceName] = endpoint.Path
+						}
 					}
 				}
 			}
@@ -439,6 +455,26 @@ func isListEndpoint(name string, endpoint spec.Endpoint) bool {
 
 	name = strings.ToLower(name)
 	return containsAny(name, []string{"list", "all"})
+}
+
+// findEntityTypeEnum returns the first required enum query param on a list endpoint
+// that looks like an entity type selector. Heuristics:
+// 1. Param is required with 2+ enum values
+// 2. Param name contains "type", "kind", "entity", "resource", or "category"
+// Returns nil if no qualifying param is found. Does NOT fall back to arbitrary
+// enum params — filters like status=open|closed should not trigger expansion.
+func findEntityTypeEnum(endpoint spec.Endpoint) *spec.Param {
+	for i := range endpoint.Params {
+		p := &endpoint.Params[i]
+		if len(p.Enum) < 2 || p.PathParam || !p.Required {
+			continue
+		}
+		nameLower := strings.ToLower(p.Name)
+		if containsAny(nameLower, []string{"type", "kind", "entity", "resource", "category"}) {
+			return p
+		}
+	}
+	return nil
 }
 
 func hasLifecycleField(params []spec.Param) bool {
