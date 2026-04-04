@@ -685,4 +685,7 @@ func enrichSpecFromCatalog(apiSpec *spec.APISpec) {
 	if len(entry.ProxyRoutes) > 0 && len(apiSpec.ProxyRoutes) == 0 {
 		apiSpec.ProxyRoutes = entry.ProxyRoutes
 	}
+	if entry.Homepage != "" && apiSpec.WebsiteURL == "" {
+		apiSpec.WebsiteURL = entry.Homepage
+	}
 }
