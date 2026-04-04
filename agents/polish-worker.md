@@ -111,7 +111,12 @@ If README uses template placeholders or generic examples, rewrite with:
 - Title matching CLI name
 - One-line description matching root Short
 - Install section
-- Quick start with 3-5 real usage examples
+- Quick Start with the commands someone will actually use first. Pick
+  commands that are both **most useful** (what you'd run daily) and
+  **show the CLI's value** (why install this over curl). Usually:
+  `doctor` → `sync` → a transcendence command like `today` or `health`
+  → `search`. Avoid raw list commands as the first example — they dump
+  data without demonstrating why the CLI exists.
 - Command list by category
 - Output format section
 
