@@ -330,12 +330,12 @@ func TestCheckCommandTree(t *testing.T) {
 	cliDir := filepath.Join(dir, "internal", "cli")
 	require.NoError(t, os.MkdirAll(cliDir, 0o755))
 
-	// Define two commands via newXxxCmd() functions
+	// Define commands with cobra Use: fields (what users see in --help)
 	writeTestFile(t, filepath.Join(cliDir, "foo.go"), `package cli
-func newFooCmd() {}
+func newFooCmd() { cmd := &cobra.Command{Use: "foo"} }
 `)
 	writeTestFile(t, filepath.Join(cliDir, "bar.go"), `package cli
-func newBarCmd() {}
+func newBarCmd() { cmd := &cobra.Command{Use: "bar"} }
 `)
 
 	// Without a buildable binary, checkCommandTree can't verify registration,
@@ -347,25 +347,25 @@ func newBarCmd() {}
 	assert.Empty(t, result.Unregistered)
 }
 
-func TestCheckCommandTree_KebabConversion(t *testing.T) {
+func TestCheckCommandTree_UseFieldExtraction(t *testing.T) {
 	dir := t.TempDir()
 	cliDir := filepath.Join(dir, "internal", "cli")
 	require.NoError(t, os.MkdirAll(cliDir, 0o755))
 
-	// Define subcommands with CamelCase function names
+	// Use: fields may include positional args — we extract just the command name
 	writeTestFile(t, filepath.Join(cliDir, "api.go"), `package cli
-func newApiGetCategoryCmd() {}
-func newApiListTeamsCmd() {}
+cmd := &cobra.Command{Use: "get-category <id>"}
+cmd2 := &cobra.Command{Use: "list-teams"}
 `)
 	writeTestFile(t, filepath.Join(cliDir, "auth.go"), `package cli
-func newAuthLoginCmd() {}
+cmd := &cobra.Command{Use: "login"}
 `)
 	writeTestFile(t, filepath.Join(cliDir, "sync.go"), `package cli
-func newSyncCmd() {}
+cmd := &cobra.Command{Use: "sync"}
 `)
 
 	result := checkCommandTree(dir)
-	// Should find 4 defined commands
+	// Should find 4 defined commands: get-category, list-teams, login, sync
 	assert.Equal(t, 4, result.Defined)
 	// Without a buildable binary, all treated as registered
 	assert.Equal(t, 4, result.Registered)

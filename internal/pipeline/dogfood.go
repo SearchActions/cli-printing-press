@@ -963,21 +963,24 @@ func checkCommandTree(dir string) CommandTreeResult {
 	cliDir := filepath.Join(dir, "internal", "cli")
 	files := listGoFiles(cliDir)
 
-	// Scan for func new*Cmd() patterns
-	cmdFuncRe := regexp.MustCompile(`(?m)^func\s+new(\w+)Cmd\s*\(`)
+	// Scan for cobra Use: fields to get the actual command names users see.
+	// Previous approach derived names from Go function names (newXxxCmd → xxx),
+	// but function names encode file hierarchy (e.g., newBookingsPromotedCmd)
+	// while Use: fields are the actual cobra names (e.g., "bookings").
+	useFieldRe := regexp.MustCompile(`(?m)Use:\s*"([^"\s]+)`)
 	definedCmds := make(map[string]struct{})
 	for _, file := range files {
 		data, err := os.ReadFile(file)
 		if err != nil {
 			continue
 		}
-		matches := cmdFuncRe.FindAllStringSubmatch(string(data), -1)
+		matches := useFieldRe.FindAllStringSubmatch(string(data), -1)
 		for _, match := range matches {
-			// Convert CamelCase function name to kebab-case command name.
-			// e.g., newApiGetCategoryCmd -> "api-get-category"
-			// This matches cobra's command naming convention in help output.
-			cmdName := camelToKebab(match[1])
-			definedCmds[cmdName] = struct{}{}
+			// Extract just the command name (before any positional args)
+			cmdName := strings.Fields(match[1])[0]
+			if cmdName != "" {
+				definedCmds[cmdName] = struct{}{}
+			}
 		}
 	}
 
@@ -1007,14 +1010,27 @@ func checkCommandTree(dir string) CommandTreeResult {
 		return result
 	}
 
-	// Also gather subcommand help by extracting top-level commands
+	// Recursively gather help output from all command levels.
+	// Many CLIs have 3+ levels (e.g., bookings → attendees → add).
+	// Only checking two levels misses nested subcommands.
 	helpLower := strings.ToLower(helpOut)
-	topCmds := extractCommandNames(helpOut)
-	for _, topCmd := range topCmds {
-		subOut, err := runDogfoodCmd(binaryPath, 15*time.Second, topCmd, "--help")
-		if err == nil {
-			helpLower += "\n" + strings.ToLower(subOut)
+	var walkHelp func(parentArgs []string, depth int)
+	walkHelp = func(parentArgs []string, depth int) {
+		if depth > 4 {
+			return // safety cap
 		}
+		args := append(parentArgs, "--help")
+		out, err := runDogfoodCmd(binaryPath, 15*time.Second, args...)
+		if err != nil {
+			return
+		}
+		helpLower += "\n" + strings.ToLower(out)
+		for _, sub := range extractCommandNames(out) {
+			walkHelp(append(parentArgs, sub), depth+1)
+		}
+	}
+	for _, topCmd := range extractCommandNames(helpOut) {
+		walkHelp([]string{topCmd}, 1)
 	}
 
 	for cmdName := range definedCmds {
