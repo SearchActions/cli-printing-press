@@ -1269,8 +1269,12 @@ test plan execution, inline fix workflow, and reporting.
 - Fix issues as you find them, not at the end. The value is discovering bugs in
   context.
 - Note whether each fix is CLI-specific or a machine issue (feeds the retro).
-- If a fix changes the sync, data layer, or output pipeline, re-run the relevant
-  shipcheck tool (`verify` or `scorecard`) once after all dogfood fixes.
+
+**After dogfood completes:** If any fixes were applied during testing, automatically
+run one polish pass (re-run `verify`, `scorecard`, fix regressions) before promoting.
+The dogfood fixes may have introduced dead code, broken a verify check, or shifted
+the scorecard. Don't ask — just run it. The user opted into quality by choosing to
+test. Report the before/after delta inline.
 
 Write:
 

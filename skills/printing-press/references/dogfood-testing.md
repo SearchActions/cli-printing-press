@@ -139,6 +139,36 @@ Dogfood Results: <cli-name>
     - [list issues for the retro]
 ```
 
+### Step 5: Auto-polish (if fixes were applied)
+
+If any fixes were applied during dogfood (M > 0), automatically run one
+verification pass. Do not ask the user — they opted into quality by choosing
+to test. Dogfood fixes can introduce dead code, break verify checks, or shift
+the scorecard.
+
+```bash
+# Rebuild after dogfood fixes
+go build -o "$CLI_NAME" ./cmd/"$CLI_NAME"
+gofmt -w .
+
+# Re-run verification tools
+printing-press verify --dir "$CLI_DIR" $SPEC_FLAG --fix
+printing-press scorecard --dir "$CLI_DIR" $SPEC_FLAG
+```
+
+Fix any regressions introduced by dogfood fixes (typically: unused imports
+after removing code, dead functions from refactoring). Report the delta:
+
+```
+Post-dogfood polish:
+  Verify:    86% → 93% (+7%)
+  Scorecard: 92 → 94 (+2)
+  Fixed: removed 2 dead functions, fixed 1 verify regression
+```
+
+If no fixes were applied during dogfood (everything passed first try), skip
+this step.
+
 ### Common failure patterns
 
 | Symptom | Likely cause | Fix location |
