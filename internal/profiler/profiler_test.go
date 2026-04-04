@@ -105,12 +105,13 @@ func TestProfileEnumExpansion(t *testing.T) {
 		syncPaths[sr.Name] = sr.Path
 	}
 
-	// 5 resources: 4 from enum expansion + 1 from teams
-	assert.Len(t, profile.SyncableResources, 5)
+	// 6 resources: 4 from enum expansion + networkentity itself + teams
+	assert.Len(t, profile.SyncableResources, 6)
 	assert.Contains(t, syncNames, "collection")
 	assert.Contains(t, syncNames, "workspace")
 	assert.Contains(t, syncNames, "api")
 	assert.Contains(t, syncNames, "flow")
+	assert.Contains(t, syncNames, "networkentity")
 	assert.Contains(t, syncNames, "team")
 
 	// Expanded paths include the enum value as a query param

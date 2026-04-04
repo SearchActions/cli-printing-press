@@ -52,7 +52,7 @@ type SearchBodyField struct {
 	Required bool   `json:"required"`
 }
 
-// SyncableResource describes a resource that supports paginated list sync.
+// SyncableResource describes a resource that supports list sync (paginated or single-page).
 type SyncableResource struct {
 	Name string
 	Path string
@@ -237,6 +237,17 @@ func Profile(s *spec.APISpec) *APIProfile {
 			if isListEndpoint(endpointName, endpoint) {
 				listCapableGETs++
 				listResources[resourceName] = struct{}{}
+
+				// Add to syncable if the endpoint can be fetched without runtime context.
+				// Exclude: (a) paths with unfilled params like {steamid}
+				// (b) endpoints with required non-pagination query params (scoped lists
+				//     like GetFriendList?steamid=REQUIRED that need a parent ID)
+				if !strings.Contains(endpoint.Path, "{") && !hasRequiredScopeParams(endpoint) {
+					if existing, ok := syncable[resourceName]; !ok || len(endpoint.Path) < len(existing) {
+						syncable[resourceName] = endpoint.Path
+					}
+				}
+
 				if endpoint.Pagination != nil {
 					p.ListEndpoints++
 
@@ -255,8 +266,8 @@ func Profile(s *spec.APISpec) *APIProfile {
 							syncable[expandedName] = expandedPath
 						}
 					} else {
-						// Standard: pick the shortest path for determinism when
-						// multiple paginated list endpoints exist for the same resource.
+						// Paginated endpoints override the path set above — they have
+						// richer pagination support for full data retrieval.
 						if existing, ok := syncable[resourceName]; !ok || len(endpoint.Path) < len(existing) {
 							syncable[resourceName] = endpoint.Path
 						}
@@ -535,6 +546,30 @@ func dataFit(v bool) int {
 		return 3
 	}
 	return 1
+}
+
+// hasRequiredScopeParams returns true if the endpoint has required query parameters
+// that aren't pagination-related. These are "scoped list" endpoints (e.g., GetFriendList
+// requires steamid) that can't be synced without runtime context.
+func hasRequiredScopeParams(endpoint spec.Endpoint) bool {
+	paginationParams := map[string]bool{
+		"limit": true, "per_page": true, "page_size": true, "pageSize": true, "first": true, "count": true, "max_results": true,
+		"after": true, "cursor": true, "page_token": true, "offset": true, "page": true, "before": true, "starting_after": true,
+		"since": true, "updated_after": true, "modified_since": true, "since_id": true,
+		"key": true, "format": true, // auth and format params, not scope
+	}
+	for _, param := range endpoint.Params {
+		if param.Required && !param.Positional && !param.PathParam {
+			if !paginationParams[param.Name] && !paginationParams[strings.ToLower(param.Name)] {
+				// Enum params with 2+ values are handled by enum expansion, not scope
+				if len(param.Enum) >= 2 {
+					continue
+				}
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func isListEndpoint(name string, endpoint spec.Endpoint) bool {
