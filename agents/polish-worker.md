@@ -158,11 +158,21 @@ govet_before: <N>
 govet_after: <N>
 fixes_applied:
 - <one-line description of each fix>
+skipped_findings:
+- <finding>: <why you chose not to fix it>
 remaining_issues:
-- <one-line description of each unfixed issue>
+- <one-line description of each issue you tried to fix but couldn't>
 ship_recommendation: <ship|ship-with-gaps|hold>
 ---END-POLISH-RESULT---
 ```
+
+The three lists serve different purposes:
+- **fixes_applied**: what changed — the caller displays these
+- **skipped_findings**: issues you found but deliberately did not fix, with reasoning
+  (e.g., "verify classifies `stale` as read — scorer bug, not a CLI problem",
+  "README cookbook section is generic — needs domain context from research brief").
+  The caller surfaces these so the user can decide whether to address them manually.
+- **remaining_issues**: issues you tried to fix but couldn't resolve
 
 Ship recommendation logic:
 - `ship`: verify >= 80%, scorecard >= 75, no critical failures
