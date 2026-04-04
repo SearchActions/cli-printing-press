@@ -353,12 +353,21 @@ Parse the result:
 - If the list is non-empty, store `EXISTING_PR_NUMBER` and `EXISTING_PR_URL` from the first entry
 - If the list is empty or the command fails (network, auth), set `EXISTING_PR_NUMBER=""` — proceed as if no PR exists
 
+**If no open PR was found**, also check for a previously merged PR on the same branch:
+
+```bash
+MERGED_PR=$(gh pr list --repo mvanhorn/printing-press-library --head "$HEAD_REF" --state merged --author @me --json number --jq '.[0].number' 2>/dev/null)
+```
+
+If `MERGED_PR` is non-empty, the branch name was already used and merged. Set `BRANCH_MERGED=true` so Step 8 creates a new branch name (e.g., `feat/<cli-name>-YYYYMMDD`) instead of reusing the merged branch. Do NOT force-push onto a merged branch — `gh pr edit` would silently update a closed PR nobody is watching.
+
 If an existing open PR was found, inform the user:
 > "Found your open PR #N for `<cli-name>`. Will update it with the new version."
 
 This determines the flow in Step 8:
 - **Existing open PR:** Overwrite the branch automatically, force-push, update the PR description
-- **No open PR:** Standard flow — ask about branch conflicts if any, create a new PR
+- **No open PR, branch not merged:** Standard flow — ask about branch conflicts if any, create a new PR
+- **No open PR, branch was merged (`BRANCH_MERGED=true`):** Auto-create a timestamped branch `feat/<cli-name>-YYYYMMDD` and create a new PR
 
 ## Step 8: Branch, Commit, and PR
 
@@ -372,7 +381,15 @@ Always overwrite the branch — the intent is clearly to update:
 git checkout -B feat/<cli-name>
 ```
 
-**If `EXISTING_PR_NUMBER` is empty** (no open PR):
+**If `EXISTING_PR_NUMBER` is empty and `BRANCH_MERGED` is true** (previous PR was merged):
+
+Auto-create a timestamped branch — do not reuse the merged branch name:
+
+```bash
+git checkout -b feat/<cli-name>-$(date +%Y%m%d)
+```
+
+**If `EXISTING_PR_NUMBER` is empty and `BRANCH_MERGED` is not set** (no open or merged PR):
 
 Check for stale branches and competing PRs:
 
