@@ -150,6 +150,24 @@ func parse(data []byte, lenient bool) (*spec.APISpec, error) {
 		version = strings.TrimSpace(doc.Info.Version)
 	}
 
+	// Extract website URL from spec metadata (contact URL, externalDocs, or x-website)
+	var websiteURL string
+	if doc.Info != nil {
+		if doc.Info.Contact != nil && doc.Info.Contact.URL != "" {
+			websiteURL = doc.Info.Contact.URL
+		}
+		if websiteURL == "" && doc.Info.Extensions != nil {
+			if raw, ok := doc.Info.Extensions["x-website"]; ok {
+				if s, ok := raw.(string); ok {
+					websiteURL = s
+				}
+			}
+		}
+	}
+	if websiteURL == "" && doc.ExternalDocs != nil && doc.ExternalDocs.URL != "" {
+		websiteURL = doc.ExternalDocs.URL
+	}
+
 	// Extract x-proxy-routes extension for proxy-envelope client pattern
 	var proxyRoutes map[string]string
 	if doc.Info != nil && doc.Info.Extensions != nil {
@@ -213,6 +231,7 @@ func parse(data []byte, lenient bool) (*spec.APISpec, error) {
 		Version:     version,
 		BaseURL:     baseURL,
 		BasePath:    basePath,
+		WebsiteURL:  websiteURL,
 		ProxyRoutes: proxyRoutes,
 		Auth:        mapAuth(doc, name),
 		Config: spec.ConfigSpec{
@@ -1146,6 +1165,16 @@ func mapRequestBody(requestBodyRef *openapi3.RequestBodyRef, method, path string
 		if schema != nil && schema.Default != nil {
 			param.Default = schema.Default
 		}
+		// For array types, propagate item-level enum as a Fields entry
+		// so downstream consumers (profiler) can access it.
+		if schema != nil && schema.Type != nil && schema.Type.Is(openapi3.TypeArray) &&
+			schema.Items != nil && schema.Items.Value != nil && len(schema.Items.Value.Enum) > 0 {
+			param.Fields = []spec.Param{{
+				Name: "items",
+				Type: "string",
+				Enum: schemaEnum(schema.Items.Value),
+			}}
+		}
 		body = append(body, param)
 	}
 
@@ -1405,6 +1434,8 @@ func mapSchemaType(schema *openapi3.Schema) string {
 		return "int"
 	case schema.Type.Includes(openapi3.TypeNumber):
 		return "float"
+	case schema.Type.Includes(openapi3.TypeArray):
+		return "array"
 	case schema.Type.Includes(openapi3.TypeString):
 		return "string"
 	default:
@@ -1463,7 +1494,22 @@ func isObjectSchema(schema *openapi3.Schema) bool {
 }
 
 func isComplexBodyFieldSchema(schema *openapi3.Schema) bool {
-	return isObjectSchema(schema) || isArraySchema(schema)
+	if isObjectSchema(schema) {
+		return true
+	}
+	if isArraySchema(schema) {
+		// Arrays with simple string/enum items are not truly complex —
+		// they can be represented as comma-separated flags and are needed
+		// by the profiler for search body construction.
+		if schema.Items != nil && schema.Items.Value != nil {
+			itemSchema := schema.Items.Value
+			if itemSchema.Type != nil && itemSchema.Type.Is(openapi3.TypeString) {
+				return false // simple string array, keep it
+			}
+		}
+		return true
+	}
+	return false
 }
 
 func schemaTypeName(schemaRef *openapi3.SchemaRef, fallback string) string {

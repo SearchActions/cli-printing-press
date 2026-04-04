@@ -3,6 +3,7 @@ package generator
 import (
 	"embed"
 	"fmt"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -111,6 +112,40 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 			return cases.Title(language.English).String(strings.ReplaceAll(s, "-", " "))
 		},
 		"envName": func(s string) string { return strings.ToUpper(strings.ReplaceAll(s, "-", "_")) },
+		"goLiteral": func(v any) string {
+			switch val := v.(type) {
+			case string:
+				return fmt.Sprintf("%q", val)
+			case int:
+				return strconv.Itoa(val)
+			case float64:
+				if val == float64(int(val)) {
+					return strconv.Itoa(int(val))
+				}
+				return fmt.Sprintf("%g", val)
+			case bool:
+				if val {
+					return "true"
+				}
+				return "false"
+			case []string:
+				parts := make([]string, len(val))
+				for i, s := range val {
+					parts[i] = fmt.Sprintf("%q", s)
+				}
+				return "[]any{" + strings.Join(parts, ", ") + "}"
+			case []any:
+				parts := make([]string, len(val))
+				for i, item := range val {
+					parts[i] = fmt.Sprintf("%q", fmt.Sprint(item))
+				}
+				return "[]any{" + strings.Join(parts, ", ") + "}"
+			case map[string]any:
+				return "map[string]any{}"
+			default:
+				return fmt.Sprintf("%v", v)
+			}
+		},
 		"firstResource": func(resources map[string]spec.Resource) string {
 			var names []string
 			for name := range resources {
@@ -187,6 +222,12 @@ type readmeTemplateData struct {
 }
 
 func (g *Generator) readmeData() *readmeTemplateData {
+	// For sniffed APIs without a website URL, derive it from the base URL domain
+	if g.Spec.WebsiteURL == "" && g.Spec.SpecSource == "sniffed" && g.Spec.BaseURL != "" {
+		if u, err := url.Parse(g.Spec.BaseURL); err == nil && u.Host != "" {
+			g.Spec.WebsiteURL = u.Scheme + "://" + u.Host
+		}
+	}
 	return &readmeTemplateData{
 		APISpec:        g.Spec,
 		Sources:        g.Sources,
@@ -425,6 +466,7 @@ func (g *Generator) Generate() error {
 		SearchEndpointPath   string
 		SearchQueryParam     string
 		SearchEndpointMethod string
+		SearchBodyFields     []profiler.SearchBodyField
 	}{
 		APISpec:              g.Spec,
 		SyncableResources:    g.profile.SyncableResources,
@@ -434,6 +476,7 @@ func (g *Generator) Generate() error {
 		SearchEndpointPath:   g.profile.SearchEndpointPath,
 		SearchQueryParam:     g.profile.SearchQueryParam,
 		SearchEndpointMethod: g.profile.SearchEndpointMethod,
+		SearchBodyFields:     g.profile.SearchBodyFields,
 	}
 
 	for _, tmplName := range g.VisionSet.TemplateNames() {
