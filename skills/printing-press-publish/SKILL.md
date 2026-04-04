@@ -530,7 +530,7 @@ gh pr edit "$EXISTING_PR_NUMBER" \
   --body "<constructed PR body>"
 ```
 
-Display: "Updated PR #N: <EXISTING_PR_URL>"
+Display the full PR URL: "Updated PR: <EXISTING_PR_URL>" (use the full `https://` URL, not shorthand).
 
 **If creating a new PR:**
 
@@ -557,7 +557,7 @@ else
 fi
 ```
 
-Display the PR URL prominently.
+Display the full PR URL (e.g., `https://github.com/mvanhorn/printing-press-library/pull/10`), not the shorthand `org/repo#N` format. The full URL is clickable in all terminals and contexts.
 
 ## Secret & PII Protection
 
