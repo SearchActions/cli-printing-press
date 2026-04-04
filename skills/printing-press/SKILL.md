@@ -1276,31 +1276,38 @@ Write:
 
 ## Phase 5.5: Polish
 
-**Always runs.** After shipcheck (and dogfood if it ran), do one automatic polish
-pass before promoting. Don't ask — just run it. The goal is to ship the best CLI
-possible, not the fastest.
+**Always runs.** Dispatch the `polish-worker` agent to run diagnostics, fix quality
+issues, and return a structured delta report. The agent is autonomous — no user
+input needed. The goal is to ship the best CLI possible, not the fastest.
 
-```bash
-cd "$CLI_WORK_DIR"
-go build -o "$CLI_NAME" ./cmd/"$CLI_NAME"
-gofmt -w .
+Dispatch via the Agent tool (**foreground** — must complete before promoting):
 
-printing-press dogfood  --dir "$CLI_WORK_DIR" --spec <same-spec>
-printing-press verify   --dir "$CLI_WORK_DIR" --spec <same-spec> --fix
-printing-press scorecard --dir "$CLI_WORK_DIR" --spec <same-spec>
+```
+Agent(
+  subagent_type: "cli-printing-press:polish-worker",
+  description: "Polish CLI quality",
+  prompt: "Polish this CLI.\nCLI_DIR: $CLI_WORK_DIR\nCLI_NAME: <api>-pp-cli\nSPEC_PATH: <same-spec>"
+)
 ```
 
-Fix what the tools find: dead code, verify regressions, description issues,
-README gaps. This is mechanical — no user input needed. Report the delta:
+The agent runs the full diagnostic-fix-rediagnose loop and ends its response with
+a `---POLISH-RESULT---` block containing scorecard/verify before/after, fixes
+applied, and a ship recommendation.
+
+Parse the result. Display the delta to the user:
 
 ```
 Polish pass:
   Verify:    86% → 93% (+7%)
   Scorecard: 92 → 94 (+2)
-  Fixed: removed 2 dead functions, fixed 1 verify regression
+  Fixed: [summary of fixes_applied from result]
 ```
 
-Write:
+**Verdict override:** If the agent's `ship_recommendation` is `hold` and the
+Phase 4 verdict was `ship` or `ship-with-gaps`, downgrade to `hold`. Release
+the lock without promoting.
+
+Write the agent's full response to:
 
 `$PROOFS_DIR/<stamp>-fix-<api>-pp-cli-polish.md`
 
