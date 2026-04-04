@@ -99,7 +99,7 @@ appear in any artifact: source code, manuscripts, proofs, READMEs, HARs, or
 anything committed to git. Env var **names** (e.g., `STEAM_API_KEY`) and
 placeholders (e.g., `"your-key-here"`) are safe.
 
-During Phase 5.5 (archiving) and before publishing, read and apply
+During Phase 5.6 (archiving) and before publishing, read and apply
 [references/secret-protection.md](references/secret-protection.md) for:
 - Exact-value scanning and auto-redaction of artifacts
 - HAR auth stripping (headers, query strings, cookies)
@@ -1250,7 +1250,7 @@ If the final verdict is `hold`, release the lock without promoting to library:
 ```bash
 printing-press lock release --cli <api>-pp-cli
 ```
-The working copy remains in `$CLI_WORK_DIR` for potential future retry. Proceed to Phase 5.5 to archive manuscripts (archiving still happens on hold).
+The working copy remains in `$CLI_WORK_DIR` for potential future retry. Proceed to Phase 5.6 to archive manuscripts (archiving still happens on hold).
 
 ## Phase 5: Dogfood Testing
 
@@ -1270,17 +1270,41 @@ test plan execution, inline fix workflow, and reporting.
   context.
 - Note whether each fix is CLI-specific or a machine issue (feeds the retro).
 
-**After dogfood completes:** If any fixes were applied during testing, automatically
-run one polish pass (re-run `verify`, `scorecard`, fix regressions) before promoting.
-The dogfood fixes may have introduced dead code, broken a verify check, or shifted
-the scorecard. Don't ask — just run it. The user opted into quality by choosing to
-test. Report the before/after delta inline.
-
 Write:
 
 `$PROOFS_DIR/<stamp>-fix-<api>-pp-cli-dogfood.md`
 
-## Phase 5.5: Promote and Archive
+## Phase 5.5: Polish
+
+**Always runs.** After shipcheck (and dogfood if it ran), do one automatic polish
+pass before promoting. Don't ask — just run it. The goal is to ship the best CLI
+possible, not the fastest.
+
+```bash
+cd "$CLI_WORK_DIR"
+go build -o "$CLI_NAME" ./cmd/"$CLI_NAME"
+gofmt -w .
+
+printing-press dogfood  --dir "$CLI_WORK_DIR" --spec <same-spec>
+printing-press verify   --dir "$CLI_WORK_DIR" --spec <same-spec> --fix
+printing-press scorecard --dir "$CLI_WORK_DIR" --spec <same-spec>
+```
+
+Fix what the tools find: dead code, verify regressions, description issues,
+README gaps. This is mechanical — no user input needed. Report the delta:
+
+```
+Polish pass:
+  Verify:    86% → 93% (+7%)
+  Scorecard: 92 → 94 (+2)
+  Fixed: removed 2 dead functions, fixed 1 verify regression
+```
+
+Write:
+
+`$PROOFS_DIR/<stamp>-fix-<api>-pp-cli-polish.md`
+
+## Phase 5.6: Promote and Archive
 
 ### Promote to Library
 
