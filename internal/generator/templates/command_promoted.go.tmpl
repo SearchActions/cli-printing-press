@@ -6,23 +6,15 @@ package cli
 import (
 	"encoding/json"
 	"fmt"
-	"io"
 	"os"
-	"strings"
 
 	"github.com/spf13/cobra"
 )
 
-var _ = strings.ReplaceAll // ensure import
-var _ = fmt.Sprintf        // ensure import
-var _ = io.ReadAll         // ensure import
-var _ = os.Stdin           // ensure import
-var _ json.RawMessage      // ensure import
-
 func new{{camel .PromotedName}}PromotedCmd(flags *rootFlags) *cobra.Command {
 {{- range .Endpoint.Params}}
 {{- if not .Positional}}
-	var flag{{camel .Name}} {{goType .Type}}
+	var flag{{camel .Name}} {{goTypeForParam .Name .Type}}
 {{- end}}
 {{- end}}
 {{- if .Endpoint.Pagination}}
@@ -35,6 +27,13 @@ func new{{camel .PromotedName}}PromotedCmd(flags *rootFlags) *cobra.Command {
 		Long:  "Shortcut for '{{.ResourceName}} {{.EndpointName}}'. {{oneline .Endpoint.Description}}",
 		Example: "  {{modulePath}} {{.PromotedName}}",
 		RunE: func(cmd *cobra.Command, args []string) error {
+{{- range .Endpoint.Params}}
+{{- if and .Required (not .Positional)}}
+			if !cmd.Flags().Changed("{{flagName .Name}}") && !flags.dryRun {
+				return fmt.Errorf("required flag \"%s\" not set", "{{flagName .Name}}")
+			}
+{{- end}}
+{{- end}}
 			c, err := flags.newClient()
 			if err != nil {
 				return err
@@ -139,10 +138,7 @@ func new{{camel .PromotedName}}PromotedCmd(flags *rootFlags) *cobra.Command {
 
 {{- range .Endpoint.Params}}
 {{- if not .Positional}}
-	cmd.Flags().{{cobraFlagFunc .Type}}(&flag{{camel .Name}}, "{{flagName .Name}}", {{defaultVal .}}, "{{oneline .Description}}")
-{{- if .Required}}
-	_ = cmd.MarkFlagRequired("{{flagName .Name}}")
-{{- end}}
+	cmd.Flags().{{cobraFlagFuncForParam .Name .Type}}(&flag{{camel .Name}}, "{{flagName .Name}}", {{defaultValForParam .}}, "{{oneline .Description}}")
 {{- end}}
 {{- end}}
 {{- if .Endpoint.Pagination}}
