@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/getkin/kin-openapi/openapi3"
 	"github.com/mvanhorn/cli-printing-press/internal/generator"
 	"github.com/mvanhorn/cli-printing-press/internal/naming"
 	"github.com/mvanhorn/cli-printing-press/internal/spec"
@@ -476,5 +477,174 @@ func TestDetectRequiredHeaders(t *testing.T) {
 	t.Run("authorization header excluded even if required on all ops", func(t *testing.T) {
 		headers := detectRequiredHeaders(nil, spec.AuthConfig{})
 		assert.Empty(t, headers)
+	})
+}
+
+func TestInferDescriptionAuth(t *testing.T) {
+	t.Parallel()
+
+	t.Run("bearer in description, no securitySchemes", func(t *testing.T) {
+		data, err := os.ReadFile(filepath.Join("..", "..", "testdata", "openapi", "bearer-in-description.yaml"))
+		require.NoError(t, err)
+
+		parsed, err := Parse(data)
+		require.NoError(t, err)
+
+		assert.Equal(t, "bearer_token", parsed.Auth.Type)
+		assert.Equal(t, "Authorization", parsed.Auth.Header)
+		assert.Equal(t, "header", parsed.Auth.In)
+		assert.True(t, parsed.Auth.Inferred)
+		assert.NotEmpty(t, parsed.Auth.EnvVars)
+		assert.Contains(t, parsed.Auth.EnvVars[0], "_TOKEN")
+	})
+
+	t.Run("petstore has explicit auth, not inferred", func(t *testing.T) {
+		data, err := os.ReadFile(filepath.Join("..", "..", "testdata", "openapi", "petstore.yaml"))
+		require.NoError(t, err)
+
+		parsed, err := Parse(data)
+		require.NoError(t, err)
+
+		assert.False(t, parsed.Auth.Inferred)
+		assert.NotEqual(t, "none", parsed.Auth.Type)
+	})
+
+	t.Run("stytch has explicit auth, not inferred", func(t *testing.T) {
+		data, err := os.ReadFile(filepath.Join("..", "..", "testdata", "openapi", "stytch.yaml"))
+		require.NoError(t, err)
+
+		parsed, err := Parse(data)
+		require.NoError(t, err)
+
+		assert.False(t, parsed.Auth.Inferred)
+	})
+
+	t.Run("no auth keywords in description stays none", func(t *testing.T) {
+		doc := &openapi3.T{
+			Info: &openapi3.Info{
+				Description: "A simple API for managing widgets and gadgets.",
+			},
+		}
+		result := inferDescriptionAuth(doc, "widgets", spec.AuthConfig{Type: "none"})
+		assert.Equal(t, "none", result.Type)
+		assert.False(t, result.Inferred)
+	})
+
+	t.Run("negation suppresses inference", func(t *testing.T) {
+		result := inferDescriptionAuth(nil, "test", spec.AuthConfig{Type: "none"})
+		assert.Equal(t, "none", result.Type)
+
+		doc := &openapi3.T{
+			Info: &openapi3.Info{
+				Description: "This API does not require Bearer authentication",
+			},
+		}
+		result = inferDescriptionAuth(doc, "test", spec.AuthConfig{Type: "none"})
+		assert.Equal(t, "none", result.Type, "negated 'Bearer' should not trigger inference")
+		assert.False(t, result.Inferred)
+	})
+
+	t.Run("api_key keyword produces api_key type", func(t *testing.T) {
+		doc := &openapi3.T{
+			Info: &openapi3.Info{
+				Description: "Authenticate with your API key in the Authorization header",
+			},
+		}
+		result := inferDescriptionAuth(doc, "example", spec.AuthConfig{Type: "none"})
+		assert.Equal(t, "api_key", result.Type)
+		assert.Equal(t, "EXAMPLE_API_KEY", result.EnvVars[0])
+		assert.True(t, result.Inferred)
+	})
+
+	t.Run("scans past negated match to find positive mention", func(t *testing.T) {
+		doc := &openapi3.T{
+			Info: &openapi3.Info{
+				Description: "Sandbox requests do not require a bearer token, but production requests use a bearer token for authentication.",
+			},
+		}
+		result := inferDescriptionAuth(doc, "example", spec.AuthConfig{Type: "none"})
+		assert.Equal(t, "bearer_token", result.Type, "should find the second non-negated 'bearer' mention")
+		assert.True(t, result.Inferred)
+	})
+
+	t.Run("Notion bearer token not falsely negated", func(t *testing.T) {
+		doc := &openapi3.T{
+			Info: &openapi3.Info{
+				Description: "Use your Notion bearer token to authenticate",
+			},
+		}
+		result := inferDescriptionAuth(doc, "notion", spec.AuthConfig{Type: "none"})
+		assert.Equal(t, "bearer_token", result.Type, "'Notion' contains 'no' but should not trigger negation")
+		assert.True(t, result.Inferred)
+	})
+
+	t.Run("custom header X-Api-Key extracted from description", func(t *testing.T) {
+		doc := &openapi3.T{
+			Info: &openapi3.Info{
+				Description: "Send your API key in the X-Api-Key header",
+			},
+		}
+		result := inferDescriptionAuth(doc, "example", spec.AuthConfig{Type: "none"})
+		assert.Equal(t, "api_key", result.Type)
+		assert.Equal(t, "X-Api-Key", result.Header, "should extract X-Api-Key, not default to Authorization")
+		assert.True(t, result.Inferred)
+	})
+
+	t.Run("nil doc returns fallback", func(t *testing.T) {
+		fb := spec.AuthConfig{Type: "none"}
+		assert.Equal(t, fb, inferDescriptionAuth(nil, "test", fb))
+	})
+}
+
+func TestAuthTierPrecedence(t *testing.T) {
+	t.Parallel()
+
+	t.Run("explicit securitySchemes wins over description keywords", func(t *testing.T) {
+		// Gmail has both securitySchemes AND description that could mention auth
+		data, err := os.ReadFile(filepath.Join("..", "..", "testdata", "openapi", "gmail.yaml"))
+		require.NoError(t, err)
+
+		parsed, err := Parse(data)
+		require.NoError(t, err)
+
+		assert.Equal(t, "bearer_token", parsed.Auth.Type)
+		assert.False(t, parsed.Auth.Inferred, "explicit auth from securitySchemes should not be marked as inferred")
+	})
+
+	t.Run("query-param auth (tier 2) wins over description (tier 3)", func(t *testing.T) {
+		// Build a minimal spec with auth-like query params on >30% of ops
+		// AND bearer keyword in description. Tier 2 should win.
+		doc := &openapi3.T{
+			Info: &openapi3.Info{
+				Description: "This API uses Bearer token authentication.",
+			},
+			Paths: &openapi3.Paths{},
+		}
+		// Add 5 operations, 3 with api_key query param (60% > 30% threshold)
+		for i, path := range []string{"/a", "/b", "/c", "/d", "/e"} {
+			pathItem := &openapi3.PathItem{
+				Get: &openapi3.Operation{
+					Responses: openapi3.NewResponses(),
+				},
+			}
+			if i < 3 { // first 3 have api_key param
+				pathItem.Get.Parameters = openapi3.Parameters{
+					&openapi3.ParameterRef{
+						Value: &openapi3.Parameter{
+							Name:     "api_key",
+							In:       "query",
+							Required: false,
+						},
+					},
+				}
+			}
+			doc.Paths.Set(path, pathItem)
+		}
+
+		// Run mapAuth directly — it should pick up query-param auth (tier 2)
+		result := mapAuth(doc, "test-api")
+		assert.Equal(t, "api_key", result.Type)
+		assert.Equal(t, "query", result.In, "tier 2 query-param auth should win over tier 3 description")
+		assert.False(t, result.Inferred, "query-param auth is not 'inferred from description'")
 	})
 }

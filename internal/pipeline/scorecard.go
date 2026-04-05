@@ -1050,12 +1050,28 @@ func evaluateAuthProtocol(dir string, spec *openAPISpecInfo) dimensionScore {
 	if spec == nil {
 		return dimensionScore{}
 	}
-	if len(spec.SecurityRequirements) == 0 {
-		return dimensionScore{}
-	}
-
 	clientContent := readFileContent(filepath.Join(dir, "internal", "client", "client.go"))
 	configContent := readFileContent(filepath.Join(dir, "internal", "config", "config.go"))
+
+	if len(spec.SecurityRequirements) == 0 {
+		// No securitySchemes in spec. Check if auth was inferred from description
+		// text (marked with "Auth inferred" comment in generated config.go).
+		// Do NOT match on env var names alone — inferQueryParamAuth also produces
+		// _API_KEY env vars for query-param auth, and scoring those as inferred
+		// header auth would penalize correct query-param implementations.
+		if !strings.Contains(configContent, "Auth inferred") {
+			return dimensionScore{} // no inferred auth marker → skip scoring
+		}
+		// Inferred auth — score based on what the CLI actually has
+		score := 1 // annotated as inferred (user knows to verify)
+		if strings.Contains(configContent, "os.Getenv(") {
+			score += 4 // env var support present
+		}
+		if strings.Contains(clientContent, "Authorization") || strings.Contains(clientContent, "X-Api-Key") || strings.Contains(clientContent, "X-Auth-Token") || strings.Contains(clientContent, "X-Access-Token") {
+			score += 3 // client sends auth header (standard or custom)
+		}
+		return dimensionScore{scored: true, score: score}
+	}
 	authContent := readFileContent(filepath.Join(dir, "internal", "cli", "auth.go"))
 	if clientContent == "" {
 		return dimensionScore{scored: true}

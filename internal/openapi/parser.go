@@ -261,7 +261,11 @@ func mapAuth(doc *openapi3.T, name string) spec.AuthConfig {
 	auth := spec.AuthConfig{Type: "none"}
 	schemeName, scheme := selectSecurityScheme(doc)
 	if scheme == nil {
-		return inferQueryParamAuth(doc, name, auth)
+		result := inferQueryParamAuth(doc, name, auth)
+		if result.Type == "none" {
+			return inferDescriptionAuth(doc, name, result)
+		}
+		return result
 	}
 
 	auth.Scheme = schemeName
@@ -464,9 +468,6 @@ func detectRequiredHeaders(doc *openapi3.T, auth spec.AuthConfig) []spec.Require
 				continue
 			}
 			totalOps++
-			// Use mergeParameters to respect operation-level overrides.
-			// If an operation redefines a path-level header (e.g., makes it
-			// optional or changes the default), the op-level wins.
 			merged := mergeParameters(pathItem, op)
 			for _, p := range merged {
 				if p == nil {
@@ -479,7 +480,6 @@ func detectRequiredHeaders(doc *openapi3.T, auth spec.AuthConfig) []spec.Require
 				h, ok := headers[lower]
 				if !ok {
 					h = &headerInfo{name: p.Name}
-					// Extract default value from schema
 					if p.Schema != nil && p.Schema.Value != nil {
 						if p.Schema.Value.Default != nil {
 							h.defaultValue = fmt.Sprintf("%v", p.Schema.Value.Default)
@@ -509,6 +509,139 @@ func detectRequiredHeaders(doc *openapi3.T, auth spec.AuthConfig) []spec.Require
 		}
 	}
 	return result
+}
+
+// bearerKeywords indicate Bearer/token auth when found in info.description.
+// Produces Type="bearer_token" with EnvVars suffix "_TOKEN".
+var bearerKeywords = []string{
+	"bearer",
+	"access token",
+	"auth token",
+}
+
+// apiKeyKeywords indicate API-key auth when found in info.description.
+// Produces Type="api_key" with EnvVars suffix "_API_KEY".
+// Only secret-key vendor prefixes (sk_*, cal_*), not publishable (pk_*).
+var apiKeyKeywords = []string{
+	"api key",
+	"api_key",
+	"authorization header",
+	"sk_live_",
+	"sk_test_",
+	"cal_live_",
+}
+
+// negationWords suppress a keyword match when they appear within 5 words
+// before the keyword, catching "does not require Bearer" patterns.
+var negationWords = []string{"not", "no", "without", "unnecessary", "optional"}
+
+// inferDescriptionAuth scans info.description for auth keywords when both
+// selectSecurityScheme and inferQueryParamAuth produce nothing. This is the
+// third and final tier of the auth detection pipeline.
+func inferDescriptionAuth(doc *openapi3.T, name string, fallback spec.AuthConfig) spec.AuthConfig {
+	if doc == nil || doc.Info == nil {
+		return fallback
+	}
+	desc := strings.ToLower(doc.Info.Description)
+	if desc == "" {
+		return fallback
+	}
+
+	envPrefix := strings.ToUpper(strings.ReplaceAll(name, "-", "_"))
+
+	// Check bearer keywords first (stronger signal for Bearer-prefix auth).
+	// Scan all occurrences — a negated first mention ("does not require bearer")
+	// should not prevent finding a later positive mention ("use a bearer token").
+	for _, kw := range bearerKeywords {
+		if findUnnegated(desc, kw) {
+			return spec.AuthConfig{
+				Type:     "bearer_token",
+				In:       "header",
+				Header:   "Authorization",
+				EnvVars:  []string{envPrefix + "_TOKEN"},
+				Inferred: true,
+			}
+		}
+	}
+
+	// Check API key keywords
+	for _, kw := range apiKeyKeywords {
+		if findUnnegated(desc, kw) {
+			return spec.AuthConfig{
+				Type:     "api_key",
+				In:       "header",
+				Header:   detectHeaderName(desc),
+				EnvVars:  []string{envPrefix + "_API_KEY"},
+				Inferred: true,
+			}
+		}
+	}
+
+	return fallback
+}
+
+// commonCustomHeaders are header names that APIs use instead of Authorization.
+// Checked case-insensitively against the description text.
+var commonCustomHeaders = []string{
+	"X-Api-Key",
+	"X-API-Key",
+	"X-Auth-Token",
+	"X-Access-Token",
+}
+
+// detectHeaderName scans description text for a known custom auth header name.
+// Returns the canonical casing if found, "Authorization" otherwise.
+func detectHeaderName(desc string) string {
+	lower := strings.ToLower(desc)
+	for _, h := range commonCustomHeaders {
+		if strings.Contains(lower, strings.ToLower(h)) {
+			return h
+		}
+	}
+	return "Authorization"
+}
+
+// findUnnegated scans all occurrences of keyword in text and returns true if
+// at least one is not negated. Handles "sandbox does not require bearer, but
+// production uses a bearer token" by scanning past the first negated match.
+func findUnnegated(text, keyword string) bool {
+	offset := 0
+	for {
+		idx := strings.Index(text[offset:], keyword)
+		if idx < 0 {
+			return false
+		}
+		absIdx := offset + idx
+		if !isNegated(text, absIdx) {
+			return true
+		}
+		offset = absIdx + len(keyword)
+	}
+}
+
+// isNegated checks if any negation word appears as a whole word within ~50 chars
+// before the keyword position, catching "does not require Bearer" while avoiding
+// false negation on words like "Notion" that contain "no" as a substring.
+func isNegated(text string, keywordIdx int) bool {
+	start := keywordIdx - 50
+	if start < 0 {
+		start = 0
+	}
+	preceding := text[start:keywordIdx]
+	for _, neg := range negationWords {
+		idx := strings.Index(preceding, neg)
+		if idx < 0 {
+			continue
+		}
+		// Check word boundaries: char before must be space/start, char after must be space/end
+		beforeOk := idx == 0 || preceding[idx-1] == ' ' || preceding[idx-1] == ',' || preceding[idx-1] == '.'
+		afterIdx := idx + len(neg)
+		afterOk := afterIdx >= len(preceding) || preceding[afterIdx] == ' ' || preceding[afterIdx] == ',' || preceding[afterIdx] == '.'
+		if beforeOk && afterOk {
+			return true
+		}
+	}
+	return false
 }
 
 func selectSecurityScheme(doc *openapi3.T) (string, *openapi3.SecurityScheme) {
