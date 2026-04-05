@@ -1296,21 +1296,71 @@ The working copy remains in `$CLI_WORK_DIR` for potential future retry. Proceed 
 
 ## Phase 5: Dogfood Testing
 
-**MANDATORY when an API key is available.** This is where you use the CLI as an
-actual user would — not just "does it start" but "does it produce correct, useful
-output for real workflows."
+**MANDATORY when an API key is available. Do NOT skip or shortcut this phase.**
 
-Shipcheck verified the CLI builds and commands respond. Dogfood verifies it
-actually works.
+Shipcheck verified commands start and return exit codes. Dogfood verifies the CLI
+produces correct, useful output for real workflows. These are different checks.
 
-Read and follow [references/dogfood-testing.md](references/dogfood-testing.md) for
-the complete dogfood protocol: depth selection (quick check vs full lifecycle),
-test plan execution, inline fix workflow, and reporting.
+### Step 1: Ask the user for depth
 
-**Key rules:**
-- Fix issues as you find them, not at the end. The value is discovering bugs in
-  context.
-- Note whether each fix is CLI-specific or a machine issue (feeds the retro).
+Present via `AskUserQuestion`:
+
+> "Shipcheck passed. How thoroughly should I test against the live API?"
+>
+> 1. **Quick check** — Read-only: doctor, list, sync, search, output modes (~5 min)
+> 2. **Full dogfood** — Complete lifecycle with mutations: create, modify, cancel, sync verification (~15-30 min). I'll create test entities on your account.
+> 3. **Skip testing** — Proceed to polish
+
+Do NOT proceed without asking. Do NOT substitute an ad-hoc smoke test.
+
+### Step 2: Run structured tests
+
+For each test, print the command and result in this format:
+```
+[1/N] <test name>
+  $ <command>
+  <result summary>
+  PASS / FAIL
+```
+
+**Quick check tests (always run unless skipped):**
+1. `doctor` — auth valid, API reachable
+2. 3-5 list commands (`bookings`, `event-types`, `schedules`, `slots`, `me`) — return data, not empty
+3. `sync --full` → `sql "SELECT count(*) FROM user_bookings"` — count > 0
+4. `search "<term from synced data>"` — finds results
+5. One list command with `--json`, `--select <fields>`, `--csv` — all produce correct output
+6. One transcendence command with synced data (`health`, `today --date <date>`) — produces output
+
+**Full dogfood tests (if user selected):**
+7. Create a test entity via the API (booking, record, etc.) with obviously-test data
+8. Verify creation in list command + get-by-ID
+9. Re-sync → search for test entity → verify in transcendence commands
+10. Test 2-3 mutation subcommands (reschedule, cancel, etc.) — verify via `--help` that the command path is discoverable, then execute
+11. Re-sync → verify status change in SQL and health
+12. Output fidelity: `--json` produces valid JSON, `--select` returns only those fields, `--csv` has header row
+13. Error paths: non-existent ID → meaningful error, missing required flag → help text
+
+### Step 3: Fix issues inline
+
+When a test fails, fix it immediately — do not accumulate failures. Tag each fix:
+- **CLI fix** — specific to this printed CLI
+- **Machine issue** — should be fixed in the generator (note for retro)
+
+### Step 4: Report
+
+```
+Dogfood Results: <cli-name>
+  Level: Quick Check / Full Dogfood
+  Tests: N/N passed
+  Fixes applied: M
+    - [each fix]
+  Machine issues: K
+    - [each issue for retro]
+```
+
+After dogfood, Phase 5.5 (Polish) runs automatically. See
+[references/dogfood-testing.md](references/dogfood-testing.md) for additional
+guidance on common failure patterns and what NOT to test.
 
 Write:
 
