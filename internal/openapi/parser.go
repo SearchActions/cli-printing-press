@@ -21,15 +21,16 @@ import (
 var (
 	maxResources            = 50
 	maxEndpointsPerResource = 50
+	endpointLimitExplicit   = false // true when user set --max-endpoints-per-resource
 )
 
-// SetMaxEndpointsPerResource overrides the default limit of 50 endpoints per
-// resource. Use this when generating from large specs (e.g., Cal.com organizations
-// which has 50+ endpoints). The limit prevents runaway generation from malformed
-// specs while allowing legitimate large resources to be fully covered.
+// SetMaxEndpointsPerResource overrides the default limit and disables
+// auto-calibration. When not called, the parser auto-calibrates the limit
+// from the spec so well-formed specs never have endpoints silently skipped.
 func SetMaxEndpointsPerResource(n int) {
 	if n > 0 {
 		maxEndpointsPerResource = n
+		endpointLimitExplicit = true
 	}
 }
 
@@ -753,6 +754,31 @@ func mapResources(doc *openapi3.T, out *spec.APISpec, basePath string) {
 	}
 	sort.Strings(pathKeys)
 	commonPrefix := detectCommonPrefix(pathKeys, basePath)
+
+	// Auto-calibrate endpoint limit unless the user explicitly set it.
+	// Pre-scans the spec to find the largest resource or sub-resource,
+	// then bumps the limit so well-formed specs never have endpoints silently
+	// skipped. The limit is checked per endpoint map (resource.Endpoints or
+	// sub.Endpoints), so we count per (primary, sub) pair to find the true max.
+	if !endpointLimitExplicit {
+		type resourceKey struct{ primary, sub string }
+		endpointCounts := map[resourceKey]int{}
+		for _, path := range pathKeys {
+			primaryName, subName := resourceAndSubFromPath(path, basePath, commonPrefix)
+			if primaryName == "" {
+				continue
+			}
+			pathItem := doc.Paths.Value(path)
+			if pathItem != nil {
+				endpointCounts[resourceKey{primaryName, subName}] += len(pathItem.Operations())
+			}
+		}
+		for _, count := range endpointCounts {
+			if count > maxEndpointsPerResource {
+				maxEndpointsPerResource = count
+			}
+		}
+	}
 
 	for _, path := range pathKeys {
 		pathItem := doc.Paths.Value(path)
