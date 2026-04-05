@@ -74,6 +74,8 @@ func newGenerateCmd() *cobra.Command {
 	var specSource string
 	var clientPattern string
 	var researchDir string
+	var maxEndpointsPerResource int
+	var specURL string
 
 	cmd := &cobra.Command{
 		Use:   "generate",
@@ -213,12 +215,18 @@ func newGenerateCmd() *cobra.Command {
 				return &ExitError{Code: ExitInputError, Err: fmt.Errorf("--spec is required")}
 			}
 
+			if maxEndpointsPerResource > 0 {
+				openapi.SetMaxEndpointsPerResource(maxEndpointsPerResource)
+			}
+
 			var specs []*spec.APISpec
+			var specRawBytes [][]byte // raw spec data for archiving
 			for _, specFile := range specFiles {
 				data, err := readSpec(specFile, refresh, dryRun)
 				if err != nil {
 					return &ExitError{Code: ExitSpecError, Err: fmt.Errorf("reading spec %s: %w", specFile, err)}
 				}
+				specRawBytes = append(specRawBytes, data)
 
 				var apiSpec *spec.APISpec
 				if openapi.IsOpenAPI(data) {
@@ -331,9 +339,23 @@ func newGenerateCmd() *cobra.Command {
 			if err := pipeline.WriteManifestForGenerate(pipeline.GenerateManifestParams{
 				APIName:   apiSpec.Name,
 				SpecSrcs:  specFiles,
+				SpecURL:   specURL,
 				OutputDir: absOut,
 			}); err != nil {
 				fmt.Fprintf(os.Stderr, "warning: could not write manifest: %v\n", err)
+			}
+
+			// Archive the input spec alongside the CLI for reproducibility.
+			// The spec_url may change or disappear; this local copy is the
+			// only guaranteed way to regenerate from the exact same input.
+			if len(specRawBytes) > 0 {
+				archiveName := "spec.json"
+				if len(specFiles) > 0 && !openapi.IsOpenAPI(specRawBytes[0]) {
+					archiveName = "spec.yaml"
+				}
+				if err := os.WriteFile(filepath.Join(absOut, archiveName), specRawBytes[0], 0o644); err != nil {
+					fmt.Fprintf(os.Stderr, "warning: could not archive spec: %v\n", err)
+				}
 			}
 
 			fmt.Fprintf(os.Stderr, "Generated %s at %s\n", naming.CLI(apiSpec.Name), absOut)
@@ -366,6 +388,8 @@ func newGenerateCmd() *cobra.Command {
 	cmd.Flags().StringVar(&specSource, "spec-source", "", "Spec provenance: official, community, sniffed, docs (affects generated client defaults like rate limiting)")
 	cmd.Flags().StringVar(&clientPattern, "client-pattern", "", "HTTP client pattern: rest (default), proxy-envelope (wraps requests in POST envelope)")
 	cmd.Flags().StringVar(&researchDir, "research-dir", "", "Pipeline directory containing research.json and discovery/ for README source credits")
+	cmd.Flags().IntVar(&maxEndpointsPerResource, "max-endpoints-per-resource", 0, "Maximum endpoints per resource (default 50, raise for large APIs)")
+	cmd.Flags().StringVar(&specURL, "spec-url", "", "Original spec URL for provenance (use when --spec is a local file downloaded from a URL)")
 
 	return cmd
 }

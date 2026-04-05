@@ -22,9 +22,9 @@ func TestGenerateProjectsCompile(t *testing.T) {
 		specPath      string
 		expectedFiles int
 	}{
-		{name: "stytch", specPath: filepath.Join("..", "..", "testdata", "stytch.yaml"), expectedFiles: 34},
-		{name: "clerk", specPath: filepath.Join("..", "..", "testdata", "clerk.yaml"), expectedFiles: 40},
-		{name: "loops", specPath: filepath.Join("..", "..", "testdata", "loops.yaml"), expectedFiles: 36},
+		{name: "stytch", specPath: filepath.Join("..", "..", "testdata", "stytch.yaml"), expectedFiles: 30},
+		{name: "clerk", specPath: filepath.Join("..", "..", "testdata", "clerk.yaml"), expectedFiles: 34},
+		{name: "loops", specPath: filepath.Join("..", "..", "testdata", "loops.yaml"), expectedFiles: 34},
 	}
 
 	for _, tt := range tests {
@@ -580,6 +580,51 @@ func TestGeneratedHelpers_ConditionalClassifyDeleteError(t *testing.T) {
 	})
 }
 
+func TestGeneratedHelpers_ConditionalDataLayerFunctions(t *testing.T) {
+	t.Parallel()
+
+	// A simple spec with no data-layer features. The profiler will compute
+	// VisionSet.Store = false, so HasDataLayer stays false and provenance
+	// helpers should be omitted.
+	apiSpec := &spec.APISpec{
+		Name:    "testdatalayer",
+		Version: "0.1.0",
+		BaseURL: "https://api.example.com",
+		Auth:    spec.AuthConfig{Type: "api_key", Header: "X-Api-Key", EnvVars: []string{"TEST_API_KEY"}},
+		Config:  spec.ConfigSpec{Format: "toml", Path: "~/.config/testdatalayer-pp-cli/config.toml"},
+		Resources: map[string]spec.Resource{
+			"items": {
+				Description: "Manage items",
+				Endpoints: map[string]spec.Endpoint{
+					"list": {Method: "GET", Path: "/items", Description: "List items"},
+				},
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), "testdatalayer-pp-cli")
+	gen := New(apiSpec, outputDir)
+	// Force VisionSet with Store=false to bypass profiler (which marks
+	// read-heavy specs as offline-valuable). We're testing the template
+	// conditional, not the profiler's decision.
+	gen.VisionSet = VisionTemplateSet{Store: false, Export: true}
+	require.NoError(t, gen.Generate())
+
+	helpersGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "helpers.go"))
+	require.NoError(t, err)
+	content := string(helpersGo)
+
+	// Without data layer, provenance helpers should be omitted
+	assert.NotContains(t, content, "DataProvenance")
+	assert.NotContains(t, content, "printProvenance")
+	assert.NotContains(t, content, "wrapWithProvenance")
+	assert.NotContains(t, content, "defaultDBPath")
+
+	// Core helpers should still be present
+	assert.Contains(t, content, "classifyAPIError")
+	assert.Contains(t, content, "printOutputWithFlags")
+}
+
 // --- Unit 3: Top-Level Command Promotion Tests ---
 
 func TestToKebab(t *testing.T) {
@@ -753,12 +798,12 @@ func TestGeneratedOutput_PromotedCommandExists(t *testing.T) {
 	require.NoError(t, gen.Generate())
 
 	// Promoted command file SHOULD exist — it provides a user-friendly shortcut.
-	// The resource group command is hidden from --help when promoted commands exist.
 	promotedFile := filepath.Join(outputDir, "internal", "cli", "promoted_users.go")
 	assert.FileExists(t, promotedFile)
 
-	// The resource group command should still exist (but hidden)
-	assert.FileExists(t, filepath.Join(outputDir, "internal", "cli", "users.go"))
+	// The resource parent command should NOT be generated — the promoted command replaces it.
+	// Generating both would leave the parent as dead code (never wired to root).
+	assert.NoFileExists(t, filepath.Join(outputDir, "internal", "cli", "users.go"))
 }
 
 func TestGeneratedOutput_PromotedCommandCompiles(t *testing.T) {
