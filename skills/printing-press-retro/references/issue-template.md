@@ -2,6 +2,12 @@
 
 Read this file during Phase 6 when creating the GitHub issue from retro findings.
 
+## Formatting rules
+
+**Never use `#N` notation** for finding or work unit numbers in the issue body. GitHub
+auto-links `#1`, `#2`, etc. as issue/PR references. Use the `F` prefix for findings
+(e.g., `F1`, `F3`) — it's self-describing and avoids the collision.
+
 ## Issue title format
 
 ```
@@ -28,61 +34,60 @@ retro — not the full retro document. The full retro is linked via catbox artif
 | Manual code edits | <N> |
 | Features built from scratch | <N> |
 
-## Priority: Fix the Scorer
+## What the Printing Press Got Right
 
-| # | Scorer | Bug summary | Impact |
-|---|--------|-------------|--------|
-| <n> | <verify/dogfood/scorecard> | <one-line summary> | <false failures or points affected> |
+- <pattern to preserve>
+- <pattern to preserve>
 
-*Omit this section if no scorer bugs were found.*
+## P1 — High priority
 
-## Priority: Do Now
+| Finding | Title | Component | Frequency | Fix summary |
+|---------|-------|-----------|-----------|-------------|
+| F1 | <one-line title> | <generator/parser/scorer/skill> | <every/most/subclass> | <one-line fix> |
 
-| # | Finding | Component | Frequency | Fix summary |
-|---|---------|-----------|-----------|-------------|
-| <n> | <one-line title> | <generator/binary/skill/scorer> | <every/most/subclass> | <one-line fix> |
+## P2 — Medium priority
 
-## Priority: Do Next
+| Finding | Title | Component | Frequency | Fix summary |
+|---------|-------|-----------|-----------|-------------|
+| F2 | ... | ... | ... | ... |
 
-| # | Finding | Component | Frequency | Fix summary |
-|---|---------|-----------|-----------|-------------|
-| <n> | <one-line title> | <generator/binary/skill/scorer> | <every/most/subclass> | <one-line fix> |
+## P3 — Low priority
 
-## Priority: Skip
+| Finding | Title | Component | Frequency | Fix summary |
+|---------|-------|-----------|-----------|-------------|
+| F3 | ... | ... | ... | ... |
 
-| # | Finding | Why unlikely to recur |
-|---|---------|----------------------|
-| <n> | <one-line title> | <one-line reasoning> |
+*Omit empty priority sections. Priority is based on frequency, fallback reliability,
+and complexity. Scorer bugs are ranked alongside other findings.*
+
+## Skipped
+
+| Finding | Title | Why unlikely to recur |
+|---------|-------|----------------------|
+| F<n> | <one-line title> | <one-line reasoning> |
 
 *Omit this section if no findings were skipped.*
 
 ## Work Units
 
-### WU-<N>: <Title>
-- **Goal:** <one sentence>
-- **Component:** <target area in printing-press, e.g., "Generator templates in internal/generator/">
-- **Findings:** #<n>, #<m>
-- **Acceptance criteria:**
-  - <concrete, testable scenario>
-  - <negative test if applicable>
-- **Complexity:** <small / medium / large>
+Summary table only — full acceptance criteria, scope boundaries, and resolved file
+paths are in the retro document (linked in Artifacts below).
 
-### WU-<N>: ...
+| WU | Title | Component | Findings | Complexity |
+|----|-------|-----------|----------|------------|
+| WU-1 | <title> | <component> | F1, F3 | small / medium / large |
+| WU-2 | ... | ... | ... | ... |
 
 ## Artifacts
 
 | Artifact | Link |
 |----------|------|
-| Full retro document + manuscripts | <$MANUSCRIPTS_URL or "Upload failed — see below"> |
+| Retro document | <$RETRO_DOC_URL or "Upload failed — see below"> |
+| Manuscripts (research + proofs) | <$MANUSCRIPTS_URL or "Upload failed — see below"> |
 | Generated CLI source code | <$CLI_SOURCE_URL or "Upload failed — see below"> |
 
 *If uploads failed:* Artifacts could not be uploaded to catbox.moe. The retro author
 has local copies. Ask them to attach manually if needed.
-
-## What the Printing Press Got Right
-
-- <pattern to preserve>
-- <pattern to preserve>
 
 ---
 
@@ -110,6 +115,7 @@ Create the issue:
 if [ "$GH_AVAILABLE" = true ]; then
   ISSUE_URL=$(gh issue create \
     --repo mvanhorn/cli-printing-press \
+    --label retro \
     --title "$ISSUE_TITLE" \
     --body "$(cat <<'EOF'
 <constructed issue body from template above>
@@ -164,6 +170,7 @@ well under this for typical retros. If `gh issue create` fails with a body-size 
 
 | Variable | Set by | Contains |
 |----------|--------|----------|
+| `$RETRO_DOC_URL` | artifact-packaging.md | catbox URL for retro .md, or empty |
 | `$MANUSCRIPTS_URL` | artifact-packaging.md | catbox URL or empty |
 | `$CLI_SOURCE_URL` | artifact-packaging.md | catbox URL or empty |
 | `$RETRO_PROOF_PATH` | SKILL.md Phase 5 | Path to saved retro in manuscript proofs |

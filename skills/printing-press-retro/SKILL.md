@@ -311,15 +311,14 @@ propose the cheapest mitigation.
 
 ## Phase 4: Prioritize
 
-Group findings into three buckets using judgment, not a formula:
+Sort findings into two buckets:
 
-- **Fix the scorer** — scoring tool is wrong. Highest priority because a wrong scorer
-  distorts every future retro.
-- **Do** — score is correct, Printing Press fix is warranted. Split into "Do now" (scoped,
-  immediate) and "Do next" (needs design/planning).
+- **Do** — a Printing Press fix is warranted. Assign a priority (P1, P2, P3) based on
+  frequency, fallback reliability, and complexity. Scorer bugs are just findings like
+  any other — rank them by impact alongside template gaps and parser issues.
 - **Skip** — unlikely to recur. State why.
 
-No numerical scoring formulas. State the reasoning in words.
+No numerical scoring formulas. State the priority reasoning in words.
 
 ## Phase 5: Write the retro
 
@@ -354,21 +353,23 @@ Write the full retro document using this template:
 
 ## Prioritized Improvements
 
-### Fix the Scorer
-| # | Scorer | Bug | Impact | Fix target |
-|---|--------|-----|--------|------------|
+### P1 — High priority
+| Finding | Title | Component | Frequency | Fallback Reliability | Complexity | Guards |
+|---------|-------|-----------|-----------|---------------------|------------|--------|
 
-### Do Now
-| # | Fix | Component | Frequency | Fallback Reliability | Complexity | Guards |
-|---|-----|-----------|-----------|---------------------|------------|--------|
+### P2 — Medium priority
+| Finding | Title | Component | Frequency | Fallback Reliability | Complexity | Guards |
+|---------|-------|-----------|-----------|---------------------|------------|--------|
 
-### Do Next
-| # | Fix | Component | Frequency | Fallback Reliability | Complexity | Guards |
-|---|-----|-----------|-----------|---------------------|------------|--------|
+### P3 — Low priority
+| Finding | Title | Component | Frequency | Fallback Reliability | Complexity | Guards |
+|---------|-------|-----------|-----------|---------------------|------------|--------|
+
+*Omit empty priority sections.*
 
 ### Skip
-| # | Fix | Why unlikely to recur |
-|---|-----|----------------------|
+| Finding | Title | Why unlikely to recur |
+|---------|-------|----------------------|
 
 ## Work Units
 (see Phase 5.5)
@@ -392,10 +393,10 @@ This must complete before Phase 6 Step 1 copies the manuscripts directory to sta
 
 Group related findings into coherent work units a planner could pick up directly.
 
-For each "Do now" or "Do next" group:
+For each "Do" finding or group of related findings:
 
 ```markdown
-### WU-1: <Title> (from findings #N, #M, ...)
+### WU-1: <Title> (from F1, F3, ...)
 - **Goal:** One sentence describing the outcome
 - **Target:** <component and area, e.g., "Generator templates in internal/generator/">
 - **Acceptance criteria:**
@@ -427,12 +428,11 @@ nothing to change in the Printing Press, the issue is noise — there's nothing 
 - Every finding landed in "Skip"
 - All findings are printed-CLI-specific (manual edits that only apply to this one API
   and wouldn't recur across other CLIs)
-- The "Do Now" and "Do Next" tables are empty and there are no scorer bugs
+- The "Do" table is empty
 
 **Create the GitHub issue if:**
-- There is at least one "Fix the Scorer", "Do Now", or "Do Next" finding — i.e.,
-  something a maintainer or agent could act on in the Printing Press (templates, binary,
-  skills, or scoring tools)
+- There is at least one "Do" finding — i.e., something a maintainer or agent could
+  act on in the Printing Press (templates, binary, skills, or scoring tools)
 
 Use judgment. A retro that found three things but all three are "this API has a weird
 auth scheme no other API uses" is not worth an issue. A retro that found one small
@@ -535,8 +535,8 @@ Use `AskUserQuestion`:
 
 **If `IN_REPO=true`:**
 
-> 1. **Plan "Do now" work units** — invoke `/compound-engineering:ce-plan`
-> 2. **Plan a specific work unit** — pick one WU
+> 1. **Plan work units** — invoke `/compound-engineering:ce-plan` to plan top-priority WUs
+> 2. **Plan a specific work unit** — pick one WU to plan
 > 3. **Done for now**
 
 If the user picks option 1 or 2, try to invoke `compound-engineering:ce-plan`. If
@@ -544,9 +544,12 @@ it's not available, fall back to printing the prompt the user would run manually
 
 **If `IN_REPO=false`:**
 
-> The printing-press maintainers will review your findings.
+> The Printing Press maintainers will review your findings.
 >
 > 1. **Done**
+
+Do not offer to plan work units when `IN_REPO=false` — the user is not in the
+Printing Press repo and cannot act on the findings directly.
 
 ## Rules
 

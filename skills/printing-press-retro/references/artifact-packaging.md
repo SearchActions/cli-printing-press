@@ -82,14 +82,25 @@ fi
 
 ## Step 5: Upload to catbox.moe
 
-Upload each zip and capture the returned URL:
+Upload each artifact and capture the returned URL:
 
 ```bash
 MANUSCRIPTS_URL=""
 CLI_SOURCE_URL=""
+RETRO_DOC_URL=""
 UPLOAD_FAILED=false
 
-# Upload manuscripts
+# Upload retro document (raw .md — viewable directly in browser)
+RESPONSE=$(curl -s -F "reqtype=fileupload" -F "fileToUpload=@$RETRO_PROOF_PATH" https://catbox.moe/user/api.php 2>/dev/null)
+if echo "$RESPONSE" | grep -q "^https://"; then
+  RETRO_DOC_URL="$RESPONSE"
+  echo "Retro document uploaded: $RETRO_DOC_URL"
+else
+  echo "WARNING: Failed to upload retro document to catbox.moe. Response: $RESPONSE"
+  UPLOAD_FAILED=true
+fi
+
+# Upload manuscripts zip
 RESPONSE=$(curl -s -F "reqtype=fileupload" -F "fileToUpload=@$MANUSCRIPTS_ZIP" https://catbox.moe/user/api.php 2>/dev/null)
 if echo "$RESPONSE" | grep -q "^https://"; then
   MANUSCRIPTS_URL="$RESPONSE"
@@ -158,6 +169,7 @@ eventually. Do not let cleanup failure block the rest of the workflow.
 
 | Variable | Contains |
 |----------|----------|
+| `$RETRO_DOC_URL` | catbox URL for retro .md file (viewable in browser), or empty if upload failed |
 | `$MANUSCRIPTS_URL` | catbox URL for manuscripts zip, or empty if upload failed |
 | `$CLI_SOURCE_URL` | catbox URL for CLI source zip, or empty if upload failed |
 | `$UPLOAD_FAILED` | `true` if any upload failed, `false` otherwise |
