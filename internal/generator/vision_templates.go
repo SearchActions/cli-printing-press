@@ -113,6 +113,11 @@ func SelectVisionTemplates(plan *vision.VisionaryPlan) VisionTemplateSet {
 		}
 	}
 
+	// Invariant: a store without sync is useless — sync populates the store.
+	if set.Store && !set.Sync {
+		set.Sync = true
+	}
+
 	// MCP server is always generated alongside the CLI
 	set.MCP = true
 
