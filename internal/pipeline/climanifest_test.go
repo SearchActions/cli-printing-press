@@ -9,9 +9,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mvanhorn/cli-printing-press/internal/spec"
 	"github.com/mvanhorn/cli-printing-press/internal/version"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"gopkg.in/yaml.v3"
 )
 
 func TestWriteCLIManifest(t *testing.T) {
@@ -290,6 +292,58 @@ func TestPublishWorkingCLIManifestWithoutSpec(t *testing.T) {
 	assert.Empty(t, got.SpecFormat)
 }
 
+func TestPublishWorkingCLIWritesMCPMetadataForInternalSpec(t *testing.T) {
+	home := setPressTestEnv(t)
+
+	workingDir := filepath.Join(home, "working", "internal-spec-pp-cli")
+	require.NoError(t, os.MkdirAll(workingDir, 0o755))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(workingDir, "main.go"),
+		[]byte("package main\nfunc main() {}"),
+		0o644,
+	))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(workingDir, "spec.json"),
+		[]byte(`
+name: internal-spec
+base_url: https://api.example.com
+auth:
+  type: bearer_token
+  env_vars:
+    - INTERNAL_SPEC_TOKEN
+resources:
+  items:
+    description: Items
+    endpoints:
+      list:
+        method: GET
+        path: /items
+        no_auth: true
+`),
+		0o644,
+	))
+
+	state := NewState("internal-spec", workingDir)
+	require.NoError(t, os.MkdirAll(filepath.Dir(state.StatePath()), 0o755))
+	require.NoError(t, state.Save())
+
+	finalDir, err := PublishWorkingCLI(state, filepath.Join(home, "library", "internal-spec-pp-cli"))
+	require.NoError(t, err)
+
+	data, err := os.ReadFile(filepath.Join(finalDir, CLIManifestFilename))
+	require.NoError(t, err)
+
+	var got CLIManifest
+	require.NoError(t, json.Unmarshal(data, &got))
+	assert.Equal(t, "internal", got.SpecFormat)
+	assert.Equal(t, "internal-spec-pp-mcp", got.MCPBinary)
+	assert.Equal(t, 1, got.MCPToolCount)
+	assert.Equal(t, 1, got.MCPPublicToolCount)
+	assert.Equal(t, "full", got.MCPReady)
+	assert.Equal(t, "bearer_token", got.AuthType)
+	assert.Equal(t, []string{"INTERNAL_SPEC_TOKEN"}, got.AuthEnvVars)
+}
+
 func TestWriteManifestForGenerateWithSpecURL(t *testing.T) {
 	dir := t.TempDir()
 
@@ -449,6 +503,121 @@ func TestArchiveRunArtifactsSkipsMissingDiscovery(t *testing.T) {
 	assert.DirExists(t, ArchivedResearchDir(state.APIName, state.RunID))
 }
 
+func TestComputeMCPReady(t *testing.T) {
+	tests := []struct {
+		name        string
+		authType    string
+		publicTools int
+		want        string
+	}{
+		{"none", "none", 0, "full"},
+		{"api_key", "api_key", 0, "full"},
+		{"bearer_token", "bearer_token", 0, "full"},
+		{"oauth2 defaults to full", "oauth2", 0, "full"},
+		{"cookie with public tools", "cookie", 3, "partial"},
+		{"cookie no public tools", "cookie", 0, "cli-only"},
+		{"composed with public tools", "composed", 5, "partial"},
+		{"composed no public tools", "composed", 0, "cli-only"},
+		{"empty auth type", "", 0, "full"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := computeMCPReady(tt.authType, tt.publicTools)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
+func TestWriteSmitheryYAML(t *testing.T) {
+	t.Run("no manifest file — no smithery written", func(t *testing.T) {
+		dir := t.TempDir()
+		err := writeSmitheryYAML(dir)
+		require.NoError(t, err)
+		_, statErr := os.Stat(filepath.Join(dir, "smithery.yaml"))
+		assert.True(t, os.IsNotExist(statErr))
+	})
+
+	t.Run("cli-only readiness — no smithery written", func(t *testing.T) {
+		dir := t.TempDir()
+		m := CLIManifest{MCPBinary: "test-pp-mcp", MCPReady: "cli-only"}
+		data, _ := json.Marshal(m)
+		require.NoError(t, os.WriteFile(filepath.Join(dir, CLIManifestFilename), data, 0o644))
+
+		err := writeSmitheryYAML(dir)
+		require.NoError(t, err)
+		_, statErr := os.Stat(filepath.Join(dir, "smithery.yaml"))
+		assert.True(t, os.IsNotExist(statErr))
+	})
+
+	t.Run("api_key auth — env vars required", func(t *testing.T) {
+		dir := t.TempDir()
+		m := CLIManifest{
+			MCPBinary:   "stripe-pp-mcp",
+			MCPReady:    "full",
+			AuthType:    "api_key",
+			AuthEnvVars: []string{"STRIPE_API_KEY"},
+			APIName:     "stripe",
+			Description: "Stripe payments API",
+		}
+		data, _ := json.Marshal(m)
+		require.NoError(t, os.WriteFile(filepath.Join(dir, CLIManifestFilename), data, 0o644))
+
+		err := writeSmitheryYAML(dir)
+		require.NoError(t, err)
+
+		content, err := os.ReadFile(filepath.Join(dir, "smithery.yaml"))
+		require.NoError(t, err)
+		s := string(content)
+		assert.Contains(t, s, "name: stripe-pp-mcp")
+		assert.Contains(t, s, "description: Stripe payments API")
+		assert.Contains(t, s, "command: go run ./cmd/stripe-pp-mcp")
+		assert.Contains(t, s, "STRIPE_API_KEY")
+		assert.Contains(t, s, "required: true")
+	})
+
+	t.Run("cookie auth — env vars optional", func(t *testing.T) {
+		dir := t.TempDir()
+		m := CLIManifest{
+			MCPBinary:   "pizza-pp-mcp",
+			MCPReady:    "partial",
+			AuthType:    "cookie",
+			AuthEnvVars: []string{"PIZZA_AUTH"},
+			APIName:     "pizza",
+		}
+		data, _ := json.Marshal(m)
+		require.NoError(t, os.WriteFile(filepath.Join(dir, CLIManifestFilename), data, 0o644))
+
+		err := writeSmitheryYAML(dir)
+		require.NoError(t, err)
+
+		content, err := os.ReadFile(filepath.Join(dir, "smithery.yaml"))
+		require.NoError(t, err)
+		assert.Contains(t, string(content), "required: false")
+	})
+
+	t.Run("description with special characters is safely escaped", func(t *testing.T) {
+		dir := t.TempDir()
+		m := CLIManifest{
+			MCPBinary:   "test-pp-mcp",
+			MCPReady:    "full",
+			APIName:     "test",
+			Description: `Notion: "All-in-one" workspace & collaboration`,
+		}
+		data, _ := json.Marshal(m)
+		require.NoError(t, os.WriteFile(filepath.Join(dir, CLIManifestFilename), data, 0o644))
+
+		err := writeSmitheryYAML(dir)
+		require.NoError(t, err)
+
+		// Verify the file is valid YAML by re-parsing it
+		content, err := os.ReadFile(filepath.Join(dir, "smithery.yaml"))
+		require.NoError(t, err)
+		var parsed map[string]interface{}
+		require.NoError(t, yaml.Unmarshal(content, &parsed), "smithery.yaml should be valid YAML even with special chars in description")
+		assert.Contains(t, parsed["description"], "Notion")
+	})
+}
+
 func TestDetectSpecFormat(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -492,4 +661,30 @@ func TestDetectSpecFormat(t *testing.T) {
 			assert.Equal(t, tt.expected, detectSpecFormat(tt.data))
 		})
 	}
+}
+
+func TestPopulateMCPMetadata(t *testing.T) {
+	var m CLIManifest
+	populateMCPMetadata(&m, &spec.APISpec{
+		Name: "test",
+		Auth: spec.AuthConfig{
+			Type:    "cookie",
+			EnvVars: []string{"TEST_AUTH"},
+		},
+		Resources: map[string]spec.Resource{
+			"items": {
+				Endpoints: map[string]spec.Endpoint{
+					"list":   {Method: "GET", Path: "/items", NoAuth: true},
+					"create": {Method: "POST", Path: "/items"},
+				},
+			},
+		},
+	})
+
+	assert.Equal(t, "test-pp-mcp", m.MCPBinary)
+	assert.Equal(t, 2, m.MCPToolCount)
+	assert.Equal(t, 1, m.MCPPublicToolCount)
+	assert.Equal(t, "partial", m.MCPReady)
+	assert.Equal(t, "cookie", m.AuthType)
+	assert.Equal(t, []string{"TEST_AUTH"}, m.AuthEnvVars)
 }

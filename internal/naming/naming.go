@@ -5,10 +5,15 @@ import "strings"
 const (
 	CurrentCLISuffix = "-pp-cli"
 	LegacyCLISuffix  = "-cli"
+	MCPSuffix        = "-pp-mcp"
 )
 
 func CLI(name string) string {
 	return name + CurrentCLISuffix
+}
+
+func MCP(name string) string {
+	return name + MCPSuffix
 }
 
 func LegacyCLI(name string) string {

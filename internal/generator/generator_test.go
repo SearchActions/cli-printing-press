@@ -84,6 +84,48 @@ func TestGenerateOAuth2AuthTemplateConditionally(t *testing.T) {
 	})
 }
 
+func TestGeneratedOutput_READMEBearerTokenMCPSetup(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := &spec.APISpec{
+		Name:    "bearer",
+		Version: "0.1.0",
+		BaseURL: "https://api.example.com",
+		Auth: spec.AuthConfig{
+			Type:    "bearer_token",
+			Header:  "Authorization",
+			Format:  "Bearer {token}",
+			EnvVars: []string{"BEARER_TOKEN"},
+		},
+		Config: spec.ConfigSpec{
+			Format: "toml",
+			Path:   "~/.config/bearer-pp-cli/config.toml",
+		},
+		Resources: map[string]spec.Resource{
+			"items": {
+				Description: "Manage items",
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:      "GET",
+						Path:        "/items",
+						Description: "List items",
+					},
+				},
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	require.NoError(t, gen.Generate())
+
+	readme, err := os.ReadFile(filepath.Join(outputDir, "README.md"))
+	require.NoError(t, err)
+	content := string(readme)
+	assert.Contains(t, content, "claude mcp add bearer bearer-pp-mcp -e BEARER_TOKEN=<your-token>")
+	assert.NotContains(t, content, "bearer-pp-cli auth login\n\nclaude mcp add bearer bearer-pp-mcp")
+}
+
 func countFiles(t *testing.T, root string) int {
 	t.Helper()
 
@@ -1520,4 +1562,86 @@ func TestGeneratedOutput_ObjectFieldsUseRawMessage(t *testing.T) {
 	// The petstore spec has object-typed schema fields; they should be json.RawMessage
 	assert.Contains(t, content, "json.RawMessage", "types.go should use json.RawMessage for object/array fields")
 	assert.Contains(t, content, `import "encoding/json"`, "types.go should import encoding/json when RawMessage is used")
+}
+
+func TestMCPDescription(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name        string
+		desc        string
+		noAuth      bool
+		authType    string
+		publicCount int
+		totalCount  int
+		want        string
+	}{
+		{
+			name: "all auth — no annotation",
+			desc: "List orders", noAuth: false, authType: "api_key",
+			publicCount: 0, totalCount: 10,
+			want: "List orders",
+		},
+		{
+			name: "all public — no annotation",
+			desc: "List items", noAuth: true, authType: "none",
+			publicCount: 10, totalCount: 10,
+			want: "List items",
+		},
+		{
+			name: "public minority — append (public)",
+			desc: "Find stores", noAuth: true, authType: "api_key",
+			publicCount: 3, totalCount: 10,
+			want: "Find stores (public)",
+		},
+		{
+			name: "public minority — auth endpoint not annotated",
+			desc: "Create order", noAuth: false, authType: "api_key",
+			publicCount: 3, totalCount: 10,
+			want: "Create order",
+		},
+		{
+			name: "auth minority api_key — append suffix",
+			desc: "Create order", noAuth: false, authType: "api_key",
+			publicCount: 8, totalCount: 10,
+			want: "Create order (requires API key)",
+		},
+		{
+			name: "auth minority cookie — append browser login",
+			desc: "View account", noAuth: false, authType: "cookie",
+			publicCount: 8, totalCount: 10,
+			want: "View account (requires browser login)",
+		},
+		{
+			name: "auth minority oauth2 — append requires auth",
+			desc: "Update profile", noAuth: false, authType: "oauth2",
+			publicCount: 8, totalCount: 10,
+			want: "Update profile (requires auth)",
+		},
+		{
+			name: "exact tie — no annotation on either side",
+			desc: "Get item", noAuth: true, authType: "api_key",
+			publicCount: 5, totalCount: 10,
+			want: "Get item",
+		},
+		{
+			name: "exact tie — auth side also not annotated",
+			desc: "Delete item", noAuth: false, authType: "api_key",
+			publicCount: 5, totalCount: 10,
+			want: "Delete item",
+		},
+		{
+			name: "oneline cleanup applied",
+			desc: "First line\nSecond line", noAuth: false, authType: "none",
+			publicCount: 0, totalCount: 5,
+			want: "First line Second line",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := mcpDescription(tt.desc, tt.noAuth, tt.authType, tt.publicCount, tt.totalCount)
+			assert.Equal(t, tt.want, got)
+		})
+	}
 }

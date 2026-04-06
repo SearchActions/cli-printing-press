@@ -14,6 +14,7 @@ import (
 	catalogpkg "github.com/mvanhorn/cli-printing-press/internal/catalog"
 	"github.com/mvanhorn/cli-printing-press/internal/naming"
 	"github.com/mvanhorn/cli-printing-press/internal/openapi"
+	"github.com/mvanhorn/cli-printing-press/internal/spec"
 	"github.com/mvanhorn/cli-printing-press/internal/version"
 )
 
@@ -25,19 +26,35 @@ const CLIManifestFilename = ".printing-press.json"
 // It is written to the root of each published CLI directory so the
 // folder is self-describing even in isolation.
 type CLIManifest struct {
-	SchemaVersion        int       `json:"schema_version"`
-	GeneratedAt          time.Time `json:"generated_at"`
-	PrintingPressVersion string    `json:"printing_press_version"`
-	APIName              string    `json:"api_name"`
-	CLIName              string    `json:"cli_name"`
-	SpecURL              string    `json:"spec_url,omitempty"`
-	SpecPath             string    `json:"spec_path,omitempty"`
-	SpecFormat           string    `json:"spec_format,omitempty"`
-	SpecChecksum         string    `json:"spec_checksum,omitempty"`
-	RunID                string    `json:"run_id,omitempty"`
-	CatalogEntry         string    `json:"catalog_entry,omitempty"`
-	Category             string    `json:"category,omitempty"`
-	Description          string    `json:"description,omitempty"`
+	SchemaVersion        int                    `json:"schema_version"`
+	GeneratedAt          time.Time              `json:"generated_at"`
+	PrintingPressVersion string                 `json:"printing_press_version"`
+	APIName              string                 `json:"api_name"`
+	CLIName              string                 `json:"cli_name"`
+	SpecURL              string                 `json:"spec_url,omitempty"`
+	SpecPath             string                 `json:"spec_path,omitempty"`
+	SpecFormat           string                 `json:"spec_format,omitempty"`
+	SpecChecksum         string                 `json:"spec_checksum,omitempty"`
+	RunID                string                 `json:"run_id,omitempty"`
+	CatalogEntry         string                 `json:"catalog_entry,omitempty"`
+	Category             string                 `json:"category,omitempty"`
+	Description          string                 `json:"description,omitempty"`
+	MCPBinary            string                 `json:"mcp_binary,omitempty"`
+	MCPToolCount         int                    `json:"mcp_tool_count,omitempty"`
+	MCPPublicToolCount   int                    `json:"mcp_public_tool_count,omitempty"`
+	MCPReady             string                 `json:"mcp_ready,omitempty"`
+	AuthType             string                 `json:"auth_type,omitempty"`
+	AuthEnvVars          []string               `json:"auth_env_vars,omitempty"`
+	NovelFeatures        []NovelFeatureManifest `json:"novel_features,omitempty"`
+}
+
+// NovelFeatureManifest is a compact representation of a transcendence feature
+// for the CLI manifest and registry. Stripped of Rationale (which stays in
+// research.json and the README).
+type NovelFeatureManifest struct {
+	Name        string `json:"name"`
+	Command     string `json:"command"`
+	Description string `json:"description"`
 }
 
 // WriteCLIManifest marshals m as indented JSON and writes it to
@@ -68,16 +85,47 @@ func specChecksum(path string) (string, error) {
 	return "sha256:" + hex.EncodeToString(h[:]), nil
 }
 
+// computeMCPReady determines the MCP readiness level based on the auth type
+// and the public/total tool split.
+func computeMCPReady(authType string, publicTools int) string {
+	switch authType {
+	case "none", "api_key", "bearer_token":
+		return "full"
+	case "cookie", "composed":
+		if publicTools > 0 {
+			return "partial"
+		}
+		return "cli-only"
+	default:
+		return "full"
+	}
+}
+
+func populateMCPMetadata(m *CLIManifest, parsed *spec.APISpec) {
+	if parsed == nil {
+		return
+	}
+	total, public := parsed.CountMCPTools()
+	m.MCPBinary = naming.MCP(parsed.Name)
+	m.MCPToolCount = total
+	m.MCPPublicToolCount = public
+	m.MCPReady = computeMCPReady(parsed.Auth.Type, public)
+	m.AuthType = parsed.Auth.Type
+	m.AuthEnvVars = parsed.Auth.EnvVars
+}
+
 // GenerateManifestParams holds the information available at generate time
 // for writing a CLI manifest. Unlike PublishWorkingCLI (which has full
 // PipelineState), the standalone generate command only knows the spec
 // sources and output directory.
 type GenerateManifestParams struct {
-	APIName   string
-	SpecSrcs  []string // --spec args (URLs or file paths)
-	SpecURL   string   // --spec-url: explicit provenance URL (when --spec is a local downloaded file)
-	DocsURL   string   // --docs URL, if used
-	OutputDir string
+	APIName       string
+	SpecSrcs      []string // --spec args (URLs or file paths)
+	SpecURL       string   // --spec-url: explicit provenance URL (when --spec is a local downloaded file)
+	DocsURL       string   // --docs URL, if used
+	OutputDir     string
+	Spec          *spec.APISpec          // parsed spec for MCP metadata (nil if unavailable)
+	NovelFeatures []NovelFeatureManifest // transcendence features from research (nil if unavailable)
 }
 
 // WriteManifestForGenerate writes a .printing-press.json manifest into the
@@ -143,6 +191,14 @@ func WriteManifestForGenerate(p GenerateManifestParams) error {
 		m.CatalogEntry = entry.Name
 		m.Category = entry.Category
 		m.Description = entry.Description
+	}
+
+	// Populate MCP metadata from the parsed spec.
+	if p.Spec != nil {
+		populateMCPMetadata(&m, p.Spec)
+	}
+	if len(p.NovelFeatures) > 0 {
+		m.NovelFeatures = p.NovelFeatures
 	}
 
 	return WriteCLIManifest(p.OutputDir, m)

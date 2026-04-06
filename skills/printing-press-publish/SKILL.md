@@ -572,13 +572,33 @@ The registry file has this structure:
       "category": "<category>",
       "api": "<api-display-name>",
       "description": "<from manifest or README>",
-      "path": "library/<category>/<cli-name>"
+      "path": "library/<category>/<cli-name>",
+      "mcp": {
+        "binary": "<name>-pp-mcp",
+        "transport": "stdio",
+        "tool_count": 42,
+        "public_tool_count": 7,
+        "auth_type": "<api_key|none|bearer_token|cookie|composed>",
+        "env_vars": ["<ENV_VAR_NAME>"],
+        "mcp_ready": "<full|partial|cli-only>"
+      }
     }
   ]
 }
 ```
 
 Read `$PUBLISH_REPO_DIR/registry.json`, parse the `entries` array (not the top-level object), add or update the entry for this CLI. Match on `name` field. Preserve `schema_version` and any other top-level fields.
+
+**MCP metadata:** If the CLI's `.printing-press.json` manifest has MCP fields (`mcp_binary` is non-empty), populate the `mcp` block in the registry entry:
+- `binary`: from manifest `mcp_binary`
+- `transport`: always `"stdio"`
+- `tool_count`: from manifest `mcp_tool_count`
+- `public_tool_count`: from manifest `mcp_public_tool_count`
+- `auth_type`: from manifest `auth_type`
+- `env_vars`: from manifest `auth_env_vars`
+- `mcp_ready`: from manifest `mcp_ready`
+
+If the manifest has no MCP fields (empty `mcp_binary`), omit the `mcp` block entirely.
 
 Write back with `jq` or via the Write tool.
 

@@ -111,6 +111,7 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 		"envVarPlaceholder":  envVarPlaceholder,
 		"add":                func(a, b int) int { return a + b },
 		"oneline":            oneline,
+		"mcpDescription":     mcpDescription,
 		"flagName":           flagName,
 		"safeTypeName":       safeTypeName,
 		"hasNonScalarType": func(types map[string]spec.TypeDef) bool {
@@ -476,10 +477,10 @@ func (g *Generator) Generate() error {
 		return fmt.Errorf("rendering auth: %w", err)
 	}
 
-	// MCP server: generate cmd/{name}-mcp/ entry point and internal/mcp/ package
+	// MCP server: generate cmd/{name}-pp-mcp/ entry point and internal/mcp/ package
 	if g.VisionSet.MCP || true { // Always generate MCP for now
 		mcpDirs := []string{
-			filepath.Join("cmd", g.Spec.Name+"-mcp"),
+			filepath.Join("cmd", naming.MCP(g.Spec.Name)),
 			filepath.Join("internal", "mcp"),
 		}
 		for _, d := range mcpDirs {
@@ -487,7 +488,7 @@ func (g *Generator) Generate() error {
 				return fmt.Errorf("creating MCP dir %s: %w", d, err)
 			}
 		}
-		if err := g.renderTemplate("main_mcp.go.tmpl", filepath.Join("cmd", g.Spec.Name+"-mcp", "main.go"), g.Spec); err != nil {
+		if err := g.renderTemplate("main_mcp.go.tmpl", filepath.Join("cmd", naming.MCP(g.Spec.Name), "main.go"), g.Spec); err != nil {
 			return fmt.Errorf("rendering MCP main: %w", err)
 		}
 	}
@@ -616,20 +617,27 @@ func (g *Generator) Generate() error {
 		}
 	}
 
-	// Render MCP tools registration (needs VisionSet + store data)
+	// Render MCP tools registration (needs VisionSet + store data + tool counts for annotations)
 	if g.VisionSet.MCP {
+		mcpTotal, mcpPublic := g.Spec.CountMCPTools()
 		mcpData := struct {
 			*spec.APISpec
 			SyncableResources []profiler.SyncableResource
 			SearchableFields  map[string][]string
 			Tables            []TableDef
 			VisionSet         VisionTemplateSet
+			MCPTotalCount     int
+			MCPPublicCount    int
+			NovelFeatures     []NovelFeature
 		}{
 			APISpec:           g.Spec,
 			SyncableResources: g.profile.SyncableResources,
 			SearchableFields:  g.profile.SearchableFields,
 			Tables:            schema,
 			VisionSet:         g.VisionSet,
+			MCPTotalCount:     mcpTotal,
+			MCPPublicCount:    mcpPublic,
+			NovelFeatures:     g.NovelFeatures,
 		}
 		if err := g.renderTemplate("mcp_tools.go.tmpl", filepath.Join("internal", "mcp", "tools.go"), mcpData); err != nil {
 			return fmt.Errorf("rendering MCP tools: %w", err)
@@ -1059,6 +1067,38 @@ func oneline(s string) string {
 		}
 	}
 	return s
+}
+
+// mcpDescription builds an MCP tool description with optional minority-side
+// auth annotation. Only annotates when the CLI has a mix of public and
+// auth-required tools. The minority side gets annotated:
+//   - Public is minority → append "(public)"
+//   - Auth-required is minority → append auth-type-specific suffix
+//   - All same status or exact tie → no annotation
+func mcpDescription(desc string, noAuth bool, authType string, publicCount, totalCount int) string {
+	authCount := totalCount - publicCount
+	mixed := publicCount > 0 && authCount > 0
+
+	if mixed {
+		if noAuth && publicCount < authCount {
+			// Public endpoints are the minority — mark them
+			desc = desc + " (public)"
+		} else if !noAuth && authCount < publicCount {
+			// Auth-required endpoints are the minority — mark them
+			switch authType {
+			case "api_key":
+				desc = desc + " (requires API key)"
+			case "cookie", "composed":
+				desc = desc + " (requires browser login)"
+			case "oauth2", "bearer_token":
+				desc = desc + " (requires auth)"
+			default:
+				desc = desc + " (requires auth)"
+			}
+		}
+	}
+
+	return oneline(desc)
 }
 
 func exampleValue(p spec.Param) string {

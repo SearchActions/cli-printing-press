@@ -17,10 +17,10 @@ clean:
 {{- if .VisionSet.MCP}}
 
 build-mcp:
-	go build -o bin/{{.Name}}-mcp ./cmd/{{.Name}}-mcp
+	go build -o bin/{{.Name}}-pp-mcp ./cmd/{{.Name}}-pp-mcp
 
 install-mcp:
-	go install ./cmd/{{.Name}}-mcp
+	go install ./cmd/{{.Name}}-pp-mcp
 
 build-all: build build-mcp
 {{- end}}

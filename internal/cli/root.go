@@ -192,6 +192,7 @@ func newGenerateCmd() *cobra.Command {
 					APIName:   parsed.Name,
 					DocsURL:   docsURL,
 					OutputDir: absOut,
+					Spec:      parsed,
 				}); err != nil {
 					fmt.Fprintf(os.Stderr, "warning: could not write manifest: %v\n", err)
 				}
@@ -341,6 +342,7 @@ func newGenerateCmd() *cobra.Command {
 				SpecSrcs:  specFiles,
 				SpecURL:   specURL,
 				OutputDir: absOut,
+				Spec:      apiSpec,
 			}); err != nil {
 				fmt.Fprintf(os.Stderr, "warning: could not write manifest: %v\n", err)
 			}
