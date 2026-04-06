@@ -437,11 +437,10 @@ func TestGeneratedOutput_READMENovelFeaturesSection(t *testing.T) {
 		readme, err := os.ReadFile(filepath.Join(outputDir, "README.md"))
 		require.NoError(t, err)
 		content := string(readme)
-		assert.Contains(t, content, "## What's New Here")
-		assert.Contains(t, content, "### `testapi-pp-cli health`")
-		assert.Contains(t, content, "### `testapi-pp-cli triage`")
+		assert.Contains(t, content, "## Unique Features")
+		assert.Contains(t, content, "**`health`**")
+		assert.Contains(t, content, "**`triage`**")
 		assert.Contains(t, content, "See scheduling health metrics at a glance")
-		assert.Contains(t, content, "> Requires correlating bookings and schedules in the local store")
 	})
 
 	t.Run("section absent with no novel features", func(t *testing.T) {
@@ -451,7 +450,7 @@ func TestGeneratedOutput_READMENovelFeaturesSection(t *testing.T) {
 
 		readme, err := os.ReadFile(filepath.Join(outputDir, "README.md"))
 		require.NoError(t, err)
-		assert.NotContains(t, string(readme), "What's New Here")
+		assert.NotContains(t, string(readme), "Unique Features")
 	})
 
 	t.Run("single novel feature still renders section", func(t *testing.T) {
@@ -464,27 +463,23 @@ func TestGeneratedOutput_READMENovelFeaturesSection(t *testing.T) {
 
 		readme, err := os.ReadFile(filepath.Join(outputDir, "README.md"))
 		require.NoError(t, err)
-		assert.Contains(t, string(readme), "## What's New Here")
+		assert.Contains(t, string(readme), "## Unique Features")
 	})
 
-	t.Run("novel features appear before sources", func(t *testing.T) {
+	t.Run("novel features appear before usage", func(t *testing.T) {
 		outputDir := filepath.Join(t.TempDir(), "testapi-pp-cli")
 		gen := New(minSpec, outputDir)
 		gen.NovelFeatures = []NovelFeature{
 			{Name: "Health dashboard", Command: "health", Description: "Metrics", Rationale: "Local data"},
-		}
-		gen.Sources = []ReadmeSource{
-			{Name: "a", URL: "https://github.com/org/a", Stars: 100},
-			{Name: "b", URL: "https://github.com/org/b", Stars: 50},
 		}
 		require.NoError(t, gen.Generate())
 
 		readme, err := os.ReadFile(filepath.Join(outputDir, "README.md"))
 		require.NoError(t, err)
 		content := string(readme)
-		novelIdx := strings.Index(content, "What's New Here")
-		sourcesIdx := strings.Index(content, "Sources & Inspiration")
-		assert.Greater(t, sourcesIdx, novelIdx, "Novel features should appear before Sources")
+		novelIdx := strings.Index(content, "Unique Features")
+		usageIdx := strings.Index(content, "## Usage")
+		assert.Greater(t, usageIdx, novelIdx, "Unique Features should appear before Usage")
 	})
 }
 
