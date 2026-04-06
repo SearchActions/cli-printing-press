@@ -482,9 +482,39 @@ func TestDetectRequiredHeaders(t *testing.T) {
 		assert.Empty(t, parsed.RequiredHeaders)
 	})
 
+	t.Run("multi-version header tracks per-endpoint overrides", func(t *testing.T) {
+		data, err := os.ReadFile(filepath.Join("..", "..", "testdata", "openapi", "multi-version-header.yaml"))
+		require.NoError(t, err)
+
+		parsed, err := Parse(data)
+		require.NoError(t, err)
+
+		// Global header should be the majority value (2024-08-13 appears on 3 of 6 ops)
+		require.Len(t, parsed.RequiredHeaders, 1)
+		assert.Equal(t, "cal-api-version", parsed.RequiredHeaders[0].Name)
+		assert.Equal(t, "2024-08-13", parsed.RequiredHeaders[0].Value)
+
+		// Event-types endpoints should have header overrides with 2024-06-14
+		eventTypes := parsed.Resources["event-types"]
+		require.NotNil(t, eventTypes)
+		for eName, ep := range eventTypes.Endpoints {
+			require.NotEmpty(t, ep.HeaderOverrides, "event-types endpoint %q should have header overrides", eName)
+			assert.Equal(t, "cal-api-version", ep.HeaderOverrides[0].Name)
+			assert.Equal(t, "2024-06-14", ep.HeaderOverrides[0].Value)
+		}
+
+		// Bookings endpoints should NOT have overrides (they match the global default)
+		bookings := parsed.Resources["bookings"]
+		require.NotNil(t, bookings)
+		for eName, ep := range bookings.Endpoints {
+			assert.Empty(t, ep.HeaderOverrides, "bookings endpoint %q should not have overrides (matches global)", eName)
+		}
+	})
+
 	t.Run("authorization header excluded even if required on all ops", func(t *testing.T) {
-		headers := detectRequiredHeaders(nil, spec.AuthConfig{})
+		headers, perEndpoint := detectRequiredHeaders(nil, spec.AuthConfig{})
 		assert.Empty(t, headers)
+		assert.Empty(t, perEndpoint)
 	})
 }
 
@@ -601,6 +631,80 @@ func TestInferDescriptionAuth(t *testing.T) {
 	t.Run("nil doc returns fallback", func(t *testing.T) {
 		fb := spec.AuthConfig{Type: "none"}
 		assert.Equal(t, fb, inferDescriptionAuth(nil, "test", fb))
+	})
+}
+
+func TestInferAuthHeaderParam(t *testing.T) {
+	t.Parallel()
+
+	t.Run("detects auth from required Authorization header params", func(t *testing.T) {
+		data, err := os.ReadFile(filepath.Join("..", "..", "testdata", "openapi", "auth-header-param.yaml"))
+		require.NoError(t, err)
+
+		parsed, err := Parse(data)
+		require.NoError(t, err)
+
+		assert.Equal(t, "bearer_token", parsed.Auth.Type)
+		assert.Equal(t, "Authorization", parsed.Auth.Header)
+		assert.Equal(t, "header", parsed.Auth.In)
+		assert.True(t, parsed.Auth.Inferred)
+		assert.NotEmpty(t, parsed.Auth.EnvVars, "EnvVars must be populated for verify")
+	})
+
+	t.Run("does not trigger when Authorization params below threshold", func(t *testing.T) {
+		// 1 out of 5 operations = 20% < 30% threshold
+		doc := &openapi3.T{
+			Info:  &openapi3.Info{Title: "test", Description: "no auth keywords"},
+			Paths: &openapi3.Paths{},
+		}
+		for i, path := range []string{"/a", "/b", "/c", "/d", "/e"} {
+			pathItem := &openapi3.PathItem{
+				Get: &openapi3.Operation{Responses: openapi3.NewResponses()},
+			}
+			if i == 0 { // only first has Authorization param
+				pathItem.Get.Parameters = openapi3.Parameters{
+					&openapi3.ParameterRef{Value: &openapi3.Parameter{
+						Name: "Authorization", In: "header", Required: true,
+					}},
+				}
+			}
+			doc.Paths.Set(path, pathItem)
+		}
+		result := mapAuth(doc, "test-api")
+		assert.Equal(t, "none", result.Type)
+	})
+
+	t.Run("optional Authorization param not counted", func(t *testing.T) {
+		doc := &openapi3.T{
+			Info:  &openapi3.Info{Title: "test", Description: "no auth keywords"},
+			Paths: &openapi3.Paths{},
+		}
+		for _, path := range []string{"/a", "/b", "/c"} {
+			pathItem := &openapi3.PathItem{
+				Get: &openapi3.Operation{
+					Responses: openapi3.NewResponses(),
+					Parameters: openapi3.Parameters{
+						&openapi3.ParameterRef{Value: &openapi3.Parameter{
+							Name: "Authorization", In: "header", Required: false,
+						}},
+					},
+				},
+			}
+			doc.Paths.Set(path, pathItem)
+		}
+		result := mapAuth(doc, "test-api")
+		assert.Equal(t, "none", result.Type)
+	})
+
+	t.Run("explicit securitySchemes still wins over header param", func(t *testing.T) {
+		data, err := os.ReadFile(filepath.Join("..", "..", "testdata", "openapi", "gmail.yaml"))
+		require.NoError(t, err)
+
+		parsed, err := Parse(data)
+		require.NoError(t, err)
+
+		assert.Equal(t, "bearer_token", parsed.Auth.Type)
+		assert.False(t, parsed.Auth.Inferred, "explicit auth should not be marked as inferred")
 	})
 }
 

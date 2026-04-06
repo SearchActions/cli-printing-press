@@ -63,16 +63,17 @@ type Resource struct {
 }
 
 type Endpoint struct {
-	Method       string            `yaml:"method" json:"method"`
-	Path         string            `yaml:"path" json:"path"`
-	Description  string            `yaml:"description" json:"description"`
-	Params       []Param           `yaml:"params" json:"params"`
-	Body         []Param           `yaml:"body" json:"body"`
-	Response     ResponseDef       `yaml:"response" json:"response"`
-	Pagination   *Pagination       `yaml:"pagination" json:"pagination"`
-	ResponsePath string            `yaml:"response_path,omitempty" json:"response_path,omitempty"` // path to extract data array from response (e.g., "data", "results.items")
-	Meta         map[string]string `yaml:"meta,omitempty" json:"meta,omitempty"`                   // per-endpoint metadata (e.g., source_tier, source_count from crowd-sniff)
-	Alias        string            `yaml:"-" json:"-"`                                             // computed, not from YAML
+	Method          string            `yaml:"method" json:"method"`
+	Path            string            `yaml:"path" json:"path"`
+	Description     string            `yaml:"description" json:"description"`
+	Params          []Param           `yaml:"params" json:"params"`
+	Body            []Param           `yaml:"body" json:"body"`
+	Response        ResponseDef       `yaml:"response" json:"response"`
+	Pagination      *Pagination       `yaml:"pagination" json:"pagination"`
+	ResponsePath    string            `yaml:"response_path,omitempty" json:"response_path,omitempty"`       // path to extract data array from response (e.g., "data", "results.items")
+	Meta            map[string]string `yaml:"meta,omitempty" json:"meta,omitempty"`                         // per-endpoint metadata (e.g., source_tier, source_count from crowd-sniff)
+	HeaderOverrides []RequiredHeader  `yaml:"header_overrides,omitempty" json:"header_overrides,omitempty"` // per-endpoint header overrides (e.g., different api-version)
+	Alias           string            `yaml:"-" json:"-"`                                                   // computed, not from YAML
 }
 
 type Param struct {

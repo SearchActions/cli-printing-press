@@ -198,13 +198,17 @@ func (c *Client) RateLimit() float64 {
 }
 
 func (c *Client) Get(path string, params map[string]string) (json.RawMessage, error) {
+	return c.GetWithHeaders(path, params, nil)
+}
+
+func (c *Client) GetWithHeaders(path string, params map[string]string, headers map[string]string) (json.RawMessage, error) {
 	// Check cache for GET requests
 	if !c.NoCache && !c.DryRun && c.cacheDir != "" {
 		if cached, ok := c.readCache(path, params); ok {
 			return cached, nil
 		}
 	}
-	result, _, err := c.do("GET", path, params, nil)
+	result, _, err := c.do("GET", path, params, nil, headers)
 	if err == nil && !c.NoCache && !c.DryRun && c.cacheDir != "" {
 		c.writeCache(path, params, result)
 	}
@@ -240,22 +244,40 @@ func (c *Client) writeCache(path string, params map[string]string, data json.Raw
 }
 
 func (c *Client) Post(path string, body any) (json.RawMessage, int, error) {
-	return c.do("POST", path, nil, body)
+	return c.do("POST", path, nil, body, nil)
+}
+
+func (c *Client) PostWithHeaders(path string, body any, headers map[string]string) (json.RawMessage, int, error) {
+	return c.do("POST", path, nil, body, headers)
 }
 
 func (c *Client) Delete(path string) (json.RawMessage, int, error) {
-	return c.do("DELETE", path, nil, nil)
+	return c.do("DELETE", path, nil, nil, nil)
+}
+
+func (c *Client) DeleteWithHeaders(path string, headers map[string]string) (json.RawMessage, int, error) {
+	return c.do("DELETE", path, nil, nil, headers)
 }
 
 func (c *Client) Put(path string, body any) (json.RawMessage, int, error) {
-	return c.do("PUT", path, nil, body)
+	return c.do("PUT", path, nil, body, nil)
+}
+
+func (c *Client) PutWithHeaders(path string, body any, headers map[string]string) (json.RawMessage, int, error) {
+	return c.do("PUT", path, nil, body, headers)
 }
 
 func (c *Client) Patch(path string, body any) (json.RawMessage, int, error) {
-	return c.do("PATCH", path, nil, body)
+	return c.do("PATCH", path, nil, body, nil)
 }
 
-func (c *Client) do(method, path string, params map[string]string, body any) (json.RawMessage, int, error) {
+func (c *Client) PatchWithHeaders(path string, body any, headers map[string]string) (json.RawMessage, int, error) {
+	return c.do("PATCH", path, nil, body, headers)
+}
+
+// do executes an HTTP request. headerOverrides, when non-nil, override global
+// RequiredHeaders for this specific request (used for per-endpoint API versioning).
+func (c *Client) do(method, path string, params map[string]string, body any, headerOverrides map[string]string) (json.RawMessage, int, error) {
 {{- if eq .ClientPattern "proxy-envelope"}}
 	// Proxy-envelope: all requests are POST'd to BaseURL with a JSON envelope
 	targetURL := c.BaseURL
@@ -274,7 +296,7 @@ func (c *Client) do(method, path string, params map[string]string, body any) (js
 
 	// Build the request for dry-run display or actual execution
 	if c.DryRun {
-		return c.dryRun(method, targetURL, path, params, bodyBytes)
+		return c.dryRun(method, targetURL, path, params, bodyBytes, headerOverrides)
 	}
 
 	const maxRetries = 3
@@ -346,6 +368,10 @@ func (c *Client) do(method, path string, params map[string]string, body any) (js
 {{- range .RequiredHeaders}}
 		req.Header.Set("{{.Name}}", "{{.Value}}")
 {{- end}}
+		// Per-endpoint header overrides (e.g., different API version per resource)
+		for k, v := range headerOverrides {
+			req.Header.Set(k, v)
+		}
 		req.Header.Set("User-Agent", "{{.Name}}-pp-cli/{{.Version}}")
 
 		resp, err := c.HTTPClient.Do(req)
@@ -400,7 +426,7 @@ func (c *Client) do(method, path string, params map[string]string, body any) (js
 	return nil, 0, lastErr
 }
 
-func (c *Client) dryRun(method, targetURL, path string, params map[string]string, body []byte) (json.RawMessage, int, error) {
+func (c *Client) dryRun(method, targetURL, path string, params map[string]string, body []byte, headerOverrides map[string]string) (json.RawMessage, int, error) {
 {{- if eq .ClientPattern "proxy-envelope"}}
 	// Show the proxy envelope that would be sent
 	envelope := proxyEnvelope{

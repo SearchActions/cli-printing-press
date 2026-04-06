@@ -260,7 +260,9 @@ func parse(data []byte, lenient bool) (*spec.APISpec, error) {
 	}
 	mapResources(doc, result, resourceBasePath)
 	mapTypes(doc, result)
-	result.RequiredHeaders = detectRequiredHeaders(doc, result.Auth)
+	var perEndpointHeaders map[string]map[string]string
+	result.RequiredHeaders, perEndpointHeaders = detectRequiredHeaders(doc, result.Auth)
+	applyHeaderOverrides(result, perEndpointHeaders)
 
 	if err := result.Validate(); err != nil {
 		return nil, fmt.Errorf("validating parsed spec: %w", err)
@@ -275,7 +277,10 @@ func mapAuth(doc *openapi3.T, name string) spec.AuthConfig {
 	if scheme == nil {
 		result := inferQueryParamAuth(doc, name, auth)
 		if result.Type == "none" {
-			return inferDescriptionAuth(doc, name, result)
+			result = inferDescriptionAuth(doc, name, result)
+		}
+		if result.Type == "none" {
+			result = inferAuthHeaderParam(doc, name, result)
 		}
 		return result
 	}
@@ -445,9 +450,9 @@ func inferQueryParamAuth(doc *openapi3.T, name string, fallback spec.AuthConfig)
 // detectRequiredHeaders scans all operations for required header parameters
 // and returns those appearing on >80% of operations as global required headers.
 // Auth-related and dynamic headers are excluded via case-insensitive matching.
-func detectRequiredHeaders(doc *openapi3.T, auth spec.AuthConfig) []spec.RequiredHeader {
+func detectRequiredHeaders(doc *openapi3.T, auth spec.AuthConfig) ([]spec.RequiredHeader, map[string]map[string]string) {
 	if doc == nil || doc.Paths == nil {
-		return nil
+		return nil, nil
 	}
 
 	// Headers to exclude (case-insensitive) — handled by other mechanisms
@@ -465,6 +470,8 @@ func detectRequiredHeaders(doc *openapi3.T, auth spec.AuthConfig) []spec.Require
 		name         string
 		defaultValue string
 		count        int
+		valueCounts  map[string]int    // value → count (for multi-value detection)
+		pathValues   map[string]string // apiPath → value (for per-endpoint overrides)
 	}
 
 	headers := map[string]*headerInfo{} // keyed by lowercase name
@@ -491,33 +498,115 @@ func detectRequiredHeaders(doc *openapi3.T, auth spec.AuthConfig) []spec.Require
 				}
 				h, ok := headers[lower]
 				if !ok {
-					h = &headerInfo{name: p.Name}
-					if p.Schema != nil && p.Schema.Value != nil {
-						if p.Schema.Value.Default != nil {
-							h.defaultValue = fmt.Sprintf("%v", p.Schema.Value.Default)
-						} else if len(p.Schema.Value.Enum) > 0 {
-							h.defaultValue = fmt.Sprintf("%v", p.Schema.Value.Enum[0])
-						}
+					h = &headerInfo{
+						name:        p.Name,
+						valueCounts: map[string]int{},
+						pathValues:  map[string]string{},
 					}
 					headers[lower] = h
 				}
 				h.count++
+
+				// Extract this operation's header value
+				val := ""
+				if p.Schema != nil && p.Schema.Value != nil {
+					if p.Schema.Value.Default != nil {
+						val = fmt.Sprintf("%v", p.Schema.Value.Default)
+					} else if len(p.Schema.Value.Enum) > 0 {
+						val = fmt.Sprintf("%v", p.Schema.Value.Enum[0])
+					}
+				}
+				if val != "" {
+					h.valueCounts[val]++
+					h.pathValues[pathKey] = val
+				}
 			}
 		}
 	}
 
 	if totalOps == 0 {
-		return nil
+		return nil, nil
 	}
 
 	var result []spec.RequiredHeader
+	// perEndpointHeaders maps headerName → apiPath → value for headers with
+	// multiple distinct values. Endpoints whose value differs from the global
+	// default get an override.
+	perEndpointHeaders := map[string]map[string]string{}
+
 	threshold := 0.8
 	for _, h := range headers {
-		if float64(h.count)/float64(totalOps) > threshold {
-			result = append(result, spec.RequiredHeader{
-				Name:  h.name,
-				Value: h.defaultValue,
-			})
+		if float64(h.count)/float64(totalOps) <= threshold {
+			continue
+		}
+
+		// Find the majority value (global default)
+		bestVal := ""
+		bestCount := 0
+		for val, cnt := range h.valueCounts {
+			if cnt > bestCount {
+				bestVal = val
+				bestCount = cnt
+			}
+		}
+		h.defaultValue = bestVal
+
+		result = append(result, spec.RequiredHeader{
+			Name:  h.name,
+			Value: h.defaultValue,
+		})
+
+		// Record per-endpoint overrides for paths with non-majority values
+		if len(h.valueCounts) > 1 {
+			overrides := map[string]string{}
+			for path, val := range h.pathValues {
+				if val != bestVal {
+					overrides[path] = val
+				}
+			}
+			if len(overrides) > 0 {
+				perEndpointHeaders[h.name] = overrides
+			}
+		}
+	}
+	return result, perEndpointHeaders
+}
+
+// applyHeaderOverrides sets HeaderOverrides on each Endpoint whose API path
+// has a per-endpoint header value differing from the global default.
+func applyHeaderOverrides(s *spec.APISpec, perEndpoint map[string]map[string]string) {
+	if len(perEndpoint) == 0 || s == nil {
+		return
+	}
+	for rName, r := range s.Resources {
+		for eName, e := range r.Endpoints {
+			overrides := headerOverridesForPath(e.Path, perEndpoint)
+			if len(overrides) > 0 {
+				e.HeaderOverrides = overrides
+				r.Endpoints[eName] = e
+			}
+		}
+		for subName, sub := range r.SubResources {
+			for eName, e := range sub.Endpoints {
+				overrides := headerOverridesForPath(e.Path, perEndpoint)
+				if len(overrides) > 0 {
+					e.HeaderOverrides = overrides
+					sub.Endpoints[eName] = e
+				}
+			}
+			r.SubResources[subName] = sub
+		}
+		s.Resources[rName] = r
+	}
+}
+
+// headerOverridesForPath checks if the given endpoint path has per-endpoint header
+// overrides. Returns the matching overrides as RequiredHeader entries.
+func headerOverridesForPath(endpointPath string, perEndpoint map[string]map[string]string) []spec.RequiredHeader {
+	var result []spec.RequiredHeader
+	for headerName, pathValues := range perEndpoint {
+		if val, ok := pathValues[endpointPath]; ok {
+			result = append(result, spec.RequiredHeader{Name: headerName, Value: val})
 		}
 	}
 	return result
@@ -590,6 +679,60 @@ func inferDescriptionAuth(doc *openapi3.T, name string, fallback spec.AuthConfig
 	}
 
 	return fallback
+}
+
+// inferAuthHeaderParam scans all operations for required Authorization header
+// parameters. This is the fourth-tier auth fallback — it fires only when
+// securitySchemes, query-param inference, and description inference all fail.
+// APIs like Cal.com declare auth via individual header parameters instead of
+// securitySchemes or description text.
+func inferAuthHeaderParam(doc *openapi3.T, name string, fallback spec.AuthConfig) spec.AuthConfig {
+	if doc == nil || doc.Paths == nil {
+		return fallback
+	}
+
+	authParamCount := 0
+	totalOps := 0
+
+	for _, pathKey := range doc.Paths.InMatchingOrder() {
+		pathItem := doc.Paths.Value(pathKey)
+		if pathItem == nil {
+			continue
+		}
+		for _, op := range pathItem.Operations() {
+			if op == nil {
+				continue
+			}
+			totalOps++
+			for _, params := range []openapi3.Parameters{pathItem.Parameters, op.Parameters} {
+				for _, pRef := range params {
+					if pRef == nil || pRef.Value == nil {
+						continue
+					}
+					p := pRef.Value
+					if p.In == openapi3.ParameterInHeader &&
+						strings.EqualFold(p.Name, "Authorization") &&
+						p.Required {
+						authParamCount++
+						break // count once per operation
+					}
+				}
+			}
+		}
+	}
+
+	if totalOps == 0 || float64(authParamCount)/float64(totalOps) <= 0.3 {
+		return fallback
+	}
+
+	envPrefix := strings.ToUpper(strings.ReplaceAll(name, "-", "_"))
+	return spec.AuthConfig{
+		Type:     "bearer_token",
+		Header:   "Authorization",
+		In:       "header",
+		EnvVars:  []string{envPrefix + "_TOKEN"},
+		Inferred: true,
+	}
 }
 
 // commonCustomHeaders are header names that APIs use instead of Authorization.

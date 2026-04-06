@@ -83,6 +83,14 @@ func new{{camel .FuncPrefix}}{{camel .EndpointName}}Cmd(flags *rootFlags) *cobra
 {{- end}}
 {{- end}}
 
+{{- if .Endpoint.HeaderOverrides}}
+			headerOverrides := map[string]string{
+{{- range .Endpoint.HeaderOverrides}}
+				"{{.Name}}": "{{.Value}}",
+{{- end}}
+			}
+{{- end}}
+
 {{- if or (eq .Endpoint.Method "GET") (eq .Endpoint.Method "HEAD")}}
 {{- if .Endpoint.Pagination}}
 {{- if .HasStore}}
@@ -114,7 +122,11 @@ func new{{camel .FuncPrefix}}{{camel .EndpointName}}Cmd(flags *rootFlags) *cobra
 {{- if .HasStore}}
 			data, prov, err := resolveRead(c, flags, "{{lower .ResourceName}}", {{if .Endpoint.Pagination}}true{{else}}false{{end}}, path, params)
 {{- else}}
+{{- if .Endpoint.HeaderOverrides}}
+			data, err := c.GetWithHeaders(path, params, headerOverrides)
+{{- else}}
 			data, err := c.Get(path, params)
+{{- end}}
 {{- end}}
 {{- end}}
 {{- else if eq .Endpoint.Method "POST"}}
@@ -137,9 +149,17 @@ func new{{camel .FuncPrefix}}{{camel .EndpointName}}Cmd(flags *rootFlags) *cobra
 				}
 {{- end}}
 			}
+{{- if .Endpoint.HeaderOverrides}}
+			data, statusCode, err := c.PostWithHeaders(path, body, headerOverrides)
+{{- else}}
 			data, statusCode, err := c.Post(path, body)
+{{- end}}
 {{- else if eq .Endpoint.Method "DELETE"}}
+{{- if .Endpoint.HeaderOverrides}}
+			data, statusCode, err := c.DeleteWithHeaders(path, headerOverrides)
+{{- else}}
 			data, statusCode, err := c.Delete(path)
+{{- end}}
 {{- else if eq .Endpoint.Method "PUT"}}
 			var body map[string]any
 			if stdinBody {
@@ -160,7 +180,11 @@ func new{{camel .FuncPrefix}}{{camel .EndpointName}}Cmd(flags *rootFlags) *cobra
 				}
 {{- end}}
 			}
+{{- if .Endpoint.HeaderOverrides}}
+			data, statusCode, err := c.PutWithHeaders(path, body, headerOverrides)
+{{- else}}
 			data, statusCode, err := c.Put(path, body)
+{{- end}}
 {{- else if eq .Endpoint.Method "PATCH"}}
 			var body map[string]any
 			if stdinBody {
@@ -181,7 +205,11 @@ func new{{camel .FuncPrefix}}{{camel .EndpointName}}Cmd(flags *rootFlags) *cobra
 				}
 {{- end}}
 			}
+{{- if .Endpoint.HeaderOverrides}}
+			data, statusCode, err := c.PatchWithHeaders(path, body, headerOverrides)
+{{- else}}
 			data, statusCode, err := c.Patch(path, body)
+{{- end}}
 {{- end}}
 {{- if eq .Endpoint.Method "DELETE"}}
 			if err != nil {
