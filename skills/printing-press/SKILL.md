@@ -1226,6 +1226,20 @@ Include:
 - skipped body fields that remain
 - any generator limitations found
 
+### Phase 3 Completion Gate
+
+**MANDATORY. Do NOT proceed to Phase 4 until this gate passes.**
+
+Before moving to shipcheck, verify the build log against the absorb manifest:
+
+1. Count the transcendence features in the Phase 1.5 manifest's transcendence table
+2. Count the transcendence commands actually built (present in `internal/cli/` and registered in `root.go`)
+3. If built < manifest count, **STOP**. List the missing features and build them before proceeding
+
+The generator handles Priority 0 (data layer) and most of Priority 1 (absorbed API endpoints). Priority 2 (transcendence) is always hand-built — the generator does not produce these. If you skip Priority 2, the CLI ships without the features that differentiate it from every other tool.
+
+Do not rationalize skipping transcendence features because "the CLI already works for live API interaction." The absorb manifest was approved by the user. Build what was approved.
+
 ## Phase 4: Shipcheck
 
 Run one combined verification block.
