@@ -195,7 +195,7 @@ func TestGenerateWithOwnerField(t *testing.T) {
 	assert.Contains(t, string(mainGo), "testowner")
 	readme, err := os.ReadFile(filepath.Join(outputDir, "README.md"))
 	require.NoError(t, err)
-	assert.Contains(t, string(readme), "go install github.com/testowner/owned-pp-cli/cmd/owned-pp-cli@latest")
+	assert.Contains(t, string(readme), "go install github.com/mvanhorn/printing-press-library/library/other/owned-pp-cli/cmd/owned-pp-cli@latest")
 }
 
 func TestGenerateWithEmptyOwner(t *testing.T) {

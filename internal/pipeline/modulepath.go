@@ -89,7 +89,7 @@ func hasRewriteExtension(path string) bool {
 }
 
 func rewriteModuleInstallPaths(content, oldPath, newPath string) string {
-	pattern := regexp.MustCompile(`(?:github\.com/[^/\s"]+/)?` + regexp.QuoteMeta(oldPath) + `/cmd/`)
+	pattern := regexp.MustCompile(`(?:\S+/)?` + regexp.QuoteMeta(oldPath) + `/cmd/`)
 	return pattern.ReplaceAllString(content, newPath+"/cmd/")
 }
 

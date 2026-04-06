@@ -9,12 +9,12 @@ Learn more at [{{humanName .Name}}]({{.WebsiteURL}}).{{end}}
 ### Go
 
 ```
-go install github.com/{{.Owner}}/{{.Name}}-pp-cli/cmd/{{.Name}}-pp-cli@latest
+go install github.com/mvanhorn/printing-press-library/library/{{if .Category}}{{.Category}}{{else}}other{{end}}/{{.Name}}-pp-cli/cmd/{{.Name}}-pp-cli@latest
 ```
 
 ### Binary
 
-Download from [Releases](https://github.com/{{.Owner}}/{{.Name}}-pp-cli/releases).
+Download from [Releases](https://github.com/mvanhorn/printing-press-library/releases).
 
 ## Quick Start
 

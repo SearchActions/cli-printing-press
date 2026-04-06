@@ -731,4 +731,7 @@ func enrichSpecFromCatalog(apiSpec *spec.APISpec) {
 	if entry.Homepage != "" && apiSpec.WebsiteURL == "" {
 		apiSpec.WebsiteURL = entry.Homepage
 	}
+	if entry.Category != "" && apiSpec.Category == "" {
+		apiSpec.Category = entry.Category
+	}
 }
