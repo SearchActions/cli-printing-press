@@ -580,7 +580,10 @@ The registry file has this structure:
         "public_tool_count": 7,
         "auth_type": "<api_key|none|bearer_token|cookie|composed>",
         "env_vars": ["<ENV_VAR_NAME>"],
-        "mcp_ready": "<full|partial|cli-only>"
+        "mcp_ready": "<full|partial|cli-only>",
+        "manifest_checksum": "<sha256:hex of tools-manifest.json>",
+        "spec_format": "<openapi3|graphql|internal>",
+        "manifest_url": "library/<category>/<cli-name>/tools-manifest.json"
       }
     }
   ]
@@ -597,6 +600,9 @@ Read `$PUBLISH_REPO_DIR/registry.json`, parse the `entries` array (not the top-l
 - `auth_type`: from manifest `auth_type`
 - `env_vars`: from manifest `auth_env_vars`
 - `mcp_ready`: from manifest `mcp_ready`
+- `manifest_checksum`: SHA-256 hash of the `tools-manifest.json` file in the CLI directory (format: `sha256:<hex>`). Compute with: `sha256sum tools-manifest.json | awk '{print "sha256:" $1}'`. If `tools-manifest.json` does not exist, omit this field.
+- `spec_format`: from manifest `spec_format` (e.g., `openapi3`, `graphql`, `internal`). Omit if empty.
+- `manifest_url`: derived from the entry's `path` field: `<path>/tools-manifest.json`. Omit if `tools-manifest.json` does not exist.
 
 If the manifest has no MCP fields (empty `mcp_binary`), omit the `mcp` block entirely.
 
