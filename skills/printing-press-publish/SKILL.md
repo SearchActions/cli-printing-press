@@ -318,20 +318,39 @@ MODULE_PATH="<module_path_base>/<category>/<api-slug>"
 
 For example: `github.com/mvanhorn/printing-press-library/library/productivity/notion`
 
-Run `publish package` with `--dest` to write directly into the publish repo:
+Run `publish package` with `--target` to stage the CLI into a temporary directory, then copy it into the publish repo:
 
 ```bash
+STAGING_DIR="/tmp/publish-staging-<api-slug>"
+rm -rf "$STAGING_DIR"
+
 printing-press publish package \
   --dir <cli-dir> \
   --category <category> \
-  --dest "$PUBLISH_REPO_DIR" \
+  --target "$STAGING_DIR" \
   --module-path "$MODULE_PATH" \
   --json
 ```
 
-This removes any existing version of the CLI (handling category changes), copies the CLI source and `.manuscripts` directly into `$PUBLISH_REPO_DIR/library/<category>/<api-slug>/`, and rewrites the Go module path.
-
 Parse the JSON result. Note the `staged_dir`, `module_path`, `manuscripts_included`, and `run_id`. The `module_path` field confirms the Go module path that was set in the packaged CLI's `go.mod` and import paths.
+
+Then copy the staged CLI into the publish repo, replacing any existing version:
+
+```bash
+# Remove existing version (handles category changes)
+rm -rf "$PUBLISH_REPO_DIR/library"/*/"<api-slug>"
+
+# Copy staged CLI into publish repo (slug-keyed directory)
+cp -r "$STAGING_DIR/library/<category>/<cli-name>" "$PUBLISH_REPO_DIR/library/<category>/<api-slug>"
+
+# Remove binaries (should not be committed)
+rm -f "$PUBLISH_REPO_DIR/library/<category>/<api-slug>/<api-slug>" "$PUBLISH_REPO_DIR/library/<category>/<api-slug>/<cli-name>"
+
+# Verify it builds from the publish repo
+cd "$PUBLISH_REPO_DIR/library/<category>/<api-slug>" && go build ./...
+```
+
+Note: `staged_dir` uses the CLI name (e.g., `espn-pp-cli`) but the publish repo uses the API slug (e.g., `espn`). The copy step handles this rename.
 
 ## Step 7: Collision Detection & Resolution
 
@@ -479,7 +498,7 @@ If a suggestion collides, skip it or increment the numeric suffix.
 
 **4. Rename the CLI in the publish repo:**
 
-Since Step 6 wrote the CLI directly into `$PUBLISH_REPO_DIR` via `--dest`, the rename operates on that directory. Note: `--old-name`/`--new-name` still use CLI-name format (e.g., `dub-pp-cli`) because `RenameCLI` does content replacement — bare slugs would cause collateral damage. The `--dir` path uses the slug-keyed directory.
+Since Step 6 copied the staged CLI into `$PUBLISH_REPO_DIR`, the rename operates on that directory. Note: `--old-name`/`--new-name` still use CLI-name format (e.g., `dub-pp-cli`) because `RenameCLI` does content replacement — bare slugs would cause collateral damage. The `--dir` path uses the slug-keyed directory.
 
 ```bash
 printing-press publish rename \
