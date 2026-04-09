@@ -32,6 +32,9 @@ func newSyncCmd(flags *rootFlags) *cobra.Command {
 	var since string
 	var concurrency int
 	var dbPath string
+{{- if .Pagination.DateRangeParam}}
+	var dates string
+{{- end}}
 
 	cmd := &cobra.Command{
 		Use:   "sync",
@@ -52,7 +55,11 @@ Once synced, use the 'search' command for instant full-text search.`,
   {{.Name}}-pp-cli sync --since 7d
 
   # Parallel sync with 8 workers
-  {{.Name}}-pp-cli sync --concurrency 8`,
+  {{.Name}}-pp-cli sync --concurrency 8
+{{- if .Pagination.DateRangeParam}}
+
+  # Sync historical data for a date range
+  {{.Name}}-pp-cli sync --dates 20250101-20250131{{end}}`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			c, err := flags.newClient()
 			if err != nil {
@@ -92,6 +99,11 @@ Once synced, use the 'search' command for instant full-text search.`,
 				sinceTS = ts.Format(time.RFC3339)
 			}
 
+{{- if .Pagination.DateRangeParam}}
+			// If --dates is provided, set it as extra sync context
+			syncDates := dates
+{{- end}}
+
 			// Worker pool: produce resources, N workers consume
 			if concurrency < 1 {
 				concurrency = 4
@@ -107,7 +119,7 @@ Once synced, use the 'search' command for instant full-text search.`,
 				go func() {
 					defer wg.Done()
 					for resource := range work {
-						res := syncResource(c, db, resource, sinceTS, full)
+						res := syncResource(c, db, resource, sinceTS, full{{if .Pagination.DateRangeParam}}, syncDates{{end}})
 						results <- res
 					}
 				}()
@@ -157,6 +169,9 @@ Once synced, use the 'search' command for instant full-text search.`,
 	cmd.Flags().StringVar(&since, "since", "", "Incremental sync duration (e.g. 7d, 24h, 1w, 30m)")
 	cmd.Flags().IntVar(&concurrency, "concurrency", 4, "Number of parallel sync workers")
 	cmd.Flags().StringVar(&dbPath, "db", "", "Database path (default: ~/.local/share/{{.Name}}-pp-cli/data.db)")
+{{- if .Pagination.DateRangeParam}}
+	cmd.Flags().StringVar(&dates, "dates", "", "Date or date range to sync (passed as {{.Pagination.DateRangeParam}} query parameter)")
+{{- end}}
 
 	return cmd
 }
@@ -166,7 +181,7 @@ Once synced, use the 'search' command for instant full-text search.`,
 func syncResource(c interface {
 	Get(string, map[string]string) (json.RawMessage, error)
 	RateLimit() float64
-}, db *store.Store, resource, sinceTS string, full bool) syncResult {
+}, db *store.Store, resource, sinceTS string, full bool{{if .Pagination.DateRangeParam}}, dates string{{end}}) syncResult {
 	started := time.Now()
 
 	if !humanFriendly {
@@ -208,6 +223,13 @@ func syncResource(c interface {
 		if effectiveSince != "" {
 			params[sinceParam] = effectiveSince
 		}
+{{- if .Pagination.DateRangeParam}}
+
+		// Set date range filter (pass-through to API)
+		if dates != "" {
+			params[determineDateRangeParam()] = dates
+		}
+{{- end}}
 
 		data, err := c.Get(path, params)
 		if err != nil {
@@ -305,6 +327,13 @@ func determinePaginationDefaults() paginationDefaults {
 func determineSinceParam() string {
 	return "{{if .Pagination.SinceParam}}{{.Pagination.SinceParam}}{{else}}since{{end}}"
 }
+{{- if .Pagination.DateRangeParam}}
+
+// determineDateRangeParam returns the query parameter name for date-range sync filtering.
+func determineDateRangeParam() string {
+	return "{{.Pagination.DateRangeParam}}"
+}
+{{- end}}
 
 // extractPageItems attempts to extract an array of items and pagination cursor from a response.
 // It tries multiple strategies:

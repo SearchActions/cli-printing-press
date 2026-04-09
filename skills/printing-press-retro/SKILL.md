@@ -309,6 +309,21 @@ propose the cheapest mitigation.
 
 **7. What is the durable fix?** Prefer: template fix > binary post-processing > skill instruction.
 
+**Strip API-specific details from the proposed fix.** The durable fix must work across
+APIs, not just the one that surfaced the finding. If the fix includes hardcoded param
+names (e.g., `--sport`, `--league`), date formats (e.g., `YYYYMMDD`), chunking
+strategies (e.g., monthly), or domain-specific logic, those are printed-CLI details
+leaking into the machine recommendation. The machine fix should be parameterized —
+driven by what the profiler detects in the spec, not by what one API happens to need.
+
+Example of the anti-pattern:
+- Finding: "ESPN sync needs `--dates` for historical data"
+- Bad fix: "Add `--dates` with `YYYYMMDD-YYYYMMDD` format, `--sport`/`--league` flags, and monthly chunking to the sync template"
+- Good fix: "When the profiler detects a date-range query param, emit a `--dates` flag that passes the value through to the API"
+
+The bad fix bakes ESPN's date format, scope params, and chunking strategy into the
+machine. The good fix lets the profiler drive behavior from the spec.
+
 ## Phase 4: Prioritize
 
 Sort findings into two buckets:

@@ -40,6 +40,7 @@ type PaginationProfile struct {
 	CursorParam     string `json:"cursor_param"`      // most common cursor param name (after, cursor, page_token, offset)
 	PageSizeParam   string `json:"page_size_param"`   // most common page size param (limit, per_page, page_size, first)
 	SinceParam      string `json:"since_param"`       // temporal filter param (since, updated_after, modified_since)
+	DateRangeParam  string `json:"date_range_param"`  // date-range filter param (dates, date_range, dateRange)
 	ItemsKey        string `json:"items_key"`         // response array key (data, results, items, or "" for root array)
 	DefaultPageSize int    `json:"default_page_size"` // detected or default 100
 }
@@ -117,6 +118,7 @@ func Profile(s *spec.APISpec) *APIProfile {
 	cursorParams := make(map[string]int)
 	pageSizeParams := make(map[string]int)
 	sinceParams := make(map[string]int)
+	dateRangeParams := make(map[string]int)
 	responsePaths := make(map[string]int)
 
 	var walk func(name string, r spec.Resource)
@@ -234,7 +236,7 @@ func Profile(s *spec.APISpec) *APIProfile {
 				p.HasChronological = true
 			}
 
-			if isListEndpoint(endpointName, endpoint) {
+			if isListEndpoint(endpointName, endpoint, s.Types) {
 				listCapableGETs++
 				listResources[resourceName] = struct{}{}
 
@@ -290,6 +292,9 @@ func Profile(s *spec.APISpec) *APIProfile {
 				name := strings.ToLower(param.Name)
 				if strings.Contains(name, "since") || strings.Contains(name, "updated_after") || strings.Contains(name, "modified_since") || strings.Contains(name, "updated_at") {
 					sinceParams[param.Name]++
+				}
+				if name == "dates" || name == "date_range" || name == "daterange" {
+					dateRangeParams[param.Name]++
 				}
 			}
 
@@ -362,6 +367,7 @@ func Profile(s *spec.APISpec) *APIProfile {
 		CursorParam:     mostCommon(cursorParams, "after"),
 		PageSizeParam:   mostCommon(pageSizeParams, "limit"),
 		SinceParam:      mostCommon(sinceParams, ""),
+		DateRangeParam:  mostCommon(dateRangeParams, ""),
 		ItemsKey:        mostCommon(responsePaths, ""),
 		DefaultPageSize: 100,
 	}
@@ -572,7 +578,7 @@ func hasRequiredScopeParams(endpoint spec.Endpoint) bool {
 	return false
 }
 
-func isListEndpoint(name string, endpoint spec.Endpoint) bool {
+func isListEndpoint(name string, endpoint spec.Endpoint, types map[string]spec.TypeDef) bool {
 	if strings.ToUpper(endpoint.Method) != "GET" {
 		return false
 	}
@@ -583,8 +589,53 @@ func isListEndpoint(name string, endpoint spec.Endpoint) bool {
 		return true
 	}
 
+	// Check for wrapper-object responses: the endpoint returns type "object"
+	// and the referenced type has a field matching a known wrapper key. These
+	// are list endpoints that wrap their arrays (e.g., {events: [...]}).
+	// The key list matches extractPageItems in sync.go.tmpl plus "events".
+	if endpoint.Response.Type == "object" && endpoint.Response.Item != "" {
+		if hasWrapperArrayField(endpoint.Response.Item, types) {
+			return true
+		}
+	}
+
 	name = strings.ToLower(name)
 	return containsAny(name, []string{"list", "all"})
+}
+
+// wrapperArrayKeys are response object field names that indicate the object
+// wraps a list of items. Kept in sync with extractPageItems in sync.go.tmpl.
+var wrapperArrayKeys = map[string]bool{
+	"data":    true,
+	"results": true,
+	"items":   true,
+	"events":  true,
+	"entries": true,
+	"records": true,
+	"nodes":   true,
+}
+
+// hasWrapperArrayField checks whether a named type in the spec's types map
+// has any field whose name matches a known wrapper key, or whether the type
+// name itself suggests a list wrapper (contains "Response", "List", "Result",
+// or "Collection"). The type-name heuristic is a fallback for specs where the
+// types map is empty or incomplete.
+func hasWrapperArrayField(typeName string, types map[string]spec.TypeDef) bool {
+	if typeDef, ok := types[typeName]; ok {
+		for _, field := range typeDef.Fields {
+			if wrapperArrayKeys[strings.ToLower(field.Name)] {
+				return true
+			}
+		}
+	}
+
+	// Fallback: if the type name itself suggests a list wrapper, treat it
+	// as a wrapper even when the types map lacks field definitions.
+	nameUpper := strings.ToUpper(typeName)
+	return strings.Contains(nameUpper, "RESPONSE") ||
+		strings.Contains(nameUpper, "LIST") ||
+		strings.Contains(nameUpper, "RESULT") ||
+		strings.Contains(nameUpper, "COLLECTION")
 }
 
 // findEntityTypeEnum returns the first required enum query param on a list endpoint
