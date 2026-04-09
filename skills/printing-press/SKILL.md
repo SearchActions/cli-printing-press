@@ -83,6 +83,7 @@ See the `printing-press-polish` skill for details. It runs diagnostics, fixes ve
 - Optimize for time-to-ship, not time-to-document.
 - Reuse prior research whenever it is already good enough.
 - Do not split one idea across multiple mandatory artifacts.
+- All files produced by this skill go under `$PRESS_RUNSTATE/` (working state) or `$PRESS_MANUSCRIPTS/` (archived). These are the only writable locations.
 - Do not create a separate narrative phase for dogfood, dead-code audit, runtime verification, and final score. Treat them as one shipcheck block.
 - Run cheap, high-signal checks early.
 - Fix blockers and high-leverage failures first.
@@ -294,7 +295,11 @@ Maintain a lightweight state file at `$STATE_FILE` so `/printing-press-score` ca
 }
 ```
 
-Active mutable work lives under `$PRESS_RUNSTATE/`. Published CLIs live under `$PRESS_LIBRARY/<api-slug>/` (keyed by API slug, e.g., `steam-web`, not CLI name). Archived research and verification evidence live under `$PRESS_MANUSCRIPTS/<api-slug>/<run-id>/`. Do not write mutable run artifacts into the repo checkout.
+There are exactly three writable locations. Every file this skill produces goes to one of them:
+
+- **`$PRESS_RUNSTATE/`** — mutable working state for the current run (research, proofs, pipeline artifacts, plans, intermediate docs)
+- **`$PRESS_LIBRARY/`** — published CLIs (`<api-slug>/` subdirectories)
+- **`$PRESS_MANUSCRIPTS/`** — archived run evidence (research, proofs, discovery)
 
 Examples of the current naming/layout:
 - `~/printing-press/library/notion/` — published CLI directory (keyed by API slug)
@@ -356,7 +361,6 @@ Before new research:
    - Otherwise, proceed with normal discovery (catalog, KnownSpecs, apis-guru, web search).
 2. Check for prior research in:
    - `$PRESS_MANUSCRIPTS/<api-slug>/*/research/*`
-   - `$REPO_ROOT/docs/plans/*<api>*` (legacy fallback)
 3. Reuse good prior work instead of redoing it.
 4. **Library Check** — Check if a CLI for this API already exists in the library or is actively being built, and present the user with context and options.
 
