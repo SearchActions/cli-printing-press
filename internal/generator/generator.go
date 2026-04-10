@@ -41,6 +41,32 @@ type NovelFeature struct {
 	Rationale   string
 }
 
+// DomainContext holds structured domain knowledge for MCP-connected agents.
+// Front-loaded at session start so agents understand the API without discovery.
+type DomainContext struct {
+	APIName     string            `json:"api_name"`
+	Description string            `json:"description"`
+	Archetype   string            `json:"archetype"`
+	Resources   []ResourceSummary `json:"resources"`
+	QueryTips   []string          `json:"query_tips,omitempty"`
+	Playbook    []PlaybookEntry   `json:"playbook,omitempty"`
+}
+
+// ResourceSummary describes an API resource and its capabilities for agents.
+type ResourceSummary struct {
+	Name        string   `json:"name"`
+	Description string   `json:"description,omitempty"`
+	Endpoints   []string `json:"endpoints"`
+	Syncable    bool     `json:"syncable,omitempty"`
+	Searchable  bool     `json:"searchable,omitempty"`
+}
+
+// PlaybookEntry is a domain-specific insight for agents.
+type PlaybookEntry struct {
+	Topic   string `json:"topic"`
+	Insight string `json:"insight"`
+}
+
 type Generator struct {
 	Spec           *spec.APISpec
 	OutputDir      string
@@ -115,6 +141,7 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 		"add":                    func(a, b int) int { return a + b },
 		"oneline":                oneline,
 		"mcpDescription":         mcpDescription,
+		"mcpDescriptionRich":     mcpDescriptionRich,
 		"flagName":               flagName,
 		"safeTypeName":           safeTypeName,
 		"hasNonScalarType": func(types map[string]spec.TypeDef) bool {
@@ -267,6 +294,116 @@ func (g *Generator) readmeData() *readmeTemplateData {
 		Sources:        g.Sources,
 		DiscoveryPages: g.DiscoveryPages,
 		NovelFeatures:  g.NovelFeatures,
+	}
+}
+
+// buildDomainContext constructs structured domain knowledge for MCP agents
+// from the spec and profiler output. This is front-loaded context that prevents
+// agents from wasting tokens discovering what the API is about.
+func (g *Generator) buildDomainContext() DomainContext {
+	ctx := DomainContext{
+		APIName:     g.Spec.Name,
+		Description: oneline(g.Spec.Description),
+		Archetype:   string(profiler.ArchetypeGeneric),
+	}
+
+	if g.profile != nil {
+		ctx.Archetype = string(g.profile.Domain.Archetype)
+
+		// Build resource summaries with syncable/searchable annotations
+		syncSet := make(map[string]bool)
+		for _, sr := range g.profile.SyncableResources {
+			syncSet[sr.Name] = true
+		}
+
+		for rName, r := range g.Spec.Resources {
+			rs := ResourceSummary{
+				Name:        rName,
+				Description: oneline(r.Description),
+				Syncable:    syncSet[rName],
+				Searchable:  len(g.profile.SearchableFields[rName]) > 0,
+			}
+			for eName := range r.Endpoints {
+				rs.Endpoints = append(rs.Endpoints, eName)
+			}
+			sort.Strings(rs.Endpoints)
+			ctx.Resources = append(ctx.Resources, rs)
+		}
+		sort.Slice(ctx.Resources, func(i, j int) bool {
+			return ctx.Resources[i].Name < ctx.Resources[j].Name
+		})
+
+		// Add query tips based on pagination profile
+		if g.profile.Pagination.CursorParam != "" {
+			ctx.QueryTips = append(ctx.QueryTips,
+				fmt.Sprintf("Pagination uses cursor-based paging. Pass %s parameter for subsequent pages.", g.profile.Pagination.CursorParam))
+		}
+		if g.profile.Pagination.PageSizeParam != "" {
+			ctx.QueryTips = append(ctx.QueryTips,
+				fmt.Sprintf("Control page size with the %s parameter (default %d).", g.profile.Pagination.PageSizeParam, g.profile.Pagination.DefaultPageSize))
+		}
+		if g.profile.Pagination.SinceParam != "" {
+			ctx.QueryTips = append(ctx.QueryTips,
+				fmt.Sprintf("Use %s for incremental fetches (filter by modification time).", g.profile.Pagination.SinceParam))
+		}
+	}
+
+	// Add playbook entries from novel features
+	for _, nf := range g.NovelFeatures {
+		ctx.Playbook = append(ctx.Playbook, PlaybookEntry{
+			Topic:   nf.Name,
+			Insight: nf.Rationale,
+		})
+	}
+
+	// Add data layer tips when store is available
+	if g.VisionSet.Store {
+		ctx.QueryTips = append(ctx.QueryTips,
+			"Use the sql tool for ad-hoc analysis on synced data. Run sync first to populate the local database.",
+			"Use the search tool for full-text search across all synced resources. Faster than iterating list endpoints.",
+			"Prefer sql/search over repeated API calls when the data is already synced.")
+	}
+
+	// Add archetype-specific playbook entries — domain opinions that agents
+	// can't discover from the API spec alone (PostHog Rule 4: skills are human knowledge)
+	if g.profile != nil {
+		ctx.Playbook = append(ctx.Playbook, archetypePlaybook(g.profile.Domain.Archetype)...)
+	}
+
+	return ctx
+}
+
+// archetypePlaybook returns domain-specific insights based on API archetype.
+// These are opinionated tips that prevent common agent mistakes.
+func archetypePlaybook(arch profiler.DomainArchetype) []PlaybookEntry {
+	switch arch {
+	case profiler.ArchetypeProjectMgmt:
+		return []PlaybookEntry{
+			{Topic: "Finding stale work", Insight: "Use the stale command or sql query to find items not updated recently. More reliable than scanning list results manually."},
+			{Topic: "Load analysis", Insight: "When analyzing team workload, filter by assignee and status. Raw counts without status filtering are misleading."},
+			{Topic: "Bulk operations", Insight: "For bulk status changes, prefer update endpoints over delete+create. Most PM APIs track history on updates."},
+		}
+	case profiler.ArchetypeCommunication:
+		return []PlaybookEntry{
+			{Topic: "Message search", Insight: "Use the search tool on synced data rather than paginating through message history. Message APIs often have aggressive rate limits."},
+			{Topic: "Channel health", Insight: "When analyzing channel activity, use the channel-health command or sql aggregation on synced messages. Don't iterate individual messages via API."},
+		}
+	case profiler.ArchetypePayments:
+		return []PlaybookEntry{
+			{Topic: "Financial data", Insight: "Always use read-only operations for financial queries. Never use create/update tools for payment data without explicit user confirmation."},
+			{Topic: "Reconciliation", Insight: "For reconciliation tasks, sync first then use sql for cross-referencing. API pagination over financial records is slow and rate-limited."},
+		}
+	case profiler.ArchetypeCRM:
+		return []PlaybookEntry{
+			{Topic: "Contact lookup", Insight: "Use search for finding contacts by name/email. List endpoints return unsorted results and require pagination for large datasets."},
+			{Topic: "Activity tracking", Insight: "When checking deal activity, sync first and query locally. CRM APIs often throttle activity-log endpoints heavily."},
+		}
+	case profiler.ArchetypeDeveloperPlatform:
+		return []PlaybookEntry{
+			{Topic: "Resource discovery", Insight: "Use list commands to discover available resources before attempting operations. Developer platform APIs often have nested resource hierarchies."},
+		}
+	default:
+		return nil
 	}
 }
 
@@ -623,6 +760,7 @@ func (g *Generator) Generate() error {
 	// Render MCP tools registration (needs VisionSet + store data + tool counts for annotations)
 	if g.VisionSet.MCP {
 		mcpTotal, mcpPublic := g.Spec.CountMCPTools()
+		domainCtx := g.buildDomainContext()
 		mcpData := struct {
 			*spec.APISpec
 			SyncableResources []profiler.SyncableResource
@@ -632,6 +770,7 @@ func (g *Generator) Generate() error {
 			MCPTotalCount     int
 			MCPPublicCount    int
 			NovelFeatures     []NovelFeature
+			DomainContext     DomainContext
 		}{
 			APISpec:           g.Spec,
 			SyncableResources: g.profile.SyncableResources,
@@ -641,6 +780,7 @@ func (g *Generator) Generate() error {
 			MCPTotalCount:     mcpTotal,
 			MCPPublicCount:    mcpPublic,
 			NovelFeatures:     g.NovelFeatures,
+			DomainContext:     domainCtx,
 		}
 		if err := g.renderTemplate("mcp_tools.go.tmpl", filepath.Join("internal", "mcp", "tools.go"), mcpData); err != nil {
 			return fmt.Errorf("rendering MCP tools: %w", err)
@@ -1140,6 +1280,50 @@ func mcpDescription(desc string, noAuth bool, authType string, publicCount, tota
 	}
 
 	return oneline(desc)
+}
+
+// mcpDescriptionRich builds an enriched MCP tool description that includes
+// the base description plus response shape hints and method context.
+// This gives agents enough information to choose the right tool without
+// trial-and-error. Total length is capped to prevent token bloat.
+func mcpDescriptionRich(desc string, noAuth bool, authType string, publicCount, totalCount int, method, respType, respItem string) string {
+	base := mcpDescription(desc, noAuth, authType, publicCount, totalCount)
+
+	var suffix string
+
+	// Add response shape hint
+	if respType == "array" && respItem != "" {
+		suffix = "Returns array of " + respItem + "."
+	} else if respType == "array" {
+		suffix = "Returns array."
+	} else if respType == "object" && respItem != "" {
+		suffix = "Returns " + respItem + "."
+	}
+
+	// Add method context for non-obvious cases
+	switch method {
+	case "DELETE":
+		if suffix != "" {
+			suffix += " Destructive."
+		} else {
+			suffix = "Destructive operation."
+		}
+	case "PATCH":
+		if suffix == "" {
+			suffix = "Partial update."
+		}
+	}
+
+	if suffix == "" {
+		return base
+	}
+
+	result := base + " " + suffix
+	// Cap at 200 chars to prevent token bloat (PostHog learned this the hard way)
+	if len(result) > 200 {
+		result = result[:197] + "..."
+	}
+	return result
 }
 
 func exampleValue(p spec.Param) string {
