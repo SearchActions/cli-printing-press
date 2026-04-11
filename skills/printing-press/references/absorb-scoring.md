@@ -52,12 +52,25 @@ identity. These are feature surfaces that generic "CRUD + analytics" thinking mi
 For each content pattern, ask: "What would the power user of THIS specific
 feature want that no existing tool provides?"
 
-##### Step 4: Validate each feature is mechanical
+##### Step 4: Self-vet before presenting
 
-For every candidate feature, verify it can be built without an LLM or external
-service. If it needs AI summarization, reframe it as a mechanical analysis
-(top-rated comments, author stats, frequency counts) with pipe-friendly output
-that users can send to an LLM themselves.
+Run every candidate feature through these 5 kill/keep checks. Do this BEFORE
+scoring, BEFORE presenting to the user. Cut ruthlessly — the user should only
+see features that can actually ship.
+
+| Check | Kill condition | Keep/reframe action |
+|-------|---------------|-------------------|
+| **LLM dependency** | Feature requires NLP, summarization, sentiment analysis, classification, or semantic grouping | **Reframe as mechanical:** replace "summarize" with "extract top-rated items + stats." Add pipe-friendly output so users can `\| claude "summarize"` themselves. If no mechanical version is useful, **cut**. |
+| **External service** | Feature requires a service not in the spec (e.g., scraping a website, calling a third-party API not in the brief) | **Cut** unless the service is free, public, and has no auth. An enrichment API documented in the brief (like OMDb for movie-goat) is fine. |
+| **Auth the user doesn't have** | Feature requires write access, OAuth scopes, or paid tiers the user hasn't confirmed | **Gate** behind an auth check, or **cut** if the feature is useless without it. Read-only features using the same auth as other commands are fine. |
+| **Scope creep** | Feature is really an application, not a command. Would take >200 lines to implement, needs a TUI, or requires persistent background processes. | **Descope** to the one-command version. "Dashboard" → "summary stats." "Monitor" → "poll once with --watch." If the one-command version isn't useful, **cut**. |
+| **Verifiability** | Feature can't be tested in dogfood. No way to verify the output is correct without manual inspection or domain expertise. | **Flag** as low-confidence. Keep only if the value is high enough to justify manual QA. |
+
+**For each surviving feature, write one sentence proving it's buildable:**
+"This uses [specific API endpoint or local data] to compute [specific output]
+with no external dependencies."
+
+If you can't write that sentence, the feature fails the vet.
 
 #### Gap Analysis
 
@@ -78,27 +91,31 @@ the persona work missed:
    - What single "killer feature" would make a power user install this over any alternative?
    - (Only when `USER_BRIEFING_CONTEXT` is non-empty) What features directly serve the user's stated goals?
 
-#### Generate and Score Candidates
+#### Generate, Vet, and Score
 
-Generate 3-8 novel feature ideas (across all 6 categories). For each, score on 4 dimensions:
+1. **Generate** 5-12 candidate features from the user-first discovery + gap analysis.
+2. **Vet** each through the Step 4 kill/keep checks. Cut or reframe failures.
+3. **Score** survivors on 4 dimensions:
 
 | Dimension | Points | Scoring |
 |-----------|--------|---------|
 | **Domain Fit** | 0-3 | 3=core to this API's power users, 2=useful but niche, 1=tangential, 0=wrong domain |
 | **User Pain** | 0-3 | 3=research surfaced explicit demand (community complaints, competitor gap), 2=implied need, 1=speculative, 0=no evidence |
-| **Build Feasibility** | 0-2 | 2=SQLite store + existing sync covers it, 1=needs minor data model additions, 0=requires new infrastructure |
+| **Build Feasibility** | 0-2 | 2=API endpoint + local data covers it, 1=needs minor data model additions, 0=requires new infrastructure |
 | **Research Backing** | 0-2 | 2=evidence from 2+ sources in Phase 1/1.5 research, 1=evidence from 1 source, 0=invented |
 
 **Normalize:** `score_10 = round(raw / 10 * 10)`. Include features scoring >= 5/10.
 
 #### Add to Transcendence Table
 
-Add each qualifying feature as a new row in the transcendence table:
+Add each qualifying feature as a new row:
 
 ```markdown
-| # | Feature | Command | Why Only We Can Do This | Score | Evidence |
-|---|---------|---------|------------------------|-------|----------|
-| N | Player comparison | compare "LeBron" "Curry" | Requires local join across player stats + team + season data | 8/10 | ESPN community requests, espn_scraper lacks cross-player queries |
+| # | Feature | Command | Score | How It Works | Evidence |
+|---|---------|---------|-------|-------------|----------|
+| N | Player comparison | compare "LeBron" "Curry" | 8/10 | Joins player_stats + team + season tables in local SQLite | ESPN community requests, espn_scraper lacks cross-player queries |
 ```
 
-The "Evidence" column MUST cite specific findings from Phase 1 or Phase 1.5 research. No unsupported assertions.
+The "How It Works" column is the buildability proof from Step 4 — one sentence
+showing the specific API endpoint or local data that powers the feature.
+The "Evidence" column MUST cite specific findings from Phase 1 or Phase 1.5 research.
