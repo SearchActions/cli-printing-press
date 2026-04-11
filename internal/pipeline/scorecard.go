@@ -9,6 +9,8 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+
+	apispec "github.com/mvanhorn/cli-printing-press/internal/spec"
 )
 
 // infraCoreFiles are CLI infrastructure files excluded from workflow/insight scoring.
@@ -996,6 +998,15 @@ func loadOpenAPISpec(specPath string) (*openAPISpecInfo, error) {
 	data, err := os.ReadFile(specPath)
 	if err != nil {
 		return nil, fmt.Errorf("reading spec: %w", err)
+	}
+
+	// Detect internal YAML spec format and convert to openAPISpecInfo.
+	if isInternalYAMLSpec(data) {
+		internal, err := apispec.ParseBytes(data)
+		if err != nil {
+			return nil, fmt.Errorf("parsing internal YAML spec: %w", err)
+		}
+		return internalSpecToOpenAPISpecInfo(internal), nil
 	}
 
 	var raw map[string]any

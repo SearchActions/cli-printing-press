@@ -51,14 +51,14 @@ func Load(configPath string) (*Config, error) {
 	cfg.Path = path
 
 	// Try to load config file
+{{- if eq .Config.Format "toml"}}
 	data, err := os.ReadFile(path)
 	if err == nil {
-{{- if eq .Config.Format "toml"}}
 		if err := toml.Unmarshal(data, cfg); err != nil {
 			return nil, fmt.Errorf("parsing config %s: %w", path, err)
 		}
-{{- end}}
 	}
+{{- end}}
 
 	// Env var overrides
 {{- if .Auth.Inferred}}

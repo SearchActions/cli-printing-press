@@ -578,3 +578,91 @@ func TestProfileWrapperObjectDetection_NoFalsePositive(t *testing.T) {
 	}
 	assert.NotContains(t, syncNames, "settings", "non-wrapper object should not be syncable")
 }
+
+func TestProfileSimpleListEndpointSyncable(t *testing.T) {
+	// Simulates the trigger-dev pattern: resources with parameterless GET list
+	// endpoints that return untyped objects (no wrapper field in types map, no
+	// pagination). These should still be syncable.
+	s := &spec.APISpec{
+		Name: "trigger-dev",
+		Resources: map[string]spec.Resource{
+			"deployments": {
+				Endpoints: map[string]spec.Endpoint{
+					"listDeployments": {
+						Method:   "GET",
+						Path:     "/v3/deployments",
+						Response: spec.ResponseDef{Type: "object"},
+					},
+					"get": {
+						Method:   "GET",
+						Path:     "/v3/deployments/{deploymentId}",
+						Response: spec.ResponseDef{Type: "object"},
+					},
+				},
+			},
+			"batches": {
+				Endpoints: map[string]spec.Endpoint{
+					"listBatches": {
+						Method:   "GET",
+						Path:     "/v3/batches",
+						Response: spec.ResponseDef{Type: "object"},
+					},
+				},
+			},
+			"runs": {
+				Endpoints: map[string]spec.Endpoint{
+					"listRuns": {
+						Method:   "GET",
+						Path:     "/v3/runs",
+						Response: spec.ResponseDef{Type: "array"},
+						Pagination: &spec.Pagination{
+							CursorParam: "cursor",
+							LimitParam:  "perPage",
+						},
+					},
+				},
+			},
+			"envvars": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:   "GET",
+						Path:     "/v3/projects/{projectRef}/envvars/{env}",
+						Response: spec.ResponseDef{Type: "object"},
+					},
+				},
+			},
+			"query": {
+				Endpoints: map[string]spec.Endpoint{
+					"create": {
+						Method: "POST",
+						Path:   "/v3/query",
+					},
+				},
+			},
+		},
+	}
+
+	profile := Profile(s)
+
+	syncNames := make([]string, len(profile.SyncableResources))
+	syncPaths := make(map[string]string)
+	for i, sr := range profile.SyncableResources {
+		syncNames[i] = sr.Name
+		syncPaths[sr.Name] = sr.Path
+	}
+
+	// deployments and batches have parameterless GET list endpoints
+	assert.Contains(t, syncNames, "deployments", "parameterless GET list endpoint should be syncable")
+	assert.Contains(t, syncNames, "batches", "parameterless GET list endpoint should be syncable")
+	assert.Equal(t, "/v3/deployments", syncPaths["deployments"])
+	assert.Equal(t, "/v3/batches", syncPaths["batches"])
+
+	// runs has pagination so it should also be syncable
+	assert.Contains(t, syncNames, "runs")
+
+	// envvars has path params so it should be excluded
+	assert.NotContains(t, syncNames, "envvars", "compound-path resource should not be syncable")
+
+	// query is POST-only so it should be excluded
+	assert.NotContains(t, syncNames, "query", "POST-only resource should not be syncable")
+}

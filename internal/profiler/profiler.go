@@ -275,6 +275,15 @@ func Profile(s *spec.APISpec) *APIProfile {
 						}
 					}
 				}
+			} else if method == "GET" && !strings.Contains(endpoint.Path, "{") && !hasRequiredScopeParams(endpoint) && looksLikeCollectionEndpoint(endpointNameLower) {
+				// Catch-all for simple GET collection endpoints that isListEndpoint
+				// didn't recognise (e.g., response is an untyped object with no
+				// wrapper field defined in the spec's types map).
+				// Only include endpoints whose name suggests a collection (list, all,
+				// index, etc.) — exclude singular getters like "get" or "show".
+				if existing, ok := syncable[resourceName]; !ok || len(endpoint.Path) < len(existing) {
+					syncable[resourceName] = endpoint.Path
+				}
 			}
 
 			if endpoint.Pagination != nil {
@@ -656,6 +665,14 @@ func findEntityTypeEnum(endpoint spec.Endpoint) *spec.Param {
 		}
 	}
 	return nil
+}
+
+// looksLikeCollectionEndpoint returns true when the endpoint name suggests it
+// returns a list of items rather than a single resource. Used as a guard for
+// the catch-all syncable-resource heuristic so that singleton getters like
+// "get" or "show" are excluded.
+func looksLikeCollectionEndpoint(nameLower string) bool {
+	return containsAny(nameLower, []string{"list", "all", "index", "search", "query", "browse", "find"})
 }
 
 func hasLifecycleField(params []spec.Param) bool {

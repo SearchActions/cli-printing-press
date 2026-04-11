@@ -49,7 +49,7 @@ func BuildSchema(s *spec.APISpec) []TableDef {
 			},
 		}
 
-		if gravity >= 8 {
+		if gravity >= 4 {
 			fields := collectResponseFields(resource)
 			for _, f := range fields {
 				if isScalarField(f) && f.Name != "id" {
@@ -79,7 +79,7 @@ func BuildSchema(s *spec.APISpec) []TableDef {
 		}
 
 		textFields := collectTextFieldNames(resource)
-		if len(textFields) >= 2 && gravity >= 6 {
+		if len(textFields) >= 2 && gravity >= 4 {
 			table.FTS5 = true
 			table.FTS5Fields = textFields
 			// Only use content-sync triggers when ALL FTS fields are
