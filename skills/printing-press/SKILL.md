@@ -923,20 +923,31 @@ Every row = a feature we MUST build. No exceptions. If someone else has it, we h
 
 SDK wrapper methods should be treated as features to absorb — each public method/function is a feature the CLI should match.
 
-### Step 1.5c: Identify compound use cases
+### Step 1.5c: Identify transcendence features
 
-What compound use cases become possible ONLY when ALL absorbed features live in SQLite together?
+Start with the users, not the technology. The best features come from understanding
+who uses this service, what their rituals are, and what questions they can't answer
+today. "What can SQLite do?" is the wrong question. "What would make a power user
+say 'I need this'?" is the right one.
+
+Read [references/absorb-scoring.md](references/absorb-scoring.md) Step 1.5c.5 for
+the **User-First Feature Discovery** framework: identify 2-4 specific user personas,
+map their rituals and frustrations, identify service-specific content patterns, then
+generate features that serve those personas.
+
+After the user-first pass, also check for compound use cases that are only possible
+with local data:
 
 ```markdown
-### Transcendence (only possible with our local data layer)
+### Transcendence (only possible with our approach)
 | # | Feature | Command | Why Only We Can Do This |
 |---|---------|---------|------------------------|
 | 1 | Bottleneck detection | bottleneck | Requires local join across issues + assignees + cycle data |
 | 2 | Velocity trends | velocity --weeks 4 | Requires historical cycle snapshots in SQLite |
-| 3 | Duplicate detection | similar "login bug" | Requires FTS5 across ALL issue text + comments |
+| 3 | What did I miss | since 2h | Requires time-windowed aggregation no single API call provides |
 ```
 
-Minimum 5 compound use case features. These are the NOI commands.
+Minimum 5 transcendence features. These are the commands that differentiate the CLI.
 
 ### Step 1.5c.5: Auto-Suggest Novel Features
 
