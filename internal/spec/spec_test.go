@@ -87,6 +87,38 @@ func TestValidation(t *testing.T) {
 	}
 }
 
+func TestVersionDefaultAndNormalize(t *testing.T) {
+	base := func(v string) APISpec {
+		return APISpec{
+			Name:      "x",
+			Version:   v,
+			BaseURL:   "http://x",
+			Resources: map[string]Resource{"a": {Endpoints: map[string]Endpoint{"b": {Method: "GET", Path: "/"}}}},
+		}
+	}
+
+	tests := []struct {
+		input    string
+		expected string
+	}{
+		{"", "1.0.0"},        // empty → default
+		{"1.0.0", "1.0.0"},   // already semver
+		{"4", "4.0.0"},       // bare major
+		{"4.4", "4.4.0"},     // major.minor only
+		{"4.17.1", "4.17.1"}, // already semver
+		{"0.1.0", "0.1.0"},   // already semver
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			s := base(tt.input)
+			err := s.Validate()
+			require.NoError(t, err)
+			assert.Equal(t, tt.expected, s.Version)
+		})
+	}
+}
+
 func TestNewFields(t *testing.T) {
 	s := APISpec{
 		Name:    "x",
