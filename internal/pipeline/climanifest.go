@@ -48,6 +48,7 @@ type CLIManifest struct {
 	MCPToolCount       int                    `json:"mcp_tool_count,omitempty"`
 	MCPPublicToolCount int                    `json:"mcp_public_tool_count,omitempty"`
 	MCPReady           string                 `json:"mcp_ready,omitempty"`
+	APIVersion         string                 `json:"api_version,omitempty"` // from the spec's info.version — provenance only, not the CLI version
 	AuthType           string                 `json:"auth_type,omitempty"`
 	AuthEnvVars        []string               `json:"auth_env_vars,omitempty"`
 	NovelFeatures      []NovelFeatureManifest `json:"novel_features,omitempty"`
@@ -196,6 +197,11 @@ func WriteManifestForGenerate(p GenerateManifestParams) error {
 		m.CatalogEntry = entry.Name
 		m.Category = entry.Category
 		m.Description = entry.Description
+	}
+
+	// Record the API version from the spec for provenance (not the CLI version).
+	if p.Spec != nil && p.Spec.Version != "" {
+		m.APIVersion = p.Spec.Version
 	}
 
 	// Populate MCP metadata from the parsed spec.

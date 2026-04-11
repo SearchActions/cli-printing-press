@@ -87,7 +87,7 @@ func TestValidation(t *testing.T) {
 	}
 }
 
-func TestVersionDefaultAndNormalize(t *testing.T) {
+func TestVersionPassedThrough(t *testing.T) {
 	base := func(v string) APISpec {
 		return APISpec{
 			Name:      "x",
@@ -97,16 +97,17 @@ func TestVersionDefaultAndNormalize(t *testing.T) {
 		}
 	}
 
+	// Version is the API version (provenance only). It passes through as-is.
+	// The CLI version is hardcoded to "1.0.0" in the generated root.go template.
 	tests := []struct {
 		input    string
 		expected string
 	}{
-		{"", "1.0.0"},        // empty → default
-		{"1.0.0", "1.0.0"},   // already semver
-		{"4", "4.0.0"},       // bare major
-		{"4.4", "4.4.0"},     // major.minor only
-		{"4.17.1", "4.17.1"}, // already semver
-		{"0.1.0", "0.1.0"},   // already semver
+		{"", ""},             // empty stays empty
+		{"1.0.0", "1.0.0"},   // semver preserved
+		{"4", "4"},           // non-semver API versions preserved
+		{"4.4", "4.4"},       // major.minor preserved
+		{"4.17.1", "4.17.1"}, // full semver preserved
 	}
 
 	for _, tt := range tests {

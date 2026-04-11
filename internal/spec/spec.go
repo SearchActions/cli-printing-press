@@ -274,16 +274,9 @@ func (s *APISpec) Validate() error {
 	if s.Name == "" {
 		return fmt.Errorf("name is required")
 	}
-	// Default version to 1.0.0 if missing, and normalize to semver.
-	if s.Version == "" {
-		s.Version = "1.0.0"
-	} else if !strings.Contains(s.Version, ".") {
-		// Bare major: "4" → "4.0.0"
-		s.Version = s.Version + ".0.0"
-	} else if strings.Count(s.Version, ".") == 1 {
-		// Major.minor only: "4.4" → "4.4.0"
-		s.Version = s.Version + ".0"
-	}
+	// Note: s.Version holds the API version from the spec (for provenance).
+	// The CLI version is always hardcoded to "1.0.0" in the generated root.go
+	// template — it is independent of the API version.
 	// Parser fallback may supply a placeholder base_url when the source spec omits servers.
 	if s.BaseURL == "" && s.BasePath == "" {
 		return fmt.Errorf("base_url is required")
