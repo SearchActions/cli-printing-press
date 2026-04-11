@@ -7,6 +7,8 @@ import (
 	"os"
 	"path/filepath"
 	"time"
+
+	"github.com/mvanhorn/cli-printing-press/internal/naming"
 )
 
 // Phase names in execution order.
@@ -306,7 +308,7 @@ func FindStateByWorkingDir(dir string) (*PipelineState, error) {
 func NewMinimalState(cliName, workingDir string) *PipelineState {
 	return &PipelineState{
 		Version:    currentStateVersion,
-		APIName:    cliName,
+		APIName:    naming.TrimCLISuffix(cliName),
 		WorkingDir: workingDir,
 		OutputDir:  workingDir,
 		StartedAt:  time.Now(),

@@ -1482,9 +1482,15 @@ Present via `AskUserQuestion`:
 > 1. **Quick check (recommended)** — Read-only: doctor, list, sync, search, output modes (~5 min)
 > 2. **Full dogfood** — Complete lifecycle with mutations: create, modify, cancel, sync verification (~15-30 min). I'll create test entities on your account.
 
-There is no skip option when an API key is available. When no API key is
-available, Phase 5 auto-skips: display "No API key available — skipping live
-dogfood testing. The CLI was verified against exit codes and dry-run only."
+There is no skip option when an API key is available or the API requires no
+auth. Phase 5 auto-skips ONLY when the API requires auth AND no key is
+available: display "No API key available — skipping live dogfood testing.
+The CLI was verified against exit codes and dry-run only."
+
+For APIs with `auth.type: none` (or no auth section in the spec), Phase 5
+is MANDATORY — the API is freely testable without any credentials. Do not
+skip testing just because no API key was detected. No-auth APIs are the
+easiest to test and the most embarrassing to ship untested.
 
 Do NOT proceed without asking. Do NOT substitute an ad-hoc smoke test.
 
