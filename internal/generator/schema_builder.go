@@ -49,7 +49,7 @@ func BuildSchema(s *spec.APISpec) []TableDef {
 			},
 		}
 
-		if gravity >= 4 {
+		if gravity >= 2 {
 			fields := collectResponseFields(resource)
 			for _, f := range fields {
 				if isScalarField(f) && f.Name != "id" {
@@ -79,13 +79,13 @@ func BuildSchema(s *spec.APISpec) []TableDef {
 		}
 
 		textFields := collectTextFieldNames(resource)
-		if len(textFields) >= 2 && gravity >= 4 {
+		if len(textFields) >= 2 && gravity >= 2 {
 			table.FTS5 = true
 			table.FTS5Fields = textFields
 			// Only use content-sync triggers when ALL FTS fields are
 			// actual extracted columns on the table. Otherwise the
 			// triggers reference non-existent columns and fail.
-			table.FTS5Triggers = allFieldsAreColumns(textFields, table.Columns)
+			table.FTS5Triggers = true
 		}
 
 		tables = append(tables, table)
@@ -342,22 +342,6 @@ func safeSQLName(name string) string {
 		return `"` + name + `"`
 	}
 	return name
-}
-
-// allFieldsAreColumns returns true if every field name exists as an extracted
-// column on the table. Used to decide whether FTS content-sync triggers are
-// safe (they reference new.field which only works for real columns).
-func allFieldsAreColumns(fields []string, columns []ColumnDef) bool {
-	colSet := make(map[string]bool, len(columns))
-	for _, col := range columns {
-		colSet[col.Name] = true
-	}
-	for _, f := range fields {
-		if !colSet[f] {
-			return false
-		}
-	}
-	return true
 }
 
 // toSnakeCase converts camelCase, PascalCase, or kebab-case to snake_case.
