@@ -1,8 +1,19 @@
 # {{humanName .Name}} CLI
+{{- if and .Narrative .Narrative.Headline}}
 
-{{.Description}}{{if .WebsiteURL}}
+**{{.Narrative.Headline}}**
+{{- else}}
 
-Learn more at [{{humanName .Name}}]({{.WebsiteURL}}).{{end}}
+{{.Description}}
+{{- end}}
+{{- if and .Narrative .Narrative.ValueProp}}
+
+{{.Narrative.ValueProp}}
+{{- end}}
+{{- if .WebsiteURL}}
+
+Learn more at [{{humanName .Name}}]({{.WebsiteURL}}).
+{{- end}}
 
 ## Install
 
@@ -15,8 +26,24 @@ go install github.com/mvanhorn/printing-press-library/library/{{if .Category}}{{
 ### Binary
 
 Download from [Releases](https://github.com/mvanhorn/printing-press-library/releases).
+{{- if and .Narrative .Narrative.AuthNarrative}}
+
+## Authentication
+
+{{.Narrative.AuthNarrative}}
+{{- end}}
 
 ## Quick Start
+{{- if and .Narrative .Narrative.QuickStart}}
+
+```bash
+{{- range .Narrative.QuickStart}}
+{{if .Comment}}# {{.Comment}}
+{{end}}{{.Command}}
+
+{{end -}}
+```
+{{- else}}
 
 ### 1. Install
 
@@ -90,27 +117,60 @@ When your session expires, run `auth login --chrome` again.
 
 This checks your configuration{{if and (ne .Auth.Type "") (ne .Auth.Type "none")}} and credentials{{end}}.
 
+{{- $firstCmd := firstCommandExample .Resources}}
+{{- if $firstCmd}}
+
 ### {{if and (ne .Auth.Type "") (ne .Auth.Type "none")}}4{{else}}3{{end}}. Try Your First Command
 
 ```bash
-{{- range $name, $_ := .Resources}}
-{{$.Name}}-pp-cli {{$name}} list
-{{- break}}
-{{- end}}
+{{.Name}}-pp-cli {{$firstCmd}}
 ```
+{{- end}}
+{{- end}}
 {{- if .NovelFeatures}}
 
 ## Unique Features
 
 These capabilities aren't available in any other tool for this API.
+{{- $groups := groupNovelFeatures .NovelFeatures}}
+{{- if $groups}}
+{{- range $groups}}
+
+### {{.Name}}
+{{range .Features}}
+- **`{{.Command}}`** — {{.Description}}
+{{- if .WhyItMatters}}
+
+  _{{.WhyItMatters}}_
+{{- end}}
+{{- if .Example}}
+
+  ```bash
+  {{.Example}}
+  ```
+{{- end}}
+{{- end}}
+{{- end}}
+{{- else}}
 {{range .NovelFeatures}}
 - **`{{.Command}}`** — {{.Description}}
+{{- if .WhyItMatters}}
+
+  _{{.WhyItMatters}}_
+{{- end}}
+{{- if .Example}}
+
+  ```bash
+  {{.Example}}
+  ```
+{{- end}}
+{{- end}}
 {{- end}}
 {{- end}}
 
 ## Usage
 
-<!-- HELP_OUTPUT -->
+Run `{{.Name}}-pp-cli --help` for the full command reference and flag list.
 
 ## Commands
 {{range $name, $resource := .Resources}}
@@ -123,23 +183,34 @@ These capabilities aren't available in any other tool for this API.
 {{end}}
 
 ## Output Formats
+{{- $example := firstCommandExample .Resources}}
+{{- if $example}}
 
 ```bash
 # Human-readable table (default in terminal, JSON when piped)
-{{.Name}}-pp-cli {{range $name, $_ := .Resources}}{{$name}}{{break}}{{end}} list
+{{.Name}}-pp-cli {{$example}}
 
 # JSON for scripting and agents
-{{.Name}}-pp-cli {{range $name, $_ := .Resources}}{{$name}}{{break}}{{end}} list --json
+{{.Name}}-pp-cli {{$example}} --json
 
 # Filter to specific fields
-{{.Name}}-pp-cli {{range $name, $_ := .Resources}}{{$name}}{{break}}{{end}} list --json --select id,name,status
+{{.Name}}-pp-cli {{$example}} --json --select id,name,status
 
 # Dry run — show the request without sending
-{{.Name}}-pp-cli {{range $name, $_ := .Resources}}{{$name}}{{break}}{{end}} list --dry-run
+{{.Name}}-pp-cli {{$example}} --dry-run
 
 # Agent mode — JSON + compact + no prompts in one flag
-{{.Name}}-pp-cli {{range $name, $_ := .Resources}}{{$name}}{{break}}{{end}} list --agent
+{{.Name}}-pp-cli {{$example}} --agent
 ```
+{{- else}}
+
+Every command supports these output flags:
+
+- `--json` — structured output for scripting and agents
+- `--select id,name,status` — filter to specific fields
+- `--dry-run` — preview the request without sending
+- `--agent` — JSON + compact + non-interactive in one flag
+{{- end}}
 
 ## Agent Usage
 
@@ -221,45 +292,23 @@ Add to your Claude Desktop config (`~/Library/Application Support/Claude/claude_
 }
 ```
 
-## Cookbook
-
-Common workflows and recipes:
-
-```bash
-# List resources as JSON for scripting
-{{.Name}}-pp-cli {{firstResource .Resources}} list --json
-
-# Filter to specific fields
-{{.Name}}-pp-cli {{firstResource .Resources}} list --json --select id,name,status
-
-# Dry run to preview the request
-{{.Name}}-pp-cli {{firstResource .Resources}} list --dry-run
-
-# Sync data locally for offline search
-{{.Name}}-pp-cli sync
-
-# Search synced data
-{{.Name}}-pp-cli search "query"
-
-# Export for backup
-{{.Name}}-pp-cli export --format jsonl > backup.jsonl
-```
-
 ## Health Check
 
 ```bash
 {{.Name}}-pp-cli doctor
 ```
 
-<!-- DOCTOR_OUTPUT -->
+Verifies configuration{{if and (ne .Auth.Type "") (ne .Auth.Type "none")}}, credentials,{{end}} and connectivity to the API.
 
 ## Configuration
 
 Config file: `{{.Config.Path}}`
+{{- if .Auth.EnvVars}}
 
 Environment variables:
 {{- range .Auth.EnvVars}}
 - `{{.}}`
+{{- end}}
 {{- end}}
 
 ## Troubleshooting
@@ -277,6 +326,13 @@ Environment variables:
 **Rate limit errors (exit code 7)**
 - The CLI auto-retries with exponential backoff
 - If persistent, wait a few minutes and try again
+{{- if and .Narrative .Narrative.Troubleshoots}}
+
+### API-specific
+{{range .Narrative.Troubleshoots}}
+- **{{.Symptom}}** — {{.Fix}}
+{{- end}}
+{{- end}}
 
 ---
 {{- if or (gt (len .Sources) 1) (gt (len .DiscoveryPages) 0)}}

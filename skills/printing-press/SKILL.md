@@ -1061,9 +1061,36 @@ cat > "$API_RUN_DIR/research.json" <<REOF
     ...
   ],
   "novel_features": [
-    {"name": "<Feature Name>", "command": "<cli-subcommand>", "description": "<One sentence: what the user gets>", "rationale": "<One sentence: why only possible with our approach>"},
+    {
+      "name": "<Feature Name>",
+      "command": "<cli-subcommand>",
+      "description": "<One sentence: what the user gets>",
+      "rationale": "<One sentence: why only possible with our approach>",
+      "example": "<ready-to-run invocation with realistic args, e.g. 'yahoo-finance-pp-cli portfolio perf --agent'>",
+      "why_it_matters": "<One sentence aimed at AI agents: when should they reach for this?>",
+      "group": "<Theme name clustering similar features, e.g. 'Local state that compounds'>"
+    },
     ...
   ],
+  "narrative": {
+    "headline": "<Bold one-sentence value prop: what makes this CLI worth using>",
+    "value_prop": "<2-3 sentence expansion rendered beneath the title>",
+    "auth_narrative": "<API-specific auth story; omit for simple API-key auth>",
+    "quickstart": [
+      {"command": "<cli> <real-command-with-real-args>", "comment": "<why this comes first>"},
+      ...
+    ],
+    "troubleshoots": [
+      {"symptom": "<user-visible error or symptom>", "fix": "<actionable one-liner>"},
+      ...
+    ],
+    "when_to_use": "<2-4 sentences describing ideal use cases; rendered in SKILL.md only>",
+    "recipes": [
+      {"title": "<Recipe name>", "command": "<cli> <invocation>", "explanation": "<one-line paragraph>"},
+      ...
+    ],
+    "trigger_phrases": ["<natural phrase that should invoke this CLI's skill>", ...]
+  },
   "gaps": [],
   "patterns": [],
   "recommendation": "proceed",
@@ -1074,12 +1101,26 @@ REOF
 
 For each tool, fill in what you know from the research. Stars and command_count are optional (use 0 if unknown). The `language` field should match the primary implementation language. Skip tools that were found during search but contributed zero features to the manifest.
 
-**Novel features rules** (the `novel_features` array populates the README's "Unique Features" section):
+**Novel features rules** (the `novel_features` array populates the README's "Unique Features" section and SKILL.md's "Unique Capabilities" block):
 1. Include all transcendence features from the manifest that scored >= 5/10. Order by score descending.
 2. `description` should be user-benefit language, not implementation detail. Good: "See which team members are overloaded before sprint planning." Bad: "Requires local join across issues + assignees + cycle data."
 3. `rationale` should explain why this is only possible with our approach. Good: "Requires correlating bookings, schedules, and staff data that only exists together in the local store." Bad: "Cal.com Insights is paid-tier only."
 4. `command` must match the actual CLI subcommand that will be built in Phase 3. For subcommands of a resource (e.g., `issues stale`), use the full command path.
-5. If no transcendence features scored >= 5/10, omit the `novel_features` field entirely.
+5. `example` is a ready-to-run invocation an agent can copy-paste. Use realistic arguments from the API's domain (e.g. `AAPL`, `customer_42`), not `<placeholder>`. Include the `--agent` flag when the feature benefits from structured output.
+6. `why_it_matters` is a single agent-facing sentence answering "when should I pick this over a generic API call?"
+7. `group` clusters related features under a theme name. Pick 2–5 themes total (e.g. "Local state that compounds", "Agent-native plumbing", "Reachability mitigation"). Use the same `group` string verbatim across features that belong together — exact matches drive README grouping. Leave `group` empty if the CLI has too few novel features to warrant clustering.
+8. If no transcendence features scored >= 5/10, omit the `novel_features` field entirely.
+
+**Narrative rules** (the `narrative` object drives README headline, Quick Start, Auth, Troubleshooting, and the entire SKILL.md):
+1. `headline` is the bold one-liner rendered beneath the CLI title. Should name the differentiator, not restate the API. Good: "Every Notion feature, plus sync, search, and a local database no other Notion tool has." Bad: "A CLI for the Notion API."
+2. `value_prop` expands the headline to 2–3 sentences. Name specific novel features by command where helpful.
+3. `auth_narrative` tells the real auth story for this API (crumb handshake, cookie session, OAuth device flow). Omit for standard API-key auth where the generic branch is fine.
+4. `quickstart` is a 3–6 step flow using REAL arguments (symbols, IDs, resource names an agent can actually pass). Each step's `comment` explains *why* it runs. This replaces the generic "resource list" first-command fallback.
+5. `troubleshoots` captures API-specific failure modes (rate-limit mitigation, cookie expiry, paginated quirks). Each `fix` must be actionable — a command or a concrete setting change.
+6. `when_to_use` is SKILL-only narrative. 2–4 sentences describing the kinds of agent tasks this CLI is the right choice for. Not rendered in README.
+7. `recipes` are 3–5 worked examples rendered in SKILL.md. Each has a title, a real command, and a one-line explanation. Prefer recipes that exercise novel features.
+8. `trigger_phrases` are natural-language phrases a user might say that should invoke this CLI's skill. Include 3–5 domain-specific phrases (e.g. for a finance CLI: "quote AAPL", "check my portfolio", "options for TSLA") and 2 generic phrases ("use <api-name>", "run <api-name>"). Domain verbs vary — don't just template "use X" variants.
+9. All `narrative` fields are optional. Omit fields you can't populate honestly rather than emit filler. The generator falls back to generic content gracefully.
 
 Also write discovery pages if sniff was used. The generator reads these from `$API_RUN_DIR/discovery/sniff-report.md` (which the sniff gate already writes there). No additional action needed for discovery pages -- they are already in the right location.
 

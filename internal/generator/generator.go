@@ -33,12 +33,56 @@ type ReadmeSource struct {
 	Stars    int
 }
 
-// NovelFeature represents a transcendence feature for the README.
+// NovelFeature represents a transcendence feature for the README and SKILL.md.
 type NovelFeature struct {
-	Name        string
+	Name         string
+	Command      string
+	Description  string
+	Rationale    string
+	Example      string // ready-to-run invocation
+	WhyItMatters string // one-sentence agent-facing rationale
+	Group        string // theme name for grouped rendering
+}
+
+// QuickStartStep mirrors pipeline.QuickStartStep for template rendering.
+type QuickStartStep struct {
+	Command string
+	Comment string
+}
+
+// Recipe mirrors pipeline.Recipe for SKILL.md template rendering.
+type Recipe struct {
+	Title       string
 	Command     string
-	Description string
-	Rationale   string
+	Explanation string
+}
+
+// TroubleshootTip mirrors pipeline.TroubleshootTip for template rendering.
+type TroubleshootTip struct {
+	Symptom string
+	Fix     string
+}
+
+// novelFeatureGroup is a template-facing bucket of novel features sharing
+// a Group name. Produced by the groupNovelFeatures template helper so the
+// README/SKILL templates don't have to do collection logic in-template.
+type novelFeatureGroup struct {
+	Name     string
+	Features []NovelFeature
+}
+
+// ReadmeNarrative mirrors pipeline.ReadmeNarrative for template rendering.
+// Holds LLM-authored prose that makes generated docs feel like product
+// documentation rather than scaffolding. All fields are optional.
+type ReadmeNarrative struct {
+	Headline       string
+	ValueProp      string
+	AuthNarrative  string
+	QuickStart     []QuickStartStep
+	Troubleshoots  []TroubleshootTip
+	WhenToUse      string
+	Recipes        []Recipe
+	TriggerPhrases []string
 }
 
 // DomainContext holds structured domain knowledge for MCP-connected agents.
@@ -72,9 +116,10 @@ type Generator struct {
 	OutputDir      string
 	VisionSet      VisionTemplateSet
 	FixtureSet     *websniff.FixtureSet
-	Sources        []ReadmeSource // Ecosystem tools to credit in README
-	DiscoveryPages []string       // Pages visited during sniff discovery
-	NovelFeatures  []NovelFeature // Transcendence features for README
+	Sources        []ReadmeSource   // Ecosystem tools to credit in README
+	DiscoveryPages []string         // Pages visited during sniff discovery
+	NovelFeatures  []NovelFeature   // Transcendence features for README/SKILL
+	Narrative      *ReadmeNarrative // LLM-authored prose for README/SKILL; optional
 	profile        *profiler.APIProfile
 	funcs          template.FuncMap
 	templates      map[string]*template.Template
@@ -233,6 +278,131 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 			}
 			return "resource"
 		},
+		// goRawSafe makes a string safe to embed inside a Go raw-string literal
+		// (backtick-delimited). Go raw strings cannot contain backticks —
+		// there's no escape — so the compiler rejects the file outright.
+		// Narrative fields are LLM-authored and routinely contain backticks
+		// (e.g. "the `--agent` flag"), so stripping is mandatory before
+		// rendering into Short/Long. Replaces ` with ' to preserve intent.
+		"goRawSafe": func(s string) string {
+			return strings.ReplaceAll(s, "`", "'")
+		},
+		// truncate clips a string to max runes with an ellipsis. Used to
+		// enforce the root --help Long size budget: LLM-authored headlines
+		// and novel-feature descriptions have no inherent length ceiling,
+		// and agents running <cli> --help shouldn't be punished for one
+		// verbose absorb output. Counts runes (not bytes) so multi-byte
+		// characters don't produce mid-codepoint truncation.
+		"truncate": func(max int, s string) string {
+			if max <= 0 {
+				return s
+			}
+			runes := []rune(s)
+			if len(runes) <= max {
+				return s
+			}
+			if max <= 1 {
+				return string(runes[:max])
+			}
+			return string(runes[:max-1]) + "…"
+		},
+		// yamlDoubleQuoted escapes a string for safe embedding inside a YAML
+		// double-quoted scalar. Handles the three failure modes we've seen
+		// from LLM-authored narrative fields: unescaped " (breaks parser),
+		// unescaped \ (swallows next char), and raw newlines (terminates
+		// scalar). Leaves single quotes alone — valid in double-quoted YAML.
+		"yamlDoubleQuoted": func(s string) string {
+			s = strings.ReplaceAll(s, `\`, `\\`)
+			s = strings.ReplaceAll(s, `"`, `\"`)
+			s = strings.ReplaceAll(s, "\n", `\n`)
+			s = strings.ReplaceAll(s, "\r", `\r`)
+			s = strings.ReplaceAll(s, "\t", `\t`)
+			return s
+		},
+		// groupNovelFeatures clusters features by their Group field, preserving
+		// first-seen order of group names. Features with empty Group land in a
+		// trailing "More" bucket so nothing gets dropped. Returns nil when no
+		// feature carries a Group value — callers should then render flat.
+		//
+		// Group matching is canonicalized (lowercase + whitespace collapsed)
+		// because the absorb LLM will not produce exact-match strings — given
+		// five features in "Local state that compounds" it will usually emit
+		// at least one "Local State That Compounds" or "local state that
+		// compounds" by drift. Without canonicalization these silently render
+		// as separate groups and a reader skimming the README sees the
+		// grouping as broken. We canonicalize for bucketing but render the
+		// first-seen display form so the LLM's casing choice wins — it's
+		// usually the more legible one.
+		"groupNovelFeatures": func(features []NovelFeature) []novelFeatureGroup {
+			canonGroup := func(s string) string {
+				return strings.Join(strings.Fields(strings.ToLower(s)), " ")
+			}
+			anyGrouped := false
+			for _, f := range features {
+				if canonGroup(f.Group) != "" {
+					anyGrouped = true
+					break
+				}
+			}
+			if !anyGrouped {
+				return nil
+			}
+			order := []string{}                // canonical keys in first-seen order
+			displayName := map[string]string{} // canonical → first-seen display form
+			byGroup := map[string][]NovelFeature{}
+			for _, f := range features {
+				display := f.Group
+				key := canonGroup(display)
+				if key == "" {
+					key = "more"
+					display = "More"
+				}
+				if _, seen := byGroup[key]; !seen {
+					order = append(order, key)
+					displayName[key] = display
+				}
+				byGroup[key] = append(byGroup[key], f)
+			}
+			out := make([]novelFeatureGroup, 0, len(order))
+			for _, key := range order {
+				out = append(out, novelFeatureGroup{Name: displayName[key], Features: byGroup[key]})
+			}
+			return out
+		},
+		// firstCommandExample returns a real "resource endpoint" pair for use
+		// in docs that need a runnable example. Prefers read-only verbs when
+		// available (list, get, search, query) to keep examples non-destructive.
+		// Returns empty string when the spec has no endpoints so callers can
+		// skip the block rather than render nonsense like "autocomplete list"
+		// when autocomplete has no list endpoint.
+		"firstCommandExample": func(resources map[string]spec.Resource) string {
+			var resNames []string
+			for name := range resources {
+				resNames = append(resNames, name)
+			}
+			sort.Strings(resNames)
+			preferredVerbs := []string{"list", "get", "search", "query"}
+			for _, rName := range resNames {
+				r := resources[rName]
+				for _, verb := range preferredVerbs {
+					if _, ok := r.Endpoints[verb]; ok {
+						return rName + " " + verb
+					}
+				}
+			}
+			for _, rName := range resNames {
+				r := resources[rName]
+				var eNames []string
+				for eName := range r.Endpoints {
+					eNames = append(eNames, eName)
+				}
+				sort.Strings(eNames)
+				if len(eNames) > 0 {
+					return rName + " " + eNames[0]
+				}
+			}
+			return ""
+		},
 	}
 	return g
 }
@@ -297,6 +467,7 @@ type readmeTemplateData struct {
 	Sources        []ReadmeSource
 	DiscoveryPages []string
 	NovelFeatures  []NovelFeature
+	Narrative      *ReadmeNarrative
 }
 
 func (g *Generator) readmeData() *readmeTemplateData {
@@ -311,6 +482,7 @@ func (g *Generator) readmeData() *readmeTemplateData {
 		Sources:        g.Sources,
 		DiscoveryPages: g.DiscoveryPages,
 		NovelFeatures:  g.NovelFeatures,
+		Narrative:      g.Narrative,
 	}
 }
 
@@ -462,6 +634,7 @@ func (g *Generator) Generate() error {
 		"types.go.tmpl":     filepath.Join("internal", "types", "types.go"),
 		"golangci.yml.tmpl": ".golangci.yml",
 		"readme.md.tmpl":    "README.md",
+		"skill.md.tmpl":     "SKILL.md",
 		"LICENSE.tmpl":      "LICENSE",
 		"NOTICE.tmpl":       "NOTICE",
 	}
@@ -469,7 +642,7 @@ func (g *Generator) Generate() error {
 	for tmplName, outPath := range singleFiles {
 		var data any
 		switch tmplName {
-		case "readme.md.tmpl":
+		case "readme.md.tmpl", "skill.md.tmpl":
 			data = g.readmeData()
 		case "helpers.go.tmpl":
 			hFlags := computeHelperFlags(g.Spec)
@@ -910,6 +1083,24 @@ func (g *Generator) Generate() error {
 		}
 	}
 
+	// Root --help Long surfaces ALL verified-built novel features — the
+	// whole point of this change is to stop making agents do discovery
+	// for novel capabilities. A count cap (earlier draft used 3) neuters
+	// the thesis for CLIs with genuinely many novel features, which are
+	// the CLIs that benefit most from the absorb work in the first place.
+	//
+	// Size is bounded two ways:
+	//   1. per-line truncation via the template's truncate helper (80 runes)
+	//   2. a soft cap on total feature lines rendered (MaxHighlightLines);
+	//      overflow becomes a "…and N more — see README" breadcrumb so a
+	//      verbose absorb output doesn't blow up --help
+	const maxHighlightLines = 15 // ~300-char overhead ceiling in the worst case
+	shownNovel := g.NovelFeatures
+	overflow := 0
+	if len(shownNovel) > maxHighlightLines {
+		overflow = len(shownNovel) - maxHighlightLines
+		shownNovel = shownNovel[:maxHighlightLines]
+	}
 	rootData := struct {
 		*spec.APISpec
 		VisionSet             VisionTemplateSet
@@ -918,6 +1109,9 @@ func (g *Generator) Generate() error {
 		InsightConstructors   []string
 		PromotedCommands      []PromotedCommand
 		PromotedResourceNames map[string]bool
+		Narrative             *ReadmeNarrative
+		TopNovelFeatures      []NovelFeature
+		NovelOverflowCount    int
 	}{
 		APISpec:               g.Spec,
 		VisionSet:             g.VisionSet,
@@ -926,6 +1120,9 @@ func (g *Generator) Generate() error {
 		InsightConstructors:   renderedInsightConstructors,
 		PromotedCommands:      promotedCommands,
 		PromotedResourceNames: promotedResourceNames,
+		Narrative:             g.Narrative,
+		TopNovelFeatures:      shownNovel,
+		NovelOverflowCount:    overflow,
 	}
 	if err := g.renderTemplate("root.go.tmpl", filepath.Join("internal", "cli", "root.go"), rootData); err != nil {
 		return fmt.Errorf("rendering root: %w", err)
