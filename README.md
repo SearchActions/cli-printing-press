@@ -24,9 +24,13 @@ go install github.com/mvanhorn/cli-printing-press/cmd/printing-press@latest
 ```
 
 ```
-/plugin marketplace add mvanhorn/cli-printing-press
-/plugin install cli-printing-press@cli-printing-press
-/reload-plugins
+/install mvanhorn/cli-printing-press
+```
+
+Want to browse and run pre-built CLIs from the [Printing Press Library](https://github.com/mvanhorn/printing-press-library)? Install the library plugin too:
+
+```
+/install mvanhorn/printing-press-library
 ```
 
 ## Why These CLIs Win
@@ -300,15 +304,19 @@ Install the binary (requires Go 1.22+):
 go install github.com/mvanhorn/cli-printing-press/cmd/printing-press@latest
 ```
 
-Then start a Claude Code session and run each command one after another:
+Then install the Claude Code plugin:
 
 ```
-/plugin marketplace add mvanhorn/cli-printing-press
-/plugin install cli-printing-press@cli-printing-press
-/reload-plugins
+/install mvanhorn/cli-printing-press
 ```
 
 No repo checkout needed. The binary embeds its own catalog data and the plugin provides the `/printing-press` skill.
+
+To also browse and run pre-built CLIs from the [Printing Press Library](https://github.com/mvanhorn/printing-press-library):
+
+```
+/install mvanhorn/printing-press-library
+```
 
 ### Run It
 
