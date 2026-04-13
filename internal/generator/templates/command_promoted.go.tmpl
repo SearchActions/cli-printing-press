@@ -82,7 +82,7 @@ func new{{camel .PromotedName}}PromotedCmd(flags *rootFlags) *cobra.Command {
 			params["{{.Name}}"] = args[{{$i}}]
 {{- end}}
 {{- if not .Positional}}
-			if flag{{camel .Name}} != {{zeroVal .Type}} {
+			if flag{{camel .Name}} != {{zeroValForParam .Name .Type}} {
 				params["{{.Name}}"] = fmt.Sprintf("%v", flag{{camel .Name}})
 			}
 {{- end}}
