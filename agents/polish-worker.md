@@ -42,6 +42,10 @@ go build -o "$CLI_NAME" ./cmd/"$CLI_NAME" 2>&1
 # Diagnostics (use SPEC_FLAG="--spec $SPEC_PATH" when SPEC_PATH is non-empty)
 printing-press dogfood --dir "$CLI_DIR" $SPEC_FLAG 2>&1
 printing-press verify --dir "$CLI_DIR" $SPEC_FLAG --json 2>&1
+# --live-check samples novel-feature outputs and populates
+# live_check.features[].warnings (Wave B entity detection) — required for
+# the "Output entity warnings" row below to have data to read.
+printing-press scorecard --dir "$CLI_DIR" $SPEC_FLAG --live-check --json > /tmp/polish-scorecard.json 2>&1 || true
 printing-press scorecard --dir "$CLI_DIR" $SPEC_FLAG 2>&1
 go vet ./... 2>&1
 ```
@@ -57,8 +61,16 @@ Parse findings into categories:
 | README gaps | scorecard | README score < 8 |
 | Example gaps | dogfood | Commands missing examples |
 | Go vet issues | go vet | Any output |
+| Output entity warnings | scorecard JSON | `live_check.features[].warnings` — raw HTML entities in human output |
+| Output plausibility | Phase 4.85 | Findings from the agentic output review |
 
-Record baseline scores: scorecard total, verify pass rate, dogfood verdict, go vet issue count.
+### Phase 4.85 — Agentic output review (Wave B)
+
+After the mechanical diagnostics above complete, run Phase 4.85 exactly as defined in the main printing-press SKILL.md (under `## Phase 4.85: Agentic Output Review`). The polish pathway uses the same Dispatch / Gate / Known blind spots contract — it's the canonical backfill path for CLIs shipped before Phase 4.85 existed. Record findings alongside the mechanical gates above so Phase 2 fixes address both.
+
+Wave B gating applies: all Phase 4.85 findings are surfaced as warnings, not blockers. Fix if obvious and cheap; document with a short comment in the scorecard JSON if deferred. Non-interactive polish runs (CI, cron) follow the fail-open-with-log contract from Phase 4.85's Gate section.
+
+Record baseline scores: scorecard total, verify pass rate, dogfood verdict, go vet issue count, Phase 4.85 finding count.
 
 ## Phase 2: Fix
 
