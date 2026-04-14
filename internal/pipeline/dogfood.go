@@ -31,7 +31,25 @@ type DogfoodReport struct {
 	WiringCheck        WiringCheckResult        `json:"wiring_check"`
 	NovelFeaturesCheck NovelFeaturesCheckResult `json:"novel_features_check"`
 	TestPresence       TestPresenceResult       `json:"test_presence"`
+	NamingCheck        NamingCheckResult        `json:"naming_check"`
 	Issues             []string                 `json:"issues"`
+}
+
+// NamingCheckResult reports non-canonical command verbs and flag names
+// found in generated CLI source. The rules live in naming_rules.go. Agents
+// trained on one printed CLI's vocabulary should recognize every other
+// printed CLI's vocabulary — drift here is a structural bug, not a style
+// preference.
+type NamingCheckResult struct {
+	Checked    int               `json:"checked"`
+	Violations []NamingViolation `json:"violations,omitempty"`
+}
+
+type NamingViolation struct {
+	File      string `json:"file"`
+	Banned    string `json:"banned"`
+	Preferred string `json:"preferred"`
+	Category  string `json:"category"`
 }
 
 // TestPresenceResult reports coverage gaps in agent-authored pure-logic
@@ -185,6 +203,7 @@ func RunDogfood(dir, specPath string, opts ...DogfoodOption) (*DogfoodReport, er
 	report.WiringCheck = checkWiring(dir)
 	report.NovelFeaturesCheck = checkNovelFeatures(dir, cfg.researchDir)
 	report.TestPresence = checkTestPresence(dir)
+	report.NamingCheck = checkNamingConsistency(dir)
 	report.Issues = collectDogfoodIssues(report, spec != nil)
 	report.Verdict = deriveDogfoodVerdict(report, spec != nil)
 
@@ -885,6 +904,103 @@ func checkDeadFunctions(dir string) DeadCodeResult {
 	return result
 }
 
+// checkNamingConsistency walks the generated CLI source and reports any
+// non-canonical command verbs or flag names against the rules in
+// naming_rules.go. The check is structural: agents need consistent
+// vocabulary across every printed CLI, so drift is a bug not a style nit.
+//
+// Verb detection: extract the first token of every cobra `Use:` declaration.
+// Flag detection: extract long-form flag names from the various
+// `Flags().StringVar` / `Flags().BoolP` / etc. registration patterns.
+//
+// The check never reports false positives from identifiers that happen to
+// contain a banned substring (e.g. `getInfoCached`) because it matches only
+// in the contexts where verbs or flags are declared.
+func checkNamingConsistency(dir string) NamingCheckResult {
+	files := listGoFiles(filepath.Join(dir, "internal", "cli"))
+	if len(files) == 0 {
+		return NamingCheckResult{}
+	}
+
+	result := NamingCheckResult{Checked: len(files)}
+
+	// Extract the first token of a cobra Use: declaration:
+	//   Use:  "get",       -> "get"
+	//   Use:  "list [id]", -> "list"
+	useRe := regexp.MustCompile(`(?m)Use:\s*"([A-Za-z][A-Za-z0-9_-]*)`)
+
+	// Extract long-form flag names from the common cobra registration
+	// patterns: StringVar, BoolVar, IntVar, Int64Var, StringVarP, BoolVarP,
+	// etc. The flag name is the second string argument in the non-P forms
+	// and the second string argument followed by a shorthand in the P forms.
+	// Matching `"--name"` directly covers both cases because the name in
+	// code does not include the leading dashes; we instead look for the
+	// quoted name positioned right after a Flags() call.
+	//
+	// Pattern catches: Flags().StringVar(&x, "name", ...), Flags().Bool("name", ...),
+	// PersistentFlags().StringVarP(&x, "name", "n", ...), etc.
+	flagRe := regexp.MustCompile(`(?:Persistent)?Flags\(\)\.(?:String|Bool|Int|Int64|Float64|Duration|StringSlice|StringArray)(?:Var)?(?:P)?\(\s*(?:&[A-Za-z_]\w*\s*,\s*)?"([A-Za-z][A-Za-z0-9_-]*)"`)
+
+	for _, path := range files {
+		content, err := os.ReadFile(path)
+		if err != nil {
+			continue
+		}
+		src := string(content)
+		rel, relErr := filepath.Rel(dir, path)
+		if relErr != nil {
+			rel = path
+		}
+
+		verbs := useRe.FindAllStringSubmatch(src, -1)
+		flags := flagRe.FindAllStringSubmatch(src, -1)
+
+		for _, match := range verbs {
+			verb := match[1]
+			if rule, ok := lookupNamingRule(verb, "verb"); ok {
+				result.Violations = append(result.Violations, NamingViolation{
+					File:      rel,
+					Banned:    verb,
+					Preferred: rule.Preferred,
+					Category:  "verb",
+				})
+			}
+		}
+		for _, match := range flags {
+			flag := match[1]
+			// Flag rules are declared with the `--` prefix; normalize.
+			bannedName := "--" + flag
+			if rule, ok := lookupNamingRule(bannedName, "flag"); ok {
+				result.Violations = append(result.Violations, NamingViolation{
+					File:      rel,
+					Banned:    bannedName,
+					Preferred: rule.Preferred,
+					Category:  "flag",
+				})
+			}
+		}
+	}
+
+	sort.Slice(result.Violations, func(i, j int) bool {
+		if result.Violations[i].File != result.Violations[j].File {
+			return result.Violations[i].File < result.Violations[j].File
+		}
+		return result.Violations[i].Banned < result.Violations[j].Banned
+	})
+	return result
+}
+
+// lookupNamingRule returns the first rule matching the given name and
+// category, or false if none match.
+func lookupNamingRule(name, category string) (NamingRule, bool) {
+	for _, r := range namingRules {
+		if r.Category == category && r.Banned == name {
+			return r, true
+		}
+	}
+	return NamingRule{}, false
+}
+
 // extractFunctionBodies returns a map from function name to its body text
 // (everything between its func line and the next top-level func line).
 func extractFunctionBodies(source string) map[string]string {
@@ -1115,6 +1231,9 @@ func deriveDogfoodVerdict(report *DogfoodReport, hasSpec bool) string {
 		// (agents rationalize skipping tests). See docs/plans/2026-04-13-001.
 		return "FAIL"
 	}
+	if len(report.NamingCheck.Violations) > 0 {
+		return "FAIL"
+	}
 	if len(report.WiringCheck.WorkflowComplete.UnmappedSteps) > 0 {
 		return "WARN"
 	}
@@ -1176,6 +1295,14 @@ func collectDogfoodIssues(report *DogfoodReport, hasSpec bool) []string {
 	if len(report.TestPresence.MissingTests) > 0 {
 		issues = append(issues, fmt.Sprintf("pure-logic packages with no tests: %s",
 			strings.Join(report.TestPresence.MissingTests, ", ")))
+	}
+	if len(report.NamingCheck.Violations) > 0 {
+		parts := make([]string, 0, len(report.NamingCheck.Violations))
+		for _, v := range report.NamingCheck.Violations {
+			parts = append(parts, fmt.Sprintf("%s %s→%s in %s", v.Category, v.Banned, v.Preferred, v.File))
+		}
+		issues = append(issues, fmt.Sprintf("%d naming violations: %s",
+			len(report.NamingCheck.Violations), strings.Join(parts, "; ")))
 	}
 	// ThinTests is intentionally NOT added as a hard issue — it's a warning
 	// surfaced to Wave B's Phase 4.85 agentic reviewer for deeper judgment.

@@ -871,6 +871,194 @@ func runExport(flags *rootFlags) {
 	assert.Equal(t, []string{"deadOnly"}, result.Items)
 }
 
+func TestCheckNamingConsistency_CleanCLI(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "internal", "cli"), 0o755))
+
+	writeTestFile(t, filepath.Join(dir, "internal", "cli", "cmd.go"), `package cli
+
+import "github.com/spf13/cobra"
+
+var forceFlag bool
+
+func newGetCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "get",
+		Short: "Get a resource",
+	}
+	cmd.Flags().BoolVar(&forceFlag, "force", false, "skip confirmation")
+	return cmd
+}
+
+func newListCmd() *cobra.Command {
+	return &cobra.Command{Use: "list"}
+}
+`)
+
+	result := checkNamingConsistency(dir)
+	assert.Equal(t, 1, result.Checked)
+	assert.Empty(t, result.Violations)
+}
+
+func TestCheckNamingConsistency_BannedVerbInfo(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "internal", "cli"), 0o755))
+
+	writeTestFile(t, filepath.Join(dir, "internal", "cli", "cmd.go"), `package cli
+
+import "github.com/spf13/cobra"
+
+func newInfoCmd() *cobra.Command {
+	return &cobra.Command{Use: "info"}
+}
+`)
+
+	result := checkNamingConsistency(dir)
+	require.Len(t, result.Violations, 1)
+	assert.Equal(t, "info", result.Violations[0].Banned)
+	assert.Equal(t, "get", result.Violations[0].Preferred)
+	assert.Equal(t, "verb", result.Violations[0].Category)
+}
+
+func TestCheckNamingConsistency_BannedVerbLs(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "internal", "cli"), 0o755))
+
+	writeTestFile(t, filepath.Join(dir, "internal", "cli", "cmd.go"), `package cli
+
+import "github.com/spf13/cobra"
+
+func newLsCmd() *cobra.Command {
+	return &cobra.Command{Use: "ls"}
+}
+`)
+
+	result := checkNamingConsistency(dir)
+	require.Len(t, result.Violations, 1)
+	assert.Equal(t, "ls", result.Violations[0].Banned)
+	assert.Equal(t, "list", result.Violations[0].Preferred)
+}
+
+func TestCheckNamingConsistency_BannedFlagSkipConfirmations(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "internal", "cli"), 0o755))
+
+	writeTestFile(t, filepath.Join(dir, "internal", "cli", "cmd.go"), `package cli
+
+import "github.com/spf13/cobra"
+
+var skip bool
+
+func newDeleteCmd() *cobra.Command {
+	cmd := &cobra.Command{Use: "delete"}
+	cmd.Flags().BoolVar(&skip, "skip-confirmations", false, "bypass prompts")
+	return cmd
+}
+`)
+
+	result := checkNamingConsistency(dir)
+	require.Len(t, result.Violations, 1)
+	assert.Equal(t, "--skip-confirmations", result.Violations[0].Banned)
+	assert.Equal(t, "--force", result.Violations[0].Preferred)
+	assert.Equal(t, "flag", result.Violations[0].Category)
+}
+
+func TestCheckNamingConsistency_YesFlagIsNotBanned(t *testing.T) {
+	// --yes is a long-standing Unix convention (apt, dnf, etc.) and the
+	// printed CLI root template uses it today. Document that only the
+	// explicitly-banned skip-confirmations variants trigger the check.
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "internal", "cli"), 0o755))
+
+	writeTestFile(t, filepath.Join(dir, "internal", "cli", "cmd.go"), `package cli
+
+import "github.com/spf13/cobra"
+
+var yesFlag bool
+
+func newCmd() *cobra.Command {
+	cmd := &cobra.Command{Use: "purge"}
+	cmd.PersistentFlags().BoolVarP(&yesFlag, "yes", "y", false, "skip prompt")
+	return cmd
+}
+`)
+
+	result := checkNamingConsistency(dir)
+	assert.Empty(t, result.Violations, "--yes is allowed; only --skip-confirmations variants are banned")
+}
+
+func TestCheckNamingConsistency_NoFalsePositiveOnIdentifierWithBannedSubstring(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "internal", "cli"), 0o755))
+
+	// `getInfoCached` contains `info` but is a Go identifier, not a Use: verb.
+	// A body containing --format or --skip as a comment or string literal must
+	// not trigger a flag violation.
+	writeTestFile(t, filepath.Join(dir, "internal", "cli", "cmd.go"), `package cli
+
+import "github.com/spf13/cobra"
+
+func getInfoCached() string { return "cached" }
+
+func newGetCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "get",
+		Short: "mentions --skip-confirmations in docstring but does not register it",
+	}
+}
+`)
+
+	result := checkNamingConsistency(dir)
+	assert.Empty(t, result.Violations)
+}
+
+func TestCheckNamingConsistency_MultipleViolationsSortedByFile(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "internal", "cli"), 0o755))
+
+	writeTestFile(t, filepath.Join(dir, "internal", "cli", "b_cmd.go"), `package cli
+import "github.com/spf13/cobra"
+func newLs() *cobra.Command { return &cobra.Command{Use: "ls"} }
+`)
+	writeTestFile(t, filepath.Join(dir, "internal", "cli", "a_cmd.go"), `package cli
+import "github.com/spf13/cobra"
+func newInfo() *cobra.Command { return &cobra.Command{Use: "info"} }
+`)
+
+	result := checkNamingConsistency(dir)
+	require.Len(t, result.Violations, 2)
+	// Sorted by file path — a_cmd.go comes before b_cmd.go
+	assert.Contains(t, result.Violations[0].File, "a_cmd.go")
+	assert.Equal(t, "info", result.Violations[0].Banned)
+	assert.Contains(t, result.Violations[1].File, "b_cmd.go")
+	assert.Equal(t, "ls", result.Violations[1].Banned)
+}
+
+func TestCheckNamingConsistency_EmptyCLIDir(t *testing.T) {
+	dir := t.TempDir()
+	// No internal/cli directory at all — check returns empty, not panics.
+	result := checkNamingConsistency(dir)
+	assert.Equal(t, 0, result.Checked)
+	assert.Empty(t, result.Violations)
+}
+
+func TestDeriveDogfoodVerdict_NamingViolationFails(t *testing.T) {
+	report := &DogfoodReport{
+		PathCheck:    PathCheckResult{Tested: 10, Pct: 100},
+		AuthCheck:    AuthCheckResult{Match: true},
+		ExampleCheck: ExampleCheckResult{Tested: 5, WithExamples: 5},
+		PipelineCheck: PipelineResult{
+			SyncCallsDomain: true, SearchCallsDomain: true, DomainTables: 1,
+		},
+		NamingCheck: NamingCheckResult{
+			Violations: []NamingViolation{
+				{File: "internal/cli/cmd.go", Banned: "info", Preferred: "get", Category: "verb"},
+			},
+		},
+	}
+	assert.Equal(t, "FAIL", deriveDogfoodVerdict(report, true))
+}
+
 func writeTestFile(t *testing.T, path string, content string) {
 	t.Helper()
 	require.NoError(t, os.WriteFile(path, []byte(content), 0o644))
