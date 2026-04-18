@@ -165,7 +165,7 @@ func findStatusSibling(s *spec.APISpec, rName, eName string) (string, string) {
 			continue
 		}
 		low := strings.ToLower(otherName)
-		if !(strings.Contains(low, "status") || strings.Contains(low, "job") || strings.Contains(low, "task") || strings.Contains(low, "operation")) {
+		if !strings.Contains(low, "status") && !strings.Contains(low, "job") && !strings.Contains(low, "task") && !strings.Contains(low, "operation") {
 			continue
 		}
 		for candName := range other.Endpoints {
