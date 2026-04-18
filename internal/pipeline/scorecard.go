@@ -40,20 +40,21 @@ type Scorecard struct {
 
 // SteinerScore breaks down the Steinberger bar into 11 dimensions, each 0-10.
 type SteinerScore struct {
-	OutputModes   int `json:"output_modes"`         // 0-10
-	Auth          int `json:"auth"`                 // 0-10
-	ErrorHandling int `json:"error_handling"`       // 0-10
-	TerminalUX    int `json:"terminal_ux"`          // 0-10
-	README        int `json:"readme"`               // 0-10
-	Doctor        int `json:"doctor"`               // 0-10
-	AgentNative   int `json:"agent_native"`         // 0-10
-	MCPQuality    int `json:"mcp_quality"`          // 0-10
-	MCPTokenEff   int `json:"mcp_token_efficiency"` // 0-10; unscored when no MCP surface
-	LocalCache    int `json:"local_cache"`          // 0-10
-	Breadth       int `json:"breadth"`              // 0-10: how many commands (penalizes empty CLIs)
-	Vision        int `json:"vision"`               // 0-10
-	Workflows     int `json:"workflows"`            // 0-10
-	Insight       int `json:"insight"`              // 0-10
+	OutputModes   int `json:"output_modes"`             // 0-10
+	Auth          int `json:"auth"`                     // 0-10
+	ErrorHandling int `json:"error_handling"`           // 0-10
+	TerminalUX    int `json:"terminal_ux"`              // 0-10
+	README        int `json:"readme"`                   // 0-10
+	Doctor        int `json:"doctor"`                   // 0-10
+	AgentNative   int `json:"agent_native"`             // 0-10
+	MCPQuality    int `json:"mcp_quality"`              // 0-10
+	MCPTokenEff   int `json:"mcp_token_efficiency"`     // 0-10; unscored when no MCP surface
+	LocalCache    int `json:"local_cache"`              // 0-10
+	Breadth       int `json:"breadth"`                  // 0-10: how many commands (penalizes empty CLIs)
+	Vision        int `json:"vision"`                   // 0-10
+	Workflows     int `json:"workflows"`                // 0-10
+	Insight       int `json:"insight"`                  // 0-10
+	AgentWorkflow int `json:"agent_workflow_readiness"` // 0-10: HeyGen-derived - async jobs, profiles, deliver, feedback
 	// Tier 2: Domain Correctness (semantic checks)
 	PathValidity          int    `json:"path_validity"`           // 0-10
 	AuthProtocol          int    `json:"auth_protocol"`           // 0-10
@@ -101,6 +102,7 @@ func RunScorecard(outputDir, pipelineDir, specPath string, verifyReport *VerifyR
 	sc.Steinberger.Vision = scoreVision(outputDir)
 	sc.Steinberger.Workflows = scoreWorkflows(outputDir)
 	sc.Steinberger.Insight = scoreInsight(outputDir)
+	sc.Steinberger.AgentWorkflow = scoreAgentWorkflow(outputDir)
 
 	if specPath != "" {
 		spec, err := loadOpenAPISpec(specPath)
@@ -136,7 +138,7 @@ func RunScorecard(outputDir, pipelineDir, specPath string, verifyReport *VerifyR
 	sc.Steinberger.TypeFidelity = scoreTypeFidelity(outputDir)
 	sc.Steinberger.DeadCode = scoreDeadCode(outputDir)
 
-	// Tier 1: Infrastructure (string-matching, 140 max; 130 when no MCP surface)
+	// Tier 1: Infrastructure (string-matching, 150 max; 140 when no MCP surface)
 	tier1Raw := sc.Steinberger.OutputModes +
 		sc.Steinberger.Auth +
 		sc.Steinberger.ErrorHandling +
@@ -150,7 +152,8 @@ func RunScorecard(outputDir, pipelineDir, specPath string, verifyReport *VerifyR
 		sc.Steinberger.Breadth +
 		sc.Steinberger.Vision +
 		sc.Steinberger.Workflows +
-		sc.Steinberger.Insight
+		sc.Steinberger.Insight +
+		sc.Steinberger.AgentWorkflow
 
 	// Apply verify caps to dimensions BEFORE tier calculation so Total stays consistent
 	if verifyReport != nil {
@@ -169,9 +172,9 @@ func RunScorecard(outputDir, pipelineDir, specPath string, verifyReport *VerifyR
 
 	// Weighted composite: Tier 1 = 50%, Tier 2 = 50% of final 100-point scale.
 	// Tier 1 max is 140 with MCP, 130 without (mcp_token_efficiency unscored).
-	tier1Max := 140
+	tier1Max := 150
 	if sc.IsDimensionUnscored("mcp_token_efficiency") {
-		tier1Max = 130
+		tier1Max = 140
 	}
 	tier1Normalized := (tier1Raw * 50) / tier1Max // scale 0-tier1Max to 0-50
 	tier2Max := 50
@@ -1074,6 +1077,55 @@ func scoreInsight(dir string) int {
 	default:
 		return 0
 	}
+}
+
+// scoreAgentWorkflow measures how well the generated CLI supports the
+// HeyGen-derived agent-workflow pattern: async jobs with --wait, named
+// profiles, routed delivery, and an in-band feedback channel. Each
+// capability is worth 2-3 points; a fully-equipped CLI scores 10.
+//
+// Profiles, deliver, and feedback are always applicable. The async
+// sub-score is only earned when the generator detected at least one
+// async endpoint (jobs.go is emitted); for purely synchronous specs
+// the missing async capability is not a penalty because there is
+// nothing to submit-then-poll.
+func scoreAgentWorkflow(dir string) int {
+	cliDir := filepath.Join(dir, "internal", "cli")
+
+	exists := func(name string) bool {
+		_, err := os.Stat(filepath.Join(cliDir, name))
+		return err == nil
+	}
+
+	hasJobs := exists("jobs.go")
+	hasProfile := exists("profile.go")
+	hasDeliver := exists("deliver.go")
+	hasFeedback := exists("feedback.go")
+
+	score := 0
+	if hasProfile {
+		score += 3
+	}
+	if hasDeliver {
+		score += 3
+	}
+	if hasFeedback {
+		score += 2
+	}
+	if hasJobs {
+		score += 2
+	} else {
+		// Async is spec-driven. Reward 1 for not needing it when the
+		// other three agent-workflow capabilities are present - the CLI
+		// is correctly shaped for its synchronous API.
+		if hasProfile && hasDeliver && hasFeedback {
+			score += 1
+		}
+	}
+	if score > 10 {
+		score = 10
+	}
+	return score
 }
 
 type openAPISecurityScheme struct {
