@@ -146,6 +146,20 @@ Add `--agent` to any command. Expands to: `--json --compact --no-input --no-colo
 - **Cacheable** — GET responses cached for 5 minutes, bypass with `--no-cache`
 - **Non-interactive** — never prompts, every input is a flag
 
+## Named Profiles
+
+A profile is a saved set of flag values, reused across invocations. Use it when a scheduled agent calls the same command every run with the same configuration - HeyGen's "Beacon" pattern.
+
+```
+<cli>-pp-cli profile save briefing --<flag> <value> ...
+<cli>-pp-cli --profile briefing <command> ...
+<cli>-pp-cli profile list [--json]
+<cli>-pp-cli profile show briefing
+<cli>-pp-cli profile delete briefing --yes
+```
+
+Explicit flags always win over profile values; profile values win over defaults. `agent-context` lists all available profiles under `available_profiles` so introspecting agents discover them at runtime.
+
 ## Async Jobs
 
 For endpoints that submit long-running work, the generator detects the submit-then-poll pattern (a `job_id`/`task_id`/`operation_id` field in the response plus a sibling status endpoint) and wires up three extra flags on the submitting command:

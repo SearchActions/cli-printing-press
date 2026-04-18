@@ -22,10 +22,11 @@ const agentContextSchemaVersion = "1"
 // (2026-04-13 Wrangler post): agents can introspect the live CLI without
 // parsing --help or reading source.
 type agentContext struct {
-	SchemaVersion string                `json:"schema_version"`
-	CLI           agentContextCLI       `json:"cli"`
-	Auth          agentContextAuth      `json:"auth"`
-	Commands      []agentContextCommand `json:"commands"`
+	SchemaVersion     string                `json:"schema_version"`
+	CLI               agentContextCLI       `json:"cli"`
+	Auth              agentContextAuth      `json:"auth"`
+	Commands          []agentContextCommand `json:"commands"`
+	AvailableProfiles []string              `json:"available_profiles"`
 }
 
 type agentContextCLI struct {
@@ -85,6 +86,10 @@ func buildAgentContext(rootCmd *cobra.Command) agentContext {
 	if authMode == "" {
 		authMode = "none"
 	}
+	profiles := ListProfileNames()
+	if profiles == nil {
+		profiles = []string{}
+	}
 	return agentContext{
 		SchemaVersion: agentContextSchemaVersion,
 		CLI: agentContextCLI{
@@ -96,7 +101,8 @@ func buildAgentContext(rootCmd *cobra.Command) agentContext {
 			Mode:    authMode,
 			EnvVars: envVars,
 		},
-		Commands: collectAgentCommands(rootCmd),
+		Commands:          collectAgentCommands(rootCmd),
+		AvailableProfiles: profiles,
 	}
 }
 

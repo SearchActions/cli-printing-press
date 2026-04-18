@@ -30,6 +30,7 @@ type rootFlags struct {
 	agent        bool
 	selectFields string
 	configPath   string
+	profileName  string
 	timeout      time.Duration
 	rateLimit    float64
 	dataSource   string
@@ -100,6 +101,7 @@ Run '{{.Name}}-pp-cli doctor' to verify auth and connectivity.{{backtick}},
 	rootCmd.PersistentFlags().BoolVar(&humanFriendly, "human-friendly", false, "Enable colored output and rich formatting")
 	rootCmd.PersistentFlags().BoolVar(&flags.agent, "agent", false, "Set all agent-friendly defaults (--json --compact --no-input --no-color --yes)")
 	rootCmd.PersistentFlags().StringVar(&flags.dataSource, "data-source", "auto", "Data source for read commands: auto (live with local fallback), live (API only), local (synced data only)")
+	rootCmd.PersistentFlags().StringVar(&flags.profileName, "profile", "", "Apply values from a saved profile (see '{{.Name}}-pp-cli profile list')")
 {{- if eq .SpecSource "sniffed"}}
 	rootCmd.PersistentFlags().Float64Var(&flags.rateLimit, "rate-limit", 2, "Max requests per second (0 to disable, default 2 for sniffed APIs)")
 {{- else}}
@@ -107,6 +109,22 @@ Run '{{.Name}}-pp-cli doctor' to verify auth and connectivity.{{backtick}},
 {{- end}}
 
 	rootCmd.PersistentPreRunE = func(cmd *cobra.Command, args []string) error {
+		if flags.profileName != "" {
+			profile, err := GetProfile(flags.profileName)
+			if err != nil {
+				return err
+			}
+			if profile == nil {
+				available := ListProfileNames()
+				if len(available) == 0 {
+					return fmt.Errorf("profile %q not found (no profiles saved yet; run '%s profile save <name> --<flag> <value>')", flags.profileName, cmd.Root().Name())
+				}
+				return fmt.Errorf("profile %q not found; available: %s", flags.profileName, strings.Join(available, ", "))
+			}
+			if err := ApplyProfileToFlags(cmd, profile); err != nil {
+				return err
+			}
+		}
 		if flags.agent {
 			if !cmd.Flags().Changed("json") {
 				flags.asJSON = true
@@ -141,6 +159,7 @@ Run '{{.Name}}-pp-cli doctor' to verify auth and connectivity.{{backtick}},
 	rootCmd.AddCommand(newDoctorCmd(&flags))
 	rootCmd.AddCommand(newAuthCmd(&flags))
 	rootCmd.AddCommand(newAgentContextCmd(rootCmd))
+	rootCmd.AddCommand(newProfileCmd(&flags))
 {{- if .HasAsyncJobs}}
 	rootCmd.AddCommand(newJobsCmd(&flags))
 {{- end}}
