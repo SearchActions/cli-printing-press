@@ -661,6 +661,7 @@ func (g *Generator) Generate() error {
 		"agent_context.go.tmpl":  filepath.Join("internal", "cli", "agent_context.go"),
 		"profile.go.tmpl":        filepath.Join("internal", "cli", "profile.go"),
 		"deliver.go.tmpl":        filepath.Join("internal", "cli", "deliver.go"),
+		"feedback.go.tmpl":       filepath.Join("internal", "cli", "feedback.go"),
 		"config.go.tmpl":         filepath.Join("internal", "config", "config.go"),
 		"cache.go.tmpl":          filepath.Join("internal", "cache", "cache.go"),
 		"client.go.tmpl":         filepath.Join("internal", "client", "client.go"),

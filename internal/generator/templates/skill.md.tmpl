@@ -146,6 +146,20 @@ Add `--agent` to any command. Expands to: `--json --compact --no-input --no-colo
 - **Cacheable** — GET responses cached for 5 minutes, bypass with `--no-cache`
 - **Non-interactive** — never prompts, every input is a flag
 
+## Agent Feedback
+
+When you (or the agent) notice something off about this CLI, record it:
+
+```
+<cli>-pp-cli feedback "the --since flag is inclusive but docs say exclusive"
+<cli>-pp-cli feedback --stdin < notes.txt
+<cli>-pp-cli feedback list --json --limit 10
+```
+
+Entries are stored locally at `~/.<cli>-pp-cli/feedback.jsonl`. They are never POSTed unless `<CLI>_FEEDBACK_ENDPOINT` is set AND either `--send` is passed or `<CLI>_FEEDBACK_AUTO_SEND=true`. Default behavior is local-only.
+
+Write what *surprised* you, not a bug report. Short, specific, one line: that is the part that compounds.
+
 ## Output Delivery
 
 Every command accepts `--deliver <sink>`. The output goes to the named sink in addition to (or instead of) stdout, so agents can route command results without hand-piping. Three sinks are supported:

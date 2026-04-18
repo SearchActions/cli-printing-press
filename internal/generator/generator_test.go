@@ -28,9 +28,10 @@ func TestGenerateProjectsCompile(t *testing.T) {
 		// +1 for internal/cli/agent_context.go (Cloudflare-style runtime introspection)
 		// +1 for internal/cli/profile.go (HeyGen-style named-profile system)
 		// +1 for internal/cli/deliver.go (HeyGen-style --deliver output routing)
-		{name: "stytch", specPath: filepath.Join("..", "..", "testdata", "stytch.yaml"), expectedFiles: 38},
-		{name: "clerk", specPath: filepath.Join("..", "..", "testdata", "clerk.yaml"), expectedFiles: 42},
-		{name: "loops", specPath: filepath.Join("..", "..", "testdata", "loops.yaml"), expectedFiles: 42},
+		// +1 for internal/cli/feedback.go (HeyGen-style in-band agent feedback channel)
+		{name: "stytch", specPath: filepath.Join("..", "..", "testdata", "stytch.yaml"), expectedFiles: 39},
+		{name: "clerk", specPath: filepath.Join("..", "..", "testdata", "clerk.yaml"), expectedFiles: 43},
+		{name: "loops", specPath: filepath.Join("..", "..", "testdata", "loops.yaml"), expectedFiles: 43},
 	}
 
 	for _, tt := range tests {
