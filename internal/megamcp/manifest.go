@@ -279,8 +279,18 @@ func tryCache(cachePath, expectedChecksum string) (*ToolsManifest, error) {
 }
 
 // fetchManifestData downloads manifest data from a URL.
+// When GITHUB_TOKEN is set, an Authorization header is attached so private-repo
+// reads via raw.githubusercontent.com succeed.
 func fetchManifestData(manifestURL string) ([]byte, error) {
-	resp, err := http.Get(manifestURL)
+	req, err := http.NewRequest(http.MethodGet, manifestURL, nil)
+	if err != nil {
+		return nil, fmt.Errorf("building request: %w", err)
+	}
+	if token := os.Getenv("GITHUB_TOKEN"); token != "" {
+		req.Header.Set("Authorization", "token "+token)
+	}
+
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("HTTP request: %w", err)
 	}

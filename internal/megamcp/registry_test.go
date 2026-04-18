@@ -96,3 +96,29 @@ func TestFetchRegistryInvalidJSON(t *testing.T) {
 	assert.Nil(t, result)
 	assert.Contains(t, err.Error(), "parsing registry JSON")
 }
+
+func TestFetchRegistryAttachesGitHubToken(t *testing.T) {
+	var gotAuth string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("Authorization")
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(Registry{SchemaVersion: 1})
+	}))
+	defer server.Close()
+
+	t.Run("with token set", func(t *testing.T) {
+		gotAuth = ""
+		t.Setenv("GITHUB_TOKEN", "ghp_testtoken123")
+		_, err := FetchRegistry(server.URL)
+		require.NoError(t, err)
+		assert.Equal(t, "token ghp_testtoken123", gotAuth)
+	})
+
+	t.Run("with token unset", func(t *testing.T) {
+		gotAuth = ""
+		t.Setenv("GITHUB_TOKEN", "")
+		_, err := FetchRegistry(server.URL)
+		require.NoError(t, err)
+		assert.Empty(t, gotAuth)
+	})
+}
