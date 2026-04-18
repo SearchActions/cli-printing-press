@@ -116,10 +116,11 @@ type Generator struct {
 	OutputDir      string
 	VisionSet      VisionTemplateSet
 	FixtureSet     *websniff.FixtureSet
-	Sources        []ReadmeSource   // Ecosystem tools to credit in README
-	DiscoveryPages []string         // Pages visited during sniff discovery
-	NovelFeatures  []NovelFeature   // Transcendence features for README/SKILL
-	Narrative      *ReadmeNarrative // LLM-authored prose for README/SKILL; optional
+	Sources        []ReadmeSource          // Ecosystem tools to credit in README
+	DiscoveryPages []string                // Pages visited during sniff discovery
+	NovelFeatures  []NovelFeature          // Transcendence features for README/SKILL
+	Narrative      *ReadmeNarrative        // LLM-authored prose for README/SKILL; optional
+	AsyncJobs      map[string]AsyncJobInfo // Detected async-job endpoints, keyed by "<resource>/<endpoint>"
 	profile        *profiler.APIProfile
 	funcs          template.FuncMap
 	templates      map[string]*template.Template
@@ -645,6 +646,13 @@ func (g *Generator) Generate() error {
 		g.profile = profiler.Profile(g.Spec)
 	}
 
+	// Detect async-job endpoints once per generation. Results flow into
+	// per-endpoint template data (for conditional --wait emission) and into
+	// the root template (for the jobs command registration).
+	if g.AsyncJobs == nil {
+		g.AsyncJobs = DetectAsyncJobs(g.Spec)
+	}
+
 	// Generate single files
 	singleFiles := map[string]string{
 		"main.go.tmpl":           filepath.Join("cmd", naming.CLI(g.Spec.Name), "main.go"),
@@ -753,6 +761,7 @@ func (g *Generator) Generate() error {
 			if promotedEndpointNames[name] == eName {
 				continue
 			}
+			asyncInfo, isAsync := g.AsyncJobs[name+"/"+eName]
 			epData := struct {
 				ResourceName string
 				FuncPrefix   string
@@ -760,6 +769,8 @@ func (g *Generator) Generate() error {
 				EndpointName string
 				Endpoint     spec.Endpoint
 				HasStore     bool
+				IsAsync      bool
+				Async        AsyncJobInfo
 				*spec.APISpec
 			}{
 				ResourceName: name,
@@ -768,6 +779,8 @@ func (g *Generator) Generate() error {
 				EndpointName: eName,
 				Endpoint:     endpoint,
 				HasStore:     g.VisionSet.Store,
+				IsAsync:      isAsync,
+				Async:        asyncInfo,
 				APISpec:      g.Spec,
 			}
 			epPath := filepath.Join("internal", "cli", name+"_"+eName+".go")
@@ -805,6 +818,8 @@ func (g *Generator) Generate() error {
 			}
 
 			for eName, endpoint := range subResource.Endpoints {
+				subKey := subName + "/" + eName
+				asyncInfo, isAsync := g.AsyncJobs[subKey]
 				epData := struct {
 					ResourceName string
 					FuncPrefix   string
@@ -812,6 +827,8 @@ func (g *Generator) Generate() error {
 					EndpointName string
 					Endpoint     spec.Endpoint
 					HasStore     bool
+					IsAsync      bool
+					Async        AsyncJobInfo
 					*spec.APISpec
 				}{
 					ResourceName: subName,
@@ -820,6 +837,8 @@ func (g *Generator) Generate() error {
 					EndpointName: eName,
 					Endpoint:     endpoint,
 					HasStore:     g.VisionSet.Store,
+					IsAsync:      isAsync,
+					Async:        asyncInfo,
 					APISpec:      g.Spec,
 				}
 				epPath := filepath.Join("internal", "cli", name+"_"+subName+"_"+eName+".go")
@@ -1138,6 +1157,8 @@ func (g *Generator) Generate() error {
 		Narrative             *ReadmeNarrative
 		TopNovelFeatures      []NovelFeature
 		NovelOverflowCount    int
+		HasAsyncJobs          bool
+		AsyncJobCount         int
 	}{
 		APISpec:               g.Spec,
 		VisionSet:             g.VisionSet,
@@ -1149,9 +1170,23 @@ func (g *Generator) Generate() error {
 		Narrative:             g.Narrative,
 		TopNovelFeatures:      shownNovel,
 		NovelOverflowCount:    overflow,
+		HasAsyncJobs:          len(g.AsyncJobs) > 0,
+		AsyncJobCount:         len(g.AsyncJobs),
 	}
 	if err := g.renderTemplate("root.go.tmpl", filepath.Join("internal", "cli", "root.go"), rootData); err != nil {
 		return fmt.Errorf("rendering root: %w", err)
+	}
+	if len(g.AsyncJobs) > 0 {
+		jobsData := struct {
+			*spec.APISpec
+			AsyncJobs map[string]AsyncJobInfo
+		}{
+			APISpec:   g.Spec,
+			AsyncJobs: g.AsyncJobs,
+		}
+		if err := g.renderTemplate("jobs.go.tmpl", filepath.Join("internal", "cli", "jobs.go"), jobsData); err != nil {
+			return fmt.Errorf("rendering jobs: %w", err)
+		}
 	}
 	if err := g.renderTemplate("go.mod.tmpl", "go.mod", rootData); err != nil {
 		return fmt.Errorf("rendering go.mod: %w", err)

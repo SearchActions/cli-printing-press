@@ -146,6 +146,26 @@ Add `--agent` to any command. Expands to: `--json --compact --no-input --no-colo
 - **Cacheable** — GET responses cached for 5 minutes, bypass with `--no-cache`
 - **Non-interactive** — never prompts, every input is a flag
 
+## Async Jobs
+
+For endpoints that submit long-running work, the generator detects the submit-then-poll pattern (a `job_id`/`task_id`/`operation_id` field in the response plus a sibling status endpoint) and wires up three extra flags on the submitting command:
+
+| Flag | Purpose |
+|------|---------|
+| `--wait` | Block until the job reaches a terminal status instead of returning the job ID immediately |
+| `--wait-timeout` | Maximum wait duration (default 10m, 0 means no timeout) |
+| `--wait-interval` | Initial poll interval (default 2s; grows with exponential backoff up to 30s) |
+
+Every `--wait` invocation records the job to `~/.<cli>-pp-cli/jobs.jsonl`. Inspect the ledger with:
+
+```
+<cli>-pp-cli jobs list [--json] [--limit N]
+<cli>-pp-cli jobs get <job-id>
+<cli>-pp-cli jobs prune --older-than 7d
+```
+
+Use async submission without `--wait` when you want to fire-and-forget; use `--wait` when you want one command to return the finished artifact.
+
 ## Exit Codes
 
 | Code | Meaning |
