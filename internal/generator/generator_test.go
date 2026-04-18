@@ -27,9 +27,10 @@ func TestGenerateProjectsCompile(t *testing.T) {
 		// +3 for cliutil package: fanout.go, text.go, cliutil_test.go
 		// +1 for internal/cli/agent_context.go (Cloudflare-style runtime introspection)
 		// +1 for internal/cli/profile.go (HeyGen-style named-profile system)
-		{name: "stytch", specPath: filepath.Join("..", "..", "testdata", "stytch.yaml"), expectedFiles: 37},
-		{name: "clerk", specPath: filepath.Join("..", "..", "testdata", "clerk.yaml"), expectedFiles: 41},
-		{name: "loops", specPath: filepath.Join("..", "..", "testdata", "loops.yaml"), expectedFiles: 41},
+		// +1 for internal/cli/deliver.go (HeyGen-style --deliver output routing)
+		{name: "stytch", specPath: filepath.Join("..", "..", "testdata", "stytch.yaml"), expectedFiles: 38},
+		{name: "clerk", specPath: filepath.Join("..", "..", "testdata", "clerk.yaml"), expectedFiles: 42},
+		{name: "loops", specPath: filepath.Join("..", "..", "testdata", "loops.yaml"), expectedFiles: 42},
 	}
 
 	for _, tt := range tests {
