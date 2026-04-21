@@ -148,10 +148,30 @@ Run `{{.Name}}-pp-cli doctor` to verify setup.
 Add `--agent` to any command. Expands to: `--json --compact --no-input --no-color --yes`.
 
 - **Pipeable** — JSON on stdout, errors on stderr
-- **Filterable** — `--select id,name` returns a subset of fields
+- **Filterable** — `--select` keeps a subset of fields. Dotted paths descend into nested structures; arrays traverse element-wise. Critical for keeping context small on verbose APIs:
+
+  ```bash
+  {{.Name}}-pp-cli <command> --agent --select id,name,status
+  {{.Name}}-pp-cli <command> --agent --select items.id,items.owner.name
+  ```
 - **Previewable** — `--dry-run` shows the request without sending
 - **Cacheable** — GET responses cached for 5 minutes, bypass with `--no-cache`
 - **Non-interactive** — never prompts, every input is a flag
+{{- if .HasDataLayer}}
+
+### Response envelope
+
+Commands that read from the local store or the API wrap output in a provenance envelope:
+
+```json
+{
+  "meta": {"source": "live" | "local", "synced_at": "...", "reason": "..."},
+  "results": <data>
+}
+```
+
+Parse `.results` for data and `.meta.source` to know whether it's live or local. A human-readable `N results (live)` summary is printed to stderr only when stdout is a terminal — piped/agent consumers get pure JSON on stdout.
+{{- end}}
 
 ## Agent Feedback
 

@@ -495,6 +495,7 @@ type readmeTemplateData struct {
 	DiscoveryPages []string
 	NovelFeatures  []NovelFeature
 	Narrative      *ReadmeNarrative
+	HasDataLayer   bool
 }
 
 func (g *Generator) readmeData() *readmeTemplateData {
@@ -512,6 +513,7 @@ func (g *Generator) readmeData() *readmeTemplateData {
 		DiscoveryPages: g.DiscoveryPages,
 		NovelFeatures:  g.NovelFeatures,
 		Narrative:      g.Narrative,
+		HasDataLayer:   g.VisionSet.Store,
 	}
 }
 
@@ -1858,28 +1860,44 @@ func buildPromotedCommands(s *spec.APISpec) []PromotedCommand {
 	usedNames := make(map[string]bool)
 
 	for name, resource := range s.Resources {
-		// Find the primary GET endpoint: prefer GET without positional params, else first GET
+		// Find the primary endpoint for the resource.
+		//
+		// Multi-endpoint resources: prefer a GET without positional params (list
+		// endpoint), else first GET — a read is the safest default landing spot.
+		//
+		// Single-endpoint resources: promote the only endpoint regardless of method.
+		// Without this, POST-only auth resources like `login`/`logout`/`register`
+		// render as `<cli> login login --email …` — ugly double-naming that no
+		// agent or human wants to type.
 		var bestName string
 		var bestEndpoint spec.Endpoint
 		found := false
 
-		for eName, ep := range resource.Endpoints {
-			if ep.Method != "GET" {
-				continue
-			}
-			hasPositional := false
-			for _, p := range ep.Params {
-				if p.Positional {
-					hasPositional = true
-					break
-				}
-			}
-			if !found || !hasPositional {
+		if len(resource.Endpoints) == 1 {
+			for eName, ep := range resource.Endpoints {
 				bestName = eName
 				bestEndpoint = ep
 				found = true
-				if !hasPositional {
-					break // Ideal: GET without path params (list endpoint)
+			}
+		} else {
+			for eName, ep := range resource.Endpoints {
+				if ep.Method != "GET" {
+					continue
+				}
+				hasPositional := false
+				for _, p := range ep.Params {
+					if p.Positional {
+						hasPositional = true
+						break
+					}
+				}
+				if !found || !hasPositional {
+					bestName = eName
+					bestEndpoint = ep
+					found = true
+					if !hasPositional {
+						break // Ideal: GET without path params (list endpoint)
+					}
 				}
 			}
 		}
