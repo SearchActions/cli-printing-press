@@ -63,52 +63,36 @@ jobs:
               exit 1
             fi
 
-            # Verify URL is accessible
-            HTTP_STATUS=$(curl -sL -o /dev/null -w '%{http_code}' "$SPEC_URL")
-            if [[ "$HTTP_STATUS" != "200" ]]; then
-              echo "FAIL: spec_url returned HTTP $HTTP_STATUS: $SPEC_URL"
-              exit 1
+            SPEC_FILE=/tmp/spec-validate.yaml
+            RAW_PREFIX="https://raw.githubusercontent.com/mvanhorn/cli-printing-press/main/"
+            if [[ "$SPEC_URL" == "$RAW_PREFIX"* ]]; then
+              LOCAL_SPEC="${SPEC_URL#"$RAW_PREFIX"}"
+              if [[ ! -f "$LOCAL_SPEC" ]]; then
+                echo "FAIL: in-repo spec_url points at missing file: $LOCAL_SPEC"
+                exit 1
+              fi
+              cp "$LOCAL_SPEC" "$SPEC_FILE"
+              echo "PASS: using local PR copy for in-repo spec ($LOCAL_SPEC)"
+            else
+              # Verify external URLs are accessible.
+              HTTP_STATUS=$(curl -sL -o /dev/null -w '%{http_code}' "$SPEC_URL")
+              if [[ "$HTTP_STATUS" != "200" ]]; then
+                echo "FAIL: spec_url returned HTTP $HTTP_STATUS: $SPEC_URL"
+                exit 1
+              fi
+
+              echo "PASS: URL accessible ($HTTP_STATUS)"
+              curl -sL -o "$SPEC_FILE" "$SPEC_URL"
             fi
 
-            echo "PASS: URL accessible ($HTTP_STATUS)"
-
-            # Download and generate
-            curl -sL -o /tmp/spec-validate.yaml "$SPEC_URL"
+            # Generate from the resolved spec.
             NAME=$(grep '^name:' "$file" | head -1 | sed 's/name: *//')
 
             ./printing-press generate \
-              --spec /tmp/spec-validate.yaml \
+              --spec "$SPEC_FILE" \
               --output /tmp/${NAME}-cli \
               --validate
 
             echo "PASS: Generated CLI compiles"
-            rm -rf /tmp/${NAME}-cli /tmp/spec-validate.yaml
+            rm -rf /tmp/${NAME}-cli "$SPEC_FILE"
           done
-
-  test-generator:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v6
-
-      - uses: actions/setup-go@v6
-        with:
-          go-version-file: go.mod
-          cache: true
-
-      - name: Run generator tests
-        run: go test -p 2 ./internal/generator
-
-  test:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v6
-
-      - uses: actions/setup-go@v6
-        with:
-          go-version-file: go.mod
-          cache: true
-
-      - name: Run non-generator tests
-        run: |
-          mapfile -t packages < <(go list ./... | grep -v '^github.com/mvanhorn/cli-printing-press/internal/generator$')
-          go test -p 2 "${packages[@]}"

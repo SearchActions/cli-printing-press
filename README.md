@@ -5,7 +5,7 @@ Just making a CLI is not hard. Making a CLI that understands the power user is e
 Claude Code, Codex, Gemini CLI, Cursor - they call CLIs thousands of times a day. Every printing press CLI is designed for agents first: `--json` by default when piped, typed exit codes for self-correction, `--compact` for token efficiency, `--dry-run` for safe exploration. Humans get the same great experience, but agents are the primary design target.
 
 ```bash
-/printing-press HubSpot                              # From the catalog (18 APIs ready)
+/printing-press HubSpot                              # From the catalog (19 APIs ready)
 /printing-press --spec ./openapi.yaml                # From a local spec
 /printing-press --har ./capture.har --name ESPN      # From captured browser traffic
 /printing-press https://postman.com/explore          # From a URL (auto-detects intent)
@@ -200,9 +200,9 @@ Phase 5     Live Smoke (optional)     (2-5 min)    Read-only API smoke + data-fl
 
 **Three entry paths.** Got an OpenAPI spec? Use `--spec`. Got a URL to a website with no docs? The browser-sniff gate launches a browser, captures traffic, and generates the spec. Got a HAR file from DevTools? Pass `--har`. The press handles all three.
 
-**18 APIs in the catalog.** Asana, DigitalOcean, Discord, Front, GitHub, HubSpot, LaunchDarkly, Pipedrive, Plaid, Postman, SendGrid, Sentry, Square, Stripe, Stytch, Telegram, Twilio - plus Petstore for testing. Each pre-verified with spec URL, auth type, and category.
+**19 APIs in the catalog.** Asana, DigitalOcean, Discord, Front, GitHub, HubSpot, LaunchDarkly, Pipedrive, Plaid, Postman, Product Hunt, SendGrid, Sentry, Square, Stripe, Stytch, Telegram, Twilio - plus Petstore for testing. Each pre-verified with spec URL, auth type, and category.
 
-**Discovery provenance.** When the press sniffs a website, it archives everything - pages visited, endpoints discovered, response samples, rate limiting events - into a `discovery/` manuscript alongside the research and proofs. Full audit trail.
+**Discovery provenance.** When the press sniffs a website, it archives everything - pages visited, endpoints discovered, response samples, rate limiting events, and `traffic-analysis.json` with protocol/auth/protection signals and discovery warnings - into a `discovery/` manuscript alongside the research and proofs. Full audit trail.
 
 **Full pipeline contract.** The fast path above compresses a longer 9-phase managed pipeline - preflight, research, scaffold, enrich, regenerate, review, agent-readiness, comparative, ship. Inputs, outputs, gates, and artifacts for each phase are documented in [docs/PIPELINE.md](docs/PIPELINE.md). Use it when you want to stop at any phase, resume later, re-run one step, or port the flow to another tool.
 
@@ -334,7 +334,7 @@ Published CLIs live in [printing-press-library](https://github.com/mvanhorn/prin
 | `espn-pp-cli` | Media & Entertainment | ESPN sports data - scores, stats, standings across 17 sports and 139 leagues | `go install github.com/mvanhorn/printing-press-library/library/media-and-entertainment/espn-pp-cli/...@latest` |
 | `linear-pp-cli` | Project Management | Linear - issues, cycles, teams, projects with GraphQL | `go install github.com/mvanhorn/printing-press-library/library/project-management/linear-pp-cli/...@latest` |
 
-Each published CLI includes research manuscripts, verification proofs, and a `.printing-press.json` provenance manifest. The full catalog has **18 APIs** ready to generate - run `/printing-press-catalog` to browse.
+Each published CLI includes research manuscripts, verification proofs, and a `.printing-press.json` provenance manifest. The full catalog has **19 APIs** ready to generate - run `/printing-press-catalog` to browse.
 
 ## Quick Start
 

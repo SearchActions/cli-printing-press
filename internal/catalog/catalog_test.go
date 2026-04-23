@@ -126,6 +126,13 @@ func TestValidateEntry(t *testing.T) {
 			},
 			wantErr: "client_pattern must be one of",
 		},
+		{
+			name: "invalid http_transport",
+			mutate: func(e *Entry) {
+				e.HTTPTransport = "lynx"
+			},
+			wantErr: "http_transport must be one of",
+		},
 	}
 
 	for _, tt := range tests {
@@ -225,6 +232,23 @@ func TestSniffedEntryValid(t *testing.T) {
 		SpecSource:    "sniffed",
 		AuthRequired:  &f,
 		ClientPattern: "proxy-envelope",
+		HTTPTransport: "browser-chrome-h3",
+	}
+	assert.NoError(t, entry.Validate())
+}
+
+func TestCustomSpecFormatValid(t *testing.T) {
+	f := false
+	entry := Entry{
+		Name:         "producthunt",
+		DisplayName:  "Product Hunt",
+		Description:  "Find, monitor, and export Product Hunt launches for launch research",
+		Category:     "marketing",
+		SpecURL:      "https://example.com/producthunt-spec.yaml",
+		SpecFormat:   "custom",
+		Tier:         "community",
+		SpecSource:   "sniffed",
+		AuthRequired: &f,
 	}
 	assert.NoError(t, entry.Validate())
 }
@@ -244,6 +268,7 @@ func TestOptionalFieldsOmittedValid(t *testing.T) {
 	assert.Empty(t, entry.SpecSource)
 	assert.Nil(t, entry.AuthRequired)
 	assert.Empty(t, entry.ClientPattern)
+	assert.Empty(t, entry.HTTPTransport)
 }
 
 func TestWrapperOnlyEntryValid(t *testing.T) {
@@ -374,6 +399,19 @@ func TestLookupFSFindsStripe(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "stripe", entry.Name)
 	assert.Equal(t, "https://raw.githubusercontent.com/stripe/openapi/master/openapi/spec3.json", entry.SpecURL)
+}
+
+func TestLookupFSFindsProductHunt(t *testing.T) {
+	entry, err := LookupFS(catalogfs.FS, "producthunt")
+	require.NoError(t, err)
+	assert.Equal(t, "producthunt", entry.Name)
+	assert.Equal(t, "Product Hunt", entry.DisplayName)
+	assert.Equal(t, "marketing", entry.Category)
+	assert.Equal(t, "community", entry.Tier)
+	assert.Equal(t, "custom", entry.SpecFormat)
+	assert.Equal(t, "sniffed", entry.SpecSource)
+	require.NotNil(t, entry.AuthRequired)
+	assert.False(t, *entry.AuthRequired)
 }
 
 func TestLookupFSNotFound(t *testing.T) {

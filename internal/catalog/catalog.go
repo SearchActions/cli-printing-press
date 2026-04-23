@@ -38,8 +38,9 @@ var validCategories = map[string]struct{}{
 }
 
 var validSpecFormats = map[string]struct{}{
-	"yaml": {},
-	"json": {},
+	"yaml":   {},
+	"json":   {},
+	"custom": {},
 }
 
 var validTiers = map[string]struct{}{
@@ -58,6 +59,12 @@ var validClientPatterns = map[string]struct{}{
 	"rest":           {}, // Standard REST — default, no special client needed
 	"proxy-envelope": {}, // All requests wrapped in a POST envelope (e.g., Postman _api/ws/proxy)
 	"graphql":        {}, // GraphQL endpoint, needs query/mutation wrapper
+}
+
+var validHTTPTransports = map[string]struct{}{
+	"standard":          {}, // Plain net/http, default for official APIs
+	"browser-chrome":    {}, // Browser-compatible transport for web-discovered/non-official APIs
+	"browser-chrome-h3": {}, // Chrome-compatible HTTP transport forced through HTTP/3
 }
 
 type KnownAlt struct {
@@ -111,6 +118,9 @@ type Entry struct {
 	// ClientPattern describes the HTTP client pattern needed. Empty defaults to "rest".
 	// Values: rest, proxy-envelope, graphql.
 	ClientPattern string `yaml:"client_pattern,omitempty"`
+	// HTTPTransport describes the runtime HTTP transport. Empty defaults by provenance:
+	// official uses standard; non-official web-discovered sources use browser-chrome.
+	HTTPTransport string `yaml:"http_transport,omitempty"`
 	// ProxyRoutes maps path prefixes to backend service names for proxy-envelope APIs.
 	// Only relevant when ClientPattern is "proxy-envelope".
 	ProxyRoutes map[string]string `yaml:"proxy_routes,omitempty"`
@@ -218,11 +228,11 @@ func (e *Entry) Validate() error {
 			return fmt.Errorf("spec_format is required")
 		}
 		if _, ok := validSpecFormats[e.SpecFormat]; !ok {
-			return fmt.Errorf("spec_format must be one of: yaml, json")
+			return fmt.Errorf("spec_format must be one of: %s", strings.Join(validSpecFormatNames(), ", "))
 		}
 	} else if e.SpecFormat != "" {
 		if _, ok := validSpecFormats[e.SpecFormat]; !ok {
-			return fmt.Errorf("spec_format must be one of: yaml, json")
+			return fmt.Errorf("spec_format must be one of: %s", strings.Join(validSpecFormatNames(), ", "))
 		}
 	}
 
@@ -264,6 +274,11 @@ func (e *Entry) Validate() error {
 			return fmt.Errorf("client_pattern must be one of: rest, proxy-envelope, graphql")
 		}
 	}
+	if e.HTTPTransport != "" {
+		if _, ok := validHTTPTransports[e.HTTPTransport]; !ok {
+			return fmt.Errorf("http_transport must be one of: standard, browser-chrome, browser-chrome-h3")
+		}
+	}
 
 	return nil
 }
@@ -279,6 +294,15 @@ func PublicCategories() []string {
 	}
 	sort.Strings(cats)
 	return cats
+}
+
+func validSpecFormatNames() []string {
+	formats := make([]string, 0, len(validSpecFormats))
+	for format := range validSpecFormats {
+		formats = append(formats, format)
+	}
+	sort.Strings(formats)
+	return formats
 }
 
 // IsPublicCategory reports whether category is allowed in user-facing workflows.

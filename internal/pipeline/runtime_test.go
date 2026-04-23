@@ -1,11 +1,13 @@
 package pipeline
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"testing"
 
+	apispec "github.com/mvanhorn/cli-printing-press/internal/spec"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -58,6 +60,96 @@ func main() {
 	require.Error(t, err)
 	assert.Nil(t, report)
 	assert.FileExists(t, existingBinary)
+}
+
+func TestRunBrowserSessionProofTestRequiresValidDoctorProof(t *testing.T) {
+	binary := buildDoctorJSONBinary(t, `{"browser_session_proof":"missing or stale","browser_session_proof_detail":"proof not found"}`)
+
+	result := runBrowserSessionProofTest(binary, apispec.AuthConfig{
+		RequiresBrowserSession:       true,
+		BrowserSessionValidationPath: "/api/items",
+	})
+
+	assert.Equal(t, 0, result.Score)
+	assert.False(t, result.Execute)
+	assert.Contains(t, result.Error, "proof not found")
+}
+
+func TestRunBrowserSessionProofTestPassesValidDoctorProof(t *testing.T) {
+	binary := buildDoctorJSONBinary(t, `{"browser_session_proof":"valid","browser_session_proof_detail":"GET /api/items verified"}`)
+
+	result := runBrowserSessionProofTest(binary, apispec.AuthConfig{
+		RequiresBrowserSession:       true,
+		BrowserSessionValidationPath: "/api/items",
+	})
+
+	assert.Equal(t, 3, result.Score)
+	assert.True(t, result.Execute)
+	assert.Empty(t, result.Error)
+}
+
+func TestRunCommandTestsExecutesMockReadCommands(t *testing.T) {
+	binary := buildCommandProbeBinary(t)
+	cmd := discoveredCommand{Name: "items", Kind: "read"}
+
+	result := runCommandTests(binary, cmd, "mock", os.Environ())
+	assert.True(t, result.Help)
+	assert.True(t, result.DryRun)
+	assert.False(t, result.Execute)
+}
+
+func buildDoctorJSONBinary(t *testing.T, payload string) string {
+	t.Helper()
+
+	dir := t.TempDir()
+	mainFile := filepath.Join(dir, "main.go")
+	writeTestFile(t, mainFile, `package main
+
+import (
+	"fmt"
+	"os"
+)
+
+func main() {
+	if len(os.Args) >= 3 && os.Args[1] == "doctor" && os.Args[2] == "--json" {
+		fmt.Println(`+"`"+payload+"`"+`)
+		return
+	}
+	os.Exit(1)
+}
+`)
+	binaryPath := filepath.Join(dir, "test-cli")
+	buildCmd := exec.Command("go", "build", "-o", binaryPath, mainFile)
+	out, err := buildCmd.CombinedOutput()
+	require.NoError(t, err, "building test binary: %s", string(out))
+	return binaryPath
+}
+
+func buildCommandProbeBinary(t *testing.T) string {
+	t.Helper()
+
+	dir := t.TempDir()
+	mainFile := filepath.Join(dir, "main.go")
+	writeTestFile(t, mainFile, `package main
+
+import (
+	"os"
+)
+
+func main() {
+	for _, arg := range os.Args[1:] {
+		if arg == "--help" || arg == "--dry-run" {
+			return
+		}
+	}
+	os.Exit(1)
+}
+`)
+	binaryPath := filepath.Join(dir, "test-cli")
+	buildCmd := exec.Command("go", "build", "-o", binaryPath, mainFile)
+	out, err := buildCmd.CombinedOutput()
+	require.NoError(t, err, "building test binary: %s", string(out))
+	return binaryPath
 }
 
 func TestDiscoverCommands_UsesHelpOutputWhenBinaryAvailable(t *testing.T) {
@@ -243,6 +335,16 @@ func TestSyntheticArgValue(t *testing.T) {
 			assert.Equal(t, tt.expected, syntheticArgValue(tt.name))
 		})
 	}
+}
+
+func TestIsIntentionalStubExit(t *testing.T) {
+	assert.True(t, isIntentionalStubExit(fmt.Errorf("exit 3: {\"cf_gated\":true,\"message\":\"stub command\"}")))
+	assert.True(t, isIntentionalStubExit(fmt.Errorf("exit 3: {\"cf_gated\": true, \"message\":\"needs manual clearance\"}")))
+	assert.False(t, isIntentionalStubExit(fmt.Errorf("exit 3: not implemented because this path is Cloudflare gated")))
+	assert.False(t, isIntentionalStubExit(fmt.Errorf("exit 3: stubbed")))
+	assert.False(t, isIntentionalStubExit(fmt.Errorf("exit 3: stub command")))
+	assert.False(t, isIntentionalStubExit(fmt.Errorf("exit 3: resource not found")))
+	assert.False(t, isIntentionalStubExit(nil))
 }
 
 func TestSyntheticFlagValue(t *testing.T) {
