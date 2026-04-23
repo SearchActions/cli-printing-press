@@ -122,7 +122,13 @@ func TestGenerateFreshnessHelperEmitted(t *testing.T) {
 	// Start from stytch (has resources -> has store) and flip cache on.
 	apiSpec, err := spec.Parse(filepath.Join("..", "..", "testdata", "stytch.yaml"))
 	require.NoError(t, err)
-	apiSpec.Cache = spec.CacheConfig{Enabled: true, StaleAfter: "6h"}
+	apiSpec.Cache = spec.CacheConfig{
+		Enabled:    true,
+		StaleAfter: "6h",
+		Commands: []spec.CacheCommand{
+			{Name: "dashboard", Resources: []string{"users"}},
+		},
+	}
 
 	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
 	gen := New(apiSpec, outputDir)
@@ -143,25 +149,69 @@ func TestGenerateFreshnessHelperEmitted(t *testing.T) {
 		"var readCommandResources = map[string][]string{",
 		"func cachePolicy() cliutil.Policy",
 		"func autoRefreshIfStale(",
+		"func ensureFreshForResources(",
+		"func ensureFreshForCommand(",
 		"func runAutoRefresh(",
+		`"stytch-pp-cli dashboard": {`,
+		`"users",`,
 		// Env opt-out is derived at runtime from the CLI name; probe the
 		// expression that yields e.g. "STYTCH_NO_AUTO_REFRESH".
 		`strings.ReplaceAll(strings.ToUpper("stytch"), "-", "_") + "_NO_AUTO_REFRESH"`,
 	} {
 		assert.Contains(t, src, snippet, "auto_refresh.go missing %q", snippet)
 	}
+	optOutIndex := strings.Index(src, "env_opt_out")
+	openStoreIndex := strings.Index(src, "store.Open(dbPath)")
+	require.NotEqual(t, -1, optOutIndex, "auto_refresh.go must report env opt-out")
+	require.NotEqual(t, -1, openStoreIndex, "auto_refresh.go must open the store after opt-out checks")
+	assert.Less(t, optOutIndex, openStoreIndex, "env opt-out must be checked before opening/migrating the store")
+
+	dataSource, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "data_source.go"))
+	require.NoError(t, err)
+	assert.NotContains(t, string(dataSource), "freshness_checked",
+		"auto mode must stay API-first because local reads do not apply filters/scopes")
 
 	// Root command must wire the hook.
 	rootSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "root.go"))
 	require.NoError(t, err)
-	assert.Contains(t, string(rootSrc), "autoRefreshIfStale(cmd.Context(), &flags, resources)",
+	assert.Contains(t, string(rootSrc), "flags.freshnessMeta = autoRefreshIfStale(cmd.Context(), &flags, resources)",
 		"root.go must invoke autoRefreshIfStale from PersistentPreRunE")
+
+	readme, err := os.ReadFile(filepath.Join(outputDir, "README.md"))
+	require.NoError(t, err)
+	assert.Contains(t, string(readme), "## Freshness")
+	assert.Contains(t, string(readme), "meta.freshness")
+	assert.Contains(t, string(readme), "`stytch-pp-cli dashboard`")
+
+	skill, err := os.ReadFile(filepath.Join(outputDir, "SKILL.md"))
+	require.NoError(t, err)
+	assert.Contains(t, string(skill), "## Freshness Contract")
+	assert.Contains(t, string(skill), "Covered paths:")
 
 	// Generated helper must compile and its tests must pass end-to-end,
 	// exercising the sync_state contract against a real SQLite DB.
 	runGoCommand(t, outputDir, "mod", "tidy")
 	runGoCommand(t, outputDir, "build", "./...")
 	runGoCommand(t, outputDir, "test", "./internal/cliutil/...")
+}
+
+func TestGenerateFreshnessRejectsGeneratedCommandCollision(t *testing.T) {
+	t.Parallel()
+
+	apiSpec, err := spec.Parse(filepath.Join("..", "..", "testdata", "stytch.yaml"))
+	require.NoError(t, err)
+	apiSpec.Cache = spec.CacheConfig{
+		Enabled: true,
+		Commands: []spec.CacheCommand{
+			{Name: "users list", Resources: []string{"users"}},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	err = gen.Generate()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "already covered by generated resource freshness")
 }
 
 // TestGenerateShareEmittedWhenEnabled verifies the end-to-end share
