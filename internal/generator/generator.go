@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -412,40 +413,7 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 			return out
 		},
 		"whichFallbackEntries": buildWhichFallbackEntries,
-		// firstCommandExample returns a real "resource endpoint" pair for use
-		// in docs that need a runnable example. Prefers read-only verbs when
-		// available (list, get, search, query) to keep examples non-destructive.
-		// Returns empty string when the spec has no endpoints so callers can
-		// skip the block rather than render nonsense like "autocomplete list"
-		// when autocomplete has no list endpoint.
-		"firstCommandExample": func(resources map[string]spec.Resource) string {
-			var resNames []string
-			for name := range resources {
-				resNames = append(resNames, name)
-			}
-			sort.Strings(resNames)
-			preferredVerbs := []string{"list", "get", "search", "query"}
-			for _, rName := range resNames {
-				r := resources[rName]
-				for _, verb := range preferredVerbs {
-					if _, ok := r.Endpoints[verb]; ok {
-						return rName + " " + verb
-					}
-				}
-			}
-			for _, rName := range resNames {
-				r := resources[rName]
-				var eNames []string
-				for eName := range r.Endpoints {
-					eNames = append(eNames, eName)
-				}
-				sort.Strings(eNames)
-				if len(eNames) > 0 {
-					return rName + " " + eNames[0]
-				}
-			}
-			return ""
-		},
+		"firstCommandExample":  firstCommandExample,
 	}
 	return g
 }
@@ -768,12 +736,7 @@ func (g *Generator) hasTrafficAnalysisHint(hint string) bool {
 	if g == nil || g.TrafficAnalysis == nil {
 		return false
 	}
-	for _, got := range g.TrafficAnalysis.GenerationHints {
-		if got == hint {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(g.TrafficAnalysis.GenerationHints, hint)
 }
 
 func appendLimited(values []string, value string, limit int) []string {
@@ -2064,13 +2027,13 @@ func configTag(format string) string {
 func envVarField(envVar string) string {
 	// STYTCH_PROJECT_ID -> ProjectID
 	parts := strings.Split(strings.ToLower(envVar), "_")
-	var result string
+	var result strings.Builder
 	for _, p := range parts {
 		if len(p) > 0 {
-			result += strings.ToUpper(p[:1]) + p[1:]
+			result.WriteString(strings.ToUpper(p[:1]) + p[1:])
 		}
 	}
-	return result
+	return result.String()
 }
 
 // builtinConfigTags lists the JSON/TOML tags of hardcoded Config struct fields
