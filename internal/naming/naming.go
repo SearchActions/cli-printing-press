@@ -3,6 +3,9 @@ package naming
 import (
 	"regexp"
 	"strings"
+	"unicode"
+
+	"golang.org/x/text/unicode/norm"
 )
 
 const (
@@ -25,6 +28,42 @@ func LegacyCLI(name string) string {
 
 func ValidationBinary(name string) string {
 	return CLI(name) + "-validation"
+}
+
+// EnvPrefix returns an ASCII-only shell-safe environment variable prefix.
+// API display names and OpenAPI titles can contain accents or punctuation
+// ("PokéAPI", "Cal.com", "1Password"); generated env vars must not.
+func EnvPrefix(name string) string {
+	var b strings.Builder
+	lastUnderscore := false
+	for _, r := range norm.NFD.String(name) {
+		switch {
+		case r >= 'a' && r <= 'z':
+			b.WriteRune(r - ('a' - 'A'))
+			lastUnderscore = false
+		case r >= 'A' && r <= 'Z':
+			b.WriteRune(r)
+			lastUnderscore = false
+		case r >= '0' && r <= '9':
+			b.WriteRune(r)
+			lastUnderscore = false
+		case unicode.Is(unicode.Mn, r):
+			continue
+		default:
+			if !lastUnderscore && b.Len() > 0 {
+				b.WriteByte('_')
+				lastUnderscore = true
+			}
+		}
+	}
+	out := strings.Trim(b.String(), "_")
+	if out == "" {
+		return "API"
+	}
+	if out[0] >= '0' && out[0] <= '9' {
+		return "API_" + out
+	}
+	return out
 }
 
 func DogfoodBinary(name string) string {

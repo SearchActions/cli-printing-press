@@ -637,6 +637,31 @@ func TestInferDescriptionAuth(t *testing.T) {
 	})
 }
 
+func TestInferredAuthEnvVarsAreASCIISafe(t *testing.T) {
+	t.Parallel()
+
+	yamlSpec := []byte(`openapi: "3.0.3"
+info:
+  title: PokéAPI
+  version: "1.0.0"
+  description: Authenticate with your API key in the Authorization header.
+servers:
+  - url: https://api.example.com
+paths:
+  /pokemon:
+    get:
+      summary: List pokemon
+      responses:
+        "200":
+          description: OK
+`)
+	parsed, err := Parse(yamlSpec)
+	require.NoError(t, err)
+
+	require.NotEmpty(t, parsed.Auth.EnvVars)
+	assert.Equal(t, "POKEAPI_API_KEY", parsed.Auth.EnvVars[0])
+}
+
 func TestInferAuthHeaderParam(t *testing.T) {
 	t.Parallel()
 

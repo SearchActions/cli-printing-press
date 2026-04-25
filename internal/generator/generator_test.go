@@ -155,9 +155,7 @@ func TestGenerateFreshnessHelperEmitted(t *testing.T) {
 		"func runAutoRefresh(",
 		`"stytch-pp-cli dashboard": {`,
 		`"users",`,
-		// Env opt-out is derived at runtime from the CLI name; probe the
-		// expression that yields e.g. "STYTCH_NO_AUTO_REFRESH".
-		`strings.ReplaceAll(strings.ToUpper("stytch"), "-", "_") + "_NO_AUTO_REFRESH"`,
+		`envOptOut := "STYTCH_NO_AUTO_REFRESH"`,
 	} {
 		assert.Contains(t, src, snippet, "auto_refresh.go missing %q", snippet)
 	}
@@ -194,6 +192,32 @@ func TestGenerateFreshnessHelperEmitted(t *testing.T) {
 	runGoCommand(t, outputDir, "mod", "tidy")
 	runGoCommand(t, outputDir, "build", "./...")
 	runGoCommand(t, outputDir, "test", "./internal/cliutil/...")
+}
+
+func TestGenerateFreshnessOptOutUsesASCIIPrefix(t *testing.T) {
+	t.Parallel()
+
+	apiSpec, err := spec.Parse(filepath.Join("..", "..", "testdata", "stytch.yaml"))
+	require.NoError(t, err)
+	apiSpec.Name = "pokéapi"
+	apiSpec.Cache = spec.CacheConfig{Enabled: true}
+	apiSpec.Config.Path = "~/.config/pokeapi-pp-cli/config.toml"
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	require.NoError(t, gen.Generate())
+
+	autoRefresh, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "auto_refresh.go"))
+	require.NoError(t, err)
+	readme, err := os.ReadFile(filepath.Join(outputDir, "README.md"))
+	require.NoError(t, err)
+	skill, err := os.ReadFile(filepath.Join(outputDir, "SKILL.md"))
+	require.NoError(t, err)
+
+	for _, content := range []string{string(autoRefresh), string(readme), string(skill)} {
+		assert.Contains(t, content, "POKEAPI_NO_AUTO_REFRESH")
+		assert.NotContains(t, content, "POKÉAPI_NO_AUTO_REFRESH")
+	}
 }
 
 func TestGenerateFreshnessRejectsGeneratedCommandCollision(t *testing.T) {

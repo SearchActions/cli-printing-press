@@ -252,7 +252,7 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 		},
 		"jsonStringParam":    isJSONStringParam,
 		"jsonEnumSuggestion": jsonEnumSuggestion,
-		"envName":            func(s string) string { return strings.ToUpper(strings.ReplaceAll(s, "-", "_")) },
+		"envName":            naming.EnvPrefix,
 		"safeName":           safeSQLName,
 		"hasDomainUpsert": func(name string) bool {
 			return domainUpsertMethodName(name) != "UpsertBatch"

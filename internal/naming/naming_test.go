@@ -48,6 +48,25 @@ func TestMCP(t *testing.T) {
 	}
 }
 
+func TestEnvPrefix(t *testing.T) {
+	tests := map[string]string{
+		"pokeapi":       "POKEAPI",
+		"pokéapi":       "POKEAPI",
+		"PokéAPI":       "POKEAPI",
+		"cal-com":       "CAL_COM",
+		"Cal.com":       "CAL_COM",
+		"food & dining": "FOOD_DINING",
+		"1password":     "API_1PASSWORD",
+		"!!!":           "API",
+	}
+
+	for input, want := range tests {
+		if got := EnvPrefix(input); got != want {
+			t.Fatalf("EnvPrefix(%q) = %q, want %q", input, got, want)
+		}
+	}
+}
+
 func TestIsCLIDirName(t *testing.T) {
 	if !IsCLIDirName("stripe-pp-cli-3") {
 		t.Fatal("expected suffixed pp-cli directory to be recognized")

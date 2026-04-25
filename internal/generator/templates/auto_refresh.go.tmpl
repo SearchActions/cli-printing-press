@@ -54,10 +54,9 @@ func cachePolicy() cliutil.Policy {
 {{- if .Cache.EnvOptOut}}
 	envOptOut := "{{.Cache.EnvOptOut}}"
 {{- else}}
-	// Default env opt-out name is the CLI name, upper-cased with dashes
-	// normalised to underscores, plus the _NO_AUTO_REFRESH suffix. For
-	// "cal-com" that yields "CAL_COM_NO_AUTO_REFRESH".
-	envOptOut := strings.ReplaceAll(strings.ToUpper("{{.Name}}"), "-", "_") + "_NO_AUTO_REFRESH"
+	// Default env opt-out name is the CLI name normalized with the same
+	// ASCII-safe convention used in generated docs and config env vars.
+	envOptOut := "{{envName .Name}}_NO_AUTO_REFRESH"
 {{- end}}
 	return cliutil.Policy{
 		StaleAfter:   staleAfter,
