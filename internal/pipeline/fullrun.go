@@ -64,6 +64,23 @@ type FullRunResult struct {
 	Duration time.Duration
 }
 
+type fullRunScoreDimension struct {
+	name  string
+	label string
+	score func(*SteinerScore) int
+}
+
+var fullRunScoreDimensions = []fullRunScoreDimension{
+	{"output_modes", "Output Modes", func(s *SteinerScore) int { return s.OutputModes }},
+	{"auth", "Auth", func(s *SteinerScore) int { return s.Auth }},
+	{"error_handling", "Error Handling", func(s *SteinerScore) int { return s.ErrorHandling }},
+	{"terminal_ux", "Terminal UX", func(s *SteinerScore) int { return s.TerminalUX }},
+	{"readme", "README", func(s *SteinerScore) int { return s.README }},
+	{"doctor", "Doctor", func(s *SteinerScore) int { return s.Doctor }},
+	{"agent_native", "Agent Native", func(s *SteinerScore) int { return s.AgentNative }},
+	{"local_cache", "Local Cache", func(s *SteinerScore) int { return s.LocalCache }},
+}
+
 // MakeBestCLI runs the full printing press pipeline for a single API and
 // returns a result summarizing every phase.
 func MakeBestCLI(apiName, level, specFlag, specURL, outputDir, pressBinary string) *FullRunResult {
@@ -400,156 +417,129 @@ func PrintComparisonTable(results []*FullRunResult) string {
 	}
 	b.WriteString("|\n")
 
-	// Quality Gates
-	writeRow(&b, "Quality Gates", results, func(r *FullRunResult) string {
-		return fmt.Sprintf("%d/7 PASS", r.GatesPassed)
-	})
-
-	// Commands
-	writeRow(&b, "Commands", results, func(r *FullRunResult) string {
-		return fmt.Sprintf("%d", r.CommandCount)
-	})
-
-	// Resources
-	writeRow(&b, "Resources", results, func(r *FullRunResult) string {
-		return fmt.Sprintf("%d", r.ResourceCount)
-	})
-
-	// API Coverage
-	writeRow(&b, "API Coverage", results, func(r *FullRunResult) string {
-		return fmt.Sprintf("%d%%", r.CoveragePercent)
+	writeComparisonRows(&b, results, []comparisonRow{
+		{"Quality Gates", func(r *FullRunResult) string {
+			return fmt.Sprintf("%d/7 PASS", r.GatesPassed)
+		}},
+		{"Commands", func(r *FullRunResult) string {
+			return fmt.Sprintf("%d", r.CommandCount)
+		}},
+		{"Resources", func(r *FullRunResult) string {
+			return fmt.Sprintf("%d", r.ResourceCount)
+		}},
+		{"API Coverage", func(r *FullRunResult) string {
+			return fmt.Sprintf("%d%%", r.CoveragePercent)
+		}},
 	})
 
 	// Steinberger dimensions
-	steinDimensions := []struct {
-		label string
-		get   func(*Scorecard) int
-	}{
-		{"Output Modes", func(s *Scorecard) int { return s.Steinberger.OutputModes }},
-		{"Auth", func(s *Scorecard) int { return s.Steinberger.Auth }},
-		{"Error Handling", func(s *Scorecard) int { return s.Steinberger.ErrorHandling }},
-		{"Terminal UX", func(s *Scorecard) int { return s.Steinberger.TerminalUX }},
-		{"README", func(s *Scorecard) int { return s.Steinberger.README }},
-		{"Doctor", func(s *Scorecard) int { return s.Steinberger.Doctor }},
-		{"Agent Native", func(s *Scorecard) int { return s.Steinberger.AgentNative }},
-		{"Local Cache", func(s *Scorecard) int { return s.Steinberger.LocalCache }},
-	}
-
-	for _, dim := range steinDimensions {
+	for _, dim := range fullRunScoreDimensions {
 		writeRow(&b, "  "+dim.label, results, func(r *FullRunResult) string {
 			if r.Scorecard == nil {
 				return "n/a"
 			}
-			return fmt.Sprintf("%d/10", dim.get(r.Scorecard))
+			return fmt.Sprintf("%d/10", dim.score(&r.Scorecard.Steinberger))
 		})
 	}
 
-	// Steinberger total + %
-	writeRow(&b, "Steinberger Total", results, func(r *FullRunResult) string {
-		if r.Scorecard == nil {
-			return "n/a"
-		}
-		return fmt.Sprintf("%d/80 (%d%%)", r.Scorecard.Steinberger.Total, r.Scorecard.Steinberger.Percentage)
-	})
-
-	// Grade
-	writeRow(&b, "Grade", results, func(r *FullRunResult) string {
-		if r.Scorecard == nil {
-			return "n/a"
-		}
-		return r.Scorecard.OverallGrade
-	})
-
-	// Competitors found
-	writeRow(&b, "Competitors Found", results, func(r *FullRunResult) string {
-		if r.Research == nil {
-			return "0"
-		}
-		return fmt.Sprintf("%d", len(r.Research.Alternatives))
-	})
-
-	// We Win?
-	writeRow(&b, "We Win?", results, func(r *FullRunResult) string {
-		if r.Scorecard == nil || len(r.Scorecard.CompetitorScores) == 0 {
-			return "n/a"
-		}
-		wins := 0
-		for _, cs := range r.Scorecard.CompetitorScores {
-			if cs.WeWin {
-				wins++
+	writeComparisonRows(&b, results, []comparisonRow{
+		{"Steinberger Total", func(r *FullRunResult) string {
+			if r.Scorecard == nil {
+				return "n/a"
 			}
-		}
-		return fmt.Sprintf("%d/%d", wins, len(r.Scorecard.CompetitorScores))
-	})
-
-	// Dogfood result
-	writeRow(&b, "Dogfood", results, func(r *FullRunResult) string {
-		if r.Dogfood == nil {
-			return "n/a"
-		}
-		if r.Dogfood.PathCheck.Tested > 0 {
-			return fmt.Sprintf("%s %d%%", r.Dogfood.Verdict, r.Dogfood.PathCheck.Pct)
-		}
-		return r.Dogfood.Verdict
-	})
-
-	// Verification
-	writeRow(&b, "Verification", results, func(r *FullRunResult) string {
-		if r.Verification == nil {
-			return "n/a"
-		}
-		summary := r.Verification.Verdict
-		if r.Verification.HallucinatedPaths > 0 {
-			summary += fmt.Sprintf(" %dp", r.Verification.HallucinatedPaths)
-		}
-		if r.Verification.DeadFlags > 0 {
-			summary += fmt.Sprintf(" %df", r.Verification.DeadFlags)
-		}
-		if r.Verification.GhostTables > 0 {
-			summary += fmt.Sprintf(" %dg", r.Verification.GhostTables)
-		}
-		return summary
-	})
-
-	// Workflow Verification
-	writeRow(&b, "Workflow Verify", results, func(r *FullRunResult) string {
-		if r.WorkflowVerify == nil {
-			return "n/a"
-		}
-		return string(r.WorkflowVerify.Verdict)
-	})
-
-	// LLM Polish
-	writeRow(&b, "LLM Polish", results, func(r *FullRunResult) string {
-		if r.PolishResult == nil {
-			return "n/a"
-		}
-		if r.PolishResult.Skipped {
-			return "skipped"
-		}
-		return fmt.Sprintf("%dh/%de/%v",
-			r.PolishResult.HelpTextsImproved,
-			r.PolishResult.ExamplesAdded,
-			r.PolishResult.READMERewritten)
-	})
-
-	// Fix plans generated
-	writeRow(&b, "Fix Plans", results, func(r *FullRunResult) string {
-		return fmt.Sprintf("%d", len(r.FixPlans))
-	})
-
-	// Duration
-	writeRow(&b, "Duration", results, func(r *FullRunResult) string {
-		return r.Duration.Round(time.Second).String()
-	})
-
-	// Errors
-	writeRow(&b, "Errors", results, func(r *FullRunResult) string {
-		return fmt.Sprintf("%d", len(r.Errors))
+			return fmt.Sprintf("%d/80 (%d%%)", r.Scorecard.Steinberger.Total, r.Scorecard.Steinberger.Percentage)
+		}},
+		{"Grade", func(r *FullRunResult) string {
+			if r.Scorecard == nil {
+				return "n/a"
+			}
+			return r.Scorecard.OverallGrade
+		}},
+		{"Competitors Found", func(r *FullRunResult) string {
+			if r.Research == nil {
+				return "0"
+			}
+			return fmt.Sprintf("%d", len(r.Research.Alternatives))
+		}},
+		{"We Win?", func(r *FullRunResult) string {
+			if r.Scorecard == nil || len(r.Scorecard.CompetitorScores) == 0 {
+				return "n/a"
+			}
+			wins := 0
+			for _, cs := range r.Scorecard.CompetitorScores {
+				if cs.WeWin {
+					wins++
+				}
+			}
+			return fmt.Sprintf("%d/%d", wins, len(r.Scorecard.CompetitorScores))
+		}},
+		{"Dogfood", func(r *FullRunResult) string {
+			if r.Dogfood == nil {
+				return "n/a"
+			}
+			if r.Dogfood.PathCheck.Tested > 0 {
+				return fmt.Sprintf("%s %d%%", r.Dogfood.Verdict, r.Dogfood.PathCheck.Pct)
+			}
+			return r.Dogfood.Verdict
+		}},
+		{"Verification", func(r *FullRunResult) string {
+			if r.Verification == nil {
+				return "n/a"
+			}
+			summary := r.Verification.Verdict
+			if r.Verification.HallucinatedPaths > 0 {
+				summary += fmt.Sprintf(" %dp", r.Verification.HallucinatedPaths)
+			}
+			if r.Verification.DeadFlags > 0 {
+				summary += fmt.Sprintf(" %df", r.Verification.DeadFlags)
+			}
+			if r.Verification.GhostTables > 0 {
+				summary += fmt.Sprintf(" %dg", r.Verification.GhostTables)
+			}
+			return summary
+		}},
+		{"Workflow Verify", func(r *FullRunResult) string {
+			if r.WorkflowVerify == nil {
+				return "n/a"
+			}
+			return string(r.WorkflowVerify.Verdict)
+		}},
+		{"LLM Polish", func(r *FullRunResult) string {
+			if r.PolishResult == nil {
+				return "n/a"
+			}
+			if r.PolishResult.Skipped {
+				return "skipped"
+			}
+			return fmt.Sprintf("%dh/%de/%v",
+				r.PolishResult.HelpTextsImproved,
+				r.PolishResult.ExamplesAdded,
+				r.PolishResult.READMERewritten)
+		}},
+		{"Fix Plans", func(r *FullRunResult) string {
+			return fmt.Sprintf("%d", len(r.FixPlans))
+		}},
+		{"Duration", func(r *FullRunResult) string {
+			return r.Duration.Round(time.Second).String()
+		}},
+		{"Errors", func(r *FullRunResult) string {
+			return fmt.Sprintf("%d", len(r.Errors))
+		}},
 	})
 
 	b.WriteString("\n")
 	return b.String()
+}
+
+type comparisonRow struct {
+	label string
+	value func(*FullRunResult) string
+}
+
+func writeComparisonRows(b *strings.Builder, results []*FullRunResult, rows []comparisonRow) {
+	for _, row := range rows {
+		writeRow(b, row.label, results, row.value)
+	}
 }
 
 func writeRow(b *strings.Builder, label string, results []*FullRunResult, fn func(*FullRunResult) string) {
@@ -589,25 +579,13 @@ func GenerateLearningsPlan(results []*FullRunResult, outputPath string) error {
 		total    int
 		sum      int
 	}
-	dimNames := []string{"output_modes", "auth", "error_handling", "terminal_ux", "readme", "doctor", "agent_native", "local_cache"}
-	dimGetters := []func(*SteinerScore) int{
-		func(s *SteinerScore) int { return s.OutputModes },
-		func(s *SteinerScore) int { return s.Auth },
-		func(s *SteinerScore) int { return s.ErrorHandling },
-		func(s *SteinerScore) int { return s.TerminalUX },
-		func(s *SteinerScore) int { return s.README },
-		func(s *SteinerScore) int { return s.Doctor },
-		func(s *SteinerScore) int { return s.AgentNative },
-		func(s *SteinerScore) int { return s.LocalCache },
-	}
-
-	tallies := make([]dimTally, len(dimNames))
+	tallies := make([]dimTally, len(fullRunScoreDimensions))
 	for _, r := range results {
 		if r.Scorecard == nil {
 			continue
 		}
-		for i, getter := range dimGetters {
-			score := getter(&r.Scorecard.Steinberger)
+		for i, dim := range fullRunScoreDimensions {
+			score := dim.score(&r.Scorecard.Steinberger)
 			tallies[i].total++
 			tallies[i].sum += score
 			if score < 5 {
@@ -619,7 +597,7 @@ func GenerateLearningsPlan(results []*FullRunResult, outputPath string) error {
 	b.WriteString("## Consistent Gaps\n\n")
 	b.WriteString("Dimensions scoring below 5/10 across multiple runs:\n\n")
 	hasGaps := false
-	for i, name := range dimNames {
+	for i, dim := range fullRunScoreDimensions {
 		t := tallies[i]
 		if t.total == 0 {
 			continue
@@ -627,7 +605,7 @@ func GenerateLearningsPlan(results []*FullRunResult, outputPath string) error {
 		avg := t.sum / t.total
 		if t.lowCount > 0 {
 			hasGaps = true
-			fmt.Fprintf(&b, "- **%s** - low in %d/%d runs (avg %d/10)\n", name, t.lowCount, t.total, avg)
+			fmt.Fprintf(&b, "- **%s** - low in %d/%d runs (avg %d/10)\n", dim.name, t.lowCount, t.total, avg)
 		}
 	}
 	if !hasGaps {
@@ -639,14 +617,14 @@ func GenerateLearningsPlan(results []*FullRunResult, outputPath string) error {
 	b.WriteString("## Recommended Fixes\n\n")
 	b.WriteString("Priority order (most impactful first):\n\n")
 	priority := 1
-	for i, name := range dimNames {
+	for i, dim := range fullRunScoreDimensions {
 		t := tallies[i]
 		if t.total == 0 || t.lowCount == 0 {
 			continue
 		}
 		fmt.Fprintf(&b, "%d. **Improve %s templates** - affects %d/%d APIs tested\n",
-			priority, name, t.lowCount, t.total)
-		if advice, ok := dimensionAdvice[name]; ok {
+			priority, dim.name, t.lowCount, t.total)
+		if advice, ok := dimensionAdvice[dim.name]; ok {
 			// Include first line of advice
 			lines := strings.SplitN(advice, "\n", 2)
 			fmt.Fprintf(&b, "   - %s\n", strings.TrimSpace(lines[0]))

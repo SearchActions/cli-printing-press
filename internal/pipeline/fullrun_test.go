@@ -5,9 +5,11 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/mvanhorn/cli-printing-press/v2/internal/llmpolish"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -67,6 +69,58 @@ func TestFullRunQualitySpecPath(t *testing.T) {
 
 	assert.Equal(t, "https://example.com/openapi.yaml", fullRunQualitySpecPath("--spec", "https://example.com/openapi.yaml"))
 	assert.Equal(t, "", fullRunQualitySpecPath("--docs", "https://example.com/docs"))
+}
+
+func TestPrintComparisonTableRows(t *testing.T) {
+	t.Parallel()
+
+	table := PrintComparisonTable([]*FullRunResult{{
+		APIName:         "demo",
+		Level:           "EASY",
+		GatesPassed:     6,
+		CommandCount:    9,
+		ResourceCount:   5,
+		CoveragePercent: 83,
+		Research:        &ResearchResult{Alternatives: []Alternative{{Name: "alt"}}},
+		Dogfood:         &DogfoodReport{Verdict: "PASS", PathCheck: PathCheckResult{Tested: 2, Pct: 100}},
+		Verification:    &VerificationReport{Verdict: "WARN", HallucinatedPaths: 1, DeadFlags: 2, GhostTables: 3},
+		WorkflowVerify:  &WorkflowVerifyReport{Verdict: WorkflowVerdictPass},
+		PolishResult:    &llmpolish.PolishResult{HelpTextsImproved: 2, ExamplesAdded: 3, READMERewritten: true},
+		FixPlans:        []string{"fix-auth", "fix-docs"},
+		Duration:        2 * time.Second,
+		Errors:          []string{"boom"},
+		Scorecard: &Scorecard{
+			OverallGrade: "B",
+			Steinberger: SteinerScore{
+				OutputModes: 8, Auth: 7, ErrorHandling: 6, TerminalUX: 5,
+				README: 4, Doctor: 3, AgentNative: 2, LocalCache: 1,
+				Total: 72, Percentage: 72,
+			},
+			CompetitorScores: []CompScore{{WeWin: true}, {WeWin: false}},
+		},
+	}})
+
+	expectedOrder := []string{
+		"Quality Gates", "Commands", "Resources", "API Coverage",
+		"Output Modes", "Auth", "Error Handling", "Terminal UX", "README", "Doctor", "Agent Native", "Local Cache",
+		"Steinberger Total", "Grade", "Competitors Found", "We Win?", "Dogfood", "Verification", "Workflow Verify", "LLM Polish", "Fix Plans", "Duration", "Errors",
+	}
+	last := -1
+	for _, label := range expectedOrder {
+		idx := strings.Index(table, label)
+		require.NotEqual(t, -1, idx, "missing row %q in:\n%s", label, table)
+		require.Greater(t, idx, last, "row %q out of order in:\n%s", label, table)
+		last = idx
+	}
+
+	assert.Contains(t, table, "6/7 PASS")
+	assert.Contains(t, table, "72/80 (72%)")
+	assert.Contains(t, table, "1/2")
+	assert.Contains(t, table, "PASS 100%")
+	assert.Contains(t, table, "WARN 1p 2f 3g")
+	assert.Contains(t, table, string(WorkflowVerdictPass))
+	assert.Contains(t, table, "2h/3e/true")
+	assert.Contains(t, table, "2s")
 }
 
 func findRepoRoot() string {
