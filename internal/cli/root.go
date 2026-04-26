@@ -193,23 +193,7 @@ func newGenerateCmd() *cobra.Command {
 					}
 				}
 
-				polished := false
-				if polish {
-					fmt.Fprintln(os.Stderr, "Running LLM polish pass...")
-					polishResult, polishErr := llmpolish.Polish(llmpolish.PolishRequest{
-						APIName:   parsed.Name,
-						OutputDir: absOut,
-					})
-					if polishErr != nil {
-						fmt.Fprintf(os.Stderr, "warning: polish failed: %v\n", polishErr)
-					} else if polishResult.Skipped {
-						fmt.Fprintf(os.Stderr, "polish skipped: %s\n", polishResult.SkipReason)
-					} else {
-						polished = true
-						fmt.Fprintf(os.Stderr, "Polish: %d help texts improved, %d examples added, README %v\n",
-							polishResult.HelpTextsImproved, polishResult.ExamplesAdded, polishResult.READMERewritten)
-					}
-				}
+				polished := runGeneratePolishPass(polish, parsed.Name, absOut)
 
 				if err := pipeline.WriteManifestForGenerate(pipeline.GenerateManifestParams{
 					APIName:       parsed.Name,
@@ -405,23 +389,7 @@ func newGenerateCmd() *cobra.Command {
 				}
 			}
 
-			polished := false
-			if polish {
-				fmt.Fprintln(os.Stderr, "Running LLM polish pass...")
-				polishResult, polishErr := llmpolish.Polish(llmpolish.PolishRequest{
-					APIName:   apiSpec.Name,
-					OutputDir: absOut,
-				})
-				if polishErr != nil {
-					fmt.Fprintf(os.Stderr, "warning: polish failed: %v\n", polishErr)
-				} else if polishResult.Skipped {
-					fmt.Fprintf(os.Stderr, "polish skipped: %s\n", polishResult.SkipReason)
-				} else {
-					polished = true
-					fmt.Fprintf(os.Stderr, "Polish: %d help texts improved, %d examples added, README %v\n",
-						polishResult.HelpTextsImproved, polishResult.ExamplesAdded, polishResult.READMERewritten)
-				}
-			}
+			polished := runGeneratePolishPass(polish, apiSpec.Name, absOut)
 
 			// When --output was not explicitly supplied, normalize the output
 			// directory to the spec-derived name so default-path runs land in the
@@ -502,6 +470,30 @@ func newGenerateCmd() *cobra.Command {
 	cmd.Flags().StringVar(&trafficAnalysisPath, "traffic-analysis", "", "Path to browser-sniff traffic-analysis.json for advisory generation context")
 
 	return cmd
+}
+
+func runGeneratePolishPass(enabled bool, apiName, outputDir string) bool {
+	if !enabled {
+		return false
+	}
+
+	fmt.Fprintln(os.Stderr, "Running LLM polish pass...")
+	polishResult, polishErr := llmpolish.Polish(llmpolish.PolishRequest{
+		APIName:   apiName,
+		OutputDir: outputDir,
+	})
+	if polishErr != nil {
+		fmt.Fprintf(os.Stderr, "warning: polish failed: %v\n", polishErr)
+		return false
+	}
+	if polishResult.Skipped {
+		fmt.Fprintf(os.Stderr, "polish skipped: %s\n", polishResult.SkipReason)
+		return false
+	}
+
+	fmt.Fprintf(os.Stderr, "Polish: %d help texts improved, %d examples added, README %v\n",
+		polishResult.HelpTextsImproved, polishResult.ExamplesAdded, polishResult.READMERewritten)
+	return true
 }
 
 func normalizeSpecSource(value string) (string, error) {

@@ -5,6 +5,8 @@ import (
 	"net/url"
 	"sort"
 	"strings"
+
+	"github.com/mvanhorn/cli-printing-press/v2/internal/discovery"
 )
 
 type TestFixture struct {
@@ -52,7 +54,7 @@ func GenerateFixtures(capture *EnrichedCapture) *FixtureSet {
 		}
 
 		fixture := SanitizeForFixture(group.Entries[0])
-		fixture.EndpointName = deriveEndpointName(group.Method, group.NormalizedPath)
+		fixture.EndpointName = discovery.EndpointName(group.Method, group.NormalizedPath)
 
 		paramNames := make(map[string]struct{})
 		bodyFields := make(map[string]struct{})

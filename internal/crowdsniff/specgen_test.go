@@ -3,6 +3,7 @@ package crowdsniff
 import (
 	"testing"
 
+	"github.com/mvanhorn/cli-printing-press/v2/internal/discovery"
 	"github.com/mvanhorn/cli-printing-press/v2/internal/spec"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -286,7 +287,7 @@ func TestDeriveResourceKey(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			resource, name := deriveResourceKey(tt.path)
+			resource, name := discovery.ResourceKey(tt.path)
 			assert.Equal(t, tt.wantResource, resource)
 			assert.Equal(t, tt.wantName, name)
 		})
@@ -307,7 +308,7 @@ func TestDeriveResourceKey_NoSlashes(t *testing.T) {
 	}
 
 	for _, p := range paths {
-		resource, _ := deriveResourceKey(p)
+		resource, _ := discovery.ResourceKey(p)
 		assert.NotContains(t, resource, "/", "resource key for %q must not contain slashes", p)
 	}
 }
@@ -317,8 +318,8 @@ func TestDeriveResourceKey_SharedFirstSegment(t *testing.T) {
 
 	// Two paths sharing the same first significant segment must map to the
 	// same resource key so they end up in one file.
-	res1, _ := deriveResourceKey("/v1/users")
-	res2, _ := deriveResourceKey("/v1/users/{id}/posts")
+	res1, _ := discovery.ResourceKey("/v1/users")
+	res2, _ := discovery.ResourceKey("/v1/users/{id}/posts")
 	assert.Equal(t, res1, res2, "paths sharing first segment should have same resource key")
 	assert.Equal(t, "users", res1)
 }

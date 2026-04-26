@@ -10,6 +10,7 @@ import (
 	"strings"
 	"unicode"
 
+	"github.com/mvanhorn/cli-printing-press/v2/internal/discovery"
 	"github.com/mvanhorn/cli-printing-press/v2/internal/spec"
 	"gopkg.in/yaml.v3"
 )
@@ -60,7 +61,7 @@ func AnalyzeCapture(capture *EnrichedCapture) (*spec.APISpec, error) {
 	groups := DeduplicateEndpoints(regularEntries)
 	for _, group := range groups {
 		endpoint := buildEndpoint(group)
-		resourceKey, resourceName := deriveResourceKey(group.NormalizedPath)
+		resourceKey, resourceName := discovery.ResourceKey(group.NormalizedPath)
 		if resourceKey == "" {
 			resourceKey = "default"
 			resourceName = "default"
@@ -74,9 +75,9 @@ func AnalyzeCapture(capture *EnrichedCapture) (*spec.APISpec, error) {
 			resource.Endpoints = make(map[string]spec.Endpoint)
 		}
 
-		name := deriveEndpointName(group.Method, group.NormalizedPath)
+		name := discovery.EndpointName(group.Method, group.NormalizedPath)
 		if _, exists := resource.Endpoints[name]; exists {
-			name = uniqueEndpointName(resource.Endpoints, name)
+			name = discovery.UniqueEndpointName(resource.Endpoints, name)
 		}
 		resource.Endpoints[name] = endpoint
 		resources[resourceKey] = resource
@@ -214,10 +215,10 @@ func addGraphQLBFFResources(resources map[string]spec.Resource, ops []graphQLOpe
 			name = safeGraphQLOperationName(op.OperationName)
 		}
 		if name == "" {
-			name = deriveEndpointName(op.Method, op.Path)
+			name = discovery.EndpointName(op.Method, op.Path)
 		}
 		if _, exists := resource.Endpoints[name]; exists {
-			name = uniqueEndpointName(resource.Endpoints, name)
+			name = discovery.UniqueEndpointName(resource.Endpoints, name)
 		}
 		resource.Endpoints[name] = endpoint
 		resources[resourceName] = resource
@@ -1095,83 +1096,6 @@ func normalizeBaseURL(raw string) string {
 	return parsed.Scheme + "://" + parsed.Host
 }
 
-func deriveResourceKey(path string) (string, string) {
-	segments := significantSegments(path)
-	if len(segments) == 0 {
-		return "", ""
-	}
-
-	// Use only the first significant segment as the resource key.
-	// This prevents slashes in resource names which break the generator's
-	// filepath.Join and Cobra Use field.
-	return segments[0], segments[len(segments)-1]
-}
-
-func significantSegments(path string) []string {
-	parts := strings.Split(path, "/")
-	segments := make([]string, 0, len(parts))
-	for _, segment := range parts {
-		segment = strings.TrimSpace(segment)
-		if segment == "" {
-			continue
-		}
-		if strings.HasPrefix(segment, "{") && strings.HasSuffix(segment, "}") {
-			continue
-		}
-		if segment == "api" || isVersionSegment(segment) {
-			continue
-		}
-		segments = append(segments, segment)
-	}
-
-	return segments
-}
-
-func isVersionSegment(segment string) bool {
-	if len(segment) < 2 || segment[0] != 'v' {
-		return false
-	}
-	for _, r := range segment[1:] {
-		if r < '0' || r > '9' {
-			return false
-		}
-	}
-	return true
-}
-
-func deriveEndpointName(method string, normalizedPath string) string {
-	resource := "endpoint"
-	segments := significantSegments(normalizedPath)
-	if len(segments) > 0 {
-		resource = strings.ReplaceAll(segments[len(segments)-1], "-", "_")
-	}
-
-	switch strings.ToUpper(method) {
-	case "GET":
-		if strings.Contains(normalizedPath, "{") {
-			return "get_" + resource
-		}
-		return "list_" + resource
-	case "POST":
-		return "create_" + resource
-	case "PUT", "PATCH":
-		return "update_" + resource
-	case "DELETE":
-		return "delete_" + resource
-	default:
-		return strings.ToLower(method) + "_" + resource
-	}
-}
-
-func uniqueEndpointName(endpoints map[string]spec.Endpoint, base string) string {
-	for i := 2; ; i++ {
-		name := fmt.Sprintf("%s_%d", base, i)
-		if _, exists := endpoints[name]; !exists {
-			return name
-		}
-	}
-}
-
 func inferResponseType(bodies []string) string {
 	for _, body := range bodies {
 		body = strings.TrimSpace(body)
@@ -1196,7 +1120,7 @@ func inferResponseType(bodies []string) string {
 }
 
 func deriveResponseItemName(path string) string {
-	segments := significantSegments(path)
+	segments := discovery.SignificantSegments(path)
 	if len(segments) == 0 {
 		return "response"
 	}

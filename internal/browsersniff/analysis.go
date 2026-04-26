@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/mvanhorn/cli-printing-press/v2/internal/discovery"
 	"github.com/mvanhorn/cli-printing-press/v2/internal/spec"
 )
 
@@ -873,7 +874,7 @@ func suggestCandidateCommands(clusters []EndpointCluster) []CandidateCommand {
 		if resource == "" {
 			continue
 		}
-		name := deriveEndpointName(cluster.Method, cluster.Path)
+		name := discovery.EndpointName(cluster.Method, cluster.Path)
 		if seen[name] {
 			continue
 		}
@@ -1316,7 +1317,7 @@ func jsonFieldNames(body string) []string {
 }
 
 func commandResource(path string) string {
-	segments := significantSegments(path)
+	segments := discovery.SignificantSegments(path)
 	if len(segments) == 0 {
 		return ""
 	}
