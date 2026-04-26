@@ -36,8 +36,19 @@ const (
 )
 
 type APISpec struct {
-	Name            string              `yaml:"name" json:"name"`
-	Description     string              `yaml:"description" json:"description"`
+	Name string `yaml:"name" json:"name"`
+	// Description describes the API itself ("REST API for ordering pizza").
+	// It flows into generated docs and SKILL.md but is intentionally NOT used
+	// as the printed CLI's --help text; that's CLIDescription's job.
+	Description string `yaml:"description" json:"description"`
+	// CLIDescription, when set, becomes the printed CLI's root cobra command
+	// `Short:` text. Spec authors should phrase it as what the CLI does
+	// ("Order Seattle pizza from the terminal"), not what the API is. When
+	// blank the generator falls back to the research narrative's headline,
+	// then to a generic "Manage <api> resources via the <api> API". Adding
+	// this field eliminates a recurring manual rewrite step that the main
+	// skill used to instruct Claude to perform after every generation.
+	CLIDescription  string              `yaml:"cli_description,omitempty" json:"cli_description,omitempty"`
 	Version         string              `yaml:"version" json:"version"`
 	BaseURL         string              `yaml:"base_url" json:"base_url"`
 	BasePath        string              `yaml:"base_path,omitempty" json:"base_path,omitempty"`
@@ -459,10 +470,169 @@ func ParseBytes(data []byte) (*APISpec, error) {
 		return nil, fmt.Errorf("parsing yaml: %w", yamlErr)
 	}
 	s.expandOperations()
+	s.enrichPathParams()
+	if err := s.validateReservedNames(); err != nil {
+		return nil, err
+	}
 	if err := s.Validate(); err != nil {
 		return nil, fmt.Errorf("validation: %w", err)
 	}
 	return &s, nil
+}
+
+// ReservedCLIResourceNames is the set of resource names that would collide with
+// reserved single-file templates emitted into the printed CLI's internal/cli/
+// directory. Two collisions occur if a spec uses one of these as a resource
+// name: the resource template's <name>.go overwrites the reserved file (losing
+// helpers like FeedbackEndpointConfigured() from feedback.go), AND the
+// resource's `new<Name>Cmd` cobra-builder shadows the reserved template's
+// same-named function, breaking the build with a redeclaration error.
+//
+// Renaming the file alone is not enough; the function-name collision still
+// breaks the build. Reject at parse time and ask the author to rename the
+// resource (e.g., `feedback` → `customer_feedback`, `auth` → `accounts`).
+//
+// The contract is intentionally stable: removing an entry is allowed only when
+// the corresponding reserved template is also removed from the generator.
+var ReservedCLIResourceNames = map[string]struct{}{
+	"agent_context":    {},
+	"api_discovery":    {},
+	"auth":             {},
+	"auto_refresh":     {},
+	"cache":            {},
+	"channel_workflow": {},
+	"client":           {},
+	"data_source":      {},
+	"deliver":          {},
+	"doctor":           {},
+	"export":           {},
+	"feedback":         {},
+	"helpers":          {},
+	"html_extract":     {},
+	"import":           {},
+	"profile":          {},
+	"root":             {},
+	"search":           {},
+	"share_commands":   {},
+	"sync":             {},
+	"tail":             {},
+	"types":            {},
+	"which":            {},
+	"workflow":         {},
+}
+
+// validateReservedNames rejects specs whose top-level resource names would
+// collide with reserved Printing Press templates. Sub-resource names are not
+// checked because they emit under a parent prefix (`<parent>_<sub>.go`,
+// `new<Parent><Sub>Cmd`) that does not collide with single-file templates.
+func (s *APISpec) validateReservedNames() error {
+	for name := range s.Resources {
+		if _, reserved := ReservedCLIResourceNames[name]; reserved {
+			return fmt.Errorf("resource name %q collides with a reserved Printing Press template (would overwrite internal/cli/%s.go and produce a duplicate `new%sCmd` function). Rename the resource — e.g. %q",
+				name, name, snakeToPascal(name), name+"_resource")
+		}
+	}
+	return nil
+}
+
+// snakeToPascal converts a snake_case identifier to PascalCase so error
+// messages name the same Go function the generator would emit. Mirrors
+// generator.toCamel for snake_case input — kept here so the spec package
+// has no import-cycle dependency on the generator. Empty input → empty
+// output.
+func snakeToPascal(s string) string {
+	if s == "" {
+		return s
+	}
+	parts := strings.Split(s, "_")
+	for i, p := range parts {
+		if p == "" {
+			continue
+		}
+		parts[i] = strings.ToUpper(p[:1]) + p[1:]
+	}
+	return strings.Join(parts, "")
+}
+
+// pathParamRe matches `{name}` placeholders in a path template. Names are
+// alphanumeric/underscore — the conservative subset every parser observed in
+// the wild uses. Anchoring on `{` and `}` keeps it from over-matching JSON
+// fragments accidentally embedded in path strings.
+var pathParamRe = regexp.MustCompile(`\{([A-Za-z_][A-Za-z0-9_]*)\}`)
+
+// enrichPathParams walks every resource and sub-resource endpoint and ensures
+// each `{paramName}` placeholder in the endpoint path is represented in
+// Endpoint.Params with Positional: true, Required: true. The expandOperations
+// path already populates these for shorthand-generated endpoints; explicit
+// `endpoints:` blocks in the YAML do not, so without this step the generator
+// emits a literal-placeholder URL with no positional-arg parsing — every
+// path-templated request returns 404 at runtime.
+//
+// Existing Params are never modified. If a placeholder name already appears
+// in Endpoint.Params or Endpoint.Body, the placeholder is left alone — the
+// author is presumed to have declared it intentionally (with their own type,
+// description, or default).
+//
+// Order is preserved: placeholders are appended in the order they appear in
+// the path so generated cobra `Args: cobra.ExactArgs(N)` sites and the
+// matching `replacePathParam(...args[i])` calls line up.
+func (s *APISpec) enrichPathParams() {
+	for resourceName, r := range s.Resources {
+		s.enrichResourcePathParams(&r)
+		s.Resources[resourceName] = r
+	}
+}
+
+func (s *APISpec) enrichResourcePathParams(r *Resource) {
+	if r.Endpoints != nil {
+		for endpointName, e := range r.Endpoints {
+			enrichEndpointPathParams(&e)
+			r.Endpoints[endpointName] = e
+		}
+	}
+	for subName, sub := range r.SubResources {
+		s.enrichResourcePathParams(&sub)
+		r.SubResources[subName] = sub
+	}
+}
+
+func enrichEndpointPathParams(e *Endpoint) {
+	if e.Path == "" {
+		return
+	}
+	matches := pathParamRe.FindAllStringSubmatch(e.Path, -1)
+	if len(matches) == 0 {
+		return
+	}
+	// Build a set of names already declared so we never duplicate or overwrite
+	// an author-provided Param/Body entry.
+	declared := make(map[string]struct{}, len(e.Params)+len(e.Body))
+	for _, p := range e.Params {
+		declared[p.Name] = struct{}{}
+	}
+	for _, p := range e.Body {
+		declared[p.Name] = struct{}{}
+	}
+	// Track which placeholders we've already appended in this pass so a
+	// repeated placeholder (rare but valid) doesn't add the param twice.
+	seen := make(map[string]struct{}, len(matches))
+	for _, m := range matches {
+		name := m[1]
+		if _, dup := seen[name]; dup {
+			continue
+		}
+		seen[name] = struct{}{}
+		if _, exists := declared[name]; exists {
+			continue
+		}
+		e.Params = append(e.Params, Param{
+			Name:        name,
+			Type:        "string",
+			Required:    true,
+			Positional:  true,
+			Description: name,
+		})
+	}
 }
 
 // expandOperations converts operations shorthand (e.g., [list, get, create])

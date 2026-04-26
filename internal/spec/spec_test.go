@@ -1441,3 +1441,394 @@ func TestHTMLResponseExtractionValidation(t *testing.T) {
 	badMethod.Resources["posts"].Endpoints["list"] = ep
 	require.ErrorContains(t, badMethod.Validate(), "html response_format is only supported")
 }
+
+func TestEnrichPathParams(t *testing.T) {
+	t.Parallel()
+
+	t.Run("explicit endpoint with placeholders gets positional Params auto-added", func(t *testing.T) {
+		t.Parallel()
+		input := `name: testapi
+base_url: https://api.example.com
+auth:
+  type: bearer_token
+  env_vars: [TESTAPI_TOKEN]
+resources:
+  customer:
+    description: Customer endpoints
+    endpoints:
+      get:
+        method: GET
+        path: /Customer/{customerId}
+        description: Get customer by ID
+`
+		s, err := ParseBytes([]byte(input))
+		require.NoError(t, err)
+		ep := s.Resources["customer"].Endpoints["get"]
+		require.Len(t, ep.Params, 1)
+		assert.Equal(t, "customerId", ep.Params[0].Name)
+		assert.True(t, ep.Params[0].Positional)
+		assert.True(t, ep.Params[0].Required)
+		assert.Equal(t, "string", ep.Params[0].Type)
+	})
+
+	t.Run("multiple placeholders preserve path order", func(t *testing.T) {
+		t.Parallel()
+		input := `name: testapi
+base_url: https://api.example.com
+auth:
+  type: bearer_token
+  env_vars: [TESTAPI_TOKEN]
+resources:
+  scheduling:
+    description: Time windows
+    endpoints:
+      slots_for_date:
+        method: GET
+        path: /TimeWindows/{storeId}/{serviceType}/{date}
+        description: Available slots for a date
+`
+		s, err := ParseBytes([]byte(input))
+		require.NoError(t, err)
+		ep := s.Resources["scheduling"].Endpoints["slots_for_date"]
+		require.Len(t, ep.Params, 3)
+		assert.Equal(t, "storeId", ep.Params[0].Name)
+		assert.Equal(t, "serviceType", ep.Params[1].Name)
+		assert.Equal(t, "date", ep.Params[2].Name)
+		for _, p := range ep.Params {
+			assert.True(t, p.Positional, "param %q should be Positional", p.Name)
+			assert.True(t, p.Required, "param %q should be Required", p.Name)
+		}
+	})
+
+	t.Run("author-declared params are not duplicated or overwritten", func(t *testing.T) {
+		t.Parallel()
+		// `customerId` is declared with a custom description and integer type;
+		// enrichment must leave it alone.
+		input := `name: testapi
+base_url: https://api.example.com
+auth:
+  type: bearer_token
+  env_vars: [TESTAPI_TOKEN]
+resources:
+  customer:
+    description: Customer endpoints
+    endpoints:
+      get:
+        method: GET
+        path: /Customer/{customerId}
+        description: Get customer
+        params:
+          - name: customerId
+            type: integer
+            required: true
+            positional: true
+            description: Numeric customer ID
+`
+		s, err := ParseBytes([]byte(input))
+		require.NoError(t, err)
+		ep := s.Resources["customer"].Endpoints["get"]
+		require.Len(t, ep.Params, 1, "should not duplicate the declared param")
+		assert.Equal(t, "customerId", ep.Params[0].Name)
+		assert.Equal(t, "integer", ep.Params[0].Type, "author's type must be preserved")
+		assert.Equal(t, "Numeric customer ID", ep.Params[0].Description, "author's description must be preserved")
+	})
+
+	t.Run("endpoint with no placeholders is unchanged", func(t *testing.T) {
+		t.Parallel()
+		input := `name: testapi
+base_url: https://api.example.com
+auth:
+  type: bearer_token
+  env_vars: [TESTAPI_TOKEN]
+resources:
+  store:
+    description: Stores
+    endpoints:
+      list:
+        method: GET
+        path: /Store
+        description: List stores
+`
+		s, err := ParseBytes([]byte(input))
+		require.NoError(t, err)
+		ep := s.Resources["store"].Endpoints["list"]
+		assert.Empty(t, ep.Params, "no placeholders should mean no Params added")
+	})
+
+	t.Run("operations shorthand still works (regression)", func(t *testing.T) {
+		t.Parallel()
+		// The shorthand path already populated Params correctly before this
+		// change; confirm enrichment doesn't break it.
+		input := `name: testapi
+base_url: https://api.example.com
+auth:
+  type: bearer_token
+  env_vars: [TESTAPI_TOKEN]
+resources:
+  items:
+    description: Items
+    path: /api/items
+    operations: [list, get, create, update, delete]
+`
+		s, err := ParseBytes([]byte(input))
+		require.NoError(t, err)
+		getEp := s.Resources["items"].Endpoints["get"]
+		require.Len(t, getEp.Params, 1)
+		assert.Equal(t, "itemId", getEp.Params[0].Name)
+		assert.True(t, getEp.Params[0].Positional)
+	})
+
+	t.Run("repeated placeholder in same path is added once", func(t *testing.T) {
+		t.Parallel()
+		input := `name: testapi
+base_url: https://api.example.com
+auth:
+  type: bearer_token
+  env_vars: [TESTAPI_TOKEN]
+resources:
+  pair:
+    description: Pair
+    endpoints:
+      twin:
+        method: GET
+        path: /Pair/{id}/twin/{id}
+        description: Twin by ID
+`
+		s, err := ParseBytes([]byte(input))
+		require.NoError(t, err)
+		ep := s.Resources["pair"].Endpoints["twin"]
+		require.Len(t, ep.Params, 1, "repeated placeholder should produce one Param")
+		assert.Equal(t, "id", ep.Params[0].Name)
+	})
+
+	t.Run("sub-resource endpoints are also enriched", func(t *testing.T) {
+		t.Parallel()
+		input := `name: testapi
+base_url: https://api.example.com
+auth:
+  type: bearer_token
+  env_vars: [TESTAPI_TOKEN]
+resources:
+  store:
+    description: Stores
+    sub_resources:
+      menu:
+        description: Per-store menus
+        endpoints:
+          get:
+            method: GET
+            path: /Store/{storeId}/Menu/{menuId}
+            description: Get menu by store and ID
+`
+		s, err := ParseBytes([]byte(input))
+		require.NoError(t, err)
+		ep := s.Resources["store"].SubResources["menu"].Endpoints["get"]
+		require.Len(t, ep.Params, 2)
+		assert.Equal(t, "storeId", ep.Params[0].Name)
+		assert.Equal(t, "menuId", ep.Params[1].Name)
+	})
+}
+
+func TestValidateReservedNames(t *testing.T) {
+	t.Parallel()
+
+	t.Run("reserved resource name is rejected with a clear rename hint", func(t *testing.T) {
+		t.Parallel()
+		// `feedback` collides with the reserved feedback.go template that
+		// declares the in-band agent feedback channel. Two collisions: file
+		// overwrite and `newFeedbackCmd` redeclaration.
+		input := `name: testapi
+base_url: https://api.example.com
+auth:
+  type: bearer_token
+  env_vars: [TESTAPI_TOKEN]
+resources:
+  feedback:
+    description: Customer feedback
+    endpoints:
+      submit:
+        method: POST
+        path: /feedback
+        description: Submit feedback
+`
+		_, err := ParseBytes([]byte(input))
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), `"feedback"`)
+		assert.Contains(t, err.Error(), "reserved Printing Press template")
+		assert.Contains(t, err.Error(), "Rename")
+		assert.Contains(t, err.Error(), "newFeedbackCmd", "error names the actual generated function")
+		assert.Contains(t, err.Error(), `"feedback_resource"`, "error suggests a concrete rename")
+	})
+
+	t.Run("multi-word reserved name produces correct PascalCase function name", func(t *testing.T) {
+		t.Parallel()
+		input := `name: testapi
+base_url: https://api.example.com
+auth:
+  type: bearer_token
+  env_vars: [TESTAPI_TOKEN]
+resources:
+  agent_context:
+    description: Should be rejected
+    endpoints:
+      list:
+        method: GET
+        path: /agent_context
+        description: list
+`
+		_, err := ParseBytes([]byte(input))
+		require.Error(t, err)
+		// The error must name the actual generated function — newAgentContextCmd —
+		// not newAgent_contextCmd. The previous capitalize-first variant lied
+		// about the function name, which would confuse users debugging the
+		// collision.
+		assert.Contains(t, err.Error(), "newAgentContextCmd")
+		assert.NotContains(t, err.Error(), "newAgent_contextCmd")
+	})
+
+	t.Run("auth resource name rejected", func(t *testing.T) {
+		t.Parallel()
+		input := `name: testapi
+base_url: https://api.example.com
+auth:
+  type: bearer_token
+  env_vars: [TESTAPI_TOKEN]
+resources:
+  auth:
+    description: Auth surface
+    endpoints:
+      list:
+        method: GET
+        path: /auth
+        description: list
+`
+		_, err := ParseBytes([]byte(input))
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), `"auth"`)
+	})
+
+	t.Run("non-reserved name with reserved-substring is allowed", func(t *testing.T) {
+		t.Parallel()
+		// "customer_feedback" contains "feedback" but is not itself reserved;
+		// we only reject exact matches because file emit is by exact name.
+		input := `name: testapi
+base_url: https://api.example.com
+auth:
+  type: bearer_token
+  env_vars: [TESTAPI_TOKEN]
+resources:
+  customer_feedback:
+    description: Customer feedback (renamed)
+    endpoints:
+      submit:
+        method: POST
+        path: /feedback
+        description: Submit feedback
+`
+		_, err := ParseBytes([]byte(input))
+		require.NoError(t, err)
+	})
+
+	t.Run("sub-resources are NOT subject to the reserved-name check", func(t *testing.T) {
+		t.Parallel()
+		// Sub-resources emit under <parent>_<sub>.go and produce
+		// new<Parent><Sub>Cmd identifiers, so they cannot collide with the
+		// single-file templates regardless of name.
+		input := `name: testapi
+base_url: https://api.example.com
+auth:
+  type: bearer_token
+  env_vars: [TESTAPI_TOKEN]
+resources:
+  customer:
+    description: Customer
+    sub_resources:
+      feedback:
+        description: Customer-feedback sub-resource
+        endpoints:
+          submit:
+            method: POST
+            path: /customer/feedback
+            description: Submit
+`
+		_, err := ParseBytes([]byte(input))
+		require.NoError(t, err)
+	})
+
+	t.Run("known clobbers are all in the set", func(t *testing.T) {
+		t.Parallel()
+		// Pin a baseline. Removing any of these from ReservedCLIResourceNames
+		// without first removing the corresponding generator template is a
+		// regression that will reintroduce silent overwrites.
+		mustReserve := []string{"feedback", "doctor", "auth", "helpers", "agent_context", "profile", "deliver", "which", "sync", "tail", "search", "client", "cache", "export", "import"}
+		for _, name := range mustReserve {
+			_, ok := ReservedCLIResourceNames[name]
+			assert.True(t, ok, "%q must remain in ReservedCLIResourceNames — losing it would reintroduce silent template overwrites", name)
+		}
+	})
+}
+func TestCLIDescriptionParses(t *testing.T) {
+	t.Parallel()
+	input := `name: testapi
+base_url: https://api.example.com
+cli_description: "Manage testapi resources from the terminal"
+auth:
+  type: bearer_token
+  env_vars: [TESTAPI_TOKEN]
+resources:
+  store:
+    description: Stores
+    endpoints:
+      list:
+        method: GET
+        path: /stores
+        description: List stores
+`
+	s, err := ParseBytes([]byte(input))
+	require.NoError(t, err)
+	assert.Equal(t, "Manage testapi resources from the terminal", s.CLIDescription)
+}
+
+func TestCLIDescriptionAbsent(t *testing.T) {
+	t.Parallel()
+	input := `name: testapi
+base_url: https://api.example.com
+auth:
+  type: bearer_token
+  env_vars: [TESTAPI_TOKEN]
+resources:
+  store:
+    description: Stores
+    endpoints:
+      list:
+        method: GET
+        path: /stores
+        description: List stores
+`
+	s, err := ParseBytes([]byte(input))
+	require.NoError(t, err)
+	assert.Empty(t, s.CLIDescription, "field should be empty when not declared")
+}
+
+func TestSnakeToPascal(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		input, expected string
+	}{
+		{"feedback", "Feedback"},
+		{"agent_context", "AgentContext"},
+		{"customer_feedback", "CustomerFeedback"},
+		{"a_b_c", "ABC"},
+		{"already_PascalCase", "AlreadyPascalCase"},
+		{"", ""},
+		{"_leading", "Leading"},
+		{"trailing_", "Trailing"},
+		{"single", "Single"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tt.expected, snakeToPascal(tt.input))
+		})
+	}
+}

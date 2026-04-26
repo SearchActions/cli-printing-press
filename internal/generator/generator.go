@@ -1087,7 +1087,7 @@ func (g *Generator) Generate() error {
 				Hidden:       false,
 				APISpec:      g.Spec,
 			}
-			parentPath := filepath.Join("internal", "cli", name+".go")
+			parentPath := filepath.Join("internal", "cli", safeResourceFileStem(name)+".go")
 			if err := g.renderTemplate("command_parent.go.tmpl", parentPath, parentData); err != nil {
 				return fmt.Errorf("rendering parent command %s: %w", name, err)
 			}
@@ -1121,7 +1121,7 @@ func (g *Generator) Generate() error {
 				Async:        asyncInfo,
 				APISpec:      g.Spec,
 			}
-			epPath := filepath.Join("internal", "cli", name+"_"+eName+".go")
+			epPath := filepath.Join("internal", "cli", safeResourceFileStem(name+"_"+eName)+".go")
 			if err := g.renderTemplate("command_endpoint.go.tmpl", epPath, epData); err != nil {
 				return fmt.Errorf("rendering endpoint %s/%s: %w", name, eName, err)
 			}
@@ -1149,7 +1149,7 @@ func (g *Generator) Generate() error {
 					Hidden:       false,
 					APISpec:      g.Spec,
 				}
-				subParentPath := filepath.Join("internal", "cli", name+"_"+subName+".go")
+				subParentPath := filepath.Join("internal", "cli", safeResourceFileStem(name+"_"+subName)+".go")
 				if err := g.renderTemplate("command_parent.go.tmpl", subParentPath, subParentData); err != nil {
 					return fmt.Errorf("rendering sub-parent %s/%s: %w", name, subName, err)
 				}
@@ -1179,7 +1179,7 @@ func (g *Generator) Generate() error {
 					Async:        asyncInfo,
 					APISpec:      g.Spec,
 				}
-				epPath := filepath.Join("internal", "cli", name+"_"+subName+"_"+eName+".go")
+				epPath := filepath.Join("internal", "cli", safeResourceFileStem(name+"_"+subName+"_"+eName)+".go")
 				if err := g.renderTemplate("command_endpoint.go.tmpl", epPath, epData); err != nil {
 					return fmt.Errorf("rendering sub-endpoint %s/%s/%s: %w", name, subName, eName, err)
 				}
@@ -2037,6 +2037,97 @@ func envVarField(envVar string) string {
 	return result.String()
 }
 
+// ReservedCLIResourceNames lives in internal/spec/spec.go (spec.ReservedCLIResourceNames)
+// so the parser can consult it without importing this package and creating a cycle.
+
+// goosTokens are the GOOS values Go's filename-based build constraints recognize.
+// A file named *_<token>.go gets an implicit build tag and is silently excluded
+// when the host OS doesn't match. Source of truth: `go tool dist list`.
+var goosTokens = map[string]struct{}{
+	"aix":       {},
+	"android":   {},
+	"darwin":    {},
+	"dragonfly": {},
+	"freebsd":   {},
+	"hurd":      {},
+	"illumos":   {},
+	"ios":       {},
+	"js":        {},
+	"linux":     {},
+	"nacl":      {},
+	"netbsd":    {},
+	"openbsd":   {},
+	"plan9":     {},
+	"solaris":   {},
+	"wasip1":    {},
+	"windows":   {},
+	"zos":       {},
+}
+
+// goarchTokens are the GOARCH values Go's filename-based build constraints recognize.
+var goarchTokens = map[string]struct{}{
+	"386":      {},
+	"amd64":    {},
+	"arm":      {},
+	"arm64":    {},
+	"loong64":  {},
+	"mips":     {},
+	"mips64":   {},
+	"mips64le": {},
+	"mipsle":   {},
+	"ppc64":    {},
+	"ppc64le":  {},
+	"riscv":    {},
+	"riscv64":  {},
+	"s390x":    {},
+	"sparc64":  {},
+	"wasm":     {},
+}
+
+// safeResourceFileStem returns a basename (without .go) safe to write under
+// internal/cli/, suffixing "_cmd" if the bare stem matches Go's filename-based
+// build-constraint pattern (*_<GOOS>.go, *_<GOARCH>.go, *_<GOOS>_<GOARCH>.go).
+// Without this rename, a file like scheduling_windows.go would get an implicit
+// Windows-only build tag and be silently excluded on macOS/Linux builds.
+//
+// The reserved-name collision is handled separately at spec-parse time
+// (see ReservedCLIResourceNames) because the function-name collision needs a
+// hard error rather than a silent rename — `new<Name>Cmd` would clash with
+// the reserved template's identically-named cobra builder.
+//
+// The suffix "_cmd" is never itself a GOOS or GOARCH token, so a single
+// application is sufficient.
+//
+// Examples:
+//
+//	safeResourceFileStem("scheduling_windows")     -> "scheduling_windows_cmd"
+//	safeResourceFileStem("foo_linux_amd64")        -> "foo_linux_amd64_cmd"
+//	safeResourceFileStem("scheduling_window_days") -> "scheduling_window_days" (no change)
+//	safeResourceFileStem("feedback")               -> "feedback" (no change; rejected at parse)
+func safeResourceFileStem(stem string) string {
+	parts := strings.Split(stem, "_")
+	if len(parts) >= 2 {
+		last := parts[len(parts)-1]
+		if _, isOS := goosTokens[last]; isOS {
+			return stem + "_cmd"
+		}
+		if _, isArch := goarchTokens[last]; isArch {
+			return stem + "_cmd"
+		}
+	}
+	if len(parts) >= 3 {
+		// Match the *_GOOS_GOARCH.go pattern (e.g., foo_linux_amd64.go).
+		penultimate := parts[len(parts)-2]
+		last := parts[len(parts)-1]
+		_, osOK := goosTokens[penultimate]
+		_, archOK := goarchTokens[last]
+		if osOK && archOK {
+			return stem + "_cmd"
+		}
+	}
+	return stem
+}
+
 // builtinConfigTags lists the JSON/TOML tags of hardcoded Config struct fields
 // in config.go.tmpl. When an env var's placeholder matches one of these, the
 // env var should populate the existing field instead of creating a duplicate.
@@ -2326,6 +2417,14 @@ func toKebab(s string) string {
 	}
 	var result strings.Builder
 	for i, r := range s {
+		// Snake-case underscores convert to dashes. Lets spec keys like
+		// `customer_feedback` and `slot_list_for_date` flow through to
+		// user-facing cobra `Use:` strings as `customer-feedback` and
+		// `slot-list-for-date` instead of preserving the snake form.
+		if r == '_' {
+			result.WriteByte('-')
+			continue
+		}
 		if unicode.IsUpper(r) && i > 0 {
 			prev := rune(s[i-1])
 			// Insert hyphen before uppercase letter if preceded by lowercase,

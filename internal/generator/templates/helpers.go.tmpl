@@ -553,13 +553,15 @@ func camelToKebab(s string) string {
 
 // printOutputWithFlags routes output through the right format based on flags.
 func printOutputWithFlags(w io.Writer, data json.RawMessage, flags *rootFlags) error {
-	// Apply --compact: filter to high-gravity fields only
-	if flags.compact {
-		data = compactFields(data)
-	}
-	// Apply --select field filtering
+	// --select wins over --compact when both are set: an explicit field list
+	// is the user's authoritative request, so the high-gravity allow-list
+	// must not strip those fields out before --select can pick them. When
+	// only --compact is set (e.g., --agent without --select), the allow-list
+	// still runs.
 	if flags.selectFields != "" {
 		data = filterFields(data, flags.selectFields)
+	} else if flags.compact {
+		data = compactFields(data)
 	}
 	// --quiet: suppress all output, exit code communicates result
 	if flags.quiet {
