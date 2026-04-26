@@ -476,6 +476,28 @@ Before new research:
    If the user picks option 2, invoke `/printing-press-polish <api>` to improve the existing CLI.
    If the user picks option 3, display the prior research, then re-present options 1 and 2.
 
+   **MANDATORY when re-using prior research after a binary upgrade.** If the user picks "Generate a fresh CLI" (option 1) AND `PRESS_VERSION` from the manifest differs from the current binary's version (parse both via semver and compare; only fire when the leading minor or major segment changed — patch-level deltas don't trigger this), prompt the user once before kicking off Phase 1 research.
+
+   Construct the prompt's "what changed" list from these category buckets — the categories are stable across versions; the specific machine deltas inside each category are not. Read `docs/CHANGELOG.md` (or run `git log --oneline v<PRESS_VERSION>..v<CURRENT> -- internal/`) and tag each notable change to one of these buckets:
+
+   | Category | Affects prior-brief assumption about... |
+   |---|---|
+   | **Transport / reachability** | Which sources are reachable, what auth/clearance is needed, which clients (stdlib, Surf, browser-clearance) the brief assumed |
+   | **Scoring rubrics** | What Phase 1.5/scorecard dimensions the brief targets, whether prior "high-priority" features still rank as such |
+   | **Auth modes** | Whether brief's auth choice (api-key, cookie, composed, oauth) is still the right pick, whether new modes unlock new endpoints |
+   | **MCP surface** | Whether brief's MCP shape (endpoint-mirror vs intent vs code-orchestration) matches the latest emit defaults |
+   | **Discovery** | Whether browser-sniff / crowd-sniff workflows changed, whether prior gate decisions are still valid |
+
+   For the prompt itself, list only the buckets that have at least one notable change between the two versions. If the CHANGELOG / git log is unavailable, list all five buckets generically and let the user decide.
+
+   > "The prior `<api>` was generated with printing-press v`<PRESS_VERSION>`. The current binary is v`<CURRENT>`. Categories where the machine has changed since then: `<applicable buckets>`. Each can invalidate prior research assumptions. Re-validate the prior brief against the current machine before reusing it?"
+
+   Options:
+   1. **Yes, re-validate the prior research** — fold the validation into Phase 1 (briefly re-probe reachability for previously-blocked sources, confirm scoring still classifies the prior CLI's pattern correctly, etc.) before reusing the brief.
+   2. **No, reuse the prior research as-is** — proceed with the brief verbatim, even if the underlying machine assumptions are stale.
+
+   The prompt forces the user to acknowledge the version delta and explicitly accept (or refuse) re-validation. Skip it entirely on first generation, on same-version regenerations, or when no prior manifest exists.
+
    If no CLI exists in the library and no lock is active, skip this step and proceed normally.
 
 5. **API Key Gate** — Check whether this API requires authentication, then handle accordingly.
@@ -1161,6 +1183,7 @@ For each tool, fill in what you know from the research. Stars and command_count 
 8. `recipes` are 3–5 worked examples rendered in SKILL.md. Each has a title, a real command, and a one-line explanation. Prefer recipes that exercise novel features. **At least one recipe must pair `--agent` with `--select`** — using dotted paths (e.g. `--select events.shortName,events.competitions.competitors.team.displayName`) when the response is deeply nested. APIs like ESPN, HubSpot, and Linear return tens of KB per call; without a `--select` recipe, agents burn context parsing verbose payloads. Pick a command known to return a large or deeply nested response and show the narrowing pattern.
 9. `trigger_phrases` are natural-language phrases a user might say that should invoke this CLI's skill. Include 3–5 domain-specific phrases (e.g. for a finance CLI: "quote AAPL", "check my portfolio", "options for TSLA") and 2 generic phrases ("use <api-name>", "run <api-name>"). Domain verbs vary — don't just template "use X" variants.
 10. All `narrative` fields are optional. Omit fields you can't populate honestly rather than emit filler. The generator falls back to generic content gracefully.
+11. **Avoid hardcoded counts in narrative copy when the count tracks a runtime list.** A number embedded in `headline` or `value_prop` ("across N trusted sources", "from N retailers", "queries N vendors") propagates into root.go's Short/Long, the README, the SKILL, the MCP tools description, and `which.go` — every output surface that reads the narrative. When the underlying registry grows or shrinks, the count goes stale across all of those surfaces simultaneously, and a single-line edit to add a source requires hunting down ~10 hardcoded copies. Prefer plural-without-count phrasing ("across the major sources", "from a curated set of retailers") or describe the breadth qualitatively ("dozens of vendors") rather than committing to a specific integer. If a count is load-bearing for the value prop, keep the brief's narrative count-free and have the printed-CLI's README/SKILL author write the count once into a single hand-edited paragraph after generation — accepting that it will need a manual update whenever the registry changes.
 
 Also write discovery pages if browser-sniff was used. The generator reads these from `$API_RUN_DIR/discovery/browser-sniff-report.md` (which the browser-sniff gate already writes there). No additional action needed for discovery pages -- they are already in the right location.
 
