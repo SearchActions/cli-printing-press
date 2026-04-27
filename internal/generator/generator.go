@@ -1238,7 +1238,14 @@ func (g *Generator) renderResourceCommands(promotedResourceNames map[string]bool
 }
 
 func (g *Generator) renderAuthFiles() error {
-	// Always render auth command - use full OAuth2 template when authorization URL is present,
+	// Skip auth.go entirely when the spec declares no auth surface. See
+	// shouldEmitAuth for the predicate; the matching root.go template gate
+	// (HasAuthCommand) and the scorecard's no-auth exemption (scoreAuth)
+	// must stay in sync with this same condition.
+	if !g.shouldEmitAuth() {
+		return nil
+	}
+	// Render auth command - use full OAuth2 template when authorization URL is present,
 	// browser cookie template for cookie-auth APIs, otherwise simple token-management template
 	authPath := filepath.Join("internal", "cli", "auth.go")
 	authTmpl := "auth_simple.go.tmpl"
@@ -1270,6 +1277,22 @@ func (g *Generator) renderAuthFiles() error {
 	}
 
 	return nil
+}
+
+// shouldEmitAuth reports whether the generator should emit internal/cli/auth.go
+// for this spec. Auth UI is emitted when the spec describes a real auth
+// surface: a non-none auth.type, an AuthorizationURL (OAuth), or a
+// graphql_persisted_query traffic-analysis hint (browser-aware refresh).
+//
+// Public-data specs (auth.type: "none", no OAuth, no GraphQL persisted-query)
+// previously shipped a dead `auth set-token / status / logout` subcommand.
+// Now they ship without it, root.go skips the registration via
+// HasAuthCommand, and scoreAuth exempts them from the "no auth subcommand"
+// deduction. All three call sites must agree -- they call this method.
+func (g *Generator) shouldEmitAuth() bool {
+	return g.Spec.Auth.Type != "none" ||
+		g.Spec.Auth.AuthorizationURL != "" ||
+		g.hasTrafficAnalysisHint("graphql_persisted_query")
 }
 
 func (g *Generator) renderMCPEntrypoint() error {
@@ -1624,6 +1647,11 @@ func (g *Generator) renderRootProjectFiles(promotedCommands []PromotedCommand, p
 		overflow = len(shownNovel) - maxHighlightLines
 		shownNovel = shownNovel[:maxHighlightLines]
 	}
+	// HasAuthCommand mirrors shouldEmitAuth. The template uses it to gate
+	// rootCmd.AddCommand(newAuthCmd) so the root binary does not reference an
+	// undefined symbol when auth.go was skipped.
+	hasAuthCommand := g.shouldEmitAuth()
+
 	rootData := struct {
 		*spec.APISpec
 		VisionSet             VisionTemplateSet
@@ -1637,6 +1665,7 @@ func (g *Generator) renderRootProjectFiles(promotedCommands []PromotedCommand, p
 		NovelOverflowCount    int
 		HasAsyncJobs          bool
 		AsyncJobCount         int
+		HasAuthCommand        bool
 	}{
 		APISpec:               g.Spec,
 		VisionSet:             g.VisionSet,
@@ -1650,6 +1679,7 @@ func (g *Generator) renderRootProjectFiles(promotedCommands []PromotedCommand, p
 		NovelOverflowCount:    overflow,
 		HasAsyncJobs:          len(g.AsyncJobs) > 0,
 		AsyncJobCount:         len(g.AsyncJobs),
+		HasAuthCommand:        hasAuthCommand,
 	}
 	if err := g.renderTemplate("root.go.tmpl", filepath.Join("internal", "cli", "root.go"), rootData); err != nil {
 		return fmt.Errorf("rendering root: %w", err)

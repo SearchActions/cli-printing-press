@@ -674,13 +674,22 @@ func TestGenerateHTMLExtractionEndpoint(t *testing.T) {
 		case "/docs/page":
 			_, _ = w.Write([]byte(`<html><head><title>Docs</title></head><body><a href="child">Child page</a></body></html>`))
 		case "/makers":
-			_, _ = w.Write([]byte(`<html><head><title>Makers</title></head><body><a href="/@alice">Alice</a></body></html>`))
+			// Lazy-load fixture: anchor's <img> has a placeholder src + real
+			// data-src (Pinterest/NYT Cooking pattern). firstImageSrc must
+			// prefer data-src over src.
+			_, _ = w.Write([]byte(`<html><head><title>Makers</title></head><body><a href="/@alice"><img src="data:image/gif;base64,placeholder" data-src="/img/alice-real.jpg" alt="Alice">Alice</a><a href="/@bob"><img srcset="/img/bob-1x.jpg 1x, /img/bob-2x.jpg 2x" alt="Bob">Bob</a></body></html>`))
 		default:
+			// Anchor 1 wraps its image in <noscript> (Dotdash/Meredith pattern).
+			// nodeTextSuppressing must skip the noscript subtree so "<img src=...>"
+			// markup does not leak into the link's name field. firstImageSrc must
+			// also skip the noscript image and look for a rendered <img> instead --
+			// here SpeakON has both: a noscript fallback AND a rendered img after.
+			// Anchor 2 has only a rendered <img> (no noscript fallback).
 			_, _ = w.Write([]byte(`<html>
 			<head><title>Product Hunt</title><meta name="description" content="New products"></head>
 			<body>
-				<a href="/products/speakon">1. SpeakON</a>
-				<a href="/products/instant-db">2. InstantDB</a>
+				<a href="/products/speakon"><noscript><img src="/img/speakon-fallback.jpg" alt="SpeakON"></noscript><img src="/img/speakon.jpg" alt="SpeakON">1. SpeakON</a>
+				<a href="/products/instant-db"><img src="/img/instant-db.jpg" alt="InstantDB">2. InstantDB</a>
 				<a href="/about">About</a>
 			</body>
 		</html>`))
@@ -779,6 +788,18 @@ func TestGenerateHTMLExtractionEndpoint(t *testing.T) {
 	assert.Equal(t, "SpeakON", links[0]["name"])
 	assert.Equal(t, "speakon", links[0]["slug"])
 	assert.Equal(t, float64(1), links[0]["rank"])
+	// noscript suppression: the anchor wrapped its fallback <img> in <noscript>,
+	// which the HTML5 spec parses as raw text. nodeTextSuppressing must skip
+	// the noscript subtree so the link name does not leak "<img src=..." markup.
+	assert.NotContains(t, links[0]["name"], "<img", "noscript-wrapped <img> markup must not leak into the link name")
+	assert.NotContains(t, links[0]["text"], "<img", "noscript-wrapped <img> markup must not leak into the link text")
+	// Image extraction: firstImageSrc walks the same suppression-aware tree
+	// and surfaces the first non-suppressed <img src>. The rendered image
+	// should win over the noscript fallback when both are present.
+	assert.Contains(t, links[0]["image"], "speakon.jpg", "expected rendered img URL, got %v", links[0]["image"])
+	assert.NotContains(t, links[0]["image"], "speakon-fallback.jpg", "noscript fallback must not be selected when a rendered image exists")
+	// Anchor without noscript still produces a clean image URL.
+	assert.Contains(t, links[1]["image"], "instant-db.jpg")
 
 	cmd = exec.Command(binaryPath, "posts", "list", "--dry-run", "--json")
 	cmd.Env = append(os.Environ(), "WEBHTML_BASE_URL="+server.URL)
@@ -804,9 +825,22 @@ func TestGenerateHTMLExtractionEndpoint(t *testing.T) {
 	out, err = cmd.CombinedOutput()
 	require.NoError(t, err, string(out))
 	require.NoError(t, json.Unmarshal(out, &envelope), string(out))
-	require.Len(t, envelope.Results, 1)
+	require.Len(t, envelope.Results, 2)
 	assert.Equal(t, server.URL+"/@alice", envelope.Results[0]["url"])
 	assert.Equal(t, "alice", envelope.Results[0]["slug"])
+	// Lazy-load priority: data-src wins over a placeholder src. The fixture
+	// embeds a base64 1x1 gif in src and the real URL in data-src. The result
+	// must be the data-src URL, NOT the placeholder.
+	assert.Contains(t, envelope.Results[0]["image"], "alice-real.jpg",
+		"data-src should win over a placeholder src; got %v", envelope.Results[0]["image"])
+	assert.NotContains(t, envelope.Results[0]["image"], "data:image/gif",
+		"placeholder src should not be selected when data-src is present")
+	// srcset fallback: when src and data-src are absent, the first srcset URL
+	// is taken. The fixture has only `srcset="/img/bob-1x.jpg 1x, ..."`, so
+	// firstSrcsetURL should extract the 1x URL.
+	assert.Equal(t, server.URL+"/@bob", envelope.Results[1]["url"])
+	assert.Contains(t, envelope.Results[1]["image"], "bob-1x.jpg",
+		"first srcset URL should be selected when src is absent; got %v", envelope.Results[1]["image"])
 }
 
 func TestGenerateStandardTransportForOfficialAPI(t *testing.T) {
@@ -2312,13 +2346,68 @@ func TestGeneratedDoctor_AuthVerifyPathProbesEndpoint(t *testing.T) {
 	require.NoError(t, err)
 	content := string(doctorGo)
 
-	// Probe should target baseURL + verify_path, not bare baseURL
+	// Probe should target baseURL + verify_path via the configured client,
+	// not bare baseURL. The doctor uses flags.newClient() now (Surf-aware)
+	// instead of stdlib http.Client.
 	assert.Contains(t, content, `verifyPath := "/me?fields=id"`)
-	assert.Contains(t, content, `http.NewRequest("GET", baseURL+verifyPath, nil)`)
+	assert.Contains(t, content, `c.GetWithHeaders(verifyPath`)
+	assert.NotContains(t, content, `&http.Client{`)
 	// When verify_path is set, 401/403 keeps the strict "invalid" verdict
 	assert.Contains(t, content, `"invalid (HTTP %d) — check your credentials"`)
 	// And does NOT emit the inconclusive fallback wording
 	assert.NotContains(t, content, "inconclusive (HTTP %d from base URL")
+}
+
+func TestGeneratedDoctor_InterstitialMarkersAreTitleAnchored(t *testing.T) {
+	t.Parallel()
+
+	// looksLikeDoctorInterstitial must anchor loose Cloudflare markers to the
+	// <title> tag so a real recipe titled "Just A Moment of Pause Cookies"
+	// (or similar benign content) is not mistakenly classified as a Cloudflare
+	// challenge page. This guards against a regression where the marker list
+	// was checked against the body's lowercased prefix without title context.
+	apiSpec := &spec.APISpec{
+		Name:    "interstitialdoc",
+		Version: "0.1.0",
+		BaseURL: "https://api.example.com",
+		Auth:    spec.AuthConfig{Type: "none"},
+		Config: spec.ConfigSpec{
+			Format: "toml",
+			Path:   "~/.config/interstitialdoc-pp-cli/config.toml",
+		},
+		Resources: map[string]spec.Resource{
+			"items": {
+				Description: "Manage items",
+				Endpoints: map[string]spec.Endpoint{
+					"list": {Method: "GET", Path: "/items", Description: "List items"},
+				},
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), "interstitialdoc-pp-cli")
+	gen := New(apiSpec, outputDir)
+	require.NoError(t, gen.Generate())
+
+	doctorGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "doctor.go"))
+	require.NoError(t, err)
+	content := string(doctorGo)
+
+	// Cloudflare's loose "just a moment" marker must be anchored to <title>.
+	assert.Contains(t, content, `"<title>just a moment"`,
+		"Cloudflare 'just a moment' marker should be anchored to <title> to avoid false positives on benign content")
+	// And the bare unanchored variant must NOT appear by itself in the
+	// switch-case (the tightened version still contains "just a moment" as
+	// a substring of the anchored marker, so we check for the anchored form's
+	// presence rather than the bare form's absence).
+	// The <title-anchored gate at the top of the function is also required.
+	assert.Contains(t, content, `if !strings.Contains(prefix, "<title")`,
+		"interstitial detector should bail early when no <title> tag is present")
+	// DataDome marker must require an additional context word, not just the
+	// vendor name (which appears in legitimate analytics scripts on many
+	// sites that don't use DataDome for blocking).
+	assert.Contains(t, content, `strings.Contains(prefix, "datadome") && (strings.Contains(prefix, "blocked") || strings.Contains(prefix, "captcha") || strings.Contains(prefix, "challenge"))`,
+		"DataDome marker should require a context word (blocked/captcha/challenge) alongside the vendor name")
 }
 
 func TestGeneratedDoctor_NoVerifyPathSoftens401(t *testing.T) {
@@ -2359,9 +2448,12 @@ func TestGeneratedDoctor_NoVerifyPathSoftens401(t *testing.T) {
 	require.NoError(t, err)
 	content := string(doctorGo)
 
-	// Probe should hit the bare base URL (no verify_path appended)
-	assert.Contains(t, content, `http.NewRequest("GET", baseURL, nil)`)
-	assert.NotContains(t, content, "verifyPath := ")
+	// Without spec verify_path, the doctor probes "/" via the configured
+	// client. The client is the same Surf-aware *client.Client used by
+	// regular commands -- not a fresh stdlib http.Client.
+	assert.Contains(t, content, `verifyPath := "/"`)
+	assert.Contains(t, content, `c.GetWithHeaders(verifyPath`)
+	assert.NotContains(t, content, `&http.Client{`)
 	// 401/403 fallback must be the soft "inconclusive" verdict
 	assert.Contains(t, content, `"inconclusive (HTTP %d from base URL — set auth.verify_path in spec for a definitive probe)"`)
 	// And must NOT use the strict "invalid" wording
@@ -2565,9 +2657,11 @@ func TestGenerate_UserAgentOverrideGatedByBrowserTransport(t *testing.T) {
 	browserClient, err := os.ReadFile(filepath.Join(browserDir, "internal", "client", "client.go"))
 	require.NoError(t, err)
 	assert.NotContains(t, string(browserClient), `req.Header.Set("User-Agent"`)
-	browserAuth, err := os.ReadFile(filepath.Join(browserDir, "internal", "cli", "auth.go"))
-	require.NoError(t, err)
-	assert.NotContains(t, string(browserAuth), "newAuthRefreshCmd")
+	// auth.go is not emitted for auth.type:none specs (see Generator.renderAuthFiles).
+	// Stronger assertion than the previous "no newAuthRefreshCmd in auth.go": there's
+	// no auth.go at all for no-auth CLIs.
+	_, err = os.Stat(filepath.Join(browserDir, "internal", "cli", "auth.go"))
+	assert.True(t, os.IsNotExist(err), "auth.go should not be emitted for auth.type:none specs")
 }
 
 func TestGenerateObjectBodyDefaultsAreParsedAsJSON(t *testing.T) {
@@ -2836,9 +2930,11 @@ func TestGeneratedOutput_NoMarkFlagRequired(t *testing.T) {
 		require.NoError(t, err)
 		content := string(data)
 
-		// No command should use MarkFlagRequired (except import.go which is not verify-tested)
-		if e.Name() != "import.go" && strings.Contains(content, "MarkFlagRequired") {
-			t.Errorf("%s still contains MarkFlagRequired", e.Name())
+		// No command should call MarkFlagRequired (except import.go which is not verify-tested).
+		// Match call sites only (`.MarkFlagRequired(` with a quote arg) so that
+		// docstrings or comments mentioning the symbol don't false-positive.
+		if e.Name() != "import.go" && strings.Contains(content, `.MarkFlagRequired("`) {
+			t.Errorf("%s still calls MarkFlagRequired", e.Name())
 		}
 
 		// Track whether we find the RunE-based validation

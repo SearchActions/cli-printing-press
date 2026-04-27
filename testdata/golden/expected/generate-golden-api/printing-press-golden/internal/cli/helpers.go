@@ -100,6 +100,28 @@ func apiErr(err error) error      { return &cliError{code: 5, err: err} }
 func configErr(err error) error   { return &cliError{code: 10, err: err} }
 func rateLimitErr(err error) error { return &cliError{code: 7, err: err} }
 
+// dryRunOK reports whether the command should short-circuit without doing any
+// real work because --dry-run was set. The verify pipeline probes hand-written
+// commands with --dry-run; commands that put validation in cobra's `Args:` or
+// `MarkFlagRequired` cannot reach a dry-run guard inside RunE because cobra
+// runs those checks before RunE. The verify-friendly pattern for hand-written
+// commands is:
+//
+//	RunE: func(cmd *cobra.Command, args []string) error {
+//	    if len(args) == 0 {
+//	        return cmd.Help()
+//	    }
+//	    if dryRunOK(flags) {
+//	        return nil
+//	    }
+//	    // ... real work ...
+//	}
+//
+// See SKILL.md "Phase 3: Build The GOAT" for the full pattern.
+func dryRunOK(flags *rootFlags) bool {
+	return flags != nil && flags.dryRun
+}
+
 // accessWarning describes an API access-denial that sync converts into a
 // non-fatal warning. It carries enough structured data for the sync_warning
 // JSON event without parsing free-form error strings downstream.
