@@ -260,11 +260,20 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 		},
 		"jsonStringParam":    isJSONStringParam,
 		"jsonEnumSuggestion": jsonEnumSuggestion,
-		"envName":            naming.EnvPrefix,
-		"safeName":           safeSQLName,
-		"isBackfillColumn":   isStoreBackfillColumn,
-		"hasBackfillColumns": hasStoreBackfillColumns,
-		"backfillDecl":       storeBackfillDecl,
+		// endpointNeedsClientLimit reports whether a list endpoint needs
+		// client-side truncation. True when the endpoint has a `limit`-named
+		// param AND no Pagination block — the spec author asked for a
+		// limit flag, but didn't declare a server-side paginator. Many
+		// APIs (Firebase, file-backed JSON dumps, RSS feeds) accept a
+		// `?limit=N` query param without honoring it; truncating client-
+		// side means the user-facing --limit flag works regardless.
+		// Surfaced by hackernews retro #350 finding F6.
+		"endpointNeedsClientLimit": endpointNeedsClientLimit,
+		"envName":                  naming.EnvPrefix,
+		"safeName":                 safeSQLName,
+		"isBackfillColumn":         isStoreBackfillColumn,
+		"hasBackfillColumns":       hasStoreBackfillColumns,
+		"backfillDecl":             storeBackfillDecl,
 		"safeNameSuffix": func(name, suffix string) string {
 			return safeSQLName(name + suffix)
 		},
@@ -489,6 +498,7 @@ type HelperFlags struct {
 	HasPathParams      bool // spec has path parameters → emit replacePathParam
 	HasMultiPositional bool // spec has endpoints with 2+ positional params → emit usageErr
 	HasDataLayer       bool // CLI has a local store (sync/search) → emit provenance helpers
+	HasClientLimit     bool // at least one endpoint needs client-side limit truncation → emit truncateJSONArray
 }
 
 // computeHelperFlags scans the spec's resources to determine which helpers are needed.
@@ -498,6 +508,9 @@ func computeHelperFlags(s *spec.APISpec) HelperFlags {
 		for _, e := range r.Endpoints {
 			if strings.EqualFold(e.Method, "DELETE") {
 				flags.HasDelete = true
+			}
+			if endpointNeedsClientLimit(e) {
+				flags.HasClientLimit = true
 			}
 			positionalCount := 0
 			for _, p := range e.Params {
@@ -514,6 +527,9 @@ func computeHelperFlags(s *spec.APISpec) HelperFlags {
 			for _, e := range sub.Endpoints {
 				if strings.EqualFold(e.Method, "DELETE") {
 					flags.HasDelete = true
+				}
+				if endpointNeedsClientLimit(e) {
+					flags.HasClientLimit = true
 				}
 				positionalCount := 0
 				for _, p := range e.Params {
@@ -633,6 +649,19 @@ func (g *Generator) readmeData() *readmeTemplateData {
 	}
 }
 
+// freshnessCommandPaths returns the rendered slice of "covered command paths"
+// surfaced in user-facing docs (README.md and SKILL.md) for the freshness
+// section. The slice contains only paths whose subcommands actually exist in
+// the generated CLI — promoted single-endpoint resources emit only the bare
+// `<cli> <resource>` form, multi-endpoint resources emit the bare form plus
+// one entry per real endpoint name.
+//
+// The runtime fallback map in `internal/cli/auto_refresh.go` (rendered by
+// auto_refresh.go.tmpl) keeps its `<resource> list/get/search` no-op
+// variants because Cobra's argument resolution can land on any of them at
+// runtime — having the map accept those forms keeps freshness lookups
+// loose. Only the slice rendered into docs needs trimming, so users and
+// agents don't see phantom subcommands they can't actually invoke.
 func (g *Generator) freshnessCommandPaths() []string {
 	if !g.Spec.Cache.Enabled || g.profile == nil {
 		return nil
@@ -646,15 +675,35 @@ func (g *Generator) freshnessCommandPaths() []string {
 		seen[path] = struct{}{}
 		paths = append(paths, path)
 	}
+	cliName := naming.CLI(g.Spec.Name)
 	for _, resource := range g.profile.SyncableResources {
-		prefix := naming.CLI(g.Spec.Name) + " " + resource.Name
+		prefix := cliName + " " + resource.Name
+		// Always emit the bare `<cli> <resource>` form. For promoted
+		// single-endpoint resources Cobra resolves this to the leaf
+		// command; for multi-endpoint resources it resolves to the
+		// parent help. Both are real, reachable paths.
 		add(prefix)
-		add(prefix + " list")
-		add(prefix + " get")
-		add(prefix + " search")
+
+		// Promoted resources have only one underlying endpoint and it
+		// is wired directly to the bare command — emitting endpoint
+		// names would create phantom paths users can't invoke.
+		if g.PromotedResourceNames[resource.Name] {
+			continue
+		}
+
+		// For multi-endpoint resources, emit one entry per real endpoint
+		// name. The endpoint map key matches the generated subcommand
+		// name (e.g., a `top` endpoint becomes `<cli> stories top`).
+		specResource, ok := g.Spec.Resources[resource.Name]
+		if !ok {
+			continue
+		}
+		for endpointName := range specResource.Endpoints {
+			add(prefix + " " + endpointName)
+		}
 	}
 	for _, command := range g.Spec.Cache.Commands {
-		add(naming.CLI(g.Spec.Name) + " " + command.Name)
+		add(cliName + " " + command.Name)
 	}
 	sort.Strings(paths)
 	return paths
@@ -1826,6 +1875,44 @@ func validateRenderedArtifact(outPath, content string) error {
 			return fmt.Errorf("%s contains unsubstituted placeholder %q", outPath, marker)
 		}
 	}
+	if err := scanForControlBytes(outPath, content); err != nil {
+		return err
+	}
+	return nil
+}
+
+// scanForControlBytes rejects any rendered markdown that contains ASCII
+// control bytes outside the small set legitimately used in text:
+// 0x09 (tab), 0x0A (LF), 0x0D (CR). Everything else in 0x00-0x1F is
+// rejected with the file path, byte offset, and a hint about the most
+// likely cause.
+//
+// Why: research.json values flow through Go's encoding/json which honors
+// JSON escape sequences like "\b" (0x08 backspace), "\f" (0x0C form
+// feed), etc. When an agent author writes a regex literal as
+// `"command": "...\bGo\b..."` (intending the literal characters
+// `\` `b` `G` `o` `\` `b`) the JSON parser yields a string containing
+// real backspace bytes, and the template engine writes those bytes
+// straight into SKILL.md / README.md. The result renders as nothing in
+// most viewers — silent corruption.
+//
+// The fix runs at render time (not at JSON parse time) so it catches
+// every future class of escape mistake, not just the regex case that
+// surfaced it. A targeted check on `narrative.recipes[].command`
+// alone would only catch this one path.
+//
+// Surfaced by hackernews retro #350 finding F2.
+func scanForControlBytes(outPath, content string) error {
+	for i := 0; i < len(content); i++ {
+		b := content[i]
+		// Tab (0x09), LF (0x0A), CR (0x0D) are allowed in markdown.
+		// Everything else in 0x00-0x1F is forbidden.
+		if b > 0x1F || b == 0x09 || b == 0x0A || b == 0x0D {
+			continue
+		}
+		hint := "likely cause: a JSON-parsed field (e.g. narrative.recipes[].command) contained \"\\b\", \"\\f\", or another JSON escape that became a control byte. Double-escape backslashes in regex literals: \"\\\\b\" not \"\\b\"."
+		return fmt.Errorf("%s contains forbidden control byte 0x%02X at offset %d. %s", outPath, b, i, hint)
+	}
 	return nil
 }
 
@@ -2058,6 +2145,40 @@ func defaultValForParam(p spec.Param) string {
 type jsonFlagSuggestion struct {
 	FlagName string
 	Values   []string
+}
+
+// endpointNeedsClientLimit reports whether a list endpoint needs
+// client-side response truncation. True when:
+//   - method is GET (only read endpoints need truncation)
+//   - the endpoint has a non-positional `limit` param (the user-facing
+//     --limit flag exists)
+//   - no Pagination block is declared (the spec author hasn't told us
+//     the API actually paginates)
+//
+// When all three conditions hold, the generator emits a
+// truncateJSONArray call after the API response returns so --limit N
+// is honored even when the API ignores ?limit=N. APIs like Firebase
+// and various file-backed JSON endpoints accept the query param
+// without applying it server-side; the truncation is harmless when
+// the API DID return only N items already (idempotent).
+//
+// Surfaced by hackernews retro #350 finding F6.
+func endpointNeedsClientLimit(endpoint spec.Endpoint) bool {
+	if !strings.EqualFold(strings.TrimSpace(endpoint.Method), "GET") {
+		return false
+	}
+	if endpoint.Pagination != nil {
+		return false
+	}
+	for _, p := range endpoint.Params {
+		if p.Positional || p.PathParam {
+			continue
+		}
+		if strings.EqualFold(strings.TrimSpace(p.Name), "limit") {
+			return true
+		}
+	}
+	return false
 }
 
 func isJSONStringParam(p spec.Param) bool {
