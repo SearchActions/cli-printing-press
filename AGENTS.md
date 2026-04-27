@@ -55,6 +55,8 @@ A pre-commit hook runs `gofmt -w` on staged Go files automatically. A pre-push h
 
 The golden harness is a byte-level behavior check for deterministic, offline `printing-press` commands and generated artifacts. It complements unit tests by catching user-visible output drift and printed CLI artifact drift.
 
+Use golden tests as refactor confidence rails for the machine. When changing internals, templates, pipeline plumbing, or broad architecture, a passing golden suite tells agents that the externally observable contracts captured by the fixtures did not move. That is the main purpose: preserve stable command output and generated artifact contracts through major machine changes, not exhaustively test every branch.
+
 Run `scripts/golden.sh verify` whenever a change may affect CLI command output, catalog rendering, browser-sniff or crowd-sniff output, generated specs or generated printed CLI files, templates under `internal/generator/templates/`, naming, endpoint derivation, auth emission, manifest generation, scorecard output, or pipeline artifacts.
 
 If a refactor changes machine code but claims behavior is identical, `scripts/golden.sh verify` should pass without fixture updates.
@@ -63,7 +65,17 @@ Run `scripts/golden.sh update` only when the behavior/output change is intention
 
 Golden cases must be deterministic, offline, and auth-free. Do not add cases that depend on network access, user credentials or env vars, `~/printing-press`, wall-clock timestamps unless normalized, machine-specific absolute paths unless normalized, or large generated printed CLI trees unless the compared subset is intentional.
 
+Passing `scripts/golden.sh verify` only proves existing fixtures did not drift. It does not prove golden coverage is complete. When adding a new deterministic CLI behavior or artifact contract, explicitly decide whether the golden suite needs a new or expanded case. Add golden coverage when the behavior is user-visible command output or persisted generated artifacts that should remain stable across refactors. Prefer unit tests for narrow helper logic, branchy internals, or cases where a golden snapshot would duplicate a focused package test without proving a CLI-level contract.
+
+Decision rubric:
+
+- **No golden update:** code changed but the captured external behavior is intentionally identical. Run `scripts/golden.sh verify`; it should pass unchanged.
+- **Update an existing fixture:** the behavior already covered by a golden case intentionally changed. Run `scripts/golden.sh update`, then inspect and explain the exact expected diff.
+- **Add or expand a fixture:** the change creates a new deterministic command output or persisted artifact contract that existing cases do not exercise. Add the smallest fixture that proves that contract.
+
 To add a case, create `testdata/golden/cases/<case-name>/`, add expected outputs under `testdata/golden/expected/<case-name>/`, and list behaviorally important generated files in `artifacts.txt` when the command creates artifacts. Prefer a small, high-signal artifact subset over snapshotting huge trees.
+
+Keep golden artifacts contract-shaped. Snapshot the specific files or output fields that demonstrate the stable behavior. Do not include broad reports, whole generated trees, or incidental diagnostics just because the harness can capture them; unrelated fields make refactors noisy and weaken the signal.
 
 Maintain `testdata/golden/fixtures/golden-api.yaml` as the purpose-built generated-CLI fixture for the Printing Press. When the machine gains deterministic generation capabilities that should survive major refactors — for example new auth shapes, pagination contracts, MCP surfaces, manifest fields, or endpoint naming rules — extend this fixture and add the smallest useful artifact comparison that proves the capability. Do not mutate this fixture for one printed CLI's edge case unless it represents a general machine behavior.
 
@@ -220,6 +232,20 @@ If you're running Claude Code from a different directory and need these skills a
 ```
 
 This copies the internal skills to `~/.claude/skills/`.
+
+## Skill Workflow Parity
+
+When a machine change alters what an agent should do, what a command now guarantees, or where source-of-truth data lives, update the relevant `SKILL.md` in the same change. Do not leave the skill as a stale manual workaround for behavior the machine now owns.
+
+Check `skills/printing-press/SKILL.md` especially when touching generator, dogfood, verify, scorecard, publish, lock/promote, manuscript/runstate, or README/SKILL rendering behavior. If a machine step becomes deterministic, the skill should say the command owns it and reserve agentic review for the remaining semantic judgment. If a command's output, gate, phase order, or failure mode changes, update the phase instructions, reviewer prompt contracts, and fix-order guidance that mention it.
+
+Decide responsibility explicitly:
+
+- **Machine capability:** deterministic transformations, schema sync, provenance fields, generated sections with structured inputs, mechanical validation, artifact copying, score calculations, and anything where the correct output can be derived from repo files or command output without judgment. Implement it in Go/templates/tests; SKILL.md should describe the guarantee, not ask the agent to perform it manually.
+- **SKILL.md / agent capability:** judgment calls, product tradeoffs, semantic honesty, whether prose overpromises, whether output is plausible, whether a feature is worth building, or workflows that require user/API context not available to the binary. Keep these as clear agent instructions and reviewer prompt contracts.
+- **Both:** the machine should produce or verify the deterministic substrate, then SKILL.md should direct the agent to inspect the remaining semantic layer. Example pattern: dogfood syncs README/SKILL feature blocks from `novel_features_built`; the skill tells the agent to audit surrounding prose, recipes, trigger phrases, and examples for indirect claims.
+
+For any SKILL.md update, search for the old concept across the skill file, not just the paragraph closest to the code change. Agentic review prompts often duplicate workflow assumptions from earlier phase instructions.
 
 ## Skill Authoring: Reference File Pattern
 

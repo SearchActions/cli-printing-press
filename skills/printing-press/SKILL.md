@@ -1753,12 +1753,13 @@ Fix order (update heartbeat between each fix category to prevent stale lock duri
 5. missing novel features (see below)
 6. scorecard-only polish gaps
 
-**Missing novel features fix (step 5):** Dogfood writes `novel_features_built` to research.json — only features whose commands actually exist. The original `novel_features` (aspirational list from absorb) is preserved for the audit trail. After dogfood:
+**Missing novel features fix (step 5):** Dogfood writes `novel_features_built` to research.json — only features whose commands actually exist. The original `novel_features` (aspirational list from absorb) is preserved for the audit trail. Dogfood also syncs the generated `README.md` `## Unique Features` block and `SKILL.md` `## Unique Capabilities` block from `novel_features_built`; if none survived, it removes those blocks. After dogfood:
 
-1. If the README has a `## Unique Features` section from initial generation, update it to match `novel_features_built` — remove entries for commands that don't exist
-2. If `novel_features_built` is empty (none survived), remove the entire `## Unique Features` section from the README
-3. If the README doesn't have the section yet but `novel_features_built` is non-empty, inject it (same format as the template) after `## Quick Start` or before `## Usage`
-4. Log which features were dropped (planned vs built delta)
+1. Inspect the dogfood planned-vs-built delta
+2. Build missing approved features when they are still in scope
+3. Rerun dogfood so research.json, `.printing-press.json`, README.md, and SKILL.md are all synced from the verified set
+4. Audit surrounding README/SKILL prose, recipes, trigger phrases, and examples for indirect references to dropped features
+5. Log which features were dropped (planned vs built delta)
 
 After fixing each category, update the heartbeat:
 ```bash
@@ -1833,13 +1834,14 @@ Use the Agent tool (general-purpose or a dedicated reviewer) with this prompt co
 > For each of these semantic checks, report findings under 50 words each:
 >
 > 1. **Trigger phrases match capabilities.** Does every trigger phrase in the SKILL's description frontmatter correspond to something the CLI can actually do? Flag phrases that imply missing capabilities.
-> 2. **Novel-feature descriptions match commands.** For each feature in the "Unique Capabilities" section, run `<cli> <command> --help` and verify the description matches the actual behavior. Mismatches are findings.
-> 3. **Stub disclosure.** If `novel_features` has items that are absent from `novel_features_built`, they shipped as stubs. The SKILL must label them (see Phase 1.5 stub-marking rule). Unlabeled stubs are findings.
-> 4. **Auth narrative accuracy.** Read the auth section. Does every `auth login/set-token/status` invocation mentioned actually exist on the CLI? Does the narrative match the CLI's auth type (api_key vs cookie vs session_handshake)?
-> 5. **Recipe output claims.** For the worked examples, does the prose claim match what the command actually produces? (Not the exact output — the shape and intent.)
-> 6. **Marketing-copy smell.** Does the SKILL read like ad copy ("comprehensive", "seamless", "powerful") instead of concrete capability descriptions? Those phrases are findings.
+> 2. **Verified-set alignment.** The SKILL's "Unique Capabilities" commands must exactly match `novel_features_built` from research.json. Planned-only features from `novel_features` must not appear there after dogfood sync. Any extra or missing command is a finding.
+> 3. **Novel-feature descriptions match commands.** For each feature in the "Unique Capabilities" section, run `<cli> <command> --help` and verify the description matches the actual behavior. Mismatches are findings.
+> 4. **Stub/gated disclosure.** If a feature that remains in `novel_features_built` is intentionally stubbed, CF-gated, unavailable without external setup, or returns a known-gap response, the SKILL must label that limitation where an agent decides whether to use the command. Unlabeled limitations are findings.
+> 5. **Auth narrative accuracy.** Read the auth section. Does every `auth login/set-token/status` invocation mentioned actually exist on the CLI? Does the narrative match the CLI's auth type (api_key vs cookie vs session_handshake)?
+> 6. **Recipe output claims.** For the worked examples, does the prose claim match what the command actually produces? (Not the exact output — the shape and intent.)
+> 7. **Marketing-copy smell.** Does the SKILL read like ad copy ("comprehensive", "seamless", "powerful") instead of concrete capability descriptions? Those phrases are findings.
 >
-> Return a list of findings. For each: check name, severity (error/warning), line number, one-sentence fix. If SKILL passes all six checks, return "PASS — no findings."
+> Return a list of findings. For each: check name, severity (error/warning), line number, one-sentence fix. If SKILL passes all seven checks, return "PASS — no findings."
 
 ### Gate
 
@@ -1865,6 +1867,8 @@ Use the Agent tool or review directly with this prompt contract:
 >
 > Check:
 > - Every command, subcommand, flag, exit code, config path, and example resolves to the printed CLI.
+> - README `## Unique Features` and SKILL `## Unique Capabilities` match `novel_features_built`; planned-only features from `novel_features` are not claimed after dogfood sync.
+> - Surrounding prose, recipes, trigger phrases, and examples do not indirectly promise planned features that dogfood dropped.
 > - No placeholder literals remain in executable examples (`<cli>`, `<command>`, `<resource>`, `<CLI>`).
 > - Boilerplate matches the CLI shape: no CRUD/retry/create-stdin/delete/cache/auth/async-job claims unless the CLI actually implements them.
 > - Read-only CLIs say they are read-only and do not imply create/update/delete support.

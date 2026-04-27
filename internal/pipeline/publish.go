@@ -296,14 +296,7 @@ func writeCLIManifestForPublish(state *PipelineState, dir string) error {
 		// If pickNovelFeaturesForManifest returned an empty slice (no
 		// Built and no planned), leave the carry-forward in place.
 		if len(nfs) > 0 {
-			m.NovelFeatures = m.NovelFeatures[:0]
-			for _, nf := range nfs {
-				m.NovelFeatures = append(m.NovelFeatures, NovelFeatureManifest{
-					Name:        nf.Name,
-					Command:     nf.Command,
-					Description: nf.Description,
-				})
-			}
+			m.NovelFeatures = novelFeaturesToManifest(nfs)
 		}
 		if len(m.NovelFeatures) > 0 && source != "" && source != state.PipelineDir() && source != RunRoot(state.RunID) {
 			// Visibility for non-canonical sources — a one-line stderr

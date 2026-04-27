@@ -294,10 +294,17 @@ func checkNovelFeatures(cliDir, researchDir string) NovelFeaturesCheckResult {
 		}
 	}
 
-	// Write the verified list back to research.json so the README and
-	// publish steps only reference features that actually exist.
+	// Write the verified list back so generated docs and publish metadata only
+	// reference features that actually exist.
 	if err := WriteNovelFeaturesBuilt(researchDir, built); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: could not write novel_features_built: %v\n", err)
+	} else {
+		if err := SyncCLIManifestNovelFeatures(cliDir, built); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: could not sync novel_features to CLI manifest: %v\n", err)
+		}
+		if err := SyncCLITranscendenceDocs(cliDir, built); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: could not sync transcendence docs: %v\n", err)
+		}
 	}
 
 	return result

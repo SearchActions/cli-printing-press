@@ -3,6 +3,7 @@ package pipeline
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -691,6 +692,56 @@ func newTriageCmd() *cobra.Command {
 		assert.Len(t, *updated.NovelFeaturesBuilt, 2, "all built")
 	})
 
+	t.Run("syncs built features into CLI manifest", func(t *testing.T) {
+		cliDir := t.TempDir()
+		cliCodeDir := filepath.Join(cliDir, "internal", "cli")
+		require.NoError(t, os.MkdirAll(cliCodeDir, 0o755))
+		writeTestFile(t, filepath.Join(cliCodeDir, "health.go"),
+			`package cli
+func newHealthCmd() *cobra.Command {
+	return &cobra.Command{Use: "health"}
+}`)
+		writeTestFile(t, filepath.Join(cliCodeDir, "stale.go"),
+			`package cli
+func newStaleCmd() *cobra.Command {
+	return &cobra.Command{Use: "stale"}
+}`)
+		writeTestFile(t, filepath.Join(cliCodeDir, "bottleneck.go"),
+			`package cli
+func newBottleneckCmd() *cobra.Command {
+	return &cobra.Command{Use: "bottleneck"}
+}`)
+		require.NoError(t, WriteCLIManifest(cliDir, CLIManifest{
+			SchemaVersion: 1,
+			APIName:       "test",
+			CLIName:       "test-pp-cli",
+		}))
+
+		researchDir := t.TempDir()
+		research := &ResearchResult{
+			APIName: "test",
+			NovelFeatures: []NovelFeature{
+				{Name: "Health dashboard", Command: "health", Description: "Summarize account health.", Rationale: "Internal only."},
+				{Name: "Stale triage", Command: "stale", Description: "Find stale records.", Rationale: "Internal only."},
+				{Name: "Bottleneck finder", Command: "bottleneck", Description: "Locate workflow bottlenecks.", Rationale: "Internal only."},
+			},
+		}
+		require.NoError(t, writeResearchJSON(research, researchDir))
+
+		result := checkNovelFeatures(cliDir, researchDir)
+		assert.Equal(t, 3, result.Found)
+
+		manifest := readPublishedManifest(t, cliDir)
+		require.Len(t, manifest.NovelFeatures, 3)
+		assert.Equal(t, NovelFeatureManifest{
+			Name:        "Health dashboard",
+			Command:     "health",
+			Description: "Summarize account health.",
+		}, manifest.NovelFeatures[0])
+		assert.Equal(t, "stale", manifest.NovelFeatures[1].Command)
+		assert.Equal(t, "bottleneck", manifest.NovelFeatures[2].Command)
+	})
+
 	t.Run("detects missing commands and writes verified subset", func(t *testing.T) {
 		cliDir := t.TempDir()
 		cliCodeDir := filepath.Join(cliDir, "internal", "cli")
@@ -725,6 +776,184 @@ func newHealthCmd() *cobra.Command {
 		require.Len(t, *updated.NovelFeaturesBuilt, 1, "only health survived")
 		assert.Equal(t, "health", (*updated.NovelFeaturesBuilt)[0].Command)
 	})
+
+	t.Run("syncs README and SKILL to verified subset", func(t *testing.T) {
+		cliDir := t.TempDir()
+		cliCodeDir := filepath.Join(cliDir, "internal", "cli")
+		require.NoError(t, os.MkdirAll(cliCodeDir, 0o755))
+		writeTestFile(t, filepath.Join(cliCodeDir, "health.go"),
+			`package cli
+func newHealthCmd() *cobra.Command {
+	return &cobra.Command{Use: "health"}
+}`)
+		writeTestFile(t, filepath.Join(cliDir, "README.md"), strings.Join([]string{
+			"# Test CLI",
+			"",
+			"## Quick Start",
+			"",
+			"Run it.",
+			"",
+			"## Unique Features",
+			"",
+			"These capabilities aren't available in any other tool for this API.",
+			"- **`health`** \u2014 planned health",
+			"- **`triage`** \u2014 planned triage",
+			"",
+			"## Usage",
+			"",
+			"Run help.",
+			"",
+		}, "\n"))
+		writeTestFile(t, filepath.Join(cliDir, "SKILL.md"), strings.Join([]string{
+			"# Test Skill",
+			"",
+			"## When Not to Use This CLI",
+			"",
+			"No writes.",
+			"",
+			"## Unique Capabilities",
+			"",
+			"These capabilities aren't available in any other tool for this API.",
+			"- **`health`** \u2014 planned health",
+			"- **`triage`** \u2014 planned triage",
+			"",
+			"## Command Reference",
+			"",
+			"**items** \u2014 Items",
+			"",
+		}, "\n"))
+
+		researchDir := t.TempDir()
+		research := &ResearchResult{
+			APIName: "test",
+			NovelFeatures: []NovelFeature{
+				{
+					Name:         "Health dashboard",
+					Command:      "health",
+					Description:  "See scheduling health metrics at a glance",
+					Example:      "test-pp-cli health --agent",
+					WhyItMatters: "Agents can inspect health in one command",
+					Group:        "Local state",
+				},
+				{Name: "Stale triage", Command: "triage", Description: "Find stale work", Group: "Local state"},
+			},
+		}
+		require.NoError(t, writeResearchJSON(research, researchDir))
+
+		result := checkNovelFeatures(cliDir, researchDir)
+		assert.Equal(t, 1, result.Found)
+		assert.Equal(t, []string{"triage"}, result.Missing)
+
+		readmeData, err := os.ReadFile(filepath.Join(cliDir, "README.md"))
+		require.NoError(t, err)
+		readme := string(readmeData)
+		assert.Contains(t, readme, "## Unique Features")
+		assert.Contains(t, readme, "### Local state")
+		assert.Contains(t, readme, "**`health`**")
+		assert.Contains(t, readme, "See scheduling health metrics at a glance")
+		assert.Contains(t, readme, "_Agents can inspect health in one command_")
+		assert.Contains(t, readme, "test-pp-cli health --agent")
+		assert.NotContains(t, readme, "triage")
+		assert.Less(t, strings.Index(readme, "## Unique Features"), strings.Index(readme, "## Usage"))
+
+		skillData, err := os.ReadFile(filepath.Join(cliDir, "SKILL.md"))
+		require.NoError(t, err)
+		skill := string(skillData)
+		assert.Contains(t, skill, "## Unique Capabilities")
+		assert.Contains(t, skill, "### Local state")
+		assert.Contains(t, skill, "**`health`**")
+		assert.NotContains(t, skill, "triage")
+		assert.Less(t, strings.Index(skill, "## Unique Capabilities"), strings.Index(skill, "## Command Reference"))
+	})
+
+	t.Run("inserts README and SKILL sections when absent", func(t *testing.T) {
+		cliDir := t.TempDir()
+		cliCodeDir := filepath.Join(cliDir, "internal", "cli")
+		require.NoError(t, os.MkdirAll(cliCodeDir, 0o755))
+		writeTestFile(t, filepath.Join(cliCodeDir, "health.go"),
+			`package cli
+func newHealthCmd() *cobra.Command {
+	return &cobra.Command{Use: "health"}
+}`)
+		writeTestFile(t, filepath.Join(cliDir, "README.md"), strings.Join([]string{
+			"# Test CLI",
+			"",
+			"## Quick Start",
+			"",
+			"Run it.",
+			"",
+			"## Usage",
+			"",
+			"Run help.",
+			"",
+		}, "\n"))
+		writeTestFile(t, filepath.Join(cliDir, "SKILL.md"), strings.Join([]string{
+			"# Test Skill",
+			"",
+			"## Command Reference",
+			"",
+			"**items** \u2014 Items",
+			"",
+		}, "\n"))
+
+		researchDir := t.TempDir()
+		research := &ResearchResult{
+			APIName: "test",
+			NovelFeatures: []NovelFeature{
+				{Name: "Health dashboard", Command: "health", Description: "See scheduling health metrics at a glance"},
+			},
+		}
+		require.NoError(t, writeResearchJSON(research, researchDir))
+
+		result := checkNovelFeatures(cliDir, researchDir)
+		assert.Equal(t, 1, result.Found)
+
+		readmeData, err := os.ReadFile(filepath.Join(cliDir, "README.md"))
+		require.NoError(t, err)
+		readme := string(readmeData)
+		assert.Contains(t, readme, "## Unique Features")
+		assert.Contains(t, readme, "**`health`**")
+		assert.Less(t, strings.Index(readme, "## Unique Features"), strings.Index(readme, "## Usage"))
+
+		skillData, err := os.ReadFile(filepath.Join(cliDir, "SKILL.md"))
+		require.NoError(t, err)
+		skill := string(skillData)
+		assert.Contains(t, skill, "## Unique Capabilities")
+		assert.Contains(t, skill, "**`health`**")
+		assert.Less(t, strings.Index(skill, "## Unique Capabilities"), strings.Index(skill, "## Command Reference"))
+	})
+
+	t.Run("does not blank manifest when no features survive", func(t *testing.T) {
+		cliDir := t.TempDir()
+		require.NoError(t, os.MkdirAll(filepath.Join(cliDir, "internal", "cli"), 0o755))
+		existing := []NovelFeatureManifest{{
+			Name:        "Existing feature",
+			Command:     "existing",
+			Description: "Already verified.",
+		}}
+		require.NoError(t, WriteCLIManifest(cliDir, CLIManifest{
+			SchemaVersion: 1,
+			APIName:       "test",
+			CLIName:       "test-pp-cli",
+			NovelFeatures: existing,
+		}))
+
+		researchDir := t.TempDir()
+		research := &ResearchResult{
+			APIName: "test",
+			NovelFeatures: []NovelFeature{
+				{Name: "Missing feature", Command: "missing", Description: "Not built."},
+			},
+		}
+		require.NoError(t, writeResearchJSON(research, researchDir))
+
+		result := checkNovelFeatures(cliDir, researchDir)
+		assert.Equal(t, 0, result.Found)
+		assert.Len(t, result.Missing, 1)
+
+		manifest := readPublishedManifest(t, cliDir)
+		assert.Equal(t, existing, manifest.NovelFeatures)
+	})
 }
 
 func TestCheckNovelFeatures_ZeroSurvivors(t *testing.T) {
@@ -735,6 +964,36 @@ func TestCheckNovelFeatures_ZeroSurvivors(t *testing.T) {
 	cliCodeDir := filepath.Join(cliDir, "internal", "cli")
 	require.NoError(t, os.MkdirAll(cliCodeDir, 0o755))
 	// No command files — nothing registered
+	writeTestFile(t, filepath.Join(cliDir, "README.md"), strings.Join([]string{
+		"# Test CLI",
+		"",
+		"## Quick Start",
+		"",
+		"Run it.",
+		"",
+		"## Unique Features",
+		"",
+		"These capabilities aren't available in any other tool for this API.",
+		"- **`health`** \u2014 planned health",
+		"",
+		"## Usage",
+		"",
+		"Run help.",
+		"",
+	}, "\n"))
+	writeTestFile(t, filepath.Join(cliDir, "SKILL.md"), strings.Join([]string{
+		"# Test Skill",
+		"",
+		"## Unique Capabilities",
+		"",
+		"These capabilities aren't available in any other tool for this API.",
+		"- **`health`** \u2014 planned health",
+		"",
+		"## Command Reference",
+		"",
+		"**items** \u2014 Items",
+		"",
+	}, "\n"))
 
 	researchDir := t.TempDir()
 	research := &ResearchResult{
@@ -757,6 +1016,16 @@ func TestCheckNovelFeatures_ZeroSurvivors(t *testing.T) {
 	assert.Len(t, updated.NovelFeatures, 2, "planned list preserved")
 	require.NotNil(t, updated.NovelFeaturesBuilt, "must be non-nil so fallback doesn't kick in")
 	assert.Empty(t, *updated.NovelFeaturesBuilt, "empty — nothing survived")
+
+	readmeData, err := os.ReadFile(filepath.Join(cliDir, "README.md"))
+	require.NoError(t, err)
+	assert.NotContains(t, string(readmeData), "## Unique Features")
+	assert.Contains(t, string(readmeData), "## Usage")
+
+	skillData, err := os.ReadFile(filepath.Join(cliDir, "SKILL.md"))
+	require.NoError(t, err)
+	assert.NotContains(t, string(skillData), "## Unique Capabilities")
+	assert.Contains(t, string(skillData), "## Command Reference")
 }
 
 func TestDeriveDogfoodVerdict_NovelFeatures(t *testing.T) {

@@ -76,6 +76,44 @@ func WriteCLIManifest(dir string, m CLIManifest) error {
 	return nil
 }
 
+func novelFeaturesToManifest(features []NovelFeature) []NovelFeatureManifest {
+	built := make([]NovelFeatureManifest, 0, len(features))
+	for _, nf := range features {
+		built = append(built, NovelFeatureManifest{
+			Name:        nf.Name,
+			Command:     nf.Command,
+			Description: nf.Description,
+		})
+	}
+	return built
+}
+
+// SyncCLIManifestNovelFeatures records dogfood-verified novel features in the
+// generated CLI manifest. Empty verified sets intentionally leave the manifest
+// untouched so a failed or incomplete dogfood pass cannot erase prior metadata.
+func SyncCLIManifestNovelFeatures(dir string, features []NovelFeature) error {
+	if len(features) == 0 {
+		return nil
+	}
+
+	manifestPath := filepath.Join(dir, CLIManifestFilename)
+	data, err := os.ReadFile(manifestPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("reading CLI manifest: %w", err)
+	}
+
+	var m CLIManifest
+	if err := json.Unmarshal(data, &m); err != nil {
+		return fmt.Errorf("parsing CLI manifest: %w", err)
+	}
+	m.NovelFeatures = novelFeaturesToManifest(features)
+
+	return WriteCLIManifest(dir, m)
+}
+
 // findArchivedSpec looks for a spec file archived alongside a generated CLI.
 // generate archives the source spec as spec.json (for JSON inputs) or
 // spec.yaml (for YAML inputs); older runs occasionally used spec.yml. Returns
