@@ -9,8 +9,8 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
-	"unicode"
 
+	"github.com/mvanhorn/cli-printing-press/v2/internal/naming"
 	"github.com/mvanhorn/cli-printing-press/v2/internal/spec"
 )
 
@@ -131,8 +131,8 @@ func WriteToolsManifest(dir string, parsed *spec.APISpec) error {
 			if cookieOrComposed && !endpoint.NoAuth {
 				continue
 			}
-			toolName := toolSnake(rName) + "_" + toolSnake(eName)
-			desc := mcpDescriptionForManifest(endpoint.Description, endpoint.NoAuth, parsed.Auth.Type, public, total)
+			toolName := naming.Snake(rName) + "_" + naming.Snake(eName)
+			desc := naming.MCPDescription(endpoint.Description, endpoint.NoAuth, parsed.Auth.Type, public, total)
 			tool := buildManifestTool(toolName, desc, endpoint)
 			manifest.Tools = append(manifest.Tools, tool)
 		}
@@ -147,8 +147,8 @@ func WriteToolsManifest(dir string, parsed *spec.APISpec) error {
 				if cookieOrComposed && !endpoint.NoAuth {
 					continue
 				}
-				toolName := toolSnake(rName) + "_" + toolSnake(subName) + "_" + toolSnake(eName)
-				desc := mcpDescriptionForManifest(endpoint.Description, endpoint.NoAuth, parsed.Auth.Type, public, total)
+				toolName := naming.Snake(rName) + "_" + naming.Snake(subName) + "_" + naming.Snake(eName)
+				desc := naming.MCPDescription(endpoint.Description, endpoint.NoAuth, parsed.Auth.Type, public, total)
 				tool := buildManifestTool(toolName, desc, endpoint)
 				manifest.Tools = append(manifest.Tools, tool)
 			}
@@ -230,7 +230,7 @@ func normalizeAuthFormat(format string, envVars []string) string {
 	}
 	result := format
 	for _, envVar := range envVars {
-		derived := envVarPlaceholder(envVar)
+		derived := naming.EnvVarPlaceholder(envVar)
 		if derived != strings.ToLower(envVar) {
 			// Replace the derived placeholder with the env var name.
 			result = strings.ReplaceAll(result, "{"+derived+"}", "{"+envVar+"}")
@@ -247,21 +247,6 @@ func normalizeAuthFormat(format string, envVars []string) string {
 	return result
 }
 
-// envVarPlaceholder derives the placeholder name from an env var.
-// DUB_TOKEN -> token, STYTCH_PROJECT_ID -> project_id.
-// Mirrors the logic in internal/generator/generator.go:1331.
-func envVarPlaceholder(envVar string) string {
-	parts := strings.Split(envVar, "_")
-	if len(parts) <= 1 {
-		return strings.ToLower(envVar)
-	}
-	lower := make([]string, 0, len(parts)-1)
-	for _, p := range parts[1:] {
-		lower = append(lower, strings.ToLower(p))
-	}
-	return strings.Join(lower, "_")
-}
-
 // normalizeParamType ensures a consistent type string. Empty types default
 // to "string".
 func normalizeParamType(t string) string {
@@ -269,70 +254,6 @@ func normalizeParamType(t string) string {
 		return "string"
 	}
 	return t
-}
-
-// toolSnake converts CamelCase to snake_case for tool name segments.
-// This is a copy of toSnake from internal/generator/generator.go:794.
-// It does NOT convert hyphens, matching the MCP template's {{snake}} function.
-func toolSnake(s string) string {
-	var result strings.Builder
-	for i, r := range s {
-		if unicode.IsUpper(r) && i > 0 {
-			result.WriteRune('_')
-		}
-		result.WriteRune(unicode.ToLower(r))
-	}
-	return result.String()
-}
-
-// mcpDescriptionForManifest replicates the mcpDescription template function
-// from internal/generator/generator.go:1078 — adds minority-side annotations
-// for mixed auth/no-auth APIs.
-func mcpDescriptionForManifest(desc string, noAuth bool, authType string, publicCount, totalCount int) string {
-	authCount := totalCount - publicCount
-	mixed := publicCount > 0 && authCount > 0
-
-	if mixed {
-		if noAuth && publicCount < authCount {
-			desc = desc + " (public)"
-		} else if !noAuth && authCount < publicCount {
-			switch authType {
-			case "api_key":
-				desc = desc + " (requires API key)"
-			case "cookie", "composed":
-				desc = desc + " (requires browser login)"
-			case "oauth2", "bearer_token":
-				desc = desc + " (requires auth)"
-			default:
-				desc = desc + " (requires auth)"
-			}
-		}
-	}
-
-	return onelineForManifest(desc)
-}
-
-// onelineForManifest replicates the oneline template function from
-// internal/generator/generator.go:1051.
-func onelineForManifest(s string) string {
-	s = strings.ReplaceAll(s, "\r\n", " ")
-	s = strings.ReplaceAll(s, "\n", " ")
-	s = strings.ReplaceAll(s, "\r", " ")
-	s = strings.ReplaceAll(s, `"`, `'`)
-	s = strings.ReplaceAll(s, "\\", "")
-	for strings.Contains(s, "  ") {
-		s = strings.ReplaceAll(s, "  ", " ")
-	}
-	s = strings.TrimSpace(s)
-	if len(s) > 120 {
-		cut := s[:117]
-		if idx := strings.LastIndex(cut, " "); idx > 60 {
-			s = cut[:idx] + "..."
-		} else {
-			s = cut + "..."
-		}
-	}
-	return s
 }
 
 // sortedResourceKeys returns sorted keys from a map[string]spec.Resource.

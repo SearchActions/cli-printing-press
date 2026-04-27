@@ -81,7 +81,7 @@ func GenerateFromPlan(planSpec *PlanSpec, outputDir string) error {
 		"upper":       strings.ToUpper,
 		"pascal":      toPascal,
 		"camel":       toCamel,
-		"snake":       toSnake,
+		"snake":       naming.Snake,
 		"kebab":       toKebab,
 		"currentYear": func() string { return strconv.Itoa(time.Now().Year()) },
 		"modulePath":  func() string { return naming.CLI(cliName) },

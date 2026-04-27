@@ -66,6 +66,84 @@ func EnvPrefix(name string) string {
 	return out
 }
 
+// Snake converts CamelCase to snake_case for generated tool name segments.
+// Hyphens are intentionally preserved to match the historical MCP template
+// helper behavior.
+func Snake(s string) string {
+	var result strings.Builder
+	for i, r := range s {
+		if unicode.IsUpper(r) && i > 0 {
+			result.WriteRune('_')
+		}
+		result.WriteRune(unicode.ToLower(r))
+	}
+	return result.String()
+}
+
+// EnvVarPlaceholder derives the placeholder name from an environment variable.
+// DUB_TOKEN -> token, STYTCH_PROJECT_ID -> project_id.
+func EnvVarPlaceholder(envVar string) string {
+	parts := strings.Split(envVar, "_")
+	if len(parts) <= 1 {
+		return strings.ToLower(envVar)
+	}
+	lower := make([]string, 0, len(parts)-1)
+	for _, p := range parts[1:] {
+		lower = append(lower, strings.ToLower(p))
+	}
+	return strings.Join(lower, "_")
+}
+
+// OneLine normalizes generated descriptions for compact template and manifest
+// output.
+func OneLine(s string) string {
+	s = strings.ReplaceAll(s, "\r\n", " ")
+	s = strings.ReplaceAll(s, "\n", " ")
+	s = strings.ReplaceAll(s, "\r", " ")
+	s = strings.ReplaceAll(s, `"`, `'`)
+	s = strings.ReplaceAll(s, "\\", "")
+	for strings.Contains(s, "  ") {
+		s = strings.ReplaceAll(s, "  ", " ")
+	}
+	s = strings.TrimSpace(s)
+	if len(s) > 120 {
+		cut := s[:117]
+		if idx := strings.LastIndex(cut, " "); idx > 60 {
+			s = cut[:idx] + "..."
+		} else {
+			s = cut + "..."
+		}
+	}
+	return s
+}
+
+// MCPDescription builds an MCP tool description with optional minority-side
+// auth annotation. It annotates only when an API has a mix of public and
+// auth-required tools, and only the minority side gets annotated.
+func MCPDescription(desc string, noAuth bool, authType string, publicCount, totalCount int) string {
+	authCount := totalCount - publicCount
+	mixed := publicCount > 0 && authCount > 0
+
+	if mixed {
+		if noAuth && publicCount < authCount {
+			desc = desc + " (public)"
+		} else if !noAuth && authCount < publicCount {
+			switch authType {
+			case "api_key":
+				desc = desc + " (requires API key)"
+			case "cookie", "composed":
+				desc = desc + " (requires browser login)"
+			case "oauth2", "bearer_token":
+				desc = desc + " (requires auth)"
+			default:
+				desc = desc + " (requires auth)"
+			}
+		}
+	}
+
+	return OneLine(desc)
+}
+
 func DogfoodBinary(name string) string {
 	return CLI(name) + "-dogfood"
 }

@@ -166,7 +166,7 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 		"upper":                 strings.ToUpper,
 		"join":                  strings.Join,
 		"camel":                 toCamel,
-		"snake":                 toSnake,
+		"snake":                 naming.Snake,
 		"pascal":                toPascal,
 		"goType":                goType,
 		"goStructType":          goStructType,
@@ -190,13 +190,13 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 		"columnPlaceholders":     columnPlaceholders,
 		"updateSet":              updateSet,
 		"envVarField":            envVarField,
-		"envVarPlaceholder":      envVarPlaceholder,
+		"envVarPlaceholder":      naming.EnvVarPlaceholder,
 		"envVarIsBuiltinField":   envVarIsBuiltinField,
 		"envVarBuiltinFieldName": envVarBuiltinFieldName,
 		"resolveEnvVarField":     resolveEnvVarField,
 		"add":                    func(a, b int) int { return a + b },
-		"oneline":                oneline,
-		"mcpDescription":         mcpDescription,
+		"oneline":                naming.OneLine,
+		"mcpDescription":         naming.MCPDescription,
 		"mcpDescriptionRich":     mcpDescriptionRich,
 		"flagName":               flagName,
 		"paramIdent":             paramIdent,
@@ -776,7 +776,7 @@ func safeDisplayURL(value string) string {
 func (g *Generator) buildDomainContext() DomainContext {
 	ctx := DomainContext{
 		APIName:     g.Spec.Name,
-		Description: oneline(g.Spec.Description),
+		Description: naming.OneLine(g.Spec.Description),
 		Archetype:   string(profiler.ArchetypeGeneric),
 	}
 
@@ -792,7 +792,7 @@ func (g *Generator) buildDomainContext() DomainContext {
 		for rName, r := range g.Spec.Resources {
 			rs := ResourceSummary{
 				Name:        rName,
-				Description: oneline(r.Description),
+				Description: naming.OneLine(r.Description),
 				Syncable:    syncSet[rName],
 				Searchable:  len(g.profile.SearchableFields[rName]) > 0,
 			}
@@ -1809,17 +1809,6 @@ func toCamel(s string) string {
 	return result
 }
 
-func toSnake(s string) string {
-	var result strings.Builder
-	for i, r := range s {
-		if unicode.IsUpper(r) && i > 0 {
-			result.WriteRune('_')
-		}
-		result.WriteRune(unicode.ToLower(r))
-	}
-	return result.String()
-}
-
 func toPascal(s string) string {
 	parts := strings.FieldsFunc(s, func(r rune) bool {
 		return r == '_' || r == '-' || !unicode.IsLetter(r) && !unicode.IsDigit(r)
@@ -2284,7 +2273,7 @@ var builtinConfigTags = map[string]string{
 // envVarIsBuiltinField returns true if the env var's placeholder tag would
 // collide with a hardcoded Config struct field tag.
 func envVarIsBuiltinField(envVar string) bool {
-	placeholder := envVarPlaceholder(envVar)
+	placeholder := naming.EnvVarPlaceholder(envVar)
 	_, ok := builtinConfigTags[placeholder]
 	return ok
 }
@@ -2292,7 +2281,7 @@ func envVarIsBuiltinField(envVar string) bool {
 // envVarBuiltinFieldName returns the Go field name of the hardcoded Config
 // struct field that matches this env var's placeholder, or empty string if none.
 func envVarBuiltinFieldName(envVar string) string {
-	placeholder := envVarPlaceholder(envVar)
+	placeholder := naming.EnvVarPlaceholder(envVar)
 	return builtinConfigTags[placeholder]
 }
 
@@ -2307,65 +2296,12 @@ func resolveEnvVarField(envVar string) string {
 	return envVarField(envVar)
 }
 
-func oneline(s string) string {
-	s = strings.ReplaceAll(s, "\r\n", " ")
-	s = strings.ReplaceAll(s, "\n", " ")
-	s = strings.ReplaceAll(s, "\r", " ")
-	s = strings.ReplaceAll(s, `"`, `'`)
-	s = strings.ReplaceAll(s, "\\", "")
-	for strings.Contains(s, "  ") {
-		s = strings.ReplaceAll(s, "  ", " ")
-	}
-	s = strings.TrimSpace(s)
-	if len(s) > 120 {
-		cut := s[:117]
-		if idx := strings.LastIndex(cut, " "); idx > 60 {
-			s = cut[:idx] + "..."
-		} else {
-			s = cut + "..."
-		}
-	}
-	return s
-}
-
-// mcpDescription builds an MCP tool description with optional minority-side
-// auth annotation. Only annotates when the CLI has a mix of public and
-// auth-required tools. The minority side gets annotated:
-//   - Public is minority → append "(public)"
-//   - Auth-required is minority → append auth-type-specific suffix
-//   - All same status or exact tie → no annotation
-func mcpDescription(desc string, noAuth bool, authType string, publicCount, totalCount int) string {
-	authCount := totalCount - publicCount
-	mixed := publicCount > 0 && authCount > 0
-
-	if mixed {
-		if noAuth && publicCount < authCount {
-			// Public endpoints are the minority — mark them
-			desc = desc + " (public)"
-		} else if !noAuth && authCount < publicCount {
-			// Auth-required endpoints are the minority — mark them
-			switch authType {
-			case "api_key":
-				desc = desc + " (requires API key)"
-			case "cookie", "composed":
-				desc = desc + " (requires browser login)"
-			case "oauth2", "bearer_token":
-				desc = desc + " (requires auth)"
-			default:
-				desc = desc + " (requires auth)"
-			}
-		}
-	}
-
-	return oneline(desc)
-}
-
 // mcpDescriptionRich builds an enriched MCP tool description that includes
 // the base description plus response shape hints and method context.
 // This gives agents enough information to choose the right tool without
 // trial-and-error. Total length is capped to prevent token bloat.
 func mcpDescriptionRich(desc string, noAuth bool, authType string, publicCount, totalCount int, method, respType, respItem string) string {
-	base := mcpDescription(desc, noAuth, authType, publicCount, totalCount)
+	base := naming.MCPDescription(desc, noAuth, authType, publicCount, totalCount)
 
 	var suffix string
 
@@ -2668,20 +2604,6 @@ func sortedEndpointNames(endpoints map[string]spec.Endpoint) []string {
 	}
 	sort.Strings(names)
 	return names
-}
-
-func envVarPlaceholder(envVar string) string {
-	// STYTCH_PROJECT_ID -> project_id (the placeholder in the format string)
-	parts := strings.Split(envVar, "_")
-	if len(parts) <= 1 {
-		return strings.ToLower(envVar)
-	}
-	// Skip the first part (tool name prefix) and join the rest
-	var lower []string
-	for _, p := range parts[1:] {
-		lower = append(lower, strings.ToLower(p))
-	}
-	return strings.Join(lower, "_")
 }
 
 // isGraphQLSpec returns true if the spec was produced by a GraphQL SDL parser.
