@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -266,38 +267,178 @@ func writeCLIManifestForPublish(state *PipelineState, dir string) error {
 		m.Description = entry.Description
 	}
 
-	// Load novel features from research.json if available. Looks in both
-	// RunRoot/research.json (printing-press skill convention) and
-	// RunRoot/pipeline/research.json (printing-press print convention) — both
-	// must be attempted because the skill flow and print flow write research
-	// to different locations. When research.json has populated NovelFeaturesBuilt,
-	// it overrides the carry-forward value from the existing manifest because
-	// post-dogfood data is the source of truth. When neither location holds
-	// research.json, emit a debug breadcrumb so the silent dropout from earlier
-	// versions is no longer silent — the breadcrumb names both attempted paths;
-	// the caller (lock promote, publish) shows it but does not treat it as an error.
-	research, researchErr := loadResearchForState(state)
-	switch {
-	case researchErr != nil:
+	// Load novel features from research.json if available, populating the
+	// manifest's NovelFeatures field so publish-validate's transcendence
+	// check passes without manual patching.
+	//
+	// Lookup order:
+	//   1. loadResearchForState — checks <RunRoot>/research.json (skill-flow
+	//      convention) then <state.PipelineDir>/research.json (generate-flow
+	//      convention). Covers both write conventions (cal-com retro #334 F2,
+	//      and food52 retro #337 F4 once #340 recovers RunID in NewMinimalState).
+	//   2. Minimal-state fallback: when loadResearchForState fails AND
+	//      state.RunID is empty (NewMinimalState had no registered runstate
+	//      to recover RunID from), glob the scoped runstate root for any
+	//      run whose research.json names this APIName and pick the most
+	//      recent by mtime. Backstop for orphaned plan-driven promotes.
+	//
+	// Within the loaded ResearchResult, prefer NovelFeaturesBuilt
+	// (dogfood-verified subset) over NovelFeatures (planned list) — if
+	// dogfood ran, only the actually-shipped features should be advertised.
+	// Falling back to the planned list when dogfood didn't run (or wrote
+	// an empty NovelFeaturesBuilt) keeps first-publish from failing the
+	// transcendence check on a CLI that genuinely shipped novel features.
+	research, source := loadResearchForPromote(state)
+	if research != nil {
+		nfs := pickNovelFeaturesForManifest(research)
+		// Override the existing-manifest carry-forward (line 221) with
+		// research.json's view: post-dogfood data is the source of truth.
+		// If pickNovelFeaturesForManifest returned an empty slice (no
+		// Built and no planned), leave the carry-forward in place.
+		if len(nfs) > 0 {
+			m.NovelFeatures = m.NovelFeatures[:0]
+			for _, nf := range nfs {
+				m.NovelFeatures = append(m.NovelFeatures, NovelFeatureManifest{
+					Name:        nf.Name,
+					Command:     nf.Command,
+					Description: nf.Description,
+				})
+			}
+		}
+		if len(m.NovelFeatures) > 0 && source != "" && source != state.PipelineDir() && source != RunRoot(state.RunID) {
+			// Visibility for non-canonical sources — a one-line stderr
+			// note keeps promote silent on the happy path but tells the
+			// user when novel_features came from the glob fallback.
+			fmt.Fprintf(os.Stderr, "publish: hydrated %d novel_features from %s\n", len(m.NovelFeatures), source)
+		}
+	} else {
+		// No research.json found by any lookup path. Emit a debug
+		// breadcrumb naming the canonical paths so the silent dropout
+		// from earlier versions stays observable. Promote still
+		// succeeds with whatever was carried forward from the existing
+		// manifest; publish validate will surface the
+		// transcendence-check failure separately if relevant.
 		fmt.Fprintf(os.Stderr,
 			"debug: research.json not found at %s or %s; skipping novel_features enrichment "+
 				"(state.RunID=%q)\n",
 			filepath.Join(RunRoot(state.RunID), "research.json"),
 			filepath.Join(state.PipelineDir(), "research.json"),
 			state.RunID)
-	case research.NovelFeaturesBuilt != nil && len(*research.NovelFeaturesBuilt) > 0:
-		built := make([]NovelFeatureManifest, 0, len(*research.NovelFeaturesBuilt))
-		for _, nf := range *research.NovelFeaturesBuilt {
-			built = append(built, NovelFeatureManifest{
-				Name:        nf.Name,
-				Command:     nf.Command,
-				Description: nf.Description,
-			})
-		}
-		m.NovelFeatures = built
 	}
 
 	return WriteCLIManifest(dir, m)
+}
+
+// loadResearchForPromote returns the research.json relevant to the
+// current promote/publish call, plus the path it was loaded from (used
+// for non-canonical-source stderr visibility).
+//
+// Lookup order:
+//   - Delegate to loadResearchForState first (RunRoot then PipelineDir).
+//     This is the dominant path; with #340's NewMinimalState recovery,
+//     even plan-driven promotes hit this branch.
+//   - When loadResearchForState fails AND RunID is empty (the registry
+//     recovery had no prior runstate to borrow from), glob the scoped
+//     runstate root for any research.json whose APIName matches and
+//     pick the most recent by mtime. Backstop for orphaned promotes.
+//
+// Returns (nil, "") when neither lookup finds a usable research.json.
+func loadResearchForPromote(state *PipelineState) (*ResearchResult, string) {
+	if r, err := loadResearchForState(state); err == nil {
+		// loadResearchForState is the canonical loader; report the
+		// path it tried first (run-root) when RunID is set, since the
+		// caller's "is this a non-canonical source?" check compares
+		// against state.PipelineDir() and RunRoot(state.RunID).
+		if state.RunID != "" {
+			if _, statErr := os.Stat(filepath.Join(RunRoot(state.RunID), "research.json")); statErr == nil {
+				return r, RunRoot(state.RunID)
+			}
+			return r, state.PipelineDir()
+		}
+		return r, ""
+	}
+
+	if state.RunID != "" {
+		// loadResearchForState already covered both canonical paths
+		// for a populated state — no further fallback to try.
+		return nil, ""
+	}
+
+	// Minimal-state fallback: empty RunID and the canonical loader
+	// found nothing. Glob the scoped runstate root for research.json
+	// files matching this APIName and pick the most recent.
+	candidates, err := globResearchCandidates(ScopedRunstateRoot())
+	if err != nil || len(candidates) == 0 {
+		return nil, ""
+	}
+	sort.SliceStable(candidates, func(i, j int) bool {
+		return candidates[i].mtime.After(candidates[j].mtime)
+	})
+	for _, c := range candidates {
+		r, err := LoadResearch(filepath.Dir(c.path))
+		if err != nil {
+			continue
+		}
+		if state.APIName != "" && r.APIName != "" && r.APIName != state.APIName {
+			continue
+		}
+		return r, c.path
+	}
+	return nil, ""
+}
+
+// researchCandidate is a path + mtime for sorting glob results.
+type researchCandidate struct {
+	path  string
+	mtime time.Time
+}
+
+// globResearchCandidates walks the scoped runstate root for research.json
+// files. Looks under both `<root>/runs/*/research.json` (run-root form,
+// what the skill flow writes) and `<root>/runs/*/pipeline/research.json`
+// (canonical generate-pipeline form). Errors during walk are non-fatal
+// (returns whatever it found so far).
+func globResearchCandidates(scopedRoot string) ([]researchCandidate, error) {
+	runsDir := filepath.Join(scopedRoot, "runs")
+	entries, err := os.ReadDir(runsDir)
+	if err != nil {
+		// Missing runs directory is normal for a brand-new workspace —
+		// not an error worth surfacing.
+		return nil, nil
+	}
+	var out []researchCandidate
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		runDir := filepath.Join(runsDir, entry.Name())
+		// Try run-root research.json (skill-flow shape).
+		for _, candidate := range []string{
+			filepath.Join(runDir, "research.json"),
+			filepath.Join(runDir, "pipeline", "research.json"),
+		} {
+			info, err := os.Stat(candidate)
+			if err != nil {
+				continue
+			}
+			out = append(out, researchCandidate{path: candidate, mtime: info.ModTime()})
+		}
+	}
+	return out, nil
+}
+
+// pickNovelFeaturesForManifest selects the right novel-features list to
+// promote into the manifest. Prefers NovelFeaturesBuilt (dogfood-verified)
+// when non-nil and non-empty; falls back to NovelFeatures (planned) so
+// CLIs whose dogfood didn't run still get a populated manifest.
+func pickNovelFeaturesForManifest(research *ResearchResult) []NovelFeature {
+	if research == nil {
+		return nil
+	}
+	if research.NovelFeaturesBuilt != nil && len(*research.NovelFeaturesBuilt) > 0 {
+		return *research.NovelFeaturesBuilt
+	}
+	return research.NovelFeatures
 }
 
 // smitheryConfig is the marketplace metadata schema for Smithery.

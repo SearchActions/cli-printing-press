@@ -50,6 +50,7 @@ func TestGenerateProjectsCompile(t *testing.T) {
 		"internal/cliutil/fanout.go",
 		"internal/cliutil/text.go",
 		"internal/cliutil/probe.go",
+		"internal/cliutil/verifyenv.go",
 		"internal/cliutil/cliutil_test.go",
 		"internal/client/client.go",
 		"internal/config/config.go",
@@ -64,9 +65,9 @@ func TestGenerateProjectsCompile(t *testing.T) {
 		// Bump it AND add to mustInclude above when adding always-emitted
 		// templates. Per-spec dynamic files (per-resource command files,
 		// generated tests) account for the difference between fixtures.
-		{name: "stytch", specPath: filepath.Join("..", "..", "testdata", "stytch.yaml"), expectedFiles: 45},
-		{name: "clerk", specPath: filepath.Join("..", "..", "testdata", "clerk.yaml"), expectedFiles: 50},
-		{name: "loops", specPath: filepath.Join("..", "..", "testdata", "loops.yaml"), expectedFiles: 47},
+		{name: "stytch", specPath: filepath.Join("..", "..", "testdata", "stytch.yaml"), expectedFiles: 46},
+		{name: "clerk", specPath: filepath.Join("..", "..", "testdata", "clerk.yaml"), expectedFiles: 51},
+		{name: "loops", specPath: filepath.Join("..", "..", "testdata", "loops.yaml"), expectedFiles: 48},
 	}
 
 	for _, tt := range tests {
@@ -841,6 +842,289 @@ func TestGenerateHTMLExtractionEndpoint(t *testing.T) {
 	assert.Equal(t, server.URL+"/@bob", envelope.Results[1]["url"])
 	assert.Contains(t, envelope.Results[1]["image"], "bob-1x.jpg",
 		"first srcset URL should be selected when src is absent; got %v", envelope.Results[1]["image"])
+}
+
+// TestGenerateHTMLExtractionEmbeddedJSONMode exercises the embedded-json mode
+// against an SSR-React-style page where serialized state is embedded in a
+// known script tag. This matches the Food52 retro motivation: extracting
+// `__NEXT_DATA__` JSON and walking a dot-notation path into props.pageProps.
+func TestGenerateHTMLExtractionEmbeddedJSONMode(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		switch r.URL.Path {
+		case "/recipes":
+			// Canonical Next.js __NEXT_DATA__ shape: serialized page state
+			// embedded in a script tag with id="__NEXT_DATA__".
+			_, _ = w.Write([]byte(`<html><head><title>Recipes</title></head><body>
+				<div id="__next">rendered</div>
+				<script id="__NEXT_DATA__" type="application/json">{"props":{"pageProps":{"recipes":[{"id":1,"name":"Pasta"},{"id":2,"name":"Soup"}]}},"page":"/recipes"}</script>
+			</body></html>`))
+		case "/articles":
+			// Custom selector + empty json_path returns the entire parsed JSON.
+			_, _ = w.Write([]byte(`<html><body>
+				<script id="ARTICLE_DATA" type="application/json">{"items":[{"slug":"a"},{"slug":"b"}]}</script>
+			</body></html>`))
+		case "/missing":
+			// No matching script tag — should produce an extractor error.
+			_, _ = w.Write([]byte(`<html><body><p>nothing here</p></body></html>`))
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	apiSpec := &spec.APISpec{
+		Name:    "embeddedjson",
+		Version: "0.1.0",
+		BaseURL: server.URL,
+		Auth:    spec.AuthConfig{Type: "none"},
+		Config: spec.ConfigSpec{
+			Format: "toml",
+			Path:   "~/.config/embeddedjson-pp-cli/config.toml",
+		},
+		Resources: map[string]spec.Resource{
+			"recipes": {
+				Description: "Browse recipes",
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:         "GET",
+						Path:           "/recipes",
+						Description:    "List recipes",
+						ResponseFormat: spec.ResponseFormatHTML,
+						HTMLExtract: &spec.HTMLExtract{
+							Mode:     spec.HTMLExtractModeEmbeddedJSON,
+							JSONPath: "props.pageProps.recipes",
+						},
+						Response: spec.ResponseDef{Type: "array", Item: "object"},
+					},
+				},
+			},
+			"articles": {
+				Description: "Browse articles",
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:         "GET",
+						Path:           "/articles",
+						Description:    "List articles via custom selector",
+						ResponseFormat: spec.ResponseFormatHTML,
+						HTMLExtract: &spec.HTMLExtract{
+							Mode:           spec.HTMLExtractModeEmbeddedJSON,
+							ScriptSelector: "script#ARTICLE_DATA",
+						},
+						Response: spec.ResponseDef{Type: "object"},
+					},
+				},
+			},
+			"missing": {
+				Description: "Missing script tag",
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:         "GET",
+						Path:           "/missing",
+						Description:    "Page with no embedded JSON",
+						ResponseFormat: spec.ResponseFormatHTML,
+						HTMLExtract: &spec.HTMLExtract{
+							Mode:     spec.HTMLExtractModeEmbeddedJSON,
+							JSONPath: "anything",
+						},
+						Response: spec.ResponseDef{Type: "object"},
+					},
+				},
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), "embeddedjson-pp-cli")
+	gen := New(apiSpec, outputDir)
+	require.NoError(t, gen.Generate())
+	require.FileExists(t, filepath.Join(outputDir, "internal", "cli", "html_extract.go"))
+
+	runGoCommand(t, outputDir, "mod", "tidy")
+	binaryPath := filepath.Join(outputDir, "embeddedjson-pp-cli")
+	runGoCommand(t, outputDir, "build", "-o", binaryPath, "./cmd/embeddedjson-pp-cli")
+
+	// Default selector + dot-notation path: returns the recipes array.
+	cmd := exec.Command(binaryPath, "recipes", "list", "--json")
+	cmd.Env = append(os.Environ(), "EMBEDDEDJSON_BASE_URL="+server.URL)
+	out, err := cmd.CombinedOutput()
+	require.NoError(t, err, string(out))
+	var recipesEnv struct {
+		Results []map[string]any `json:"results"`
+	}
+	require.NoError(t, json.Unmarshal(out, &recipesEnv), string(out))
+	require.Len(t, recipesEnv.Results, 2)
+	assert.Equal(t, "Pasta", recipesEnv.Results[0]["name"])
+	assert.Equal(t, "Soup", recipesEnv.Results[1]["name"])
+
+	// Custom selector + empty json_path: returns the whole parsed JSON.
+	cmd = exec.Command(binaryPath, "articles", "list", "--json")
+	cmd.Env = append(os.Environ(), "EMBEDDEDJSON_BASE_URL="+server.URL)
+	out, err = cmd.CombinedOutput()
+	require.NoError(t, err, string(out))
+	var articleEnv struct {
+		Results map[string]any `json:"results"`
+	}
+	require.NoError(t, json.Unmarshal(out, &articleEnv), string(out))
+	items, ok := articleEnv.Results["items"].([]any)
+	require.True(t, ok, "expected items array, got %T", articleEnv.Results["items"])
+	require.Len(t, items, 2)
+
+	// Missing script tag: extractor reports an actionable error rather
+	// than silently returning empty data.
+	cmd = exec.Command(binaryPath, "missing", "list", "--json")
+	cmd.Env = append(os.Environ(), "EMBEDDEDJSON_BASE_URL="+server.URL)
+	out, err = cmd.CombinedOutput()
+	require.Error(t, err, string(out))
+	assert.Contains(t, string(out), "embedded-json")
+}
+
+// TestGenerateHTMLExtractionPerModeGating asserts that html_extract.go is
+// emitted with only the helpers that match the mode(s) the spec actually
+// uses. A spec that declares only mode: embedded-json must NOT emit the
+// page-mode DOM walkers (htmlExtractedPage, applyMeta, htmlLink, etc.);
+// a spec that declares only mode: page must NOT emit the embedded-json
+// walker (extractEmbeddedJSON, walkJSONDotPath); a mixed spec emits both.
+// This is the core U6 retro contract: per-mode gating eliminates the
+// dead-helper count in the printed CLI.
+func TestGenerateHTMLExtractionPerModeGating(t *testing.T) {
+	t.Parallel()
+
+	specWithMode := func(name, mode string) *spec.APISpec {
+		s := &spec.APISpec{
+			Name:    name,
+			Version: "0.1.0",
+			BaseURL: "https://example.com",
+			Auth:    spec.AuthConfig{Type: "none"},
+			Config: spec.ConfigSpec{
+				Format: "toml",
+				Path:   "~/.config/" + name + "-pp-cli/config.toml",
+			},
+			Resources: map[string]spec.Resource{
+				"posts": {
+					Description: "Browse posts",
+					Endpoints: map[string]spec.Endpoint{
+						"list": {
+							Method:         "GET",
+							Path:           "/",
+							Description:    "List posts",
+							ResponseFormat: spec.ResponseFormatHTML,
+							HTMLExtract: &spec.HTMLExtract{
+								Mode:     mode,
+								JSONPath: "props.pageProps.posts",
+							},
+							Response: spec.ResponseDef{Type: "array", Item: "object"},
+						},
+					},
+				},
+			},
+		}
+		return s
+	}
+
+	read := func(t *testing.T, dir string) string {
+		t.Helper()
+		data, err := os.ReadFile(filepath.Join(dir, "internal", "cli", "html_extract.go"))
+		require.NoError(t, err)
+		return string(data)
+	}
+
+	// Helpers are matched by their declaration line ("func name(" or
+	// "type name") so a substring mention inside a comment doesn't
+	// cause a false positive — the dispatcher's comment legitimately
+	// names the page-mode walker even when the page-mode branch is
+	// gated out.
+	hasFunc := func(body, name string) bool {
+		return strings.Contains(body, "func "+name+"(")
+	}
+	hasType := func(body, name string) bool {
+		return strings.Contains(body, "type "+name+" ")
+	}
+
+	t.Run("embedded-json-only omits page+links helpers", func(t *testing.T) {
+		dir := filepath.Join(t.TempDir(), "ejonly-pp-cli")
+		require.NoError(t, New(specWithMode("ejonly", spec.HTMLExtractModeEmbeddedJSON), dir).Generate())
+		body := read(t, dir)
+		// embedded-json branch present
+		assert.True(t, hasFunc(body, "extractEmbeddedJSON"))
+		assert.True(t, hasFunc(body, "walkJSONDotPath"))
+		// page+links branch absent
+		assert.False(t, hasFunc(body, "extractHTMLPageOrLinks"))
+		assert.False(t, hasType(body, "htmlExtractedPage"))
+		assert.False(t, hasFunc(body, "applyMeta"))
+		assert.False(t, hasFunc(body, "extractHTMLLink"))
+		assert.False(t, hasFunc(body, "looksLikeHTMLChallenge"))
+		assert.False(t, hasFunc(body, "nodeTextSuppressing"))
+		assert.False(t, hasFunc(body, "firstImageSrc"))
+		assert.False(t, hasFunc(body, "cleanHTMLText"))
+		// Imports that only the page+links branch needs are not emitted
+		assert.NotContains(t, body, `"regexp"`)
+		assert.NotContains(t, body, `"strconv"`)
+		assert.NotContains(t, body, `stdhtml "html"`)
+		// Must still build cleanly even with helpers gated out
+		runGoCommand(t, dir, "mod", "tidy")
+		runGoCommand(t, dir, "build", "./...")
+	})
+
+	t.Run("page-only omits embedded-json helpers", func(t *testing.T) {
+		dir := filepath.Join(t.TempDir(), "pageonly-pp-cli")
+		require.NoError(t, New(specWithMode("pageonly", spec.HTMLExtractModePage), dir).Generate())
+		body := read(t, dir)
+		// page branch present
+		assert.True(t, hasFunc(body, "extractHTMLPageOrLinks"))
+		assert.True(t, hasType(body, "htmlExtractedPage"))
+		assert.True(t, hasFunc(body, "applyMeta"))
+		// embedded-json branch absent
+		assert.False(t, hasFunc(body, "extractEmbeddedJSON"))
+		assert.False(t, hasFunc(body, "walkJSONDotPath"))
+		assert.False(t, hasFunc(body, "parseSimpleSelector"))
+		assert.False(t, hasFunc(body, "findScriptByTagAndID"))
+		// Must still build cleanly
+		runGoCommand(t, dir, "mod", "tidy")
+		runGoCommand(t, dir, "build", "./...")
+	})
+
+	t.Run("mixed modes emit both branches", func(t *testing.T) {
+		// One endpoint per mode in the same spec.
+		mixedSpec := &spec.APISpec{
+			Name:    "mixed",
+			Version: "0.1.0",
+			BaseURL: "https://example.com",
+			Auth:    spec.AuthConfig{Type: "none"},
+			Config:  spec.ConfigSpec{Format: "toml", Path: "~/.config/mixed-pp-cli/config.toml"},
+			Resources: map[string]spec.Resource{
+				"posts": {
+					Description: "Posts",
+					Endpoints: map[string]spec.Endpoint{
+						"list": {
+							Method: "GET", Path: "/", Description: "List",
+							ResponseFormat: spec.ResponseFormatHTML,
+							HTMLExtract:    &spec.HTMLExtract{Mode: spec.HTMLExtractModePage},
+							Response:       spec.ResponseDef{Type: "object"},
+						},
+					},
+				},
+				"data": {
+					Description: "Embedded",
+					Endpoints: map[string]spec.Endpoint{
+						"list": {
+							Method: "GET", Path: "/data", Description: "List from embedded JSON",
+							ResponseFormat: spec.ResponseFormatHTML,
+							HTMLExtract: &spec.HTMLExtract{
+								Mode:     spec.HTMLExtractModeEmbeddedJSON,
+								JSONPath: "props.pageProps.data",
+							},
+							Response: spec.ResponseDef{Type: "object"},
+						},
+					},
+				},
+			},
+		}
+		dir := filepath.Join(t.TempDir(), "mixed-pp-cli")
+		require.NoError(t, New(mixedSpec, dir).Generate())
+		body := read(t, dir)
+		assert.Contains(t, body, "extractHTMLPageOrLinks")
+		assert.Contains(t, body, "extractEmbeddedJSON")
+		runGoCommand(t, dir, "mod", "tidy")
+		runGoCommand(t, dir, "build", "./...")
+	})
 }
 
 func TestGenerateStandardTransportForOfficialAPI(t *testing.T) {

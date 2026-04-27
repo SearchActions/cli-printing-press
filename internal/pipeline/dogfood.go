@@ -174,6 +174,14 @@ type openAPISpec struct {
 	Auth          apispec.AuthConfig
 	Kind          string // see apispec.KindREST / apispec.KindSynthetic
 	HTTPTransport string
+	// ParamDefaults maps a positional placeholder name (lowercase) to its
+	// spec-declared default value, when one is set. Verify mock-mode uses
+	// this as the first step in its lookup chain so spec authors can name
+	// realistic placeholder values without modifying the generator (e.g.,
+	// food52's `servings: 4` rather than the generic `mock-value`). Built
+	// only for internal-format specs; OpenAPI specs leave this nil and
+	// fall through to the generic `canonicalargs` registry.
+	ParamDefaults map[string]string
 }
 
 func (s *openAPISpec) IsSynthetic() bool {
@@ -1606,7 +1614,32 @@ func runDogfoodCmd(binary string, timeout time.Duration, args ...string) (string
 	return "", err
 }
 
+// extractExamplesSection scans Cobra --help output for the Examples block.
+//
+// The original implementation broke on the first unindented line, which
+// failed silently when authors used `Example: strings.TrimSpace(\`...\`)`
+// — TrimSpace strips the leading 2-space indent, so the first example
+// line is unindented and the parser captured nothing.
+//
+// The fix: break only on a closed set of canonical Cobra section headers,
+// not on any unindented line. Cobra emits these headers verbatim (no
+// indentation) when they delimit help output sections; nothing else
+// reliably has the same shape. Anything outside this set is treated as
+// continuation of the Examples block — losing-by-default is safer than
+// misclassifying real example content as a section boundary.
 func extractExamplesSection(helpOutput string) string {
+	// Canonical Cobra section header set. Match on the trimmed line being
+	// exactly equal to one of these (case-sensitive — Cobra's emission is).
+	cobraSectionHeaders := map[string]struct{}{
+		"Usage:":                  {},
+		"Aliases:":                {},
+		"Available Commands:":     {},
+		"Examples:":               {},
+		"Flags:":                  {},
+		"Global Flags:":           {},
+		"Additional help topics:": {},
+	}
+
 	lines := strings.Split(helpOutput, "\n")
 	var inExamples bool
 	var examples []string
@@ -1616,13 +1649,24 @@ func extractExamplesSection(helpOutput string) string {
 			inExamples = true
 			continue
 		}
-		if inExamples {
-			// Section headers in Cobra help are non-indented and non-empty
-			if len(line) > 0 && line[0] != ' ' && line[0] != '\t' {
-				break
-			}
-			examples = append(examples, line)
+		if !inExamples {
+			continue
 		}
+		// Section boundary: a known Cobra section header.
+		if _, ok := cobraSectionHeaders[trimmed]; ok {
+			break
+		}
+		// Cobra emits a "Use \"<root> <subcommand> [command] --help\" for
+		// more information about a command." trailing line at the bottom
+		// of help output. Match the literal `Use "` prefix to avoid
+		// accidentally swallowing example lines that happen to start
+		// with the word "use".
+		if strings.HasPrefix(trimmed, `Use "`) {
+			break
+		}
+		// Otherwise treat as example continuation — preserves indented and
+		// unindented content alike, and tolerates blank lines mid-block.
+		examples = append(examples, line)
 	}
 	return strings.TrimSpace(strings.Join(examples, "\n"))
 }
