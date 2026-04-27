@@ -1263,64 +1263,46 @@ func checkPipelineIntegrity(dir string) PipelineResult {
 	return result
 }
 
+type dogfoodVerdictRule struct {
+	verdict string
+	match   func(*DogfoodReport, bool) bool
+}
+
+var dogfoodVerdictRules = []dogfoodVerdictRule{
+	{"FAIL", func(r *DogfoodReport, hasSpec bool) bool {
+		return hasSpec && r.PathCheck.Tested > 0 && r.PathCheck.Pct < 70
+	}},
+	{"FAIL", func(r *DogfoodReport, hasSpec bool) bool { return hasSpec && !r.AuthCheck.Match }},
+	{"FAIL", func(r *DogfoodReport, hasSpec bool) bool {
+		return hasSpec && r.BrowserSessionCheck.Required && !r.BrowserSessionCheck.Pass
+	}},
+	{"FAIL", func(r *DogfoodReport, _ bool) bool { return r.DeadFlags.Dead >= 3 }},
+	{"FAIL", func(r *DogfoodReport, _ bool) bool {
+		return r.ExampleCheck.Tested > 0 && (r.ExampleCheck.WithExamples*100/r.ExampleCheck.Tested) < 50
+	}},
+	{"WARN", func(r *DogfoodReport, _ bool) bool { return r.DeadFlags.Dead >= 1 && r.DeadFlags.Dead <= 2 }},
+	{"WARN", func(r *DogfoodReport, _ bool) bool { return r.DeadFuncs.Dead >= 1 }},
+	{"WARN", func(r *DogfoodReport, _ bool) bool { return !r.PipelineCheck.SyncCallsDomain }},
+	{"WARN", func(r *DogfoodReport, _ bool) bool { return len(r.ExampleCheck.InvalidFlags) > 0 }},
+	{"WARN", func(r *DogfoodReport, _ bool) bool { return r.ExampleCheck.Skipped }},
+	{"FAIL", func(r *DogfoodReport, _ bool) bool { return len(r.WiringCheck.CommandTree.Unregistered) > 0 }},
+	{"FAIL", func(r *DogfoodReport, _ bool) bool {
+		return !r.WiringCheck.ConfigConsist.Consistent && len(r.WiringCheck.ConfigConsist.Mismatched) > 0
+	}},
+	// Pure-logic packages with zero tests fail shipcheck; prompts alone have not kept this invariant reliable.
+	{"FAIL", func(r *DogfoodReport, _ bool) bool { return len(r.TestPresence.MissingTests) > 0 }},
+	{"FAIL", func(r *DogfoodReport, _ bool) bool { return len(r.NamingCheck.Violations) > 0 }},
+	{"WARN", func(r *DogfoodReport, _ bool) bool { return len(r.WiringCheck.WorkflowComplete.UnmappedSteps) > 0 }},
+	{"WARN", func(r *DogfoodReport, _ bool) bool { return len(r.NovelFeaturesCheck.Missing) > 0 }},
+	// Surface hand-rolled responses without hard-blocking early iteration.
+	{"WARN", func(r *DogfoodReport, _ bool) bool { return len(r.ReimplementationCheck.Suspicious) > 0 }},
+}
+
 func deriveDogfoodVerdict(report *DogfoodReport, hasSpec bool) string {
-	if hasSpec && report.PathCheck.Tested > 0 && report.PathCheck.Pct < 70 {
-		return "FAIL"
-	}
-	if hasSpec && !report.AuthCheck.Match {
-		return "FAIL"
-	}
-	if hasSpec && report.BrowserSessionCheck.Required && !report.BrowserSessionCheck.Pass {
-		return "FAIL"
-	}
-	if report.DeadFlags.Dead >= 3 {
-		return "FAIL"
-	}
-	if report.ExampleCheck.Tested > 0 && (report.ExampleCheck.WithExamples*100/report.ExampleCheck.Tested) < 50 {
-		return "FAIL"
-	}
-	if report.DeadFlags.Dead >= 1 && report.DeadFlags.Dead <= 2 {
-		return "WARN"
-	}
-	if report.DeadFuncs.Dead >= 1 {
-		return "WARN"
-	}
-	if !report.PipelineCheck.SyncCallsDomain {
-		return "WARN"
-	}
-	if len(report.ExampleCheck.InvalidFlags) > 0 {
-		return "WARN"
-	}
-	if report.ExampleCheck.Skipped {
-		return "WARN"
-	}
-	if len(report.WiringCheck.CommandTree.Unregistered) > 0 {
-		return "FAIL"
-	}
-	if !report.WiringCheck.ConfigConsist.Consistent && len(report.WiringCheck.ConfigConsist.Mismatched) > 0 {
-		return "FAIL"
-	}
-	if len(report.TestPresence.MissingTests) > 0 {
-		// Pure-logic packages with zero tests fail shipcheck. This enforces the
-		// plan's R5 gate structurally — the skill prompt alone is insufficient
-		// (agents rationalize skipping tests). See docs/plans/2026-04-13-001.
-		return "FAIL"
-	}
-	if len(report.NamingCheck.Violations) > 0 {
-		return "FAIL"
-	}
-	if len(report.WiringCheck.WorkflowComplete.UnmappedSteps) > 0 {
-		return "WARN"
-	}
-	if len(report.NovelFeaturesCheck.Missing) > 0 {
-		return "WARN"
-	}
-	if len(report.ReimplementationCheck.Suspicious) > 0 {
-		// Hand-rolled responses and empty-stub commands surface as WARN so
-		// they're visible in the shipcheck block without hard-blocking a
-		// run that may legitimately be in an early iteration. Reviewers
-		// upgrade to FAIL when the pipeline integrity check also drops.
-		return "WARN"
+	for _, rule := range dogfoodVerdictRules {
+		if rule.match(report, hasSpec) {
+			return rule.verdict
+		}
 	}
 	return "PASS"
 }

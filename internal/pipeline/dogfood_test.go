@@ -597,6 +597,20 @@ func TestDeriveDogfoodVerdict_WiringChecks(t *testing.T) {
 	assert.Equal(t, "PASS", deriveDogfoodVerdict(report, true))
 }
 
+func TestDeriveDogfoodVerdict_PreservesPriority(t *testing.T) {
+	report := passingDogfoodReport()
+	report.AuthCheck.Match = true
+	report.DeadFlags.Dead = 1
+	report.ExampleCheck = ExampleCheckResult{Tested: 10, WithExamples: 4}
+	assert.Equal(t, "FAIL", deriveDogfoodVerdict(report, true))
+
+	report = passingDogfoodReport()
+	report.AuthCheck.Match = true
+	report.DeadFuncs.Dead = 1
+	report.WiringCheck.CommandTree.Unregistered = []string{"orphaned"}
+	assert.Equal(t, "WARN", deriveDogfoodVerdict(report, true))
+}
+
 func TestCheckNovelFeatures(t *testing.T) {
 	t.Run("skipped when no research dir", func(t *testing.T) {
 		result := checkNovelFeatures(t.TempDir(), "")
