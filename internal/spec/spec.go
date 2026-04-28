@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/mvanhorn/cli-printing-press/v2/internal/naming"
 	"gopkg.in/yaml.v3"
 )
 
@@ -49,6 +50,15 @@ const DefaultEmbeddedJSONScriptSelector = "script#__NEXT_DATA__"
 
 type APISpec struct {
 	Name string `yaml:"name" json:"name"`
+	// DisplayName is the human-readable brand name used in user-facing
+	// surfaces that aren't a kebab-case slug — Claude Desktop's connector
+	// list, MCPB manifest display_name, the MCP server's protocol-level
+	// name in `server.NewMCPServer(...)`. Authors can set it explicitly
+	// (e.g. "Company GOAT", "Cal.com", "PokéAPI") to preserve unusual
+	// capitalization or punctuation; when empty the generator title-cases
+	// Name as a fallback. The generate command also fills this from a
+	// matching catalog entry's display_name when available.
+	DisplayName string `yaml:"display_name,omitempty" json:"display_name,omitempty"`
 	// Description describes the API itself ("REST API for ordering pizza").
 	// It flows into generated docs and SKILL.md but is intentionally NOT used
 	// as the printed CLI's --help text; that's CLIDescription's job.
@@ -100,6 +110,21 @@ type ExtraCommand struct {
 // strict path-validity and scorecard marks path_validity as unscored.
 func (s *APISpec) IsSynthetic() bool {
 	return s != nil && s.Kind == KindSynthetic
+}
+
+// EffectiveDisplayName returns the human-readable brand name for this CLI.
+// Explicit DisplayName wins (preserves "Company GOAT", "Cal.com", "PokéAPI"
+// shape); otherwise we title-case Name. Used by the MCP server's protocol
+// name, the MCPB manifest, and any surface that wants a friendly identity
+// instead of the kebab-case slug.
+func (s *APISpec) EffectiveDisplayName() string {
+	if s == nil {
+		return ""
+	}
+	if strings.TrimSpace(s.DisplayName) != "" {
+		return s.DisplayName
+	}
+	return naming.HumanName(s.Name)
 }
 
 func (s *APISpec) EffectiveHTTPTransport() string {
@@ -701,6 +726,21 @@ func enrichEndpointPathParams(e *Endpoint) {
 		}
 		seen[name] = struct{}{}
 		if _, exists := declared[name]; exists {
+			// The path template wins over how the author declared the param.
+			// A placeholder like {cik} in /submissions/CIK{cik}.json is a path
+			// substitution regardless of whether the author wrote location:query
+			// or omitted location entirely. Promote the existing param so URL
+			// substitution and MCP positionalParams emission see it as such.
+			// Use PathParam=true (not Positional=true) to preserve the author's
+			// CLI-rendering intent — a param can be a flag that also fills a
+			// path slot (e.g. pagination, dates).
+			for i := range e.Params {
+				if e.Params[i].Name == name {
+					e.Params[i].PathParam = true
+					e.Params[i].Required = true
+					break
+				}
+			}
 			continue
 		}
 		e.Params = append(e.Params, Param{

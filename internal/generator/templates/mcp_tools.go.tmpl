@@ -47,7 +47,7 @@ func RegisterTools(s *server.MCPServer) {
 {{- end}}
 {{- end}}
 		),
-		makeAPIHandler({{printf "%q" (upper $endpoint.Method)}}, {{printf "%q" $endpoint.Path}}, []string{ {{- range $endpoint.Params}}{{if .Positional}}{{printf "%q" .Name}},{{end}}{{end}} }),
+		makeAPIHandler({{printf "%q" (upper $endpoint.Method)}}, {{printf "%q" $endpoint.Path}}, []string{ {{- range $endpoint.Params}}{{if or .Positional .PathParam}}{{printf "%q" .Name}},{{end}}{{end}} }),
 	)
 {{- end}}
 {{- range $subName, $subResource := $resource.SubResources}}
@@ -65,7 +65,7 @@ func RegisterTools(s *server.MCPServer) {
 {{- end}}
 {{- end}}
 		),
-		makeAPIHandler({{printf "%q" (upper $endpoint.Method)}}, {{printf "%q" $endpoint.Path}}, []string{ {{- range $endpoint.Params}}{{if .Positional}}{{printf "%q" .Name}},{{end}}{{end}} }),
+		makeAPIHandler({{printf "%q" (upper $endpoint.Method)}}, {{printf "%q" $endpoint.Path}}, []string{ {{- range $endpoint.Params}}{{if or .Positional .PathParam}}{{printf "%q" .Name}},{{end}}{{end}} }),
 	)
 {{- end}}
 {{- end}}
@@ -372,6 +372,9 @@ func handleContext(_ context.Context, _ mcplib.CallToolRequest) (*mcplib.CallToo
 		"description": {{printf "%q" .DomainContext.Description}},
 		"archetype":   {{printf "%q" .DomainContext.Archetype}},
 		"tool_count":  {{.MCPTotalCount}},
+		// tool_surface tells agents which surface a capability lives on so
+		// they don't try to invoke cli_only_capabilities through MCP.
+		"tool_surface": "MCP exposes the endpoints listed under `resources` (plus sync/search/sql/context utilities when present). Items under `cli_only_capabilities` require running the companion {{.Name}}-pp-cli binary; the MCP cannot invoke them.",
 {{- if and .Auth.Type (ne .Auth.Type "none")}}
 		"auth": map[string]any{
 			"type": {{printf "%q" .Auth.Type}},
@@ -408,9 +411,13 @@ func handleContext(_ context.Context, _ mcplib.CallToolRequest) (*mcplib.CallToo
 		},
 {{- end}}
 {{- if .NovelFeatures}}
-		"unique_capabilities": []map[string]string{
+		// CLI-only features. Each entry's `via: "cli"` is intentional and
+		// machine-readable: an agent that filters tool surfaces by transport
+		// can skip these when scoring "what can I do via MCP?" without
+		// pattern-matching prose.
+		"cli_only_capabilities": []map[string]string{
 {{- range .NovelFeatures}}
-			{"name": {{printf "%q" .Name}}, "command": {{printf "%q" .Command}}, "description": {{printf "%q" (oneline .Description)}}, "rationale": {{printf "%q" (oneline .Rationale)}}},
+			{"name": {{printf "%q" .Name}}, "command": {{printf "%q" .Command}}, "description": {{printf "%q" (oneline .Description)}}, "rationale": {{printf "%q" (oneline .Rationale)}}, "via": "cli"},
 {{- end}}
 		},
 {{- end}}

@@ -63,6 +63,7 @@ func Execute() error {
 	rootCmd.AddCommand(newMCPAuditCmd())
 	rootCmd.AddCommand(newProbeReachabilityCmd())
 	rootCmd.AddCommand(newSchemaCmd())
+	rootCmd.AddCommand(newBundleCmd())
 
 	return rootCmd.Execute()
 }
@@ -163,6 +164,7 @@ func newGenerateCmd() *cobra.Command {
 				}
 
 				fmt.Fprintf(os.Stderr, "Generated %s at %s (from docs)\n", parsed.Name, absOut)
+				autoBundleForHost(absOut, os.Stderr)
 				if asJSON {
 					if err := json.NewEncoder(os.Stdout).Encode(map[string]any{
 						"name":       parsed.Name,
@@ -335,6 +337,7 @@ func newGenerateCmd() *cobra.Command {
 			}
 
 			fmt.Fprintf(os.Stderr, "Generated %s at %s\n", apiSpec.Name, absOut)
+			autoBundleForHost(absOut, os.Stderr)
 			if asJSON {
 				if err := json.NewEncoder(os.Stdout).Encode(map[string]any{
 					"name":       apiSpec.Name,
