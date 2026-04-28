@@ -226,10 +226,12 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 		"graphqlFieldSelection": func(typeName string, types map[string]spec.TypeDef) []string {
 			return graphqlFieldSelection(typeName, types)
 		},
-		"isGraphQL": isGraphQLSpec,
-		"backtick":  func() string { return "`" },
-		"kebab":     toKebab,
-		"humanName": naming.HumanName,
+		"isGraphQL":   isGraphQLSpec,
+		"backtick":    func() string { return "`" },
+		"kebab":       toKebab,
+		"humanName":   naming.HumanName,
+		"envPrefix":   naming.EnvPrefix,
+		"mcpToolName": naming.SnakeIdentifier,
 		"lookupEndpoint": func(resources map[string]spec.Resource, ref string) spec.Endpoint {
 			e, _ := lookupEndpointForTemplate(resources, ref)
 			return e

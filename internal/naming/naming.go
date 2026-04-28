@@ -43,6 +43,31 @@ func HumanName(slug string) string {
 	return cases.Title(language.English).String(strings.ReplaceAll(slug, "-", " "))
 }
 
+// SnakeIdentifier collapses a free-form command spec into a snake_case Go
+// identifier safe to use as an MCP tool name. "funding --who" → "funding_who",
+// "FUNDING-TREND" → "funding_trend". Used by the generator's mcpToolName
+// template helper.
+func SnakeIdentifier(s string) string {
+	var b strings.Builder
+	lastUnder := false
+	for _, r := range s {
+		switch {
+		case (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9'):
+			b.WriteRune(r)
+			lastUnder = false
+		case r >= 'A' && r <= 'Z':
+			b.WriteRune(r + ('a' - 'A'))
+			lastUnder = false
+		default:
+			if !lastUnder && b.Len() > 0 {
+				b.WriteByte('_')
+				lastUnder = true
+			}
+		}
+	}
+	return strings.TrimRight(b.String(), "_")
+}
+
 // EnvPrefix returns an ASCII-only shell-safe environment variable prefix.
 // API display names and OpenAPI titles can contain accents or punctuation
 // ("PokéAPI", "Cal.com", "1Password"); generated env vars must not.
