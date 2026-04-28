@@ -55,6 +55,12 @@ func TestGenerateProjectsCompile(t *testing.T) {
 		"internal/cliutil/cliutil_test.go",
 		"internal/client/client.go",
 		"internal/config/config.go",
+		"internal/mcp/cobratree/walker.go",
+		"internal/mcp/cobratree/classify.go",
+		"internal/mcp/cobratree/typemap.go",
+		"internal/mcp/cobratree/shellout.go",
+		"internal/mcp/cobratree/cli_path.go",
+		"internal/mcp/cobratree/names.go",
 	}
 
 	tests := []struct {
@@ -66,9 +72,9 @@ func TestGenerateProjectsCompile(t *testing.T) {
 		// Bump it AND add to mustInclude above when adding always-emitted
 		// templates. Per-spec dynamic files (per-resource command files,
 		// generated tests) account for the difference between fixtures.
-		{name: "stytch", specPath: filepath.Join("..", "..", "testdata", "stytch.yaml"), expectedFiles: 47},
-		{name: "clerk", specPath: filepath.Join("..", "..", "testdata", "clerk.yaml"), expectedFiles: 52},
-		{name: "loops", specPath: filepath.Join("..", "..", "testdata", "loops.yaml"), expectedFiles: 49},
+		{name: "stytch", specPath: filepath.Join("..", "..", "testdata", "stytch.yaml"), expectedFiles: 53},
+		{name: "clerk", specPath: filepath.Join("..", "..", "testdata", "clerk.yaml"), expectedFiles: 58},
+		{name: "loops", specPath: filepath.Join("..", "..", "testdata", "loops.yaml"), expectedFiles: 55},
 	}
 
 	for _, tt := range tests {
@@ -205,7 +211,7 @@ func TestGenerateFreshnessHelperEmitted(t *testing.T) {
 	// Root command must wire the hook.
 	rootSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "root.go"))
 	require.NoError(t, err)
-	assert.Contains(t, string(rootSrc), "flags.freshnessMeta = autoRefreshIfStale(cmd.Context(), &flags, resources)",
+	assert.Contains(t, string(rootSrc), "flags.freshnessMeta = autoRefreshIfStale(cmd.Context(), flags, resources)",
 		"root.go must invoke autoRefreshIfStale from PersistentPreRunE")
 
 	readme, err := os.ReadFile(filepath.Join(outputDir, "README.md"))
@@ -312,7 +318,7 @@ func TestGenerateShareEmittedWhenEnabled(t *testing.T) {
 	// root.go registers the share parent command.
 	rootSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "root.go"))
 	require.NoError(t, err)
-	assert.Contains(t, string(rootSrc), "rootCmd.AddCommand(newShareCmd(&flags))",
+	assert.Contains(t, string(rootSrc), "rootCmd.AddCommand(newShareCmd(flags))",
 		"root.go must register newShareCmd when share is enabled")
 
 	// The generated share package tests must compile and pass; this is
@@ -3062,8 +3068,8 @@ func TestGenerateGraphQLBFFUsesSemanticCommandSurface(t *testing.T) {
 	rootGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "root.go"))
 	require.NoError(t, err)
 	rootSrc := string(rootGo)
-	assert.Contains(t, rootSrc, "rootCmd.AddCommand(newProductsCmd(&flags))")
-	assert.NotContains(t, rootSrc, "rootCmd.AddCommand(newGraphqlCmd(&flags))")
+	assert.Contains(t, rootSrc, "rootCmd.AddCommand(newProductsCmd(flags))")
+	assert.NotContains(t, rootSrc, "rootCmd.AddCommand(newGraphqlCmd(flags))")
 	assert.FileExists(t, filepath.Join(outputDir, "internal", "cli", "products.go"))
 	assert.FileExists(t, filepath.Join(outputDir, "internal", "cli", "products_launches.go"))
 	assert.FileExists(t, filepath.Join(outputDir, "internal", "cli", "products_makers.go"))

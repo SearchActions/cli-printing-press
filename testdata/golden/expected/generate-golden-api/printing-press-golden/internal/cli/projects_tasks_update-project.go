@@ -23,6 +23,7 @@ func newProjectsTasksUpdateProjectCmd(flags *rootFlags) *cobra.Command {
 		Aliases: []string{"update"},
 		Short: "Update project task",
 		Example: "  printing-press-golden-pp-cli projects tasks update-project example-value example-value",
+		Annotations: map[string]string{"pp:endpoint": "tasks.update-project"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if len(args) == 0 {
 				return cmd.Help()

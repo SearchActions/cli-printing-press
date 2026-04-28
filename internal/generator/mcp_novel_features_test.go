@@ -3,6 +3,7 @@ package generator
 import (
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -10,12 +11,11 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestMCPRegisterNovelFeatureToolsEmitted verifies that the generator emits
-// MCP tool registrations for each NovelFeature, plus the shell-out helpers,
-// only when novel features exist. The empty-features case is exercised by
-// the golden suite (every standard fixture has no novel features today and
-// the goldens lock in the empty-body shape).
-func TestMCPRegisterNovelFeatureToolsEmitted(t *testing.T) {
+// TestMCPRegistersCobraTreeMirror verifies that novel features no longer
+// drive a static MCP list. RegisterTools wires the runtime Cobra-tree mirror,
+// while RegisterNovelFeatureTools remains as a compatibility no-op for old
+// generated mains.
+func TestMCPRegistersCobraTreeMirror(t *testing.T) {
 	t.Parallel()
 
 	apiSpec := minimalSpec("noveltest")
@@ -47,44 +47,32 @@ func TestMCPRegisterNovelFeatureToolsEmitted(t *testing.T) {
 	require.NoError(t, err)
 	content := string(tools)
 
-	// Function declaration with body
+	// Compatibility function remains, but the static registration body is gone.
 	assert.Contains(t, content, "func RegisterNovelFeatureTools(s *server.MCPServer) {")
+	assert.Contains(t, content, "_ = s")
+	assert.NotContains(t, content, `shellOutToCLI("snapshot")`)
+	assert.Contains(t, content, "cobratree.RegisterAll(s, cli.RootCmd(), cobratree.SiblingCLIPath)")
 
-	// One s.AddTool call per novel feature, with snake_case tool names derived
-	// from each Command. The "funding --who" command must collapse to
-	// "funding_who" (no leading dashes, single underscore between tokens).
-	assert.Contains(t, content, `mcplib.NewTool("snapshot",`)
-	assert.Contains(t, content, `mcplib.NewTool("funding_who",`)
-	assert.Contains(t, content, `mcplib.NewTool("funding_trend",`)
+	cobratreeCLIPath, err := os.ReadFile(filepath.Join(outputDir, "internal", "mcp", "cobratree", "cli_path.go"))
+	require.NoError(t, err)
+	assert.Contains(t, string(cobratreeCLIPath), `const cliName = "noveltest-pp-cli"`)
+	assert.Contains(t, string(cobratreeCLIPath), `os.Getenv("NOVELTEST_CLI_PATH")`)
 
-	// Each tool gets the args-string parameter
-	assert.Contains(t, content, `mcplib.WithString("args"`)
+	cobratreeShellout, err := os.ReadFile(filepath.Join(outputDir, "internal", "mcp", "cobratree", "shellout.go"))
+	require.NoError(t, err)
+	assert.Contains(t, string(cobratreeShellout), "func shellOutToCLI(")
+	assert.Contains(t, string(cobratreeShellout), "func splitShellArgs(s string)")
 
-	// Handler dispatch passes the original command spec verbatim — this is
-	// what shellOutToCLI splits and prepends to user args. Preserves the
-	// "funding --who" form so the CLI sees the right subcommand+flag pair.
-	assert.Contains(t, content, `shellOutToCLI("snapshot")`)
-	assert.Contains(t, content, `shellOutToCLI("funding --who")`)
-	assert.Contains(t, content, `shellOutToCLI("funding-trend")`)
+	root, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "root.go"))
+	require.NoError(t, err)
+	assert.Contains(t, string(root), "func RootCmd() *cobra.Command")
 
-	// Helpers must emit when novel features exist
-	assert.Contains(t, content, "func siblingCLIPath()")
-	assert.Contains(t, content, "func shellOutToCLI(commandSpec string)")
-	assert.Contains(t, content, "func splitShellArgs(s string)")
-
-	// Sibling CLI binary name must match the spec's CLI name
-	assert.Contains(t, content, `const cliName = "noveltest-pp-cli"`)
-
-	// Env-var fallback uses the API's prefix (uppercased, hyphens to underscores)
-	assert.Contains(t, content, `os.Getenv("NOVELTEST_CLI_PATH")`)
-
-	// os/exec import must be present (only when novel features exist)
-	assert.Contains(t, content, `"os/exec"`)
-
-	// main.go always calls RegisterNovelFeatureTools — wiring stays uniform
+	// main.go calls only RegisterTools; RegisterTools owns endpoint tools and
+	// the runtime command mirror.
 	main, err := os.ReadFile(filepath.Join(outputDir, "cmd", "noveltest-pp-mcp", "main.go"))
 	require.NoError(t, err)
-	assert.Contains(t, string(main), "mcptools.RegisterNovelFeatureTools(s)")
+	assert.Contains(t, string(main), "mcptools.RegisterTools(s)")
+	assert.NotContains(t, string(main), "mcptools.RegisterNovelFeatureTools(s)")
 }
 
 // TestMCPNovelFeatureToolNameSanitization pins the snake-case tool-name
@@ -119,16 +107,39 @@ func TestMCPNovelFeatureToolNameSanitization(t *testing.T) {
 	}
 	require.NoError(t, gen.Generate())
 
-	tools, err := os.ReadFile(filepath.Join(outputDir, "internal", "mcp", "tools.go"))
+	names, err := os.ReadFile(filepath.Join(outputDir, "internal", "mcp", "cobratree", "names.go"))
 	require.NoError(t, err)
-	content := string(tools)
+	content := string(names)
 
+	assert.Contains(t, content, "func toolNameForPath(parts []string) string")
+
+	var testSrc strings.Builder
+	testSrc.WriteString(`package cobratree
+
+import (
+	"strings"
+	"testing"
+)
+
+func TestToolNameForPathCases(t *testing.T) {
+	cases := map[string]string{
+`)
 	for command, want := range cases {
-		if command == "" || want == "" {
-			continue
-		}
-		assert.True(t,
-			strings.Contains(content, `mcplib.NewTool("`+want+`",`),
-			"command %q should produce tool name %q", command, want)
+		testSrc.WriteString("\t\t")
+		testSrc.WriteString(strconv.Quote(command))
+		testSrc.WriteString(": ")
+		testSrc.WriteString(strconv.Quote(want))
+		testSrc.WriteString(",\n")
 	}
+	testSrc.WriteString(`	}
+	for command, want := range cases {
+		if got := toolNameForPath(strings.Fields(command)); got != want {
+			t.Fatalf("toolNameForPath(%q) = %q, want %q", command, got, want)
+		}
+	}
+}
+`)
+	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "internal", "mcp", "cobratree", "names_extra_test.go"), []byte(testSrc.String()), 0o644))
+
+	runGoCommandRequired(t, outputDir, "test", "./internal/mcp/cobratree")
 }

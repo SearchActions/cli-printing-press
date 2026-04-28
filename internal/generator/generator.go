@@ -132,6 +132,14 @@ type Generator struct {
 	Narrative       *ReadmeNarrative        // LLM-authored prose for README/SKILL; optional
 	AsyncJobs       map[string]AsyncJobInfo // Detected async-job endpoints, keyed by "<resource>/<endpoint>"
 
+	// ModulePath overrides the Go module import path emitted by templates that
+	// reference internal packages (`{{modulePath}}/internal/client`, etc.).
+	// Defaults to `<api>-pp-cli` when empty — matches the standalone-publish
+	// shape. Set explicitly when regenerating a CLI that lives under a
+	// different go.mod, e.g. library checkouts where the module path is the
+	// repo-prefixed full path. Read by mcp-sync from the existing go.mod.
+	ModulePath string
+
 	// Promoted-command plan, populated by Generate() before any rendering so
 	// SKILL/README templates can honor leaf promotion (and not emit phantom paths
 	// like `<cli> qr get-qrcode` for a resource the generator collapsed to `qr`).
@@ -219,9 +227,14 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 			}
 			return false
 		},
-		"exampleLine":       g.exampleLine,
-		"currentYear":       func() string { return strconv.Itoa(time.Now().Year()) },
-		"modulePath":        func() string { return naming.CLI(s.Name) },
+		"exampleLine": g.exampleLine,
+		"currentYear": func() string { return strconv.Itoa(time.Now().Year()) },
+		"modulePath": func() string {
+			if g.ModulePath != "" {
+				return g.ModulePath
+			}
+			return naming.CLI(s.Name)
+		},
 		"graphqlQueryField": graphqlQueryField,
 		"graphqlFieldSelection": func(typeName string, types map[string]spec.TypeDef) []string {
 			return graphqlFieldSelection(typeName, types)
@@ -958,6 +971,7 @@ func (g *Generator) prepareOutput() error {
 		filepath.Join("internal", "client"),
 		filepath.Join("internal", "cliutil"),
 		filepath.Join("internal", "config"),
+		filepath.Join("internal", "mcp", "cobratree"),
 		filepath.Join("internal", "types"),
 	}
 
@@ -999,30 +1013,36 @@ func (g *Generator) prepareOutput() error {
 
 func (g *Generator) renderSingleFiles() error {
 	singleFiles := map[string]string{
-		"main.go.tmpl":              filepath.Join("cmd", naming.CLI(g.Spec.Name), "main.go"),
-		"helpers.go.tmpl":           filepath.Join("internal", "cli", "helpers.go"),
-		"doctor.go.tmpl":            filepath.Join("internal", "cli", "doctor.go"),
-		"agent_context.go.tmpl":     filepath.Join("internal", "cli", "agent_context.go"),
-		"profile.go.tmpl":           filepath.Join("internal", "cli", "profile.go"),
-		"deliver.go.tmpl":           filepath.Join("internal", "cli", "deliver.go"),
-		"feedback.go.tmpl":          filepath.Join("internal", "cli", "feedback.go"),
-		"which.go.tmpl":             filepath.Join("internal", "cli", "which.go"),
-		"which_test.go.tmpl":        filepath.Join("internal", "cli", "which_test.go"),
-		"config.go.tmpl":            filepath.Join("internal", "config", "config.go"),
-		"cache.go.tmpl":             filepath.Join("internal", "cache", "cache.go"),
-		"client.go.tmpl":            filepath.Join("internal", "client", "client.go"),
-		"cliutil_fanout.go.tmpl":    filepath.Join("internal", "cliutil", "fanout.go"),
-		"cliutil_text.go.tmpl":      filepath.Join("internal", "cliutil", "text.go"),
-		"cliutil_probe.go.tmpl":     filepath.Join("internal", "cliutil", "probe.go"),
-		"cliutil_ratelimit.go.tmpl": filepath.Join("internal", "cliutil", "ratelimit.go"),
-		"cliutil_verifyenv.go.tmpl": filepath.Join("internal", "cliutil", "verifyenv.go"),
-		"cliutil_test.go.tmpl":      filepath.Join("internal", "cliutil", "cliutil_test.go"),
-		"types.go.tmpl":             filepath.Join("internal", "types", "types.go"),
-		"golangci.yml.tmpl":         ".golangci.yml",
-		"readme.md.tmpl":            "README.md",
-		"skill.md.tmpl":             "SKILL.md",
-		"LICENSE.tmpl":              "LICENSE",
-		"NOTICE.tmpl":               "NOTICE",
+		"main.go.tmpl":               filepath.Join("cmd", naming.CLI(g.Spec.Name), "main.go"),
+		"helpers.go.tmpl":            filepath.Join("internal", "cli", "helpers.go"),
+		"doctor.go.tmpl":             filepath.Join("internal", "cli", "doctor.go"),
+		"agent_context.go.tmpl":      filepath.Join("internal", "cli", "agent_context.go"),
+		"profile.go.tmpl":            filepath.Join("internal", "cli", "profile.go"),
+		"deliver.go.tmpl":            filepath.Join("internal", "cli", "deliver.go"),
+		"feedback.go.tmpl":           filepath.Join("internal", "cli", "feedback.go"),
+		"which.go.tmpl":              filepath.Join("internal", "cli", "which.go"),
+		"which_test.go.tmpl":         filepath.Join("internal", "cli", "which_test.go"),
+		"config.go.tmpl":             filepath.Join("internal", "config", "config.go"),
+		"cache.go.tmpl":              filepath.Join("internal", "cache", "cache.go"),
+		"client.go.tmpl":             filepath.Join("internal", "client", "client.go"),
+		"cliutil_fanout.go.tmpl":     filepath.Join("internal", "cliutil", "fanout.go"),
+		"cliutil_text.go.tmpl":       filepath.Join("internal", "cliutil", "text.go"),
+		"cliutil_probe.go.tmpl":      filepath.Join("internal", "cliutil", "probe.go"),
+		"cliutil_ratelimit.go.tmpl":  filepath.Join("internal", "cliutil", "ratelimit.go"),
+		"cliutil_verifyenv.go.tmpl":  filepath.Join("internal", "cliutil", "verifyenv.go"),
+		"cliutil_test.go.tmpl":       filepath.Join("internal", "cliutil", "cliutil_test.go"),
+		"cobratree/walker.go.tmpl":   filepath.Join("internal", "mcp", "cobratree", "walker.go"),
+		"cobratree/classify.go.tmpl": filepath.Join("internal", "mcp", "cobratree", "classify.go"),
+		"cobratree/typemap.go.tmpl":  filepath.Join("internal", "mcp", "cobratree", "typemap.go"),
+		"cobratree/shellout.go.tmpl": filepath.Join("internal", "mcp", "cobratree", "shellout.go"),
+		"cobratree/cli_path.go.tmpl": filepath.Join("internal", "mcp", "cobratree", "cli_path.go"),
+		"cobratree/names.go.tmpl":    filepath.Join("internal", "mcp", "cobratree", "names.go"),
+		"types.go.tmpl":              filepath.Join("internal", "types", "types.go"),
+		"golangci.yml.tmpl":          ".golangci.yml",
+		"readme.md.tmpl":             "README.md",
+		"skill.md.tmpl":              "SKILL.md",
+		"LICENSE.tmpl":               "LICENSE",
+		"NOTICE.tmpl":                "NOTICE",
 	}
 
 	for tmplName, outPath := range singleFiles {
@@ -1168,6 +1188,31 @@ func (g *Generator) Generate() error {
 		return err
 	}
 	return g.renderVisionAndRootFiles(g.PromotedCommands, g.PromotedResourceNames)
+}
+
+// GenerateMCPSurfaceOnly rewrites the generated MCP entrypoint, tools package,
+// and cobratree helpers without touching the printed CLI's command files.
+func (g *Generator) GenerateMCPSurfaceOnly() error {
+	if err := g.prepareOutput(); err != nil {
+		return err
+	}
+	g.PromotedCommands, g.PromotedResourceNames, g.PromotedEndpointNames = buildPromotedCommandPlan(g.Spec)
+	for tmplName, outPath := range map[string]string{
+		"cobratree/walker.go.tmpl":   filepath.Join("internal", "mcp", "cobratree", "walker.go"),
+		"cobratree/classify.go.tmpl": filepath.Join("internal", "mcp", "cobratree", "classify.go"),
+		"cobratree/typemap.go.tmpl":  filepath.Join("internal", "mcp", "cobratree", "typemap.go"),
+		"cobratree/shellout.go.tmpl": filepath.Join("internal", "mcp", "cobratree", "shellout.go"),
+		"cobratree/cli_path.go.tmpl": filepath.Join("internal", "mcp", "cobratree", "cli_path.go"),
+		"cobratree/names.go.tmpl":    filepath.Join("internal", "mcp", "cobratree", "names.go"),
+	} {
+		if err := g.renderTemplate(tmplName, outPath, g.Spec); err != nil {
+			return fmt.Errorf("rendering %s: %w", tmplName, err)
+		}
+	}
+	if err := g.renderMCPEntrypoint(); err != nil {
+		return err
+	}
+	return g.renderMCPToolFiles(g.schemaWithDependentParents())
 }
 
 func buildPromotedCommandPlan(apiSpec *spec.APISpec) ([]PromotedCommand, map[string]bool, map[string]string) {

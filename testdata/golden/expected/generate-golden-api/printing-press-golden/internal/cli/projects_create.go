@@ -22,6 +22,7 @@ func newProjectsCreateCmd(flags *rootFlags) *cobra.Command {
 		Use:   "create",
 		Short: "Create project",
 		Example: "  printing-press-golden-pp-cli projects create --name example-resource",
+		Annotations: map[string]string{"pp:endpoint": "projects.create"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if !stdinBody {
 				if !cmd.Flags().Changed("name") && !flags.dryRun {

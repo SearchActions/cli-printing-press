@@ -177,4 +177,5 @@ End normally.
 - Do not add new features. Polish fixes quality issues, not feature gaps.
 - Do not re-run research or generation. Polish works with the CLI as-is.
 - Do not modify the printing-press generator. That's `/printing-press-retro`.
+- If polish adds or renames a Cobra command, the MCP surface updates automatically through the generated `internal/mcp/cobratree` runtime mirror. Update `novel_features` only when README/SKILL highlights or registry display should change; use `cmd.Annotations["mcp:hidden"] = "true"` for debug-only commands.
 - Maximum 3 total polish passes (initial + 2 retries).

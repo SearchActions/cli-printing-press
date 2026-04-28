@@ -18,6 +18,7 @@ func newPublicPromotedCmd(flags *rootFlags) *cobra.Command {
 		Short: "Get public service status",
 		Long:  "Shortcut for 'public get-status'. Get public service status",
 		Example: "  printing-press-golden-pp-cli public",
+		Annotations: map[string]string{"pp:endpoint": "public.get-status"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			c, err := flags.newClient()
 			if err != nil {

@@ -64,6 +64,7 @@ func Execute() error {
 	rootCmd.AddCommand(newProbeReachabilityCmd())
 	rootCmd.AddCommand(newSchemaCmd())
 	rootCmd.AddCommand(newBundleCmd())
+	rootCmd.AddCommand(newMCPSyncCmd())
 
 	return rootCmd.Execute()
 }

@@ -35,6 +35,12 @@
     "auth protocol mismatch",
     "3 dead flags found"
   ],
+  "mcp_surface_parity": {
+    "detail": "no internal/mcp/tools.go; CLI does not ship an MCP surface",
+    "pass": true,
+    "skipped": true,
+    "state": "missing"
+  },
   "naming_check": {
     "checked": 3
   },

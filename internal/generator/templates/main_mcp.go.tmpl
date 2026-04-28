@@ -33,7 +33,6 @@ func main() {
 	)
 
 	mcptools.RegisterTools(s)
-	mcptools.RegisterNovelFeatureTools(s)
 
 	transport := flag.String("transport", defaultTransport(), "MCP transport: stdio | http")
 	addr := flag.String("addr", defaultHTTPAddr, "bind address for http transport (host:port or :port)")
@@ -87,7 +86,6 @@ func main() {
 	)
 
 	mcptools.RegisterTools(s)
-	mcptools.RegisterNovelFeatureTools(s)
 
 	if err := server.ServeStdio(s); err != nil {
 		fmt.Fprintf(os.Stderr, "MCP server error: %v\n", err)

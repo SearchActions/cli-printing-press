@@ -167,7 +167,7 @@ Outputs:
 - `review.md` summarizing the combined shipcheck result
 
 Gates:
-- Dogfood: structural checks (path validity, auth, dead flags, wiring) pass at the configured tier
+- Dogfood: structural checks (path validity, auth, dead flags, wiring, MCP surface parity) pass at the configured tier. The `mcp_surface_parity` check requires generated MCP files to use the runtime Cobra-tree mirror; stale static novel-feature lists fail with a `printing-press mcp-sync <cli-dir>` remediation.
 - Verify: runtime behavioral checks against the real API or a mock server return PASS (or WARN after an auto-remediation pass)
 - Scorecard: overall grade clears the operator's configured threshold. Tier-1 dimensions include three MCP-shape dimensions (`mcp_remote_transport`, `mcp_tool_design`, `mcp_surface_strategy`) added in the April 2026 MCP production-readiness pass — opt-in via the `(score, bool)` pattern so CLIs without the relevant surface remain unscored.
 

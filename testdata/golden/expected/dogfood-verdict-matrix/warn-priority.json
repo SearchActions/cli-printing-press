@@ -32,6 +32,12 @@
     "1 dead helper functions found",
     "1 unregistered commands: orphan"
   ],
+  "mcp_surface_parity": {
+    "detail": "no internal/mcp/tools.go; CLI does not ship an MCP surface",
+    "pass": true,
+    "skipped": true,
+    "state": "missing"
+  },
   "naming_check": {
     "checked": 3
   },

@@ -631,13 +631,15 @@ func scoreMCPQuality(dir string) int {
 
 	// High-level tools: sql, search, sync exposed to MCP (not just CLI)
 	highlevelCount := 0
+	hasRuntimeMirror := strings.Contains(mcpContent, "cobratree.RegisterAll")
 	if strings.Contains(mcpContent, `"sql"`) && strings.Contains(mcpContent, "handleSQL") {
 		highlevelCount++
 	}
 	if strings.Contains(mcpContent, `"search"`) && strings.Contains(mcpContent, "handleSearch") {
 		highlevelCount++
 	}
-	if strings.Contains(mcpContent, `"sync"`) && strings.Contains(mcpContent, "handleSync") {
+	if (strings.Contains(mcpContent, `"sync"`) && strings.Contains(mcpContent, "handleSync")) ||
+		(hasRuntimeMirror && fileExists(filepath.Join(dir, "internal", "cli", "sync.go"))) {
 		highlevelCount++
 	}
 	if highlevelCount >= 2 {

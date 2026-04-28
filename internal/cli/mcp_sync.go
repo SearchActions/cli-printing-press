@@ -1,0 +1,40 @@
+package cli
+
+import (
+	"errors"
+	"fmt"
+	"path/filepath"
+
+	"github.com/mvanhorn/cli-printing-press/v2/internal/pipeline/mcpsync"
+	"github.com/spf13/cobra"
+)
+
+func newMCPSyncCmd() *cobra.Command {
+	var force bool
+	cmd := &cobra.Command{
+		Use:   "mcp-sync <cli-dir>",
+		Short: "Migrate a printed CLI to the runtime Cobra-tree MCP surface",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cliDir, err := filepath.Abs(args[0])
+			if err != nil {
+				return &ExitError{Code: ExitInputError, Err: fmt.Errorf("resolving cli dir: %w", err)}
+			}
+			result, err := mcpsync.Sync(cliDir, mcpsync.Options{Force: force})
+			if err != nil {
+				if errors.Is(err, mcpsync.ErrHandEdited) {
+					return &ExitError{Code: ExitUnknownError, Err: err}
+				}
+				return &ExitError{Code: ExitPublishError, Err: err}
+			}
+			if result.Changed {
+				fmt.Fprintf(cmd.OutOrStdout(), "migrated MCP surface in %s\n", cliDir)
+			} else {
+				fmt.Fprintf(cmd.OutOrStdout(), "%s\n", result.Detail)
+			}
+			return nil
+		},
+	}
+	cmd.Flags().BoolVar(&force, "force", false, "Overwrite generated MCP files even when tools.go lacks the generated marker")
+	return cmd
+}

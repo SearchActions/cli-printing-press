@@ -26,6 +26,7 @@ func new{{camel .PromotedName}}PromotedCmd(flags *rootFlags) *cobra.Command {
 		Short: "{{oneline .Endpoint.Description}}",
 		Long:  "Shortcut for '{{.ResourceName}} {{.EndpointName}}'. {{oneline .Endpoint.Description}}",
 		Example: "  {{modulePath}} {{.PromotedName}}",
+		Annotations: map[string]string{"pp:endpoint": "{{.ResourceName}}.{{.EndpointName}}"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 {{- range .Endpoint.Params}}
 {{- if and .Required (not .Positional) (not .Default)}}

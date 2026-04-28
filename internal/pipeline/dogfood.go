@@ -32,6 +32,7 @@ type DogfoodReport struct {
 	ExampleCheck          ExampleCheckResult          `json:"example_check"`
 	WiringCheck           WiringCheckResult           `json:"wiring_check"`
 	NovelFeaturesCheck    NovelFeaturesCheckResult    `json:"novel_features_check"`
+	MCPSurfaceParityCheck MCPSurfaceResult            `json:"mcp_surface_parity"`
 	ReimplementationCheck ReimplementationCheckResult `json:"reimplementation_check"`
 	SourceClientCheck     SourceClientCheckResult     `json:"source_client_check"`
 	TestPresence          TestPresenceResult          `json:"test_presence"`
@@ -258,6 +259,7 @@ func RunDogfood(dir, specPath string, opts ...DogfoodOption) (*DogfoodReport, er
 	report.ExampleCheck = checkExamples(dir)
 	report.WiringCheck = checkWiring(dir)
 	report.NovelFeaturesCheck = checkNovelFeatures(dir, cfg.researchDir)
+	report.MCPSurfaceParityCheck = checkMCPSurfaceParity(dir)
 	report.ReimplementationCheck = checkReimplementation(dir, cfg.researchDir)
 	report.SourceClientCheck = checkSourceClients(dir)
 	report.TestPresence = checkTestPresence(dir)
@@ -285,6 +287,18 @@ func WithResearchDir(dir string) DogfoodOption {
 	return func(c *dogfoodConfig) {
 		c.researchDir = dir
 	}
+}
+
+func checkMCPSurfaceParity(cliDir string) MCPSurfaceResult {
+	result, err := InspectMCPSurface(cliDir)
+	if err != nil {
+		return MCPSurfaceResult{
+			State:  MCPSurfaceUnknown,
+			Pass:   false,
+			Detail: err.Error(),
+		}
+	}
+	return result
 }
 
 // checkNovelFeatures validates that transcendence features from research.json
@@ -1328,8 +1342,14 @@ var dogfoodVerdictRules = []dogfoodVerdictRule{
 	// Pure-logic packages with zero tests fail shipcheck; prompts alone have not kept this invariant reliable.
 	{"FAIL", func(r *DogfoodReport, _ bool) bool { return len(r.TestPresence.MissingTests) > 0 }},
 	{"FAIL", func(r *DogfoodReport, _ bool) bool { return len(r.NamingCheck.Violations) > 0 }},
+	{"FAIL", func(r *DogfoodReport, _ bool) bool {
+		return mcpSurfaceCheckActive(r.MCPSurfaceParityCheck) && !r.MCPSurfaceParityCheck.HandEdited && !r.MCPSurfaceParityCheck.Pass
+	}},
 	{"WARN", func(r *DogfoodReport, _ bool) bool { return len(r.WiringCheck.WorkflowComplete.UnmappedSteps) > 0 }},
 	{"WARN", func(r *DogfoodReport, _ bool) bool { return len(r.NovelFeaturesCheck.Missing) > 0 }},
+	{"WARN", func(r *DogfoodReport, _ bool) bool {
+		return mcpSurfaceCheckActive(r.MCPSurfaceParityCheck) && r.MCPSurfaceParityCheck.HandEdited
+	}},
 	// Surface hand-rolled responses without hard-blocking early iteration.
 	{"WARN", func(r *DogfoodReport, _ bool) bool { return len(r.ReimplementationCheck.Suspicious) > 0 }},
 	{"WARN", func(r *DogfoodReport, _ bool) bool { return len(r.SourceClientCheck.Findings) > 0 }},
@@ -1396,6 +1416,12 @@ func collectDogfoodIssues(report *DogfoodReport, hasSpec bool) []string {
 			report.NovelFeaturesCheck.Planned,
 			strings.Join(report.NovelFeaturesCheck.Missing, ", ")))
 	}
+	if mcpSurfaceCheckActive(report.MCPSurfaceParityCheck) && !report.MCPSurfaceParityCheck.Pass {
+		issues = append(issues, "MCP surface parity: "+report.MCPSurfaceParityCheck.Detail)
+	}
+	if mcpSurfaceCheckActive(report.MCPSurfaceParityCheck) && report.MCPSurfaceParityCheck.HandEdited {
+		issues = append(issues, "MCP surface parity: "+report.MCPSurfaceParityCheck.Detail)
+	}
 	if len(report.ReimplementationCheck.Suspicious) > 0 {
 		parts := make([]string, 0, len(report.ReimplementationCheck.Suspicious))
 		for _, f := range report.ReimplementationCheck.Suspicious {
@@ -1432,6 +1458,10 @@ func collectDogfoodIssues(report *DogfoodReport, hasSpec bool) []string {
 	// Hard-gating on test-function count would reward trivial placeholder
 	// tests; the agentic review is better at judging coverage quality.
 	return issues
+}
+
+func mcpSurfaceCheckActive(result MCPSurfaceResult) bool {
+	return result.State != ""
 }
 
 func checkExamples(dir string) ExampleCheckResult {

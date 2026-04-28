@@ -176,6 +176,20 @@ func printDogfoodReport(report *pipeline.DogfoodReport) {
 	}
 	fmt.Println()
 
+	mcp := report.MCPSurfaceParityCheck
+	if mcp.Skipped {
+		fmt.Printf("MCP Surface:       SKIP (%s)\n", mcp.Detail)
+	} else {
+		mcpStatus := "PASS"
+		if mcp.HandEdited {
+			mcpStatus = "WARN"
+		} else if !mcp.Pass {
+			mcpStatus = "FAIL"
+		}
+		fmt.Printf("MCP Surface:       %s (%s)\n", mcpStatus, mcp.Detail)
+	}
+	fmt.Println()
+
 	fmt.Printf("Verdict: %s\n", report.Verdict)
 	for _, issue := range report.Issues {
 		fmt.Printf("  - %s\n", issue)
