@@ -151,15 +151,29 @@ The before is what OpenAPI auto-generators emit. The after is what an agent pick
 
 #### Where to mine the content from
 
-Don't write MCP descriptions from general API knowledge — that produces plausible but inaccurate prose. The CLI ships with the source material; ground every rewrite in it:
+Don't write MCP descriptions from general API knowledge — that produces plausible but inaccurate prose. The CLI ships with the source material; ground every rewrite in it.
 
-1. **The OpenAPI spec** at `<cli-dir>/spec.json` (or `spec.yaml`). For each tool, find the matching operation by `path` and `method` (those are in `tools-manifest.json` next to the description). The operation object usually has:
-   - A richer `description` field, often several sentences, that the manifest's `summary` truncated. This is your primary source for the rewrite.
-   - `parameters[].description` — use these to name the meaningful parameters in your rewrite. Don't list every parameter; pick the 1-3 that drive how the agent calls the tool.
-   - `responses['200'].content[*].schema` — tells you what comes back. Translate the schema shape into a one-clause "Returns ..." rather than a field-by-field listing.
-2. **The runtime registration** at `<cli-dir>/internal/mcp/tools.go`. Find the matching `mcplib.NewTool(...)` block. The parameter list there is what the runtime actually exposes (sometimes a subset of what the spec defines). Your description should reflect that subset, not the spec's superset.
+**The spec is authoritative. `tools-manifest.json` is a derivative.** For required-vs-optional, parameter location (path / query / body), and the canonical parameter list, read `<cli-dir>/spec.json` (or `spec.yaml`) directly. The manifest's `params` field is generated from the spec; generator bugs can drop or misclassify entries. When the manifest disagrees with the spec, **the spec wins**. The manifest's `description` field is the spec's `summary` shaped for MCP — useful as orientation, not as the source of truth for parameter contracts.
 
-If the spec's operation `description` is itself empty or as thin as the `summary`, you're upstream of an incomplete spec — flag this in the accept rationale and write the best description you can from the parameters and response schema. Don't make up parameters or behaviors the spec doesn't document.
+**Per-tool spec walk** (do this for every finding, not a sample):
+
+1. **Find the operation.** `tools-manifest.json` gives you `path` and `method`. Look up `spec.paths[<path>][<method>]`.
+
+2. **Description prose** comes from the operation:
+   - `description` field — usually richer than `summary`. Primary source.
+   - `summary` — fallback when `description` is missing, or when `description` is just a deprecation banner with no action verb. Don't override the action verb with the deprecation warning alone.
+   - `responses['200'].content[*].schema` (or `'201'` for creates, `'204'` for deletes) — tells you what comes back. Translate the schema shape into a one-clause `Returns …` rather than a field-by-field listing.
+
+3. **Required-vs-optional** comes from the spec's parameter sources, NOT from the manifest:
+   - `parameters[]`: every entry with `in: path` is structurally required (must appear in the URL) regardless of how the CLI renders it as flag or positional arg. Every entry with `in: query` is required iff its own `required: true`.
+   - `requestBody.content.application/json.schema.required[]` — the canonical list of required body fields. Body fields not in this array are optional.
+   - When the body schema is a `$ref`, follow the ref to `components.schemas[<name>]` and read `required[]` there.
+
+4. **Sanity-check the manifest.** Glance at `tools-manifest.json`'s `params` for the same tool. If it disagrees with what you found in the spec, trust the spec for your description and surface the discrepancy in the polish summary so the generator bug can be filed and fixed.
+
+5. **The runtime registration** at `<cli-dir>/internal/mcp/tools.go` is what's actually exposed at runtime. If the runtime registers only a subset of the spec's parameter superset, your description should reflect what the runtime exposes — but the required/optional metadata for that subset still comes from the spec.
+
+If the spec's operation `description` is itself empty or as thin as the `summary`, you're upstream of an incomplete spec. Flag this in the accept rationale and write the best description you can from `parameters[]`, `requestBody.schema.required[]`, and the response schema. Don't make up parameters or behaviors the spec doesn't document.
 
 ### Anti-patterns to remove
 
