@@ -701,11 +701,98 @@ func TestWriteMCPBManifest(t *testing.T) {
 	})
 }
 
+func TestWriteMCPBManifestPreservesExistingDisplayName(t *testing.T) {
+	cases := []struct {
+		name     string
+		apiSlug  string
+		existing string
+		want     string
+	}{
+		{"single-word title-case brand (Wikipedia)", "wikipedia", "Wikipedia", "Wikipedia"},
+		{"single-word title-case brand (Stripe)", "stripe", "Stripe", "Stripe"},
+		{"all-caps brand (ESPN)", "espn", "ESPN", "ESPN"},
+		{"branded with punctuation (Cal.com)", "cal-com", "Cal.com", "Cal.com"},
+		{"multi-word brand (Company GOAT)", "company-goat", "Company GOAT", "Company GOAT"},
+		{"lowercase slug treated as derived fallback", "espn", "espn", "espn"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			writeMCPBManifest(t, dir, MCPBManifest{
+				ManifestVersion: MCPBManifestVersion,
+				Name:            tc.apiSlug + "-pp-mcp",
+				DisplayName:     tc.existing,
+				Description:     "stale description",
+			})
+			// CLIManifest WITHOUT DisplayName forces the chain to fall
+			// through to the existing manifest.
+			writeManifest(t, dir, CLIManifest{
+				APIName:   tc.apiSlug,
+				MCPBinary: tc.apiSlug + "-pp-mcp",
+				MCPReady:  "full",
+			})
+
+			require.NoError(t, WriteMCPBManifest(dir))
+			assert.Equal(t, tc.want, readMCPBManifest(t, dir).DisplayName)
+		})
+	}
+}
+
+func TestWriteMCPBManifestPreservesExistingDescription(t *testing.T) {
+	t.Run("hand-edited description preserved over canonical", func(t *testing.T) {
+		dir := t.TempDir()
+		handEdit := "Find the best version of any recipe across 37 trusted sites — trust-aware ranking weights real reader signal."
+		writeMCPBManifest(t, dir, MCPBManifest{
+			ManifestVersion: MCPBManifestVersion,
+			Name:            "recipe-goat-pp-mcp",
+			DisplayName:     "Recipe Goat",
+			Description:     handEdit,
+		})
+		writeManifest(t, dir, CLIManifest{
+			APIName:     "recipe-goat",
+			DisplayName: "Recipe Goat",
+			MCPBinary:   "recipe-goat-pp-mcp",
+			MCPReady:    "full",
+			Description: "Recipe GOAT aggregates recipes from canonical-description-source.json",
+		})
+
+		require.NoError(t, WriteMCPBManifest(dir))
+		assert.Equal(t, handEdit, readMCPBManifest(t, dir).Description)
+	})
+
+	t.Run("derived-default existing description refreshed from canonical", func(t *testing.T) {
+		dir := t.TempDir()
+		writeMCPBManifest(t, dir, MCPBManifest{
+			ManifestVersion: MCPBManifestVersion,
+			Name:            "wikipedia-pp-mcp",
+			DisplayName:     "Wikipedia",
+			Description:     "Wikipedia API surface as MCP tools.",
+		})
+		writeManifest(t, dir, CLIManifest{
+			APIName:     "wikipedia",
+			DisplayName: "Wikipedia",
+			MCPBinary:   "wikipedia-pp-mcp",
+			MCPReady:    "full",
+			Description: "Wikipedia REST API. Article summaries, search, related topics.",
+		})
+
+		require.NoError(t, WriteMCPBManifest(dir))
+		assert.Equal(t, "Wikipedia REST API. Article summaries, search, related topics.", readMCPBManifest(t, dir).Description)
+	})
+}
+
 func writeManifest(t *testing.T, dir string, m CLIManifest) {
 	t.Helper()
 	data, err := json.Marshal(m)
 	require.NoError(t, err)
 	require.NoError(t, os.WriteFile(filepath.Join(dir, CLIManifestFilename), data, 0o644))
+}
+
+func writeMCPBManifest(t *testing.T, dir string, m MCPBManifest) {
+	t.Helper()
+	data, err := json.Marshal(m)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(dir, MCPBManifestFilename), data, 0o644))
 }
 
 func readMCPBManifest(t *testing.T, dir string) MCPBManifest {
