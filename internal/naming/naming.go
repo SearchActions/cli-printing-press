@@ -5,10 +5,30 @@ import (
 	"strings"
 	"unicode"
 
+	"github.com/mozillazg/go-unidecode"
 	"golang.org/x/text/cases"
 	"golang.org/x/text/language"
-	"golang.org/x/text/unicode/norm"
 )
+
+// ASCIIFold transliterates Unicode to ASCII via Unidecode tables (the
+// same ones Django's slugify and Rails use). Apply at every chokepoint
+// that turns user-supplied spec strings (titles, resource names,
+// operationIds, schema names, path segments) into file/folder names or
+// Go identifiers. Output preserves spacing/casing — downstream
+// to{Snake,Kebab,Camel}Case still owns identifier shape.
+func ASCIIFold(s string) string {
+	// Pure-ASCII fast path. unidecode.Unidecode allocates a builder and
+	// walks every rune unconditionally; for the common case of
+	// well-behaved OpenAPI specs this fold runs thousands of times per
+	// parse on inputs that are >99% ASCII. A byte scan suffices: any
+	// non-ASCII codepoint has a continuation byte ≥0x80.
+	for i := 0; i < len(s); i++ {
+		if s[i] >= 0x80 {
+			return unidecode.Unidecode(s)
+		}
+	}
+	return s
+}
 
 const (
 	CurrentCLISuffix = "-pp-cli"
@@ -48,6 +68,7 @@ func HumanName(slug string) string {
 // "FUNDING-TREND" → "funding_trend". Used by the generator's mcpToolName
 // template helper.
 func SnakeIdentifier(s string) string {
+	s = ASCIIFold(s)
 	var b strings.Builder
 	lastUnder := false
 	for _, r := range s {
@@ -69,12 +90,13 @@ func SnakeIdentifier(s string) string {
 }
 
 // EnvPrefix returns an ASCII-only shell-safe environment variable prefix.
-// API display names and OpenAPI titles can contain accents or punctuation
-// ("PokéAPI", "Cal.com", "1Password"); generated env vars must not.
+// API display names and OpenAPI titles can contain accents or non-Latin
+// scripts ("PokéAPI", "Cal.com", "1Password", "東京"); generated env vars
+// must not.
 func EnvPrefix(name string) string {
 	var b strings.Builder
 	lastUnderscore := false
-	for _, r := range norm.NFD.String(name) {
+	for _, r := range ASCIIFold(name) {
 		switch {
 		case r >= 'a' && r <= 'z':
 			b.WriteRune(r - ('a' - 'A'))
@@ -85,8 +107,6 @@ func EnvPrefix(name string) string {
 		case r >= '0' && r <= '9':
 			b.WriteRune(r)
 			lastUnderscore = false
-		case unicode.Is(unicode.Mn, r):
-			continue
 		default:
 			if !lastUnderscore && b.Len() > 0 {
 				b.WriteByte('_')
@@ -108,6 +128,7 @@ func EnvPrefix(name string) string {
 // Hyphens are intentionally preserved to match the historical MCP template
 // helper behavior.
 func Snake(s string) string {
+	s = ASCIIFold(s)
 	var result strings.Builder
 	for i, r := range s {
 		if unicode.IsUpper(r) && i > 0 {

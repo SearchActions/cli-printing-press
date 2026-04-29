@@ -423,6 +423,20 @@ func TestCleanSpecName(t *testing.T) {
 		{title: "Domino\u2019s Pizza API", want: "dominos-pizza"},
 		// Multiple apostrophes
 		{title: "Rock'n'Roll API", want: "rocknroll"},
+		// Precomposed accents:
+		{title: "Pok\u00e9mon API", want: "pokemon"},
+		{title: "Caf\u00e9 Reservations", want: "cafe-reservations"},
+		{title: "Na\u00efve Bayes API", want: "naive-bayes"},
+		// Fused-diacritic Latin:
+		{title: "Gro\u00dfhandel API", want: "grosshandel"},
+		{title: "Encyclop\u00e6dia API", want: "encyclopaedia"},
+		{title: "\u00d8rsted Energy", want: "orsted-energy"},
+		{title: "\u0141\u00f3d\u017a Transit", want: "lodz-transit"},
+		{title: "\u00deingvellir Tours", want: "thingvellir-tours"},
+		// Non-Latin scripts:
+		{title: "\u6771\u4eac API", want: "dong-jing"},
+		{title: "\u0440\u0443\u0441\u0441\u043a\u0438\u0439 API", want: "russkii"},
+		{title: "\u0394elta API", want: "delta"},
 	}
 
 	for _, tt := range tests {
