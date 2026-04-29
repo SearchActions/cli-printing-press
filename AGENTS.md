@@ -1,88 +1,67 @@
 # CLI Printing Press - Development Conventions
 
-## Machine vs Printed CLI — What Are You Optimizing?
+## Machine vs Printed CLI
 
-This repo contains **the machine** (generator, templates, binary, skills) that produces **printed CLIs**. When fixing bugs or adding features, always ask: is this a machine change or a printed CLI change?
+This repo is **the machine** (generator, templates, binary, skills) that produces **printed CLIs**. When fixing a bug or adding a feature, ask: machine change or printed-CLI change?
 
-- **Machine changes** (generator, templates, parser, skills) affect every future CLI. They must be generalized — think about how the fix applies across different APIs, spec formats, and auth patterns, not just the CLI you're looking at right now.
-- **Printed CLI changes** (code in `~/printing-press/library/<cli>/`) fix one specific CLI. These are fine for targeted improvements but don't compound.
+- **Machine changes** (generator, templates, parser, skills) affect every future CLI; they must generalize across APIs, spec formats, and auth patterns.
+- **Printed-CLI changes** (`~/printing-press/library/<api-slug>/`) fix one CLI; they don't compound.
 
-**Default to machine changes.** If a problem shows up in a printed CLI, the first question is: should the generator have gotten this right? If yes, fix the machine so every future CLI benefits. Only fix the printed CLI directly when the issue is genuinely specific to that one API.
+Rules:
 
-**Never change the machine for one CLI's edge case** unless explicitly told to. If a fix only helps Pagliacci but would be wrong for Stripe, it doesn't belong in the generator. Add a conditional with a clear guard, or leave it as a printed-CLI-level fix.
+- **Default to machine changes.** If a problem appears in a printed CLI, ask first whether the generator should have gotten this right. Only fix the printed CLI directly when the issue is genuinely API-specific.
+- **Don't change the machine for one CLI's edge case.** A fix that helps one API but breaks another doesn't belong in the generator — guard it with a clear conditional or leave it as a printed-CLI fix.
+- **Don't hardcode API/site names in reusable artifacts.** Skills, templates, generator code, prompts, shared docs must use placeholders (`<api>`, `<site>`, "the target site") unless the text is explicitly an example or test fixture. Concrete names belong in `Example:` paragraphs, never in operational instructions.
+- **Update dependent verifiers in the same change.** A new generator capability that affects scoring requires a scorer update; one that changes the MCP surface requires an audit update. Forgetting either half ships a CLI whose advertised contract diverges from what's emitted.
 
-**Do not hardcode one API/site into reusable machine artifacts.** Skills, templates, generator code, prompts, and shared docs must use placeholders or generic phrasing (`<api>`, `<site>`, "the target site") unless the text is explicitly labeled as an example or test fixture. A Product Hunt, Pagliacci, Stripe, etc. name in reusable guidance is usually a bug: it leaks one investigation into every future printed CLI. If a concrete example is useful, put it in an "Example:" paragraph and keep the operational instruction generic.
+When iterating on a printed CLI to discover issues, label findings as systemic (retro candidate) vs specific (printed-CLI fix). The retro → plan → implement loop feeds discoveries back into the machine.
 
-**When iterating on a printed CLI to discover issues**, note which problems are systemic (retro findings) vs specific. The retro → plan → implement loop exists to feed discoveries from individual CLIs back into the machine.
+### Anti-reimplementation
 
-**When adding a capability that affects scoring**, update the scorer in the same change. The goal is not to inflate scores — it's to ensure the scorer accurately reflects the capability. If you add composed cookie auth but the scorer only recognizes Bearer/Basic, it will penalize a correctly-implemented CLI. Fix the scorer to recognize the new pattern, not to give it a free pass.
+A printed CLI wraps an API; it does not replace one. Novel-feature commands must call the real endpoint or read from the local store populated by sync. Reimplementations are worse than the API they pretend to replace.
 
-### Anti-Reimplementation
-
-A printed CLI wraps an API. It does not replace the API. Novel-feature commands must call the real endpoint, or read from the local SQLite store populated by sync. Anything in between is a reimplementation, and reimplementations are worse than the API they pretend to replace.
-
-Concretely, the generator and review loop reject:
+Reject:
 
 - Hand-rolled response builders that return constants, hardcoded JSON, or struct literals shaped like an API payload
 - Endpoint stubs that return `"OK"` or a canned success message without calling the client
 - Aggregations computed in-process when the API has an aggregation endpoint
 - Enum mappings and reference data synthesized locally when the API returns them
 
-Three carve-outs are legitimate:
+Carve-outs:
 
-- Commands that read from the generated `internal/store` package to join or query sync'd data (the `stale`, `bottleneck`, `health`, `reconcile` family). These are local-data commands, not fake API calls.
-- Commands that cache an API response in the store after calling it. Presence of both a client call and a store call is fine.
-- Commands whose data is the curated content itself — substitution tables, holiday lists, currency metadata, conversion factors. The data IS the feature; calling an API or hitting the store would be wrong. Opt in by adding the directive `// pp:novel-static-reference` anywhere in the command's source file (typically near the package-level data declaration). The reimplementation check exempts the command on the same footing as the store/client carve-outs.
+- Commands that read from `internal/store` (the `stale`, `bottleneck`, `health`, `reconcile` family) — local-data, not fake API calls
+- Commands that cache an API response in the store after calling it — both a client call and a store call is fine
+- Commands whose data is the curated content itself (substitution tables, holiday lists, currency metadata) — opt in via `// pp:novel-static-reference` directive in the command's source file
 
-The rule is enforced in two places. The absorb manifest has a Kill Check (see `skills/printing-press/references/absorb-scoring.md`) that rejects reimplementation candidates before they enter the feature list. Dogfood runs `reimplementation_check` over every built novel-feature command and flags any handler file that shows neither a client call nor a store access (and lacks the static-reference opt-out).
+Enforced by the absorb manifest's Kill Check (`skills/printing-press/references/absorb-scoring.md`) and dogfood's `reimplementation_check`, which flags handler files showing neither a client call nor a store access (without the static-reference opt-out).
 
 ## Agent-Native Surface
 
-Every printed CLI exposes two surfaces: the **CLI surface** that humans drive with shell commands, and the **MCP surface** that agents call as tools. Per the agent-native parity principle, any action a user can take should be reachable by an agent — but the surfaces are not identical. The CLI carries operator/human ergonomics that don't belong in an agent's tool catalog.
+Every printed CLI exposes two surfaces: a CLI surface for humans and an MCP surface for agents. Any action a user can take should be reachable by an agent, but the surfaces are not identical — operator ergonomics belong on the human-facing CLI, not in an agent's tool catalog.
 
-### What belongs on the MCP surface
+### Default: expose; skip rules are exceptions
 
-The runtime walker in `internal/mcp/cobratree/` mirrors the Cobra tree at server start. Default: every user-facing command becomes an MCP tool. The walker filters via three rules, in order:
+The runtime walker in `internal/mcp/cobratree/` mirrors the Cobra tree at server start, registering every user-facing command as an MCP tool. It skips a command only if one of these applies:
 
-1. **Endpoint mirrors keep typed schemas.** A Cobra command annotated `cmd.Annotations["pp:endpoint"] = "<resource>.<endpoint>"` is registered as a typed MCP tool by the existing template (one per spec endpoint, schema derived from spec params). The walker skips these so they aren't shell-out duplicates.
-2. **Framework commands are excluded by name.** The `frameworkCommands` set in `cobratree/classify.go.tmpl` lists generator-emitted CLI commands the walker must skip. Two cases qualify:
-   - A typed MCP tool already covers the capability (the typed schema is strictly better than a shell-out): `sql`, `search`, `about`/`agent-context` (covered by typed `context`), `api` (covered by typed endpoint tools).
-   - The command is non-functional via MCP — interactive setup, shell ergonomics, trivial introspection, local-only state: `auth`, `completion`, `doctor`, `version`, `feedback`, `profile`, `which`, `help`.
-3. **Per-command opt-out via annotation.** Domain commands that should not be agent tools — interactive setup wizards, debug commands, anything that needs human-in-the-loop input — set `cmd.Annotations["mcp:hidden"] = "true"` at construction time.
+1. **Endpoint mirrors keep typed schemas.** Commands annotated `cmd.Annotations["pp:endpoint"] = "<resource>.<endpoint>"` are already registered as typed tools elsewhere; the walker skips to avoid duplicates.
+2. **Framework commands.** Listed by name in `cobratree/classify.go.tmpl`'s `frameworkCommands` set. Two reasons qualify a command for that set: a typed equivalent is strictly better (`sql`, `search`, `context`), or the command is non-functional via MCP (interactive setup, version reporting, local-only state — `auth`, `completion`, `doctor`, `version`, `feedback`, `profile`, `which`, `help`).
+3. **Per-command opt-out.** `cmd.Annotations["mcp:hidden"] = "true"` for domain commands that need human-in-the-loop input.
 
-**Critical: store-population commands stay exposed.** `sync`, `stale`, `orphans`, `reconcile`, `load`, `export`, `import`, `workflow`, `analytics` are generator-emitted but they have real agent value, so they MUST be reachable as MCP tools. The walker registers them as shell-out tools by default (no entry in the framework set means "the runtime walker exposes it"). 
+**Store-population commands stay exposed.** `sync`, `stale`, `orphans`, `reconcile`, `load`, `export`, `import`, `workflow`, `analytics` look like operator commands but have real agent value — `sql` and `search` return empty until `sync` populates the store. Hiding either side breaks the contract.
 
-Excluding `sync` while exposing the typed `sql` tool is a **broken contract** — `sql` returns empty results until something populates the store, and the only thing that does is `sync`. The same logic applies to `search` (FTS5 over the store): without `sync`, it's inert. Earlier framework-set drafts incorrectly excluded all of these as "operator commands"; the agent surfaced the bug by trying to query an empty database. The corrected rule, encoded above, is "framework-skip is for things with a better typed equivalent OR no agent value at all" — store-population doesn't fit either case.
-
-A novel domain command that maps cleanly to a single agent action gets exposed automatically. The author does not need to declare it anywhere.
+**When in doubt, leave it exposed.** Hiding a command that should be exposed silently breaks contracts; exposing one that should be hidden just adds a low-value tool. The default flips toward exposure because agents must be able to do anything users can.
 
 ### Tool safety annotations
 
-The MCP spec includes per-tool annotations (`readOnlyHint`, `destructiveHint`, `idempotentHint`, `openWorldHint`) that hosts like Claude Desktop use to classify tool safety and decide when to ask for user permission. Without annotations the host defaults conservatively to "could write or delete," demanding permission per call.
+MCP hosts use `readOnlyHint` / `destructiveHint` / `idempotentHint` / `openWorldHint` to decide when to ask the user for permission. Missing annotations default to "could write or delete" — every call prompts.
 
-The generator emits annotations automatically based on what it knows:
+The generator emits annotations automatically:
 
-- **Spec endpoint mirrors:** annotated from the HTTP method. `GET` → `readOnlyHint: true` + `openWorldHint: true`. `DELETE` → `destructiveHint: true` + `openWorldHint: true`. `POST`/`PUT`/`PATCH` get `openWorldHint: true` (writes, not destructive). All endpoint-mirror tools also carry `openWorldHint: true` since they call external APIs.
-- **Built-in MCP tools:** `context`, `sql`, `search` all carry `readOnlyHint: true` (no `openWorldHint` — they read local domain context, the local DB, or the local FTS index, not external APIs).
-- **Runtime-walker shell-out tools:** the walker can't infer semantics from a Cobra command alone, so they ship without annotations by default. Authors can opt a command into the read-only hint via `cmd.Annotations["mcp:read-only"] = "true"` (parallel to `mcp:hidden`). Use this on novel CLI commands that don't mutate external state — read-only API queries, local cache lookups, lightweight derivations.
+- **Endpoint mirrors:** from HTTP method. `GET` → read-only + open-world. `DELETE` → destructive + open-world. `POST`/`PUT`/`PATCH` → open-world (writes, not destructive).
+- **Built-in tools:** `context`, `sql`, `search` are read-only (no open-world; they read local data).
+- **Shell-out tools (runtime walker):** no annotations by default — the walker can't infer from a Cobra command alone. Opt into read-only with `cmd.Annotations["mcp:read-only"] = "true"` for novel commands that don't mutate external state (read-only API queries, cache lookups, derivations).
 
-Default openness: missing annotations don't break anything; they just produce more permission prompts. Adding the wrong annotation (e.g., claiming `readOnlyHint: true` on a tool that mutates state) is the failure mode to avoid — the host trusts the claim and stops asking.
-
-### Adding a new framework command
-
-When you add a new generator-emitted top-level command, the default is **expose it as an MCP tool** — no action needed in the walker. The runtime walker registers any user-facing Cobra command as a shell-out tool automatically.
-
-Only update `frameworkCommands` in `internal/generator/templates/cobratree/classify.go.tmpl` when the new command meets one of the two skip criteria above (typed equivalent already exists, or non-functional via MCP). Adding to `frameworkCommands` is a structural choice to *hide* a capability from agents — make it deliberately, not by reflex.
-
-Skipping a command that should be exposed silently breaks contracts (the `sync`/`sql` example above). Exposing a command that should be hidden adds a low-value tool to the catalog but doesn't break anything. **When in doubt, leave it out of the framework set.**
-
-This is the same shape as the "When adding a capability that affects scoring" rule a few sections up: a new generator capability must update the dependent verifier or surface in the same change. Forgetting either half ships a CLI whose advertised contract diverges from what's actually emitted.
-
-### Why agent-facing != user-facing
-
-Diagnostics (`doctor`, `version`), interactive setup (`auth login`), local-only operations (`profile save`, `feedback`), and shell ergonomics (`completion`, `which`) all belong on the human-facing CLI. Exposing them as MCP tools doesn't help agents — it pollutes the tool catalog with tools that either fail without TTY input, return information the agent doesn't need (e.g., the CLI's own version), or duplicate first-class MCP tools (`agent-context` would shadow the typed `context` MCP tool). Curated absence is a feature.
-
-The default flips toward exposure for one reason: agents must be able to do anything users can. So the rules are written as exceptions to a permissive default, not as an allowlist. When in doubt, leave it exposed — undeclared MCP gaps were the bug class that drove this whole architecture (see `docs/plans/2026-04-28-001-feat-mcp-cobra-tree-mirror-plan.md` for the audit that surfaced ESPN missing 18 commands and company-goat missing 7).
+Wrong annotations are worse than missing ones: the host trusts the claim and stops asking. A `readOnlyHint: true` on a mutating tool is a real bug; a missing annotation is just a permission prompt.
 
 ## Build, Test & Lint
 
@@ -142,6 +121,8 @@ Golden verification does not replace `go test ./...`, `go vet ./...`, `golangci-
 - `skills/` - Claude Code skill definitions
 - `testdata/` - Test fixtures (internal + OpenAPI specs)
 - `docs/PIPELINE.md` - Portable contract for the 9-phase generation pipeline (preflight through ship). Phase names and ordering are authoritative in `internal/pipeline/state.go`; per-phase intent is authoritative in `internal/pipeline/seeds.go`. Update `docs/PIPELINE.md` in the same PR whenever those files change
+- `docs/SKILLS.md` - Skill authoring conventions: workflow parity, reference-file pattern, frontmatter fields
+- `docs/PATTERNS.md` - Cross-cutting design patterns (deterministic-inventory ledger, etc.)
 
 ## Glossary
 
@@ -153,6 +134,13 @@ Key terms used throughout this repo. Several have overloaded meanings — the gl
 
 **Subsystem names are fine alongside the Printing Press name.** When skills produce diagnostic output (retro findings, issue tables, work units), use component names — generator, scorer, skills, binary — to tell developers *where* to fix something. "Fix the Printing Press" is useless as an action item; "fix the scorer — it penalizes cookie auth" is actionable. The Printing Press is the system; the subsystems are how you navigate within it.
 
+**Default disambiguation conventions.** Several terms below are overloaded; when body prose uses one without qualifier, default to the local form:
+
+- "library" → local library (`~/printing-press/library/<api-slug>/`). The public library is always called out explicitly: "public library" or "public library repo."
+- "publish" → in body prose, prefer "the publish step" (pipeline) or "publish to the public library" (skill workflow) when context isn't already established.
+- "manifest" → `tools-manifest.json` (the MCP tool catalog). The other manifests (`manifest.json` for plugin metadata, `.printing-press.json` for provenance) are always called by full name.
+- "catalog" → the embedded `catalog/` in this repo. The public library's category-organized catalog of finished CLIs is "public library catalog."
+
 | Canonical term | Meaning |
 |----------------|---------|
 | **the printing press** / **the machine** | This repo's generator system — the Go binary, templates, skills, and catalog that together produce CLIs. |
@@ -163,7 +151,7 @@ Key terms used throughout this repo. Several have overloaded meanings — the gl
 | **brief** | The output of the machine's research phase (Phase 1) — a condensed doc covering API identity, competitors, data layer, and product thesis. Stored in `manuscripts/<api>/<run>/research/`. Drives all downstream decisions. |
 | **browser-sniff** | Browser-driven API discovery. The user captures live traffic via browser automation (browser-use, agent-browser) or DevTools as a HAR; the `browser-sniff` subcommand analyzes the HAR and produces an OpenAPI-compatible spec. Produces a `discovery/` manuscript with `browser-sniff-report.md`, HAR captures, and `browser-sniff-unique-paths.txt`. Use when no official spec exists or to supplement one with endpoints the docs miss. |
 | **crowd-sniff** | Discovery technique that scrapes npm, PyPI, and GitHub for unofficial API clients to learn undocumented endpoints, auth patterns, and rate limits. Produces a `discovery/` manuscript with `crowd-sniff-report.md`. Complementary to browser-sniff — community-sourced vs. browser-captured. Used when no official spec exists or to supplement one. |
-| **manuscript** | The full archive of a generation run. Contains three subdirectories: `research/` (briefs, spec analysis), `proofs/` (dogfood, verify, scorecard results), and optionally `discovery/` (browser-sniff and crowd-sniff artifacts). Stored at `~/printing-press/manuscripts/<api-slug>/<run-id>/`. |
+| **manuscript** | The full archive of a generation run. Contains three subdirectories: `research/` (briefs, spec analysis), `proofs/` (dogfood, verify, scorecard results), and optionally `discovery/` (browser-sniff and crowd-sniff artifacts). Stored at `~/printing-press/manuscripts/<api-slug>/<run-id>/`. The local library is the working copy of the latest successful run for a given API; manuscripts are immutable archives across runs — same `<api-slug>` keys, separate top-level directories. |
 | **emboss** | A second-pass improvement cycle for an already-printed CLI. Audits baseline, re-researches, identifies top improvements, rebuilds, re-verifies, reports delta. Subcommand: `printing-press emboss <api>`. Still active — not deprecated. |
 | **polish** | Targeted fix-up of a printed CLI (distinct from emboss's full cycle). Skill: `/printing-press-polish`. The retro improves the machine; polish improves the printed CLI. |
 | **retro** / **retrospective** | Post-generation analysis of *the machine itself* — not the printed CLI. Identifies systemic improvements to templates, the Go binary, skill instructions, or catalog. Output goes to `docs/retros/` and `manuscripts/<api>/<run>/proofs/`. |
@@ -186,8 +174,10 @@ Key terms used throughout this repo. Several have overloaded meanings — the gl
 | **public library repo** | The GitHub repo [`mvanhorn/printing-press-library`](https://github.com/mvanhorn/printing-press-library) — public catalog of finished CLIs organized by category. `/printing-press-publish` pushes here. |
 | **publish (pipeline)** | The pipeline step that moves a working CLI into the local library and writes the `.printing-press.json` provenance manifest. |
 | **publish (to public library repo)** | The skill-driven workflow (`/printing-press-publish`) that packages a local library CLI and creates a PR in the public library repo. |
-| **provenance** / **`.printing-press.json`** | Manifest written to each published CLI's root. Contains generation metadata: spec URL, checksum, run ID, printing-press version, timestamp. `api_name` is the canonical API identity; `cli_name` is the executable name. Makes the directory self-describing. |
-| **catalog** | Embedded YAML entries in `catalog/` describing available APIs (name, spec URL, category, tier). Baked into the binary at build time via `catalog.FS`. |
+| **provenance** / **`.printing-press.json`** | Manifest written to each published CLI's root. Contains generation metadata: spec URL, checksum, run ID, printing-press version, timestamp. `api_name` is the canonical API identity; `cli_name` is the executable name. Makes the directory self-describing. Distinct from `manifest.json` (plugin metadata) and `tools-manifest.json` (MCP tool catalog). |
+| **`manifest.json`** | Claude plugin manifest at the printed CLI root. Carries `display_name`, `description`, `homepage`, version, and other plugin-host fields. Read by Claude Desktop and other MCP-aware hosts when installing the CLI as a plugin. Distinct from `tools-manifest.json` (the MCP tool catalog) and `.printing-press.json` (provenance). |
+| **`tools-manifest.json`** | MCP tool catalog at the printed CLI root. For each tool, carries name, description, parameters, and auth metadata. The MCP server reads it at runtime to register typed tools with full schemas; the audit and scorecard pipelines consume it. "The manifest" without qualifier means this file. Distinct from `manifest.json` (plugin metadata) and `.printing-press.json` (provenance). |
+| **catalog** (embedded) | Embedded YAML entries in `catalog/` describing available APIs (name, spec URL, category, tier). Baked into the binary at build time via `catalog.FS`. Distinct from the **public library catalog**, which is the category-organized index of finished CLIs in the public library repo. |
 | **tier** | Catalog classification: `official` (vendor-maintained spec) or `community` (unofficial/reverse-engineered). Affects risk expectations. |
 | **runstate** | Mutable per-workspace state at `~/printing-press/.runstate/<scope>/`. Tracks current run and sync cursors. Distinct from manuscripts, which are immutable archives. |
 
@@ -219,25 +209,20 @@ Every commit and PR title must include one of these scopes. The `PR Title` actio
 
 **PR titles must follow the same format.** GitHub's "Squash and merge" uses the PR title as the squash commit message, so release-please reads PR titles on main. The `PR Title` GitHub Action (`.github/workflows/pr-title.yml`) enforces this — PRs with invalid titles cannot merge.
 
-## Versioning
+## Versioning & Release
+
+Releases are fully automated by release-please + goreleaser; no manual steps. The flow:
+
+1. Merge PRs to main with conventional-commit titles.
+2. release-please opens (and updates) a release PR with the accumulated changelog.
+3. When ready to ship, merge the release PR. release-please bumps all version files, creates a git tag, opens a GitHub release; goreleaser builds and attaches cross-platform binaries.
 
 **Never manually edit version numbers.** Three files carry the version and release-please keeps them in sync:
 - `.claude-plugin/plugin.json` → `version`
 - `.claude-plugin/marketplace.json` → `plugins[0].version`
-- `internal/version/version.go` → `var Version` (annotated with `x-release-please-version`)
+- `internal/version/version.go` → `var Version` (annotated `x-release-please-version`)
 
-`TestVersionConsistencyAcrossFiles` in `internal/cli/release_test.go` will fail if versions drift.
-
-## Release Process
-
-Releases are fully automated. No manual steps required.
-
-1. **Merge PRs to main** with conventional commit messages / PR titles
-2. **release-please opens a release PR** accumulating all changes since the last release, with a generated changelog
-3. **Merge the release PR** when ready to cut a release
-4. **Automated:** release-please bumps all three version files, creates a git tag, and creates a GitHub release
-5. **Automated:** goreleaser builds cross-platform binaries (linux/darwin/windows × amd64/arm64) and attaches them to the release
-6. **Users update** via `go install ...@latest` (picks up the new tag) or download binaries from the release
+`TestVersionConsistencyAcrossFiles` in `internal/cli/release_test.go` fails if they drift.
 
 ## Adding Catalog Entries
 
@@ -259,17 +244,30 @@ Run `go test ./...` before considering your work done.
 
 Generated CLIs must pass 7 gates: go mod tidy, go vet, go build, binary build, --help, version, doctor.
 
-## `~/printing-press/` Layout
+## Local Artifacts (`~/printing-press/`)
 
 Generated artifacts live under the user's home directory, not in this repo.
 
-- `library/<api-slug>/` — Published CLIs (e.g., `notion`). Directory is keyed by API slug, not CLI name. The binary inside is still `<api-slug>-pp-cli`.
+- `library/<api-slug>/` — Local library: printed CLIs the generator has produced (e.g., `notion`). Directory is keyed by API slug, not CLI name. The binary inside is still `<api-slug>-pp-cli`. This is the working copy; the public library is the published-and-curated counterpart (see "Public Library" below).
 - `manuscripts/<api-slug>/` — Archived research and verification proofs, keyed by API slug (e.g., `notion`), not CLI name. One API can have multiple runs.
 - `.runstate/<scope>/` — Mutable per-workspace state (current run, sync cursors). Scoped by repo basename + hash.
 
 The API slug is derived by the generator from the spec title (`cleanSpecName`), not manually chosen. The CLI binary name is `<api-slug>-pp-cli`. Never hardcode an API slug when the generator can derive it — names with periods (cal.com, dub.co) normalize differently than you'd guess.
 
 The `-pp-` infix exists to avoid colliding with official CLIs. The binary `notion-pp-cli` can coexist with whatever `notion-cli` Notion ships themselves. The library directory is just `notion/` — the `-pp-cli` suffix only appears on binary names, not directory names.
+
+## Public Library
+
+The public library is the GitHub repo [`mvanhorn/printing-press-library`](https://github.com/mvanhorn/printing-press-library) — a curated, category-organized catalog of finished printed CLIs. Users install printed CLIs from here; this is where a CLI goes when it's ready to ship.
+
+**Local → public flow.** A successfully generated printed CLI lives in the local library. The `/printing-press-publish` skill packages a local CLI and opens a PR against the public library repo. Merging that PR is what moves the CLI from "works on this machine" to "users can install it."
+
+**Local-vs-public divergence.** The local library and public library can drift in two ways:
+
+- **Expected divergence.** Some files are intentionally rewritten by the publish step — most notably `go.mod`'s module path. The polish skill's divergence check exempts these.
+- **Unexpected divergence.** Local edits since the last publish — polish in progress, manual fixes, mcp-sync regen — that haven't been pushed. The polish skill's divergence check surfaces these so you can decide to either republish or discard the local changes.
+
+Treat the public library as the durable artifact and the local library as the working copy. When users hit a bug, they're hitting the public library's version, not whatever's currently in `~/printing-press/library/`.
 
 ## Internal Skills
 
@@ -283,73 +281,41 @@ If you're running Claude Code from a different directory and need these skills a
 
 This copies the internal skills to `~/.claude/skills/`.
 
-## Skill Workflow Parity
+## Skill Authoring
 
-When a machine change alters what an agent should do, what a command now guarantees, or where source-of-truth data lives, update the relevant `SKILL.md` in the same change. Do not leave the skill as a stale manual workaround for behavior the machine now owns.
+When a machine change alters what an agent should do or what a command guarantees, update the relevant `SKILL.md` in the same change — don't leave the skill as a stale manual workaround for behavior the machine now owns.
 
-Check `skills/printing-press/SKILL.md` especially when touching generator, dogfood, verify, scorecard, publish, lock/promote, manuscript/runstate, or README/SKILL rendering behavior. If a machine step becomes deterministic, the skill should say the command owns it and reserve agentic review for the remaining semantic judgment. If a command's output, gate, phase order, or failure mode changes, update the phase instructions, reviewer prompt contracts, and fix-order guidance that mention it.
+Detail in [`docs/SKILLS.md`](docs/SKILLS.md): workflow parity (when machine changes require skill changes), the reference-file pattern (extracting conditional content from SKILL.md), and the `context: fork` / `user-invocable` frontmatter fields.
 
-Decide responsibility explicitly:
+## Code & Comment Hygiene
 
-- **Machine capability:** deterministic transformations, schema sync, provenance fields, generated sections with structured inputs, mechanical validation, artifact copying, score calculations, and anything where the correct output can be derived from repo files or command output without judgment. Implement it in Go/templates/tests; SKILL.md should describe the guarantee, not ask the agent to perform it manually.
-- **SKILL.md / agent capability:** judgment calls, product tradeoffs, semantic honesty, whether prose overpromises, whether output is plausible, whether a feature is worth building, or workflows that require user/API context not available to the binary. Keep these as clear agent instructions and reviewer prompt contracts.
-- **Both:** the machine should produce or verify the deterministic substrate, then SKILL.md should direct the agent to inspect the remaining semantic layer. Example pattern: dogfood syncs README/SKILL feature blocks from `novel_features_built`; the skill tells the agent to audit surrounding prose, recipes, trigger phrases, and examples for indirect claims.
+### Write-time defaults
 
-For any SKILL.md update, search for the old concept across the skill file, not just the paragraph closest to the code change. Agentic review prompts often duplicate workflow assumptions from earlier phase instructions.
+- **No speculative future-proofing in comments.** "Structured to absorb additional dimensions if future X needs them" — write the future struct when the future arrives. Today's reader can't act on a comment about hypothetical needs.
+- **No dates, incidents, or ticket numbers in code comments.** Belongs in the PR description and commit message, not the code. Comments stay forever; incidents fade.
+- **Code comments must be self-contained.** Don't make them load-bearing on in-repo skill prose, plans, or reference files that could be reorganized. RFCs, vendor API docs, and language specs are durable; in-repo prose is not. If you find yourself wanting to link, keep enough context inline that the code reads correctly when the link breaks.
+- **Don't restate the field or function name in its comment.** `MCPDescriptionQuality int` does not need `// the score for MCP description quality`. Document WHY (hidden constraints, subtle invariants), not WHAT (the name already says it).
+- **Categorical strings → typed const at introduction.** When adding an event kind, finding type, status name, or any string that names a category, declare the const in the same commit even with one call site. The compiler catches typos at every future site, and the const adds two lines today.
+- **Single-case switch with default fallthrough → `||`.** If every branch returns the same thing, `switch x { case A, B: return true } return false` is just `return x == A || x == B`. Switch shape implies cases will diverge; if they won't, write the `||`.
+- **Parse command inputs once at the entry point.** In a `RunE`, read files / manifests / configs at the entry and pass parsed results into helpers. Don't re-read "for clarity" — the cost compounds when helpers cross-call.
+- **UTF-8 safe string truncation.** `s[:n] + "…"` cuts mid-rune on multibyte input. Use rune slicing or an existing truncate helper from the same package.
 
-## Skill Authoring: Reference File Pattern
+### Pre-commit: scan the diff
 
-Skills use a `references/` directory for content that is only needed during specific phases or conditions. The SKILL.md stays lean with inline pointers (`Read [references/foo.md](...) when X`), and the agent loads the reference file only when the condition is met.
+- Near-identical loops or functions that should share a helper
+- A compound predicate (e.g., `f.Status != accepted || (requiresX(f.Kind) && missingX(f))`) inlined at 3+ sites that should be a named function
+- Parallel `hasX() bool` / `xCount() int` that drifted apart — derive one from the other
+- The same string literal repeated across sites where the categorical-const rule above would have applied — the const is cheap to add retroactively if missed at write-time
 
-**Why this matters:** SKILL.md content is loaded into the context window for every tool call in the session. A 2,000-line skill burns tokens on every phase — even phases that don't need most of the content. Extracting conditional sections (e.g., browser capture flows only needed when browser-sniffing, codex templates only needed in codex mode) into reference files reduces baseline context by 30-40%.
+## Editing AGENTS.md
 
-**What stays inline:** Cardinal rules, decision matrices, phase structure, user-facing prompts — anything the agent needs at all times or to decide whether to load more.
+The "Code & Comment Hygiene" rules apply to this file too. Specifically:
 
-**What gets extracted:** Implementation details for conditional paths: capture tool CLI commands, delegation templates, scoring frameworks, report templates. These are loaded on-demand when the agent reaches the relevant phase gate.
+- **No dates, incidents, or ticket numbers in rules.** Justification belongs in the PR introducing the rule, not embedded in it.
+- **Don't defend the doc's structure inside the doc.** "We split this honestly because…" doesn't help future readers — write the rule, trust them.
+- **Make rules applicable at the moment they fire.** Write-time rules in a write-time section, diff-review rules in a review section. A rule the agent can't apply at the relevant moment is worse than no rule.
+- **Examples should be generic or anti-pattern-shaped, not lifted from the specific incident that prompted the rule.**
 
-## Deterministic Inventory + Agent-Marked Ledger
+## Patterns
 
-When a workflow has a checklist where detection is mechanical but each item needs per-item judgment, split the work between a binary-emitted inventory and an agent-maintained ledger. The binary owns "what's there"; the agent owns "what to do about each item." A persistent file holds both, so the work survives context flushes and the audit trail surfaces the agent's reasoning.
-
-The canonical example is `printing-press tools-audit` + `skills/printing-press/references/tools-polish.md`. The binary parses every Cobra command and emits findings (empty Short, thin Short, missing read-only annotation). The agent walks each finding, fixes most, and marks the rest `accepted` with a one-sentence rationale. The ledger persists at `<cli-dir>/.printing-press-tools-polish.json` for 24 hours.
-
-Reach for this pattern when the work has the **detect mechanically + decide per-item + persist rationale** shape. The trigger isn't a numeric item count — a 15-item list with three accept decisions across two sessions benefits, while a 200-item batch update where every item has the same fix does not. Skip it when one pass is enough, when every item has the same fix, when detection itself requires judgment, or when a `TodoWrite` task list with rationale in the description carries the whole workflow.
-
-**Structure:**
-
-1. **Binary writes the inventory.** A subcommand emits a structured snapshot file (`.<topic>-ledger.json` or similar) on every run. Each entry has stable identity fields (file, line, kind, key) and may carry agent-written `status` and `note` fields (`omitempty` so the bare audit output stays clean).
-2. **Agent annotates the ledger.** When the agent decides to keep an item as-is, it edits the ledger to set `status: "accepted"` and writes a `note`. Code fixes are *not* marked manually — the next run re-detects and the finding disappears automatically.
-3. **Re-runs preserve agent state.** The binary reads the previous ledger before writing the new one. Findings whose identity key matches inherit `status` and `note`. Findings present last run but absent now read as "resolved" in the delta line. New findings start fresh as pending.
-4. **Staleness, not history.** Ledgers age out (e.g., 24h) and are deleted. They're working state, not artifacts to preserve in version control. Add the ledger filename to the relevant repo's `.gitignore` if the cli-dir lives inside one.
-5. **Verification asks for zero pending, not zero findings.** "Done" means every finding is either fixed (auto-removed) or explicitly accepted with a note — not that the count is zero. Reviewers can see accepts in the ledger and judge whether each rationale holds.
-
-Compared to the alternatives: pure `TodoWrite` state is invisible to the binary and dies with the session; pure binary recompute can't track accept decisions and re-flags them every run; multi-file artifacts (cards/, ledger.md, rejections.md per the `simplify-and-refactor` skill) are heavier than warranted when each item is small and self-contained.
-
-## Skill Frontmatter: `context: fork` and `user-invocable`
-
-Two skill frontmatter fields shape how a skill participates in larger workflows. Both default to permissive behavior (shared context, user-invocable). Set them explicitly when the skill plays a non-default role.
-
-### `context: fork`
-
-Default: skills run in the caller's context. The skill sees the full parent conversation; the parent sees the skill's tool calls and output interleaved with its own work.
-
-`context: fork` gives the skill its own context window. Two consequences pull in opposite directions:
-
-- **Benefit:** the skill starts with a fresh, dedicated context — its full window is available for its own work (multi-step loops, sub-agent transcripts, large reads) rather than competing with whatever the parent has already accumulated.
-- **Cost:** the skill can't see anything from the parent's conversation. Everything it needs must come through `args`, be readable from disk, or be hardcoded.
-
-The decision rule is whether the skill is **self-contained** given its declared inputs. If args plus the filesystem cover everything the skill needs (e.g., `printing-press-polish` takes a CLI dir and reads the rest from the repo and manuscripts; `printing-press-output-review` takes a CLI dir and runs `scorecard --live-check` to gather data), `context: fork` is a clear win. If the skill needs prior tool output, conversation history, or anything else the parent has accumulated, don't fork — the skill won't have access to it and you'll end up plumbing context through args anyway.
-
-### `user-invocable`
-
-Default: `true` — the skill is discoverable as a slash command (`/skill-name`) and routes from trigger phrases in the description. Setting `user-invocable: false` makes it internal-only: only Claude can invoke it (typically via the Skill tool from another skill).
-
-Set `user-invocable: false` when the skill has no standalone meaning for a user. A user typing `/internal-skill` would get half a workflow with no input gate, no follow-up offer, no completion verdict. The actionable wrappers are the parent skills.
-
-In this family, every printing-press skill is user-invocable except `printing-press-output-review`, which runs only as a sub-step inside Phase 4.85 (main skill) and the polish diagnostic loop.
-
-### Internal-only sub-skill pattern
-
-When a workflow step has multiple parents and no standalone user meaning, extract it into a `user-invocable: false` skill that both parents invoke via the Skill tool. Single source of truth for the prompt, gate logic, and any reference docs. The framework dispatches it; nobody has to find and read sibling SKILL.md prose at runtime.
-
-The two fields compose. `context: fork` + `user-invocable: false` is the combo for self-contained internal sub-skills. `context: fork` alone (default user-invocable) is for user-facing skills with their own multi-step workflow that don't need parent context. Default frontmatter is for terse helper skills, or any skill that genuinely needs to see the parent's conversation.
+Cross-cutting design patterns are documented in [`docs/PATTERNS.md`](docs/PATTERNS.md). Notably **Deterministic Inventory + Agent-Marked Ledger** — the shape used by `printing-press tools-audit` for workflows that combine mechanical detection with per-item agent judgment, with four enforcement primitives (pre-decision fields, duplicate-rationale rejection, numeric end-state gate, resume protocol) for cases where bulk-accept is a realistic failure mode.
