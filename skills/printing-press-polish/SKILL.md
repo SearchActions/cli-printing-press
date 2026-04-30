@@ -8,22 +8,13 @@ description: >
   /printing-press run, or on any CLI in ~/printing-press/library/. Trigger
   phrases: "polish", "improve the CLI", "fix verify", "make it publish-ready",
   "clean up the CLI", "get this ready to ship".
-context: fork
-allowed-tools:
-  - Bash
-  - Read
-  - Glob
-  - Grep
-  - Write
-  - Edit
-  - AskUserQuestion
 ---
 
 # /printing-press-polish
 
 Polish a generated CLI so it passes verification and is ready to publish.
 
-The retro improves the Printing Press. Polish improves the generated CLI. This skill runs in a forked context (`context: fork`) so its diagnostic and fix loop doesn't pollute the caller — the diagnostic spam, fix iterations, and re-diagnose noise stay scoped to the polish session, and the caller receives a clean summary.
+The retro improves the Printing Press. Polish improves the generated CLI.
 
 ```bash
 /printing-press-polish redfin
@@ -47,8 +38,6 @@ Can also be run standalone on any CLI in `~/printing-press/library/`.
 PRESS_HOME="$HOME/printing-press"
 PRESS_LIBRARY="$PRESS_HOME/library"
 ```
-
-**`AskUserQuestion` is a deferred tool.** Before the first use in this session, load its schema with `ToolSearch select:AskUserQuestion`. Without that load step the tool's schema isn't visible in the tool list and it appears unavailable — do not fall back to plain-text "reply 1 or 2" prompts when running in a forked context. Plain-text replies land in the parent session, never reach this fork, and the workflow stalls. Load AskUserQuestion eagerly during Setup so every later prompt site (resolve CLI, divergence check, publish offer) just works.
 
 ### Public-library hint
 
