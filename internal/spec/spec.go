@@ -74,6 +74,20 @@ type APISpec struct {
 	Version         string              `yaml:"version" json:"version"`
 	BaseURL         string              `yaml:"base_url" json:"base_url"`
 	BasePath        string              `yaml:"base_path,omitempty" json:"base_path,omitempty"`
+	// GraphQLEndpointPath is the path appended to BaseURL for GraphQL POSTs.
+	// REST specs leave it empty; GraphQL specs default it to "/graphql" but
+	// can override (e.g., Shopify's "/admin/api/{version}/graphql.json").
+	// The split exists because some GraphQL APIs put the endpoint behind a
+	// per-tenant subdomain or version segment, and the old single-BaseURL
+	// model couldn't represent that without hardcoding "/graphql" in the
+	// generated client.
+	GraphQLEndpointPath string `yaml:"graphql_endpoint_path,omitempty" json:"graphql_endpoint_path,omitempty"`
+	// EndpointTemplateVars lists placeholder names embedded in BaseURL or
+	// GraphQLEndpointPath as {var} (e.g., ["shop", "version"]). The
+	// generator emits per-variable env-var lookups in the printed CLI's
+	// config so users can resolve them at runtime. PR-1 carries this field
+	// as plumbing only; PR-2 wires the runtime substitution.
+	EndpointTemplateVars []string `yaml:"endpoint_template_vars,omitempty" json:"endpoint_template_vars,omitempty"`
 	Owner           string              `yaml:"owner,omitempty" json:"owner,omitempty"`                   // GitHub owner for import paths and Homebrew tap
 	Kind            string              `yaml:"kind,omitempty" json:"kind,omitempty"`                     // "rest" (default) or "synthetic" — synthetic CLIs aggregate multiple sources beyond the spec; dogfood's path-validity check is relaxed accordingly
 	SpecSource      string              `yaml:"spec_source,omitempty" json:"spec_source,omitempty"`       // official, community, sniffed, docs — affects generated client defaults
