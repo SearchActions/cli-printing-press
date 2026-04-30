@@ -100,7 +100,9 @@ func TestParseSDLContent(t *testing.T) {
 	require.NoError(t, err)
 
 	assert.Equal(t, "linear", parsed.Name)
-	assert.Equal(t, "https://api.linear.app/graphql", parsed.BaseURL)
+	assert.Equal(t, "https://api.linear.app", parsed.BaseURL)
+	assert.Equal(t, "/graphql", parsed.GraphQLEndpointPath)
+	assert.Empty(t, parsed.EndpointTemplateVars)
 	assert.Equal(t, "api_key", parsed.Auth.Type)
 	assert.Equal(t, []string{"LINEAR_API_KEY"}, parsed.Auth.EnvVars)
 

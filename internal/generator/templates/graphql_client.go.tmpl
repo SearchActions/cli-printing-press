@@ -53,10 +53,17 @@ func isGraphQLAccessDenialCode(code string) bool {
 	return false
 }
 
-// Query executes a GraphQL query via POST /graphql and returns the raw data payload.
+// graphqlEndpointPath is the request path appended to BaseURL for every
+// GraphQL POST. It is rendered from APISpec.GraphQLEndpointPath at generate
+// time so per-tenant or versioned endpoints (e.g.,
+// "/admin/api/{version}/graphql.json") work without editing the client.
+const graphqlEndpointPath = "{{.GraphQLEndpointPath}}"
+
+// Query executes a GraphQL query via POST against graphqlEndpointPath and
+// returns the raw data payload.
 func (c *Client) Query(query string, variables map[string]any) (json.RawMessage, error) {
 	req := GraphQLRequest{Query: query, Variables: variables}
-	raw, _, err := c.Post("/graphql", req)
+	raw, _, err := c.Post(graphqlEndpointPath, req)
 	if err != nil {
 		return nil, err
 	}
@@ -86,8 +93,9 @@ func (c *Client) Query(query string, variables map[string]any) (json.RawMessage,
 	return resp.Data, nil
 }
 
-// Mutate executes a GraphQL mutation via POST /graphql and returns the raw data payload.
-// Identical transport to Query; separate method for clarity.
+// Mutate executes a GraphQL mutation via POST against graphqlEndpointPath and
+// returns the raw data payload. Identical transport to Query; separate method
+// for clarity.
 func (c *Client) Mutate(query string, variables map[string]any) (json.RawMessage, error) {
 	return c.Query(query, variables)
 }

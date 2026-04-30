@@ -29,6 +29,11 @@ func TestParsePetstore(t *testing.T) {
 	assert.Equal(t, "petstore", parsed.Name)
 	assert.Equal(t, "", parsed.BaseURL)
 	assert.Equal(t, "/api/v3", parsed.BasePath)
+	// REST specs must leave the GraphQL-only fields unset; the generated
+	// graphql_client template is gated on isGraphQLSpec so a stray value here
+	// would silently leak into REST clients that never call POST /graphql.
+	assert.Empty(t, parsed.GraphQLEndpointPath)
+	assert.Empty(t, parsed.EndpointTemplateVars)
 	assert.NotEmpty(t, parsed.Resources)
 
 	hasEndpoint := false
