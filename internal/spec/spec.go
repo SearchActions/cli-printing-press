@@ -635,6 +635,9 @@ func ParseBytes(data []byte) (*APISpec, error) {
 	if err := s.validateReservedNames(); err != nil {
 		return nil, err
 	}
+	if err := s.validateFrameworkCobraCollisions(); err != nil {
+		return nil, err
+	}
 	if err := s.Validate(); err != nil {
 		return nil, fmt.Errorf("validation: %w", err)
 	}
@@ -682,6 +685,42 @@ var ReservedCLIResourceNames = map[string]struct{}{
 	"workflow":         {},
 }
 
+// ReservedCobraUseNames is the set of cobra command names registered at
+// the top level of every printed CLI's root cobra tree. A spec resource
+// whose name maps to one of these would shadow the framework command at
+// runtime. Distinct from ReservedCLIResourceNames above: that set
+// protects template-file overwrites (snake_case); this set protects
+// cobra-Use shadowing (kebab-case). Hand-maintained; drift invariants
+// enforced by tests in reserved_drift_test.go.
+var ReservedCobraUseNames = map[string]struct{}{
+	"about":         {},
+	"agent-context": {},
+	"analytics":     {},
+	"api":           {},
+	"auth":          {},
+	"completion":    {},
+	"doctor":        {},
+	"export":        {},
+	"feedback":      {},
+	"health":        {},
+	"help":          {},
+	"import":        {},
+	"jobs":          {},
+	"load":          {},
+	"orphans":       {},
+	"profile":       {},
+	"search":        {},
+	"share":         {},
+	"similar":       {},
+	"sql":           {},
+	"stale":         {},
+	"sync":          {},
+	"tail":          {},
+	"version":       {},
+	"which":         {},
+	"workflow":      {},
+}
+
 // validateReservedNames rejects specs whose top-level resource names would
 // collide with reserved Printing Press templates. Sub-resource names are not
 // checked because they emit under a parent prefix (`<parent>_<sub>.go`,
@@ -694,6 +733,29 @@ func (s *APISpec) validateReservedNames() error {
 		}
 	}
 	return nil
+}
+
+// validateFrameworkCobraCollisions rejects specs whose top-level resource
+// names would shadow a framework cobra subcommand at runtime. Sub-resources
+// are exempt — they register under a parent prefix and never reach the
+// root.
+func (s *APISpec) validateFrameworkCobraCollisions() error {
+	for name := range s.Resources {
+		kebab := snakeToKebab(name)
+		if _, reserved := ReservedCobraUseNames[kebab]; reserved {
+			suggestion := name + "_resource"
+			if s.Name != "" {
+				suggestion = snakeToKebab(s.Name) + "_" + name
+			}
+			return fmt.Errorf("resource name %q would shadow framework cobra command %q at runtime (every printed CLI registers `<cli> %s` as a built-in). Rename the resource — e.g. %q",
+				name, kebab, kebab, suggestion)
+		}
+	}
+	return nil
+}
+
+func snakeToKebab(s string) string {
+	return strings.ReplaceAll(strings.ToLower(s), "_", "-")
 }
 
 // snakeToPascal converts a snake_case identifier to PascalCase so error
