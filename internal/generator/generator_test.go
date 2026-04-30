@@ -4143,6 +4143,216 @@ func TestGenerateNoEndpointTemplateVarsByteCompat(t *testing.T) {
 		"config struct must not carry TemplateVars when EndpointTemplateVars is empty")
 }
 
+// TestGenerateResourceBaseURLOverrideRoutesToOverrideHost — Open-Meteo
+// shape: top-level BaseURL points at api.open-meteo.com, but the
+// geocoding resource lives at geocoding-api.open-meteo.com. The
+// generated handler must emit the override host into `path` so the
+// client's absolute-URL branch routes the request to the right host.
+//
+// Each resource carries two endpoints so the generator emits per-
+// endpoint handler files instead of promoting them to top-level
+// commands (single-endpoint resources are inlined into a promoted
+// command, which would skip the per-endpoint file emit path).
+func TestGenerateResourceBaseURLOverrideRoutesToOverrideHost(t *testing.T) {
+	t.Parallel()
+	apiSpec := minimalSpec("multihost")
+	apiSpec.BaseURL = "https://api.example.com/v1"
+	apiSpec.Resources["forecast"] = spec.Resource{
+		Description: "Weather forecast",
+		Endpoints: map[string]spec.Endpoint{
+			"now":    {Method: "GET", Path: "/forecast", Description: "Current"},
+			"hourly": {Method: "GET", Path: "/forecast/hourly", Description: "Hourly"},
+		},
+	}
+	apiSpec.Resources["geocoding"] = spec.Resource{
+		Description: "Geocoding lookup",
+		BaseURL:     "https://geocoding-api.example.com/v1",
+		Endpoints: map[string]spec.Endpoint{
+			"search":  {Method: "GET", Path: "/search", Description: "Search"},
+			"reverse": {Method: "GET", Path: "/reverse", Description: "Reverse"},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	require.NoError(t, gen.Generate())
+
+	// The geocoding handler emits the absolute URL into `path`.
+	geoHandler, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "geocoding_search.go"))
+	require.NoError(t, err)
+	assert.Contains(t, string(geoHandler), `path := "https://geocoding-api.example.com/v1/search"`,
+		"geocoding handler must emit the absolute URL into path")
+
+	// The forecast handler keeps the relative path (no override on this resource).
+	fcHandler, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "forecast_now.go"))
+	require.NoError(t, err)
+	assert.Contains(t, string(fcHandler), `path := "/forecast"`,
+		"forecast handler must keep the relative path when its resource has no override")
+
+	// The client emits the absolute-URL branch + isAbsoluteURL helper.
+	clientGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "client", "client.go"))
+	require.NoError(t, err)
+	assert.Contains(t, string(clientGo), "func isAbsoluteURL(path string) bool",
+		"client must emit isAbsoluteURL helper when at least one resource has a BaseURL override")
+	assert.Contains(t, string(clientGo), "if isAbsoluteURL(path) {",
+		"client.do() must branch on isAbsoluteURL")
+
+	// Must compile.
+	runGoCommand(t, outputDir, "mod", "tidy")
+	runGoCommand(t, outputDir, "build", "./...")
+}
+
+// TestGenerateSubResourceInheritsParentBaseURL — a sub-resource without
+// its own BaseURL inherits the parent resource's override. An explicit
+// sub-resource override takes precedence.
+func TestGenerateSubResourceInheritsParentBaseURL(t *testing.T) {
+	t.Parallel()
+	apiSpec := minimalSpec("multihost-sub")
+	apiSpec.BaseURL = "https://api.example.com/v1"
+	apiSpec.Resources["geocoding"] = spec.Resource{
+		Description: "Geocoding",
+		BaseURL:     "https://geocoding-api.example.com/v1",
+		SubResources: map[string]spec.Resource{
+			// Inherits parent override.
+			"city": {
+				Description: "City lookup",
+				Endpoints: map[string]spec.Endpoint{
+					"get": {Method: "GET", Path: "/city", Description: "Get"},
+				},
+			},
+			// Explicit override beats parent.
+			"reverse": {
+				Description: "Reverse geocoding",
+				BaseURL:     "https://reverse-api.example.com/v1",
+				Endpoints: map[string]spec.Endpoint{
+					"get": {Method: "GET", Path: "/reverse", Description: "Get"},
+				},
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	require.NoError(t, gen.Generate())
+
+	cityHandler, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "geocoding_city_get.go"))
+	require.NoError(t, err)
+	assert.Contains(t, string(cityHandler), `path := "https://geocoding-api.example.com/v1/city"`,
+		"sub-resource without its own BaseURL must inherit the parent's override")
+
+	reverseHandler, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "geocoding_reverse_get.go"))
+	require.NoError(t, err)
+	assert.Contains(t, string(reverseHandler), `path := "https://reverse-api.example.com/v1/reverse"`,
+		"sub-resource with its own BaseURL must use its own override")
+
+	runGoCommand(t, outputDir, "mod", "tidy")
+	runGoCommand(t, outputDir, "build", "./...")
+}
+
+// TestGenerateNoResourceBaseURLOverrideByteCompat — specs without any
+// per-resource BaseURL override must regenerate without the
+// isAbsoluteURL helper or the absolute-URL branch in client.do().
+// Mirrors the EndpointTemplateVars byte-compat guarantee at the
+// resource level.
+func TestGenerateNoResourceBaseURLOverrideByteCompat(t *testing.T) {
+	t.Parallel()
+	apiSpec, err := spec.Parse(filepath.Join("..", "..", "testdata", "loops.yaml"))
+	require.NoError(t, err)
+	for _, r := range apiSpec.Resources {
+		require.Empty(t, r.BaseURL,
+			"loops fixture must keep resource BaseURL empty for the byte-compat case")
+	}
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	require.NoError(t, gen.Generate())
+
+	clientGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "client", "client.go"))
+	require.NoError(t, err)
+	assert.NotContains(t, string(clientGo), "isAbsoluteURL",
+		"client.go must not carry the isAbsoluteURL helper when no resource has a BaseURL override")
+	assert.Contains(t, string(clientGo), "targetURL := c.BaseURL + path",
+		"client.do() must keep the raw concat when no resource has a BaseURL override")
+}
+
+// TestGenerateResourceBaseURLTrailingSlashTrimmed — the most likely
+// spec-author mistake is `base_url: "https://api.example.com/v1/"`
+// (trailing slash) paired with `endpoints[].path: "/search"` (leading
+// slash). Without normalization the emitted handler concatenates to
+// `https://api.example.com/v1//search`. Trim trailing slash off
+// the override at the data-passing site so spec authors don't have
+// to memorize the convention.
+func TestGenerateResourceBaseURLTrailingSlashTrimmed(t *testing.T) {
+	t.Parallel()
+	apiSpec := minimalSpec("trailingslash")
+	apiSpec.Resources["geocoding"] = spec.Resource{
+		Description: "Geocoding lookup",
+		BaseURL:     "https://geocoding-api.example.com/v1/",
+		Endpoints: map[string]spec.Endpoint{
+			"search":  {Method: "GET", Path: "/search", Description: "Search"},
+			"reverse": {Method: "GET", Path: "/reverse", Description: "Reverse"},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	require.NoError(t, gen.Generate())
+
+	geoHandler, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "geocoding_search.go"))
+	require.NoError(t, err)
+	assert.Contains(t, string(geoHandler), `path := "https://geocoding-api.example.com/v1/search"`,
+		"trailing slash on the override must be trimmed before concatenation")
+	assert.NotContains(t, string(geoHandler), `path := "https://geocoding-api.example.com/v1//search"`,
+		"double slash from base+path concat must not leak into the generated handler")
+}
+
+// TestGenerateResourceBaseURLWithEndpointTemplateVars — confirms
+// per-resource BaseURL composes correctly with EndpointTemplateVars.
+// A resource declares both a templated host (`{shop}` resolved from
+// env at runtime) and a fixed override host. The generator emits the
+// templated absolute URL into `path`; the client's buildURL substitutes
+// the placeholder before the request fires.
+func TestGenerateResourceBaseURLWithEndpointTemplateVars(t *testing.T) {
+	t.Parallel()
+	apiSpec := minimalSpec("multitenant-multihost")
+	apiSpec.BaseURL = "https://{shop}.api.example.com/v1"
+	apiSpec.EndpointTemplateVars = []string{"shop"}
+	apiSpec.Resources["storefront"] = spec.Resource{
+		Description: "Storefront API on a per-tenant host",
+		BaseURL:     "https://{shop}.storefront-api.example.com/v1",
+		Endpoints: map[string]spec.Endpoint{
+			"products":    {Method: "GET", Path: "/products", Description: "List products"},
+			"collections": {Method: "GET", Path: "/collections", Description: "List collections"},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	require.NoError(t, gen.Generate())
+
+	// Handler emits the override host with the placeholder intact;
+	// resolution happens in the client at request time.
+	handler, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "storefront_products.go"))
+	require.NoError(t, err)
+	assert.Contains(t, string(handler),
+		`path := "https://{shop}.storefront-api.example.com/v1/products"`,
+		"override host with {placeholder} markers must flow into path verbatim")
+
+	// Client emits both the EndpointTemplateVars resolution AND the
+	// absolute-URL detection — the combined branch goes through
+	// `buildURL("", path, endpointVars)` for absolute paths.
+	clientGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "client", "client.go"))
+	require.NoError(t, err)
+	clientStr := string(clientGo)
+	assert.Contains(t, clientStr, "func isAbsoluteURL(path string) bool",
+		"isAbsoluteURL helper must be emitted")
+	assert.Contains(t, clientStr, `buildURL("", path, endpointVars)`,
+		"absolute-URL branch must call buildURL with empty BaseURL so {placeholder} markers in path still substitute")
+
+	runGoCommand(t, outputDir, "mod", "tidy")
+	runGoCommand(t, outputDir, "build", "./...")
+}
+
 // TestGenerateMCPMainStdioDefault confirms that a spec with no mcp: block
 // produces the same stdio-only MCP entry point we've always emitted. Remote
 // transport is opt-in; the default stays on the current behavior so existing

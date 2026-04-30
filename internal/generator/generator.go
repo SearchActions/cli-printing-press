@@ -588,6 +588,24 @@ type clientTemplateData struct {
 	HasGraphQLPersistedQueries bool
 }
 
+// endpointTemplateData is the data passed to command_endpoint.go.tmpl
+// for both top-level resource endpoints and sub-resource endpoints.
+// ResourceBaseURL carries the resource's BaseURL override (or its
+// inherited parent override for sub-resources); the template prepends
+// it to Endpoint.Path so per-resource hosts produce absolute URLs.
+type endpointTemplateData struct {
+	ResourceName    string
+	ResourceBaseURL string
+	FuncPrefix      string
+	CommandPath     string
+	EndpointName    string
+	Endpoint        spec.Endpoint
+	HasStore        bool
+	IsAsync         bool
+	Async           AsyncJobInfo
+	*spec.APISpec
+}
+
 // readmeTemplateData wraps APISpec with additional fields for README rendering.
 type readmeTemplateData struct {
 	*spec.APISpec
@@ -1307,26 +1325,17 @@ func (g *Generator) renderResourceCommands(promotedResourceNames map[string]bool
 				continue
 			}
 			asyncInfo, isAsync := g.AsyncJobs[name+"/"+eName]
-			epData := struct {
-				ResourceName string
-				FuncPrefix   string
-				CommandPath  string
-				EndpointName string
-				Endpoint     spec.Endpoint
-				HasStore     bool
-				IsAsync      bool
-				Async        AsyncJobInfo
-				*spec.APISpec
-			}{
-				ResourceName: name,
-				FuncPrefix:   name,
-				CommandPath:  name,
-				EndpointName: eName,
-				Endpoint:     endpoint,
-				HasStore:     g.VisionSet.Store,
-				IsAsync:      isAsync,
-				Async:        asyncInfo,
-				APISpec:      g.Spec,
+			epData := endpointTemplateData{
+				ResourceName:    name,
+				ResourceBaseURL: strings.TrimRight(resource.BaseURL, "/"),
+				FuncPrefix:      name,
+				CommandPath:     name,
+				EndpointName:    eName,
+				Endpoint:        endpoint,
+				HasStore:        g.VisionSet.Store,
+				IsAsync:         isAsync,
+				Async:           asyncInfo,
+				APISpec:         g.Spec,
 			}
 			epPath := filepath.Join("internal", "cli", safeResourceFileStem(name+"_"+eName)+".go")
 			if err := g.renderTemplate("command_endpoint.go.tmpl", epPath, epData); err != nil {
@@ -1362,29 +1371,31 @@ func (g *Generator) renderResourceCommands(promotedResourceNames map[string]bool
 				}
 			}
 
+			// Sub-resources inherit the parent's BaseURL override; an
+			// explicit sub_resource.base_url wins. Falls through to the
+			// spec-level BaseURL when both are empty. Trailing slash is
+			// trimmed so the template's `path := <base><endpoint.path>`
+			// concat doesn't produce `https://x.com/v1//search` when the
+			// override and endpoint path both carry slashes.
+			subResourceBaseURL := subResource.BaseURL
+			if subResourceBaseURL == "" {
+				subResourceBaseURL = resource.BaseURL
+			}
+			subResourceBaseURL = strings.TrimRight(subResourceBaseURL, "/")
 			for eName, endpoint := range subResource.Endpoints {
 				subKey := subName + "/" + eName
 				asyncInfo, isAsync := g.AsyncJobs[subKey]
-				epData := struct {
-					ResourceName string
-					FuncPrefix   string
-					CommandPath  string
-					EndpointName string
-					Endpoint     spec.Endpoint
-					HasStore     bool
-					IsAsync      bool
-					Async        AsyncJobInfo
-					*spec.APISpec
-				}{
-					ResourceName: subName,
-					FuncPrefix:   name + "-" + subName,
-					CommandPath:  name + " " + subName,
-					EndpointName: eName,
-					Endpoint:     endpoint,
-					HasStore:     g.VisionSet.Store,
-					IsAsync:      isAsync,
-					Async:        asyncInfo,
-					APISpec:      g.Spec,
+				epData := endpointTemplateData{
+					ResourceName:    subName,
+					ResourceBaseURL: subResourceBaseURL,
+					FuncPrefix:      name + "-" + subName,
+					CommandPath:     name + " " + subName,
+					EndpointName:    eName,
+					Endpoint:        endpoint,
+					HasStore:        g.VisionSet.Store,
+					IsAsync:         isAsync,
+					Async:           asyncInfo,
+					APISpec:         g.Spec,
 				}
 				epPath := filepath.Join("internal", "cli", safeResourceFileStem(name+"_"+subName+"_"+eName)+".go")
 				if err := g.renderTemplate("command_endpoint.go.tmpl", epPath, epData); err != nil {
@@ -1758,8 +1769,12 @@ func (g *Generator) renderPromotedCommandFiles(promotedCommands []PromotedComman
 	// Generate promoted top-level commands (user-friendly aliases for nested API commands)
 	// promotedCommands was computed earlier so promoted resources can replace their raw parents.
 	for _, pc := range promotedCommands {
-		// Look up the full resource to pass sibling endpoints/sub-resources
+		// Look up the full resource to pass sibling endpoints/sub-resources.
+		// Trim trailing slash on BaseURL so the promoted handler's
+		// `path := <Resource.BaseURL><Endpoint.Path>` concat doesn't
+		// produce `https://x.com/v1//search`.
 		resource := g.Spec.Resources[pc.ResourceName]
+		resource.BaseURL = strings.TrimRight(resource.BaseURL, "/")
 		promotedData := struct {
 			PromotedName string
 			ResourceName string

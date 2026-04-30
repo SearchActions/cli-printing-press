@@ -439,11 +439,44 @@ func (m MCPConfig) HasTransport(t string) bool {
 }
 
 type Resource struct {
-	Description  string              `yaml:"description" json:"description"`
-	Path         string              `yaml:"path,omitempty" json:"path,omitempty"`             // base path for operations shorthand (e.g., /api/items)
-	Operations   []string            `yaml:"operations,omitempty" json:"operations,omitempty"` // shorthand: list, get, create, update, delete, search
+	Description string   `yaml:"description" json:"description"`
+	Path        string   `yaml:"path,omitempty" json:"path,omitempty"`             // base path for operations shorthand (e.g., /api/items)
+	Operations  []string `yaml:"operations,omitempty" json:"operations,omitempty"` // shorthand: list, get, create, update, delete, search
+	// BaseURL overrides the spec-level BaseURL for this resource's
+	// endpoints. Fixed at generation time. Incompatible with the
+	// proxy-envelope client pattern, which POSTs every request to a
+	// single URL.
+	BaseURL      string              `yaml:"base_url,omitempty" json:"base_url,omitempty"`
 	Endpoints    map[string]Endpoint `yaml:"endpoints" json:"endpoints"`
 	SubResources map[string]Resource `yaml:"sub_resources,omitempty" json:"sub_resources,omitempty"`
+}
+
+// HasResourceBaseURLOverride reports whether any resource (top-level or
+// nested sub-resource) declares a BaseURL override. Used by the client
+// template to gate the absolute-URL detection branch — specs that don't
+// opt in regenerate byte-identically.
+func (s *APISpec) HasResourceBaseURLOverride() bool {
+	if s == nil {
+		return false
+	}
+	for _, resource := range s.Resources {
+		if resourceHasBaseURLOverride(resource) {
+			return true
+		}
+	}
+	return false
+}
+
+func resourceHasBaseURLOverride(resource Resource) bool {
+	if resource.BaseURL != "" {
+		return true
+	}
+	for _, sub := range resource.SubResources {
+		if resourceHasBaseURLOverride(sub) {
+			return true
+		}
+	}
+	return false
 }
 
 type Endpoint struct {
@@ -910,6 +943,9 @@ func (s *APISpec) Validate() error {
 	}
 	if err := validateMCP(s.MCP, s.Resources); err != nil {
 		return err
+	}
+	if s.ClientPattern == "proxy-envelope" && s.HasResourceBaseURLOverride() {
+		return fmt.Errorf("resource base_url overrides are incompatible with client_pattern=proxy-envelope; the proxy POSTs every request to the spec-level BaseURL, so per-resource overrides would be silently ignored")
 	}
 	for name, r := range s.Resources {
 		if len(r.Endpoints) == 0 && len(r.SubResources) == 0 {
