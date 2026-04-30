@@ -3890,6 +3890,250 @@ func TestGenerateGraphQLEndpointPathRendersTemplatedURL(t *testing.T) {
 		"BaseURL + GraphQLEndpointPath must resolve to the Shopify Admin endpoint after env substitution")
 }
 
+// TestGenerateEndpointTemplateVarsRuntimeSubstitution covers PR-2's contract:
+// when a spec declares EndpointTemplateVars, the generated CLI gets a buildURL
+// helper that resolves {placeholder} markers against env-backed
+// Config.TemplateVars at request time. The test compiles the generated tree
+// and runs an injected behavioral test that exercises every required path —
+// successful substitution, missing env var (actionable error), and the
+// passthrough case where vars is nil. Mirrors the inject-and-go-test pattern
+// used by TestGenerateMetaSyncErrorClassification so we exercise the helper
+// in its real package context.
+func TestGenerateEndpointTemplateVarsRuntimeSubstitution(t *testing.T) {
+	t.Parallel()
+
+	// Variable names follow the {upper Name}_{upper var} convention. For
+	// Shopify, this means the spec's var name is "api_version" (not
+	// "version") because the real-world env var is SHOPIFY_API_VERSION.
+	// The URL placeholder mirrors the var name, so both sides line up.
+	apiSpec := &spec.APISpec{
+		Name:                 "shopify",
+		Description:          "Shopify Admin GraphQL (test fixture)",
+		Version:              "2026-04",
+		BaseURL:              "https://{shop}",
+		GraphQLEndpointPath:  "/admin/api/{api_version}/graphql.json",
+		EndpointTemplateVars: []string{"shop", "api_version"},
+		Auth: spec.AuthConfig{
+			Type:    "api_key",
+			Header:  "X-Shopify-Access-Token",
+			EnvVars: []string{"SHOPIFY_ACCESS_TOKEN"},
+		},
+		Config: spec.ConfigSpec{
+			Format: "toml",
+			Path:   "~/.config/shopify-pp-cli/config.toml",
+		},
+		Resources: map[string]spec.Resource{
+			"orders": {
+				Description: "Orders",
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:       "GET",
+						Path:         "/graphql",
+						Description:  "List orders",
+						ResponsePath: "data.orders.nodes",
+						Pagination: &spec.Pagination{
+							Type:           "cursor",
+							LimitParam:     "first",
+							CursorParam:    "after",
+							NextCursorPath: "data.orders.pageInfo.endCursor",
+							HasMoreField:   "data.orders.pageInfo.hasNextPage",
+						},
+						Response: spec.ResponseDef{Type: "array", Item: "Order"},
+					},
+				},
+			},
+		},
+		Types: map[string]spec.TypeDef{
+			"Order": {Fields: []spec.TypeField{
+				{Name: "id", Type: "string"},
+				{Name: "name", Type: "string"},
+			}},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	require.NoError(t, gen.Generate())
+
+	// url.go must exist; this is where buildURL and templateVarEnvNames live.
+	urlGoPath := filepath.Join(outputDir, "internal", "client", "url.go")
+	urlGoBytes, err := os.ReadFile(urlGoPath)
+	require.NoError(t, err, "url.go should be generated when EndpointTemplateVars is set")
+	urlGo := string(urlGoBytes)
+	assert.Contains(t, urlGo, "func buildURL(",
+		"url.go must define the buildURL helper")
+	assert.Contains(t, urlGo, `"shop": "SHOPIFY_SHOP"`,
+		"templateVarEnvNames must wire {shop} to SHOPIFY_SHOP")
+	assert.Contains(t, urlGo, `"api_version": "SHOPIFY_API_VERSION"`,
+		"templateVarEnvNames must wire {api_version} to SHOPIFY_API_VERSION")
+
+	// config.go must populate Config.TemplateVars from env at Load() time.
+	configGoBytes, err := os.ReadFile(filepath.Join(outputDir, "internal", "config", "config.go"))
+	require.NoError(t, err)
+	configGo := string(configGoBytes)
+	assert.Contains(t, configGo, "TemplateVars map[string]string",
+		"config struct must carry the TemplateVars map")
+	assert.Contains(t, configGo, `os.Getenv("SHOPIFY_SHOP")`,
+		"config Load() must read SHOPIFY_SHOP from env")
+	assert.Contains(t, configGo, `os.Getenv("SHOPIFY_API_VERSION")`,
+		"config Load() must read SHOPIFY_API_VERSION from env (spec var name 'api_version')")
+
+	// client.go must route requests through buildURL, not the old c.BaseURL+path concat.
+	clientGoBytes, err := os.ReadFile(filepath.Join(outputDir, "internal", "client", "client.go"))
+	require.NoError(t, err)
+	clientGo := string(clientGoBytes)
+	assert.Contains(t, clientGo, "buildURL(c.BaseURL, path,",
+		"client.do() must call buildURL when EndpointTemplateVars is set")
+	assert.NotContains(t, clientGo, "targetURL := c.BaseURL + path",
+		"client.do() must not retain the raw concat once EndpointTemplateVars is set")
+	// Cache key must include the template-var values so two shops never
+	// collide on the same path. Without this, a warm SHOPIFY_SHOP=A cache
+	// would feed responses to a SHOPIFY_SHOP=B caller.
+	assert.Contains(t, clientGo, `c.Config.TemplateVars[name]`,
+		"cacheKey must mix template-var values into the cache identity")
+
+	// Compile the generated tree before injecting a behavioral test — a syntax
+	// error in url.go.tmpl should surface here, not as a confusing test
+	// runner failure.
+	runGoCommand(t, outputDir, "mod", "tidy")
+	runGoCommand(t, outputDir, "build", "./...")
+
+	// Inject a unit test for buildURL in its real package context. Covers the
+	// three acceptance paths from PR-2: full substitution, actionable error
+	// for missing env var, and pure passthrough when no placeholders are
+	// present. The test file is package-local so it sees buildURL and
+	// templateVarEnvNames directly.
+	behaviorTest := `package client
+
+import (
+	"strings"
+	"testing"
+
+	cfgpkg "shopify-pp-cli/internal/config"
+)
+
+func TestBuildURLSubstitutes(t *testing.T) {
+	vars := map[string]string{
+		"shop":        "foo.myshopify.com",
+		"api_version": "2026-04",
+	}
+	got, err := buildURL("https://{shop}", "/admin/api/{api_version}/graphql.json", vars)
+	if err != nil {
+		t.Fatalf("buildURL: %v", err)
+	}
+	const want = "https://foo.myshopify.com/admin/api/2026-04/graphql.json"
+	if got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
+func TestBuildURLMissingShopReturnsActionableError(t *testing.T) {
+	vars := map[string]string{"api_version": "2026-04"}
+	_, err := buildURL("https://{shop}", "/admin/api/{api_version}/graphql.json", vars)
+	if err == nil {
+		t.Fatal("expected error when {shop} cannot be resolved")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "SHOPIFY_SHOP not set") {
+		t.Errorf("error must name SHOPIFY_SHOP; got %q", msg)
+	}
+	if !strings.Contains(msg, "export SHOPIFY_SHOP=") {
+		t.Errorf("error must include export hint; got %q", msg)
+	}
+}
+
+func TestBuildURLPassthroughWhenNoPlaceholders(t *testing.T) {
+	got, err := buildURL("https://api.example.com", "/v1/items", nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	const want = "https://api.example.com/v1/items"
+	if got != want {
+		t.Errorf("got %q, want %q (no substitution should be attempted)", got, want)
+	}
+}
+
+func TestBuildURLEmptyVarValueIsTreatedAsUnset(t *testing.T) {
+	// An env var that exists but is empty must produce the same actionable
+	// error as one that's not set — otherwise a stray "export FOO=" silently
+	// sends requests to literal "{foo}" URLs.
+	vars := map[string]string{"shop": "", "api_version": "2026-04"}
+	_, err := buildURL("https://{shop}", "/admin/api/{api_version}/graphql.json", vars)
+	if err == nil {
+		t.Fatal("expected error when {shop} value is empty")
+	}
+	if !strings.Contains(err.Error(), "SHOPIFY_SHOP") {
+		t.Errorf("expected error to name SHOPIFY_SHOP; got %q", err.Error())
+	}
+}
+
+// TestCacheKeyIncludesTemplateVars guards the per-tenant isolation contract:
+// the same path under two different shops must produce two different cache
+// keys, and flipping a value back to unset must miss the warm cache.
+func TestCacheKeyIncludesTemplateVars(t *testing.T) {
+	mk := func(shop, ver string) *Client {
+		cfg := &cfgpkg.Config{TemplateVars: map[string]string{}}
+		if shop != "" {
+			cfg.TemplateVars["shop"] = shop
+		}
+		if ver != "" {
+			cfg.TemplateVars["api_version"] = ver
+		}
+		return &Client{Config: cfg}
+	}
+
+	keyA := mk("storeA.myshopify.com", "2026-04").cacheKey("/v1/orders", nil)
+	keyB := mk("storeB.myshopify.com", "2026-04").cacheKey("/v1/orders", nil)
+	if keyA == keyB {
+		t.Fatalf("cacheKey collided across shops: storeA and storeB share %q", keyA)
+	}
+	keyEmpty := mk("", "2026-04").cacheKey("/v1/orders", nil)
+	if keyEmpty == keyA {
+		t.Fatalf("cacheKey collided when SHOPIFY_SHOP unset matched a warm shop value: both produced %q", keyA)
+	}
+}
+`
+	testPath := filepath.Join(outputDir, "internal", "client", "url_behavior_test.go")
+	require.NoError(t, os.WriteFile(testPath, []byte(behaviorTest), 0o644))
+	runGoCommand(t, outputDir, "test", "./internal/client", "-run", "TestBuildURL")
+}
+
+// TestGenerateNoEndpointTemplateVarsByteCompat guards the byte-compat
+// promise: a spec that doesn't declare EndpointTemplateVars must regenerate
+// without url.go and with the original c.BaseURL+path concat in client.do().
+// Adding url.go to every printed CLI would silently bump file counts in
+// downstream library mirrors; this test catches that regression.
+func TestGenerateNoEndpointTemplateVarsByteCompat(t *testing.T) {
+	t.Parallel()
+
+	apiSpec, err := spec.Parse(filepath.Join("..", "..", "testdata", "loops.yaml"))
+	require.NoError(t, err)
+	require.Empty(t, apiSpec.EndpointTemplateVars,
+		"loops fixture must keep EndpointTemplateVars empty for the byte-compat case")
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	require.NoError(t, gen.Generate())
+
+	_, err = os.Stat(filepath.Join(outputDir, "internal", "client", "url.go"))
+	assert.True(t, os.IsNotExist(err),
+		"url.go must NOT be emitted for specs without EndpointTemplateVars; got err=%v", err)
+
+	clientGoBytes, err := os.ReadFile(filepath.Join(outputDir, "internal", "client", "client.go"))
+	require.NoError(t, err)
+	clientGo := string(clientGoBytes)
+	assert.Contains(t, clientGo, "targetURL := c.BaseURL + path",
+		"client.do() must keep the raw concat when EndpointTemplateVars is empty")
+	assert.NotContains(t, clientGo, "buildURL(",
+		"client.do() must not call buildURL when EndpointTemplateVars is empty")
+
+	configGoBytes, err := os.ReadFile(filepath.Join(outputDir, "internal", "config", "config.go"))
+	require.NoError(t, err)
+	configGo := string(configGoBytes)
+	assert.NotContains(t, configGo, "TemplateVars",
+		"config struct must not carry TemplateVars when EndpointTemplateVars is empty")
+}
+
 // TestGenerateMCPMainStdioDefault confirms that a spec with no mcp: block
 // produces the same stdio-only MCP entry point we've always emitted. Remote
 // transport is opt-in; the default stays on the current behavior so existing
