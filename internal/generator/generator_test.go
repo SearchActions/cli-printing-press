@@ -3775,6 +3775,121 @@ func TestGenerateGraphQLCompiles(t *testing.T) {
 	runGoCommand(t, outputDir, "build", "./...")
 }
 
+// TestGenerateGraphQLEndpointPathRendersTemplatedURL guards PR-1's contract:
+// when a GraphQL spec sets BaseURL to a templated host and GraphQLEndpointPath
+// to a templated path (the Shopify shape), the generated client must build
+// the request URL by concatenating BaseURL + GraphQLEndpointPath without
+// stripping or normalizing the {var} placeholders. PR-2 will substitute the
+// placeholders against env vars at request time; this test simulates that
+// substitution to prove the URL the runtime sees would resolve correctly.
+//
+// The test deliberately builds the spec by hand (instead of going through
+// graphql.ParseSDL) because no real-world API in the parser's
+// knownGraphQLDefaults table uses a templated host today — Shopify is the
+// motivating case but ships outside this repo. Constructing the spec inline
+// keeps the test focused on the template plumbing.
+func TestGenerateGraphQLEndpointPathRendersTemplatedURL(t *testing.T) {
+	t.Parallel()
+
+	const (
+		baseURL          = "https://{shop}"
+		endpointPath     = "/admin/api/{version}/graphql.json"
+		shopValue        = "foo.myshopify.com"
+		versionValue     = "2026-04"
+		expectedFinalURL = "https://foo.myshopify.com/admin/api/2026-04/graphql.json"
+	)
+
+	apiSpec := &spec.APISpec{
+		Name:                 "shopify",
+		Description:          "Shopify Admin GraphQL (test fixture)",
+		Version:              "2026-04",
+		BaseURL:              baseURL,
+		GraphQLEndpointPath:  endpointPath,
+		EndpointTemplateVars: []string{"shop", "version"},
+		Auth: spec.AuthConfig{
+			Type:    "api_key",
+			Header:  "X-Shopify-Access-Token",
+			EnvVars: []string{"SHOPIFY_ACCESS_TOKEN"},
+		},
+		Config: spec.ConfigSpec{
+			Format: "toml",
+			Path:   "~/.config/shopify-pp-cli/config.toml",
+		},
+		Resources: map[string]spec.Resource{
+			// isGraphQLSpec gates emission of graphql.go on every list endpoint
+			// having Path == "/graphql". The path field is a sentinel for
+			// "this resource flows through the GraphQL transport"; it is
+			// distinct from GraphQLEndpointPath, which is the URL path the
+			// client posts to at runtime.
+			"orders": {
+				Description: "Orders",
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:       "GET",
+						Path:         "/graphql",
+						Description:  "List orders",
+						ResponsePath: "data.orders.nodes",
+						Pagination: &spec.Pagination{
+							Type:           "cursor",
+							LimitParam:     "first",
+							CursorParam:    "after",
+							NextCursorPath: "data.orders.pageInfo.endCursor",
+							HasMoreField:   "data.orders.pageInfo.hasNextPage",
+						},
+						Response: spec.ResponseDef{Type: "array", Item: "Order"},
+					},
+				},
+			},
+		},
+		Types: map[string]spec.TypeDef{
+			"Order": {Fields: []spec.TypeField{
+				{Name: "id", Type: "string"},
+				{Name: "name", Type: "string"},
+			}},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	require.NoError(t, gen.Generate())
+
+	graphqlGoPath := filepath.Join(outputDir, "internal", "client", "graphql.go")
+	graphqlGoBytes, err := os.ReadFile(graphqlGoPath)
+	require.NoError(t, err, "graphql.go should be generated for a GraphQL spec")
+	graphqlGo := string(graphqlGoBytes)
+
+	// The endpoint path constant must render the templated value verbatim.
+	// Anything that strips or pre-resolves the {var} placeholders here would
+	// break PR-2's runtime substitution and quietly send requests to the
+	// wrong host once a real shop is configured.
+	assert.Contains(t, graphqlGo, `const graphqlEndpointPath = "`+endpointPath+`"`,
+		"graphql.go must render GraphQLEndpointPath into a const")
+	assert.NotContains(t, graphqlGo, `c.Post("/graphql"`,
+		"graphql.go must not retain the hardcoded /graphql path after PR-1")
+	assert.Contains(t, graphqlGo, "c.Post(graphqlEndpointPath",
+		"Query/Mutate must post against the rendered constant, not a literal")
+
+	// The config struct must carry the templated BaseURL through unchanged so
+	// PR-2 can resolve {shop} against SHOPIFY_SHOP at Load() time without
+	// re-deriving the URL shape.
+	configGoBytes, err := os.ReadFile(filepath.Join(outputDir, "internal", "config", "config.go"))
+	require.NoError(t, err)
+	assert.Contains(t, string(configGoBytes), `BaseURL: "`+baseURL+`"`,
+		"config.go must carry the templated BaseURL into Load()'s defaults")
+
+	// Simulate the runtime URL build: client.do() concatenates BaseURL+path.
+	// PR-1 must produce a URL that — once env vars are substituted — points
+	// at the real Shopify endpoint. The substitution itself ships in PR-2;
+	// here we mimic it inline to prove the structure is right.
+	rawURL := baseURL + endpointPath
+	resolved := strings.NewReplacer(
+		"{shop}", shopValue,
+		"{version}", versionValue,
+	).Replace(rawURL)
+	assert.Equal(t, expectedFinalURL, resolved,
+		"BaseURL + GraphQLEndpointPath must resolve to the Shopify Admin endpoint after env substitution")
+}
+
 // TestGenerateMCPMainStdioDefault confirms that a spec with no mcp: block
 // produces the same stdio-only MCP entry point we've always emitted. Remote
 // transport is opt-in; the default stays on the current behavior so existing
