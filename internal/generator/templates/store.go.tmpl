@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -36,8 +37,14 @@ func IsUUID(s string) bool {
 const StoreSchemaVersion = 1
 
 type Store struct {
-	db   *sql.DB
-	path string
+	db *sql.DB
+	// writeMu serializes all DB writes. Read paths bypass the lock and run
+	// concurrently against WAL. Resource-level concurrency in sync.go.tmpl
+	// is 1 (one goroutine per resource via len(resources)-sized work channel)
+	// — read-then-write sequences (e.g., GetSyncCursor → SaveSyncState) are
+	// race-free by construction within a resource.
+	writeMu sync.Mutex
+	path    string
 }
 
 func Open(dbPath string) (*Store, error) {
@@ -422,6 +429,8 @@ func (s *Store) upsertGenericResourceTx(tx *sql.Tx, resourceType, id string, dat
 }
 
 func (s *Store) Upsert(resourceType, id string, data json.RawMessage) error {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
 	tx, err := s.db.Begin()
 	if err != nil {
 		return err
@@ -522,7 +531,11 @@ func ftsRowID(id string) int64 {
 	return int64(h & 0x7FFFFFFFFFFFFFFF) // ensure positive
 }
 
-func lookupFieldValue(obj map[string]any, snakeKey string) any {
+// LookupFieldValue resolves a field value from a JSON object map, trying
+// the snake_case key first and the camelCase rendering second. Exported so
+// the sync command's extractID and the upsert path resolve fields the same
+// way — a divergence here produces silent drops on heterogeneous payloads.
+func LookupFieldValue(obj map[string]any, snakeKey string) any {
 	if v, ok := obj[snakeKey]; ok {
 		return v
 	}
@@ -537,6 +550,13 @@ func lookupFieldValue(obj map[string]any, snakeKey string) any {
 		return v
 	}
 	return nil
+}
+
+// lookupFieldValue is kept as an unexported alias for in-package callers so
+// the existing UpsertBatch code reads naturally without prefixing every call
+// with the package name.
+func lookupFieldValue(obj map[string]any, snakeKey string) any {
+	return LookupFieldValue(obj, snakeKey)
 }
 
 {{- range .Tables}}
@@ -593,6 +613,8 @@ func (s *Store) Upsert{{pascal .Name}}(data json.RawMessage) error {
 		return fmt.Errorf("missing id for {{.Name}}")
 	}
 
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
 	tx, err := s.db.Begin()
 	if err != nil {
 		return err
@@ -612,54 +634,94 @@ func (s *Store) Upsert{{pascal .Name}}(data json.RawMessage) error {
 {{- end}}
 {{- end}}
 
-// UpsertBatch inserts or replaces multiple records in a single transaction
-// and returns the count of items actually stored. This is 10-100x faster
-// than individual Upsert calls for bulk operations.
+// resourceIDFieldOverrides projects per-resource IDField (set by the profiler
+// from x-resource-id or response-schema fallback) into a runtime lookup map.
+// UpsertBatch consults this first so the templated path wins over the
+// generic fallback list. Empty when no resource declared an override; the
+// runtime fallback list still applies.
 //
-// The returned count lets sync log the honest stored-row count rather
-// than the consumed-item count. When the API returns scalar IDs rather
-// than objects (Firebase /topstories.json, GitHub user-repo lists, etc.)
-// every item fails ID extraction and stored=0 even when consumed=N —
-// callers can detect this divergence and warn loudly instead of
-// silently reporting "N synced".
+// Includes both flat resources and dependent (parent-child) resources so a
+// child path-item annotated with x-resource-id resolves the same as a flat
+// path-item.
+var resourceIDFieldOverrides = map[string]string{
+{{- range .SyncableResources}}
+{{- if .IDField}}
+	{{printf "%q" .Name}}: {{printf "%q" .IDField}},
+{{- end}}
+{{- end}}
+{{- range .DependentSyncResources}}
+{{- if .IDField}}
+	{{printf "%q" .Name}}: {{printf "%q" .IDField}},
+{{- end}}
+{{- end}}
+}
+
+// genericIDFieldFallbacks is the runtime safety net for resources that did
+// NOT receive a templated IDField. API-specific names belong in spec
+// annotations (x-resource-id), not this list.
+var genericIDFieldFallbacks = []string{"id", "ID", "name", "uuid", "slug", "key", "code", "uid"}
+
+// UpsertBatch inserts or replaces multiple records in a single transaction
+// and returns (stored, extractFailures, err). stored counts rows actually
+// landed; extractFailures counts items that survived JSON unmarshal but had
+// no extractable primary key (templated IDField AND generic fallback both
+// missed). callers (sync.go.tmpl) compare these against len(items) to emit
+// the per-item primary_key_unresolved warning and the F4b
+// stored_count_zero_after_extraction probe.
 //
 // For resource types that have a domain-specific typed table, the per-item
 // generic insert is followed by a dispatch to the matching upsert<Pascal>Tx
 // inside the same transaction. Without that dispatch, paginated syncs would
 // only populate the generic resources table — typed tables (and indexed
 // columns like parent_id added by dependent-resource sync) would stay empty.
-func (s *Store) UpsertBatch(resourceType string, items []json.RawMessage) (int, error) {
+func (s *Store) UpsertBatch(resourceType string, items []json.RawMessage) (int, int, error) {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
 	tx, err := s.db.Begin()
 	if err != nil {
-		return 0, fmt.Errorf("starting batch transaction: %w", err)
+		return 0, 0, fmt.Errorf("starting batch transaction: %w", err)
 	}
 	defer tx.Rollback()
 
-	var stored, skippedCount int
+	var stored, skippedCount, extractFailures int
 	for _, item := range items {
 		var obj map[string]any
 		if err := json.Unmarshal(item, &obj); err != nil {
 			skippedCount++
 			continue
 		}
-		// Try common primary key field names in priority order.
+		// Templated IDField wins; generic fallback list runs second when
+		// the override is empty OR the override field is absent on this
+		// particular item (response shape mismatches happen even when the
+		// spec declares x-resource-id).
 		var id string
-		for _, key := range []string{"id", "ID", "ticker", "event_ticker", "series_ticker", "key", "code", "uid", "uuid", "slug", "name"} {
-			if v := lookupFieldValue(obj, key); v != nil {
+		if override, ok := resourceIDFieldOverrides[resourceType]; ok && override != "" {
+			if v := lookupFieldValue(obj, override); v != nil {
 				s := fmt.Sprintf("%v", v)
 				if s != "" && s != "<nil>" {
 					id = s
-					break
+				}
+			}
+		}
+		if id == "" {
+			for _, key := range genericIDFieldFallbacks {
+				if v := lookupFieldValue(obj, key); v != nil {
+					s := fmt.Sprintf("%v", v)
+					if s != "" && s != "<nil>" {
+						id = s
+						break
+					}
 				}
 			}
 		}
 		if id == "" {
 			skippedCount++
+			extractFailures++
 			continue
 		}
 
 		if err := s.upsertGenericResourceTx(tx, resourceType, id, item); err != nil {
-			return 0, fmt.Errorf("upserting %s/%s: %w", resourceType, id, err)
+			return 0, extractFailures, fmt.Errorf("upserting %s/%s: %w", resourceType, id, err)
 		}
 
 		switch resourceType {
@@ -667,7 +729,7 @@ func (s *Store) UpsertBatch(resourceType string, items []json.RawMessage) (int, 
 {{- if and (gt (len .Columns) 3) (ne .Name "sync_state") (hasDomainUpsert .Name)}}
 		case "{{.Name}}":
 			if err := s.upsert{{pascal .Name}}Tx(tx, id, obj, item); err != nil {
-				return 0, fmt.Errorf("typed upsert for %s/%s: %w", resourceType, id, err)
+				return 0, extractFailures, fmt.Errorf("typed upsert for %s/%s: %w", resourceType, id, err)
 			}
 {{- end}}
 {{- end}}
@@ -682,9 +744,9 @@ func (s *Store) UpsertBatch(resourceType string, items []json.RawMessage) (int, 
 	}
 
 	if err := tx.Commit(); err != nil {
-		return 0, err
+		return 0, extractFailures, err
 	}
-	return stored, nil
+	return stored, extractFailures, nil
 }
 
 {{- range .Tables}}
@@ -721,6 +783,8 @@ func (s *Store) Search{{pascal .Name}}(query string, limit int) ([]json.RawMessa
 {{- end}}
 
 func (s *Store) SaveSyncState(resourceType, cursor string, count int) error {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
 	_, err := s.db.Exec(
 		`INSERT INTO sync_state (resource_type, last_cursor, last_synced_at, total_count)
 		 VALUES (?, ?, ?, ?)
@@ -744,6 +808,8 @@ func (s *Store) GetSyncState(resourceType string) (cursor string, lastSynced tim
 
 // SaveSyncCursor stores the pagination cursor for a resource type.
 func (s *Store) SaveSyncCursor(resourceType, cursor string) error {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
 	_, err := s.db.Exec(
 		`INSERT INTO sync_state (resource_type, last_cursor, last_synced_at, total_count)
 		 VALUES (?, ?, CURRENT_TIMESTAMP, 0)
@@ -801,6 +867,8 @@ func (s *Store) GetLastSyncedAt(resourceType string) string {
 
 // ClearSyncCursors resets all sync state for a full resync.
 func (s *Store) ClearSyncCursors() error {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
 	_, err := s.db.Exec("DELETE FROM sync_state")
 	return err
 }

@@ -3838,6 +3838,450 @@ func TestIsSyncAccessWarningClassification(t *testing.T) {
 	runGoCommand(t, outputDir, "test", "./internal/cli", "-run", "TestIsSyncAccessWarningClassification")
 }
 
+// TestGeneratedSyncMaxPagesAndStickyCursor verifies that the generated
+// sync command (a) defaults --max-pages to 100 (covers <=10k items/resource
+// at default page size; bigger resources opt in explicitly), (b) emits a
+// structured sync_warning with reason "max_pages_cap_hit" on BOTH the flat
+// and dependent-resource code paths when the cap is reached, and (c) breaks
+// the pagination loop with a "stuck_pagination" sync_warning when the API
+// echoes a non-advancing next cursor across consecutive pages. The literal
+// "%s" interpolation pattern matches the sync_anomaly emission elsewhere in
+// sync.go.tmpl rather than %q Go-escaping; this test pins both the JSON
+// event shapes and the flag default at the template-emission layer so
+// future template churn cannot silently regress them.
+func TestGeneratedSyncMaxPagesAndStickyCursor(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := &spec.APISpec{
+		Name:    "pagedsync",
+		Version: "0.1.0",
+		BaseURL: "https://api.example.com",
+		Auth: spec.AuthConfig{
+			Type:    "api_key",
+			Header:  "Authorization",
+			Format:  "Bearer {token}",
+			EnvVars: []string{"PAGEDSYNC_API_KEY"},
+		},
+		Config: spec.ConfigSpec{
+			Format: "toml",
+			Path:   "~/.config/pagedsync-pp-cli/config.toml",
+		},
+		// Parent + child resources so the generated sync.go includes
+		// both syncResource (flat path) and syncDependentResource paths,
+		// each of which must emit the new max_pages_cap_hit warning and
+		// the stuck_pagination detector.
+		Resources: map[string]spec.Resource{
+			"channels": {
+				Description: "Manage channels",
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:      "GET",
+						Path:        "/channels",
+						Description: "List channels",
+						Response:    spec.ResponseDef{Type: "array"},
+						Pagination:  &spec.Pagination{CursorParam: "after", LimitParam: "limit"},
+					},
+				},
+			},
+			"messages": {
+				Description: "Manage messages",
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:      "GET",
+						Path:        "/channels/{channelId}/messages",
+						Description: "List messages in a channel",
+						Response:    spec.ResponseDef{Type: "array"},
+						Pagination:  &spec.Pagination{CursorParam: "after", LimitParam: "limit"},
+					},
+				},
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	require.NoError(t, gen.Generate())
+
+	syncGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "sync.go"))
+	require.NoError(t, err)
+	syncContent := string(syncGo)
+
+	// (a) Default --max-pages is 100 (covers <=10k items per resource at
+	// the default page size of 100; the old 10-page default silently
+	// truncated reference resources at 1000 items).
+	assert.Contains(t, syncContent, `cmd.Flags().IntVar(&maxPages, "max-pages", 100,`,
+		"sync.go must declare --max-pages with default 100")
+	assert.NotContains(t, syncContent, `cmd.Flags().IntVar(&maxPages, "max-pages", 10,`,
+		"sync.go must not retain the old 10-page default")
+
+	// (b1) Flat-path cap-hit emits structured sync_warning with reason
+	// "max_pages_cap_hit". Use the literal %s embedded-quote shape — match
+	// the emission in sync.go.tmpl line 374.
+	assert.Contains(t, syncContent,
+		`{"event":"sync_warning","resource":"%s","reason":"max_pages_cap_hit"`,
+		"flat-path cap-hit must emit a structured sync_warning with reason max_pages_cap_hit")
+
+	// (b2) Dependent-path cap-hit emits the same shape (with parent attached).
+	// Pre-WU-2 the dependent-resource cap-hit branch was silent — verify
+	// the new emission lands.
+	assert.Contains(t, syncContent,
+		`{"event":"sync_warning","resource":"%s","parent":"%s","reason":"max_pages_cap_hit"`,
+		"dependent-resource cap-hit must emit a structured sync_warning with reason max_pages_cap_hit")
+
+	// (c) Sticky-cursor detection on the flat path. The check must compare
+	// against a tracked lastNextCursor and emit the structured warning when
+	// the cursor doesn't advance.
+	assert.Contains(t, syncContent, "lastNextCursor",
+		"sync.go must track lastNextCursor for sticky-cursor detection")
+	assert.Contains(t, syncContent, "nextCursor == lastNextCursor",
+		"sync.go must compare nextCursor against lastNextCursor to detect stuck pagination")
+	assert.Contains(t, syncContent,
+		`{"event":"sync_warning","resource":"%s","reason":"stuck_pagination"`,
+		"flat-path stuck-pagination must emit a structured sync_warning")
+
+	// (c2) Dependent-path sticky-cursor emission. Includes parent context.
+	assert.Contains(t, syncContent,
+		`{"event":"sync_warning","resource":"%s","parent":"%s","reason":"stuck_pagination"`,
+		"dependent-resource stuck-pagination must emit a structured sync_warning")
+
+	// AGENTS.md: emission must use the "%s" embedded-quote pattern, not
+	// %q. A %q usage here would be a real bug — JSON shapes for resource
+	// names containing quotes/backslashes would diverge across emission
+	// sites. The plan (docs/plans/2026-04-30-001) calls this out explicitly.
+	assert.NotContains(t, syncContent,
+		`"reason":%q,"message"`,
+		"sync_warning must use literal %s interpolation, not %q Go-escaping")
+
+	// Build the generated CLI to catch template-syntax / import errors that
+	// substring assertions miss.
+	runGoCommand(t, outputDir, "mod", "tidy")
+	runGoCommand(t, outputDir, "build", "./...")
+}
+
+// TestGeneratedSyncExitPolicy pins the generated sync command's exit-code
+// contract: (a) a --strict flag for callers that want any per-resource
+// failure to exit non-zero, (b) a `criticalResources` map literal at the
+// top of newSyncCmd projecting SyncableResource.Critical (set from
+// x-critical), (c) a four-branch exit-policy that downgrades non-critical
+// failures to warnings unless --strict is set, and (d) a one-shot in-band
+// sync_warning with reason "exit_policy_default_changed" emitted the first
+// time the policy suppresses a non-critical failure, so external callers
+// can detect partial-failure tolerance. The literal "%s" embedded-quote
+// pattern matches the shape used elsewhere in sync.go.tmpl.
+func TestGeneratedSyncExitPolicy(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := &spec.APISpec{
+		Name:    "exitsync",
+		Version: "0.1.0",
+		BaseURL: "https://api.example.com",
+		Auth: spec.AuthConfig{
+			Type:    "api_key",
+			Header:  "Authorization",
+			Format:  "Bearer {token}",
+			EnvVars: []string{"EXITSYNC_API_KEY"},
+		},
+		Config: spec.ConfigSpec{
+			Format: "toml",
+			Path:   "~/.config/exitsync-pp-cli/config.toml",
+		},
+		// Two flat resources: one annotated x-critical: true (channels) and
+		// one unannotated (messages). The generator should emit channels in
+		// the criticalResources map and omit messages.
+		Resources: map[string]spec.Resource{
+			"channels": {
+				Description: "Manage channels",
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:      "GET",
+						Path:        "/channels",
+						Description: "List channels",
+						Response:    spec.ResponseDef{Type: "array"},
+						Pagination:  &spec.Pagination{CursorParam: "after", LimitParam: "limit"},
+						Critical:    true,
+					},
+				},
+			},
+			"messages": {
+				Description: "Manage messages",
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:      "GET",
+						Path:        "/messages",
+						Description: "List messages",
+						Response:    spec.ResponseDef{Type: "array"},
+						Pagination:  &spec.Pagination{CursorParam: "after", LimitParam: "limit"},
+					},
+				},
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	require.NoError(t, gen.Generate())
+
+	syncGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "sync.go"))
+	require.NoError(t, err)
+	syncContent := string(syncGo)
+
+	// (a) --strict flag declared with a description that mentions the
+	// per-resource-failure behavior so callers understand the trade-off
+	// against the default critical-only exit policy.
+	assert.Contains(t, syncContent,
+		`cmd.Flags().BoolVar(&strict, "strict", false,`,
+		"sync.go must declare --strict flag")
+	assert.Contains(t, syncContent,
+		"any per-resource failure",
+		"--strict flag description should describe the per-resource-failure behavior")
+
+	// (b) criticalResources map literal lists exactly the critical resources.
+	assert.Contains(t, syncContent,
+		`var criticalResources = map[string]bool{`,
+		"sync.go must declare criticalResources as a package-level var")
+	assert.Contains(t, syncContent,
+		`"channels": true,`,
+		"criticalResources must include channels (x-critical: true)")
+	// messages is non-critical and must NOT appear with `: true,` in the map.
+	// We can't easily assert absence-from-map without a substring scan; ensure
+	// the unrelated literal isn't there.
+	assert.NotContains(t, syncContent,
+		`"messages": true,`,
+		"criticalResources must NOT include messages (no x-critical)")
+
+	// (c) Four-branch exit policy. The four guards land in sequence; assert
+	// each individually so a refactor can't silently collapse two of them.
+	assert.Contains(t, syncContent,
+		`if strict && errCount > 0 {`,
+		"strict-mode branch must exit non-zero on any error")
+	assert.Contains(t, syncContent,
+		`if criticalErrCount > 0 {`,
+		"critical-failure branch must exit non-zero regardless of --strict")
+	assert.Contains(t, syncContent,
+		`if successCount == 0 {`,
+		"nothing-synced branch must exit non-zero")
+
+	// criticalErrCount must be tallied at result-aggregation time using the
+	// criticalResources map. This pins the lookup mechanism so a refactor
+	// can't accidentally drop the per-resource classification.
+	assert.Contains(t, syncContent,
+		`if criticalResources[res.Resource] {`,
+		"sync.go must classify each errored resource against criticalResources")
+
+	// (d) In-band default-flip signal. Fires once when the new default
+	// suppressed a non-zero exit under the old contract.
+	assert.Contains(t, syncContent,
+		`"reason":"exit_policy_default_changed"`,
+		"sync.go must emit one-shot sync_warning with reason exit_policy_default_changed")
+	assert.Contains(t, syncContent,
+		`if errCount > 0 && !strict && criticalErrCount == 0 && successCount > 0 {`,
+		"default-flip signal must fire only when the new default suppressed a non-zero exit")
+
+	// AGENTS.md: emission must use the "%s" embedded-quote pattern, not
+	// %q. Match the sync_anomaly shape on line 374 of sync.go.tmpl.
+	assert.NotContains(t, syncContent,
+		`"reason":%q,"errored"`,
+		"exit_policy_default_changed must use literal %s interpolation, not %q Go-escaping")
+
+	// Build the generated CLI to catch template-syntax / import errors that
+	// substring assertions miss.
+	runGoCommand(t, outputDir, "mod", "tidy")
+	runGoCommand(t, outputDir, "build", "./...")
+}
+
+// TestGeneratedSyncIDFieldOverridesAndProbes pins the WU-2 U3 contract: the
+// generated sync command and store layer (a) emit a resourceIDFieldOverrides
+// map literal projecting SyncableResource.IDField (set by U1 from
+// x-resource-id or response-schema fallback), (b) drop kalshi-specific names
+// (ticker/event_ticker/series_ticker) from the runtime fallback list — no
+// other public-library CLIs depend on them and the user owns kalshi, (c)
+// emit per-item primary_key_unresolved sync_anomaly events the first time
+// silent drops occur (rate-limited via anomalyEmitted), and (d) emit the
+// F4b stored_count_zero_after_extraction probe at end-of-resource for the
+// case where extraction succeeded but rows didn't land. The AGENTS.md
+// "%s" embedded-quote pattern applies — same JSON-shape consistency as U2/U4.
+func TestGeneratedSyncIDFieldOverridesAndProbes(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := &spec.APISpec{
+		Name:    "idfieldsync",
+		Version: "0.1.0",
+		BaseURL: "https://api.example.com",
+		Auth: spec.AuthConfig{
+			Type:    "api_key",
+			Header:  "Authorization",
+			Format:  "Bearer {token}",
+			EnvVars: []string{"IDFIELDSYNC_API_KEY"},
+		},
+		Config: spec.ConfigSpec{
+			Format: "toml",
+			Path:   "~/.config/idfieldsync-pp-cli/config.toml",
+		},
+		// One resource with an explicit IDField (templated path), one without
+		// (runtime fallback). Both have a list endpoint so syncResource is
+		// emitted; messages additionally exercises syncDependentResource via
+		// path-templated parent ID.
+		Resources: map[string]spec.Resource{
+			"events": {
+				Description: "Manage events",
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:      "GET",
+						Path:        "/events",
+						Description: "List events",
+						Response:    spec.ResponseDef{Type: "array"},
+						Pagination:  &spec.Pagination{CursorParam: "after", LimitParam: "limit"},
+						IDField:     "event_id", // Templated override path
+					},
+				},
+			},
+			"channels": {
+				Description: "Manage channels",
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:      "GET",
+						Path:        "/channels",
+						Description: "List channels",
+						Response:    spec.ResponseDef{Type: "array"},
+						Pagination:  &spec.Pagination{CursorParam: "after", LimitParam: "limit"},
+						// No IDField — exercises the runtime fallback path.
+					},
+				},
+			},
+			"messages": {
+				Description: "Manage messages",
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:      "GET",
+						Path:        "/channels/{channelId}/messages",
+						Description: "List messages",
+						Response:    spec.ResponseDef{Type: "array"},
+						Pagination:  &spec.Pagination{CursorParam: "after", LimitParam: "limit"},
+					},
+				},
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	require.NoError(t, gen.Generate())
+
+	syncGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "sync.go"))
+	require.NoError(t, err)
+	syncContent := string(syncGo)
+
+	storeGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "store", "store.go"))
+	require.NoError(t, err)
+	storeContent := string(storeGo)
+
+	// (a) resourceIDFieldOverrides map declared in BOTH sync.go and store.go.
+	// The map projects SyncableResource.IDField — events with IDField=event_id
+	// must appear, channels (no IDField) must NOT.
+	assert.Contains(t, syncContent,
+		`var resourceIDFieldOverrides = map[string]string{`,
+		"sync.go must declare resourceIDFieldOverrides map")
+	assert.Contains(t, syncContent,
+		`"events": "event_id",`,
+		"sync.go resourceIDFieldOverrides must include events: event_id (from IDField)")
+	// channels has no IDField — assert it doesn't appear inside the override
+	// map. We can't use NotContains on `"channels":` blanket because the
+	// resource also appears in syncResourcePath ("channels": "/channels"); pin
+	// the absence by extracting the override-map block and asserting.
+	overrideStart := strings.Index(syncContent, `var resourceIDFieldOverrides = map[string]string{`)
+	require.GreaterOrEqual(t, overrideStart, 0)
+	overrideEnd := strings.Index(syncContent[overrideStart:], "}")
+	require.Greater(t, overrideEnd, 0)
+	overrideBlock := syncContent[overrideStart : overrideStart+overrideEnd]
+	assert.NotContains(t, overrideBlock, `"channels"`,
+		"resourceIDFieldOverrides block must NOT include channels (no IDField)")
+	assert.NotContains(t, overrideBlock, `"messages"`,
+		"resourceIDFieldOverrides block must NOT include messages (no IDField)")
+
+	assert.Contains(t, storeContent,
+		`var resourceIDFieldOverrides = map[string]string{`,
+		"store.go must declare resourceIDFieldOverrides map")
+	assert.Contains(t, storeContent,
+		`"events": "event_id",`,
+		"store.go resourceIDFieldOverrides must include events: event_id")
+
+	// (b) Generic fallback list reduced — kalshi-specific names dropped.
+	// The user owns the kalshi CLI and will regenerate with x-resource-id
+	// annotations; no other public-library CLIs depend on these names.
+	assert.Contains(t, storeContent,
+		`var genericIDFieldFallbacks = []string{"id", "ID", "name", "uuid", "slug", "key", "code", "uid"}`,
+		"store.go genericIDFieldFallbacks must be the reduced WU-2 U3 list")
+	// Negative: kalshi-specific names must not be in the fallback list.
+	// We assert a robust shape: no occurrence of "ticker" inside the fallback
+	// declaration. The generic check below also pins the absence at a
+	// site-independent layer.
+	assert.NotContains(t, storeContent, `"ticker"`,
+		"store.go must not contain ticker as a fallback ID name (WU-2 U3 dropped it)")
+	assert.NotContains(t, storeContent, `"event_ticker"`,
+		"store.go must not contain event_ticker as a fallback ID name (WU-2 U3 dropped it)")
+	assert.NotContains(t, storeContent, `"series_ticker"`,
+		"store.go must not contain series_ticker as a fallback ID name (WU-2 U3 dropped it)")
+
+	// (c) Per-item primary_key_unresolved sync_anomaly emission. Fires
+	// when extractFailures > 0 but at least one item landed; rate-limited
+	// to one event per resource per sync run via anomalyEmitted.
+	assert.Contains(t, syncContent,
+		`"reason":"primary_key_unresolved"`,
+		"sync.go must emit primary_key_unresolved sync_anomaly")
+	assert.Contains(t, syncContent,
+		"anomalyEmitted",
+		"sync.go must rate-limit primary_key_unresolved emission via anomalyEmitted flag")
+	// Pin the literal "%s" interpolation pattern (AGENTS.md).
+	assert.Contains(t, syncContent,
+		`{"event":"sync_anomaly","resource":"%s","consumed":%d,"stored":%d,"count":%d,"reason":"primary_key_unresolved"}`,
+		"primary_key_unresolved must use the literal %s interpolation pattern")
+
+	// Existing roll-up sync_anomaly preserved — fires when 100% of items
+	// fail extraction (entire page yields stored=0).
+	assert.Contains(t, syncContent,
+		`"reason":"all_items_failed_id_extraction"`,
+		"sync.go must preserve the all_items_failed_id_extraction roll-up event")
+
+	// (d) F4b symptom probe at end-of-resource. Fires when consumed > 0
+	// AND totalCount (stored) == 0 AND extraction succeeded for at least
+	// one item — the symptom that's currently held out for controlled
+	// repro. Probe must land in BOTH syncResource and syncDependentResource.
+	assert.Contains(t, syncContent,
+		`"reason":"stored_count_zero_after_extraction"`,
+		"sync.go must emit stored_count_zero_after_extraction sync_anomaly (F4b probe)")
+	// Pin the F4b emission shape (literal "%s" embedded quotes).
+	assert.Contains(t, syncContent,
+		`{"event":"sync_anomaly","resource":"%s","consumed":%d,"stored":0,"extract_failures":%d,"reason":"stored_count_zero_after_extraction"}`,
+		"F4b probe must use the literal %s interpolation pattern")
+
+	// UpsertBatch's signature is (int, int, error) — sync.go must consume
+	// all three return values. Without this contract, extractFailures would
+	// not be observable from sync's per-item warning code.
+	assert.Contains(t, syncContent,
+		`stored, extractFailures, err := db.UpsertBatch(resource, items)`,
+		"sync.go syncResource must consume the three-tuple UpsertBatch return")
+	assert.Contains(t, syncContent,
+		`stored, extractFailures, err := db.UpsertBatch(dep.Name, items)`,
+		"sync.go syncDependentResource must consume the three-tuple UpsertBatch return")
+
+	// store.go's UpsertBatch declaration matches the new signature.
+	assert.Contains(t, storeContent,
+		`func (s *Store) UpsertBatch(resourceType string, items []json.RawMessage) (int, int, error) {`,
+		"store.go UpsertBatch must return (stored, extractFailures, err)")
+
+	// AGENTS.md guard: literal "%s" interpolation, not %q Go-escaping.
+	assert.NotContains(t, syncContent,
+		`"reason":%q,"count"`,
+		"primary_key_unresolved must not use %q Go-escaping")
+
+	// Build the generated CLI to catch template-syntax / import errors that
+	// substring assertions miss. Also run the generated tests so the new
+	// per-resource override and fallback-list tests execute against real code.
+	runGoCommand(t, outputDir, "mod", "tidy")
+	runGoCommand(t, outputDir, "build", "./...")
+	runGoCommand(t, outputDir, "test", "./internal/store/...", "-run", "TestUpsertBatch_TemplatedIDFieldOverrideWins|TestUpsertBatch_GenericFallbackList|TestUpsertBatch_ExtractFailuresReturnedForPerItemMisses")
+}
+
 func TestGenerateGraphQLCompiles(t *testing.T) {
 	t.Parallel()
 
