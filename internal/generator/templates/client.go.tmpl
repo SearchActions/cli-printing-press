@@ -185,6 +185,21 @@ func (c *Client) cacheKey(path string, params map[string]string) string {
 	for k, v := range params {
 		key += k + "=" + v
 	}
+{{- if .EndpointTemplateVars}}
+	// Include resolved template-var values in the cache identity so two
+	// tenants (different SHOPIFY_SHOP) never collide on the same path, and
+	// flipping a value back to unset misses the warm cache and surfaces
+	// the actionable error from buildURL instead of returning stale data.
+	if c.Config != nil {
+		for _, name := range []string{
+		{{- range .EndpointTemplateVars}}
+			"{{.}}",
+		{{- end}}
+		} {
+			key += "|" + name + "=" + c.Config.TemplateVars[name]
+		}
+	}
+{{- end}}
 	h := sha256.Sum256([]byte(key))
 	return hex.EncodeToString(h[:8])
 }
@@ -243,11 +258,36 @@ func (c *Client) PatchWithHeaders(path string, body any, headers map[string]stri
 // do executes an HTTP request. headerOverrides, when non-nil, override global
 // RequiredHeaders for this specific request (used for per-endpoint API versioning).
 func (c *Client) do(method, path string, params map[string]string, body any, headerOverrides map[string]string) (json.RawMessage, int, error) {
+{{- if .EndpointTemplateVars}}
+	// EndpointTemplateVars are declared in the spec — resolve {placeholder}
+	// markers in BaseURL (and, for non-proxy clients, the request path)
+	// against env-backed Config.TemplateVars. Done once at the top of every
+	// request so a missing env var surfaces an actionable error instead of
+	// quietly sending a literal "{shop}" to the API.
+	var endpointVars map[string]string
+	if c.Config != nil {
+		endpointVars = c.Config.TemplateVars
+	}
+{{- end}}
 {{- if eq .ClientPattern "proxy-envelope"}}
 	// Proxy-envelope: all requests are POST'd to BaseURL with a JSON envelope
+{{- if .EndpointTemplateVars}}
+	targetURL, urlErr := buildURL(c.BaseURL, "", endpointVars)
+	if urlErr != nil {
+		return nil, 0, urlErr
+	}
+{{- else}}
 	targetURL := c.BaseURL
+{{- end}}
+{{- else}}
+{{- if .EndpointTemplateVars}}
+	targetURL, urlErr := buildURL(c.BaseURL, path, endpointVars)
+	if urlErr != nil {
+		return nil, 0, urlErr
+	}
 {{- else}}
 	targetURL := c.BaseURL + path
+{{- end}}
 {{- end}}
 
 	var bodyBytes []byte
