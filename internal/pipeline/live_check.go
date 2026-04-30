@@ -14,6 +14,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 )
 
 // LiveStatus is the outcome of one feature's live check.
@@ -345,7 +346,7 @@ func runOneFeatureCheck(cliDir, binaryPath string, f NovelFeature, timeout time.
 		return fail("empty output")
 	}
 
-	if query := extractQueryToken(args); query != "" {
+	if query := extractQueryToken(args, f.Command); query != "" {
 		if !outputMentionsQuery(stdoutCap.String(), query) {
 			return fail(fmt.Sprintf("output does not contain any token from query %q", query))
 		}
@@ -500,21 +501,20 @@ func shellSplit(s string) ([]string, error) {
 //
 // URLs and IDs are intentionally excluded: the CLI's output for a URL-based
 // command (recipe get <url>) wouldn't contain the URL itself, so matching
-// against it produces false negatives.
+// against it produces false negatives. commandPath is the cobra command
+// path being exercised (e.g. "leaderboard top"); positionals that match a
+// word from it are treated as subcommand names, not queries — without
+// this, `leaderboard top` would treat `top` as a search query and fail
+// the relevance heuristic against output that has no reason to echo it.
 //
 // Examples:
 //
-//	["goat", "brownies", "--limit", "5"]  → "brownies"
-//	["sub", "buttermilk"]                 → "buttermilk"
-//	["recipe", "get", "https://foo/bar"]  → "" (URL, skip relevance check)
-//	["cookbook", "list", "--json"]        → "" (no query)
-//
-// TODO: commands like `list pending` where "pending" is a status keyword
-// won't have the status in their rendered output, producing a spurious
-// relevance failure. If this starts biting, consider a denylist of common
-// non-content positionals or reading a dedicated "relevance arg" pointer
-// from NovelFeature metadata.
-func extractQueryToken(args []string) string {
+//	args=["goat", "brownies", "--limit", "5"], cmd="goat"           → "brownies"
+//	args=["sub", "buttermilk"], cmd="sub"                            → "buttermilk"
+//	args=["recipe", "get", "https://foo/bar"], cmd="recipe get"      → "" (URL, skip)
+//	args=["cookbook", "list", "--json"], cmd="cookbook list"         → "" (no query)
+//	args=["leaderboard", "top"], cmd="leaderboard top"               → "" (subcommand name)
+func extractQueryToken(args []string, commandPath string) string {
 	var positionals []string
 	for _, arg := range args {
 		if strings.HasPrefix(arg, "-") {
@@ -526,6 +526,12 @@ func extractQueryToken(args []string) string {
 		return ""
 	}
 	candidate := positionals[len(positionals)-1]
+	candidateLower := strings.ToLower(candidate)
+	for word := range strings.FieldsSeq(strings.ToLower(commandPath)) {
+		if word == candidateLower {
+			return ""
+		}
+	}
 	if looksLikeURLOrID(candidate) {
 		return ""
 	}
@@ -576,11 +582,15 @@ func looksLikeURLOrID(s string) bool {
 }
 
 // outputMentionsQuery is case-insensitive; splits the query on whitespace
-// and succeeds if any token (with singular/plural tolerance) appears in the
-// output. Mirrors the permissive relevance check used inside generated CLIs.
+// and commas, then succeeds if any token (with singular/plural tolerance)
+// appears in the output. Mirrors the permissive relevance check used
+// inside generated CLIs. Splitting on commas catches comma-separated
+// list queries like `pikachu,charizard,blastoise` whose individual names
+// appear in JSON-array outputs separated by quote+comma+quote.
 func outputMentionsQuery(output, query string) bool {
 	lowered := strings.ToLower(output)
-	for tok := range strings.FieldsSeq(strings.ToLower(query)) {
+	splitOnQueryDelim := func(r rune) bool { return unicode.IsSpace(r) || r == ',' }
+	for _, tok := range strings.FieldsFunc(strings.ToLower(query), splitOnQueryDelim) {
 		tok = strings.TrimFunc(tok, func(r rune) bool { return r == '"' || r == '\'' })
 		if len(tok) < 3 {
 			continue
