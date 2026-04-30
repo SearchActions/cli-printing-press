@@ -33,6 +33,13 @@ type Config struct {
 	{{envVarField .}} string `{{configTag $.Config.Format}}:"{{envVarPlaceholder .}}"`
 {{- end}}
 {{- end}}
+{{- if .EndpointTemplateVars}}
+	// TemplateVars holds the runtime values for {placeholder} markers in
+	// BaseURL and the request path (e.g. Shopify's {shop}/{version}). Populated
+	// at Load() time from env vars; consumed by the client's buildURL helper.
+	// Stored as a serializable map so non-default values survive a config save.
+	TemplateVars map[string]string `{{configTag .Config.Format}}:"template_vars,omitempty"`
+{{- end}}
 }
 
 func Load(configPath string) (*Config, error) {
@@ -85,6 +92,22 @@ func Load(configPath string) (*Config, error) {
 	if v := os.Getenv("{{envName .Name}}_BASE_URL"); v != "" {
 		cfg.BaseURL = v
 	}
+{{- if .EndpointTemplateVars}}
+
+	// Endpoint template vars: resolve each {placeholder} in BaseURL or the
+	// GraphQL path against the matching env var. Populated even when values
+	// are empty so the client's buildURL helper can issue an actionable
+	// "export FOO_BAR=..." error instead of silently sending a request to a
+	// URL with literal "{shop}" in it.
+	if cfg.TemplateVars == nil {
+		cfg.TemplateVars = map[string]string{}
+	}
+{{- range .EndpointTemplateVars}}
+	if v := os.Getenv("{{envName $.Name}}_{{upper .}}"); v != "" {
+		cfg.TemplateVars["{{.}}"] = v
+	}
+{{- end}}
+{{- end}}
 	return cfg, nil
 }
 
