@@ -1282,6 +1282,100 @@ func TestGenerateWithEmptyOwner(t *testing.T) {
 	assert.NotContains(t, string(gomod), "module github.com/")
 }
 
+// TestGenerateStoreMigrateUsesBeginImmediate is a fast canary that the
+// emitted store.go runs migrations inside a BEGIN IMMEDIATE transaction
+// pinned to a single connection. Without it, parallel Open() against a
+// fresh DB races per CREATE TABLE statement and trips SQLITE_BUSY despite
+// the busy_timeout. The runtime concurrency check ships into every
+// generated CLI's store package; this test fails the generator
+// immediately on regression so the slower runtime check doesn't have
+// to be the first signal.
+func TestGenerateStoreMigrateUsesBeginImmediate(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := &spec.APISpec{
+		Name:    "begin-immediate-canary",
+		Version: "0.1.0",
+		BaseURL: "https://api.example.com",
+		Auth:    spec.AuthConfig{Type: "none"},
+		Config: spec.ConfigSpec{
+			Format: "toml",
+			Path:   "~/.config/begin-immediate-canary-pp-cli/config.toml",
+		},
+		Resources: map[string]spec.Resource{
+			"things": {
+				Description: "Things",
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:      "GET",
+						Path:        "/things",
+						Description: "List things",
+						Response:    spec.ResponseDef{Type: "array"},
+						Params: []spec.Param{
+							{Name: "id", Type: "string"},
+							{Name: "name", Type: "string"},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	gen.VisionSet = VisionTemplateSet{Store: true}
+	require.NoError(t, gen.Generate())
+
+	storeSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "store", "store.go"))
+	require.NoError(t, err)
+	src := string(storeSrc)
+
+	// Stripping comments first prevents false negatives from a refactor that
+	// removes the call sites but leaves explanatory prose containing the same
+	// keywords behind. The check would otherwise pass on comments alone.
+	codeOnly := stripGoComments(src)
+
+	assert.Contains(t, codeOnly, `withMigrationLock(`,
+		"migrate must dispatch the lock helper — without this call, the BEGIN/COMMIT wrapper is unreachable")
+	assert.Contains(t, codeOnly, `s.db.Conn(ctx)`,
+		"migrate must pin a connection — BEGIN/COMMIT pairs must run on the same connection")
+	assert.Contains(t, codeOnly, `BEGIN IMMEDIATE`,
+		"migrate must wrap migrations in BEGIN IMMEDIATE so concurrent fresh-DB Opens serialize on the RESERVED lock instead of racing per-statement")
+	assert.Contains(t, codeOnly, `COMMIT`,
+		"migrate must commit the transaction explicitly")
+}
+
+// stripGoComments removes // line comments and /* ... */ block comments from
+// Go source. Crude but sufficient for canary assertions on emitted templates;
+// it doesn't try to parse string literals (none of the asserted substrings
+// appear in literals in the templates we check).
+func stripGoComments(src string) string {
+	var b strings.Builder
+	b.Grow(len(src))
+	i := 0
+	for i < len(src) {
+		if i+1 < len(src) && src[i] == '/' && src[i+1] == '/' {
+			for i < len(src) && src[i] != '\n' {
+				i++
+			}
+			continue
+		}
+		if i+1 < len(src) && src[i] == '/' && src[i+1] == '*' {
+			i += 2
+			for i+1 < len(src) && (src[i] != '*' || src[i+1] != '/') {
+				i++
+			}
+			if i+1 < len(src) {
+				i += 2
+			}
+			continue
+		}
+		b.WriteByte(src[i])
+		i++
+	}
+	return b.String()
+}
+
 func TestGenerateStoreWithBatchResourceDoesNotDuplicateUpsertBatch(t *testing.T) {
 	t.Parallel()
 

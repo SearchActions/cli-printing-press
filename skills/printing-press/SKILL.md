@@ -1663,6 +1663,91 @@ Phase 1 research brief for auth requirements and manually add env var support to
 `config.go` using the pattern: add `APIKey`/`APIKeySource` fields to the Config struct,
 and `os.Getenv("<API>_API_KEY")` in the Load function.
 
+**REQUIRED: Validate narrative `command` strings resolve in the CLI tree.**
+The LLM (or human) authoring `research.json` can name commands that don't actually
+exist in the generated CLI — `<cli> stats` when the real shape is `<cli> reports stats`,
+or a command that was dropped because its endpoint had a complex body. Without a check,
+the broken commands ship to the README's Quick Start (`narrative.quickstart`) and the
+SKILL's recipes (`narrative.recipes`); users copy-paste them and hit `unknown command`
+on the very first invocation.
+
+Build the CLI binary first (the CLI does not need to run against a live API for this
+check; `--help` is offline). Then for each `narrative.quickstart[].command` and
+`narrative.recipes[].command`, strip the binary name and trailing arguments to get the
+command path, and confirm it walks the Cobra tree:
+
+```bash
+QUICKSTART_BINARY="$CLI_WORK_DIR/<api>-pp-cli"
+go build -o "$QUICKSTART_BINARY" "$CLI_WORK_DIR/cmd/<api>-pp-cli"
+
+# Fail loudly if research.json is missing or malformed — silent jq output
+# would otherwise pass an empty pipeline through the loop and falsely
+# report "everything looks fine" when nothing was actually checked.
+if [ ! -f "$API_RUN_DIR/research.json" ]; then
+  echo "ERROR: $API_RUN_DIR/research.json not found; cannot validate narrative commands" >&2
+  exit 1
+fi
+if ! jq empty "$API_RUN_DIR/research.json" >/dev/null 2>&1; then
+  echo "ERROR: $API_RUN_DIR/research.json is not valid JSON" >&2
+  exit 1
+fi
+
+# Track whether any narrative command was actually walked. An empty quickstart
+# AND empty recipes list is itself worth flagging — the LLM authoring the
+# research.json may have omitted both sections by mistake.
+walked=0
+missing=0
+
+while IFS=$'\t' read -r section cmd; do
+  # Drop the leading binary name and any --flag/positional arg suffix.
+  # Keep only the literal subcommand words (everything before the first
+  # word that starts with `-` or that contains `=`/`:`/non-alphanumerics).
+  words=$(printf '%s\n' "$cmd" \
+    | awk '{ for (i=2; i<=NF; i++) { if ($i ~ /^-/ || $i ~ /[^a-zA-Z0-9_-]/) break; printf "%s ", $i } }')
+  # Strip trailing whitespace; awk's "%s " emits a trailing space.
+  words=$(printf '%s' "$words" | sed 's/[[:space:]]*$//')
+  if [ -z "$words" ]; then
+    # Bare-binary or pure-flag commands ("<cli>", "<cli> --version") have
+    # nothing for `--help` to validate. Flag instead of silently passing.
+    echo "EMPTY [$section]: $cmd has no subcommand words to verify" >&2
+    missing=$((missing + 1))
+    continue
+  fi
+  walked=$((walked + 1))
+  # shellcheck disable=SC2086  # words is a deliberate splat into argv
+  if ! "$QUICKSTART_BINARY" $words --help >/dev/null 2>&1; then
+    echo "MISSING [$section]: $cmd → $words" >&2
+    missing=$((missing + 1))
+  fi
+done < <(jq -r '
+  ((.narrative.quickstart // []) | .[] | "quickstart\t" + .command),
+  ((.narrative.recipes // [])    | .[] | "recipes\t"    + .command)
+' "$API_RUN_DIR/research.json")
+
+if [ "$walked" -eq 0 ] && [ "$missing" -eq 0 ]; then
+  echo "WARNING: research.json has no narrative.quickstart or narrative.recipes entries" >&2
+fi
+if [ "$missing" -gt 0 ]; then
+  echo "ERROR: $missing narrative command(s) failed validation; fix research.json before continuing" >&2
+  exit 1
+fi
+```
+
+If any commands are reported missing, fix them in `research.json` before continuing.
+Common causes:
+
+- Resource was renamed during generation (typically the spec uses `users` but the LLM
+  wrote `user` in research.json).
+- The endpoint exists but is hidden (had a complex body and was dropped from the
+  promoted-command surface; reach it via the typed `<resource> <endpoint>` form).
+- The command name is a placeholder (`<cli> example`) that should have been replaced
+  with a real path.
+
+`narrative.quickstart` drives the README Quick Start and `narrative.recipes` drives
+the SKILL.md recipes; getting either wrong silently ships copy-paste-broken examples
+to users. The `--help`-walk check is the cheapest catch and runs offline against the
+just-built binary — no live API access needed.
+
 After the description rewrite, update the lock heartbeat:
 
 ```bash
