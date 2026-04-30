@@ -787,3 +787,58 @@ func initRoot() {
 	assert.Equal(t, "PASS", report.Verdict)
 	assert.FileExists(t, report.Binary)
 }
+
+// TestDiscoverCLIEnvVars_SkipsTemplateVarReads guards the verifier integration
+// for endpoint template vars: the helper must NOT report env vars that feed
+// Config.TemplateVars (Shopify's SHOPIFY_SHOP / SHOPIFY_API_VERSION shape) as
+// auth env vars, because the verifier's --api-key path overwrites every
+// discovered name with the API key value, which would route requests at the
+// API-key string instead of the configured shop.
+func TestDiscoverCLIEnvVars_SkipsTemplateVarReads(t *testing.T) {
+	dir := t.TempDir()
+	configDir := filepath.Join(dir, "internal", "config")
+	require.NoError(t, os.MkdirAll(configDir, 0o755))
+
+	// Mirror the shape that config.go.tmpl emits for a spec with both auth
+	// env vars and EndpointTemplateVars: auth reads land in named fields,
+	// template-var reads land in Config.TemplateVars.
+	configBody := `package config
+
+import "os"
+
+type Config struct {
+	BaseURL      string
+	AccessToken  string
+	TemplateVars map[string]string
+}
+
+func Load() *Config {
+	cfg := &Config{}
+	if v := os.Getenv("SHOPIFY_ACCESS_TOKEN"); v != "" {
+		cfg.AccessToken = v
+	}
+	if v := os.Getenv("SHOPIFY_BASE_URL"); v != "" {
+		cfg.BaseURL = v
+	}
+	if cfg.TemplateVars == nil {
+		cfg.TemplateVars = map[string]string{}
+	}
+	if v := os.Getenv("SHOPIFY_SHOP"); v != "" {
+		cfg.TemplateVars["shop"] = v
+	}
+	if v := os.Getenv("SHOPIFY_API_VERSION"); v != "" {
+		cfg.TemplateVars["api_version"] = v
+	}
+	return cfg
+}
+`
+	require.NoError(t, os.WriteFile(filepath.Join(configDir, "config.go"), []byte(configBody), 0o644))
+
+	got := discoverCLIEnvVars(dir)
+	assert.Equal(t, []string{"SHOPIFY_ACCESS_TOKEN"}, got,
+		"discoverCLIEnvVars must report only auth env vars; template-var reads must be excluded")
+
+	gotTemplate := discoverCLITemplateVarEnvs(dir)
+	assert.ElementsMatch(t, []string{"SHOPIFY_SHOP", "SHOPIFY_API_VERSION"}, gotTemplate,
+		"discoverCLITemplateVarEnvs must return the template-var env names so mock mode can inject placeholder values")
+}

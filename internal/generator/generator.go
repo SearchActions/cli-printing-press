@@ -1154,6 +1154,17 @@ func (g *Generator) renderOptionalSupportFiles() error {
 		}
 	}
 
+	// Specs that declare per-tenant URL placeholders (e.g. Shopify's
+	// "{shop}" / "{version}") get a buildURL helper that resolves the
+	// {var} markers against env-backed Config.TemplateVars at request
+	// time. Specs without EndpointTemplateVars skip the file so existing
+	// CLIs regenerate byte-for-byte.
+	if len(g.Spec.EndpointTemplateVars) > 0 {
+		if err := g.renderTemplate("url.go.tmpl", filepath.Join("internal", "client", "url.go"), g.Spec); err != nil {
+			return fmt.Errorf("rendering url helper: %w", err)
+		}
+	}
+
 	return nil
 }
 

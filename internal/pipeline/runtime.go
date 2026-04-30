@@ -166,6 +166,15 @@ func RunVerify(cfg VerifyConfig) (*VerifyReport, error) {
 		}
 	}
 
+	// EndpointTemplateVars env names live in their own bucket so the
+	// --api-key overwrite path doesn't rewrite SHOPIFY_SHOP into the
+	// API key, and so mock mode can inject placeholder values that
+	// satisfy buildURL without leaking into authEnvVars. Live mode
+	// inherits whatever the operator already exported; we don't mirror
+	// the env into the subprocess again because os.Environ() above
+	// already carries it.
+	templateVarEnvs := discoverCLITemplateVarEnvs(cfg.Dir)
+
 	// buildEnv constructs the environment for test subprocesses, passing
 	// all auth-related env vars so auth-requiring commands can complete.
 	buildEnv := func() []string {
@@ -187,6 +196,15 @@ func RunVerify(cfg VerifyConfig) (*VerifyReport, error) {
 			env = append(env, baseURLEnvVar+"="+baseURLOverride)
 			for _, ev := range authEnvVars {
 				env = append(env, ev+"=mock-token-for-testing")
+			}
+			// Templated URLs (e.g. /admin/api/{api_version}/graphql.json)
+			// need every {var} resolved before buildURL succeeds. Without
+			// injecting safe values here mock-mode requests never leave the
+			// generated CLI — TemplateVarError fires first. The string
+			// "mock" is opaque to the test server, which echoes whatever
+			// path it receives.
+			for _, ev := range templateVarEnvs {
+				env = append(env, ev+"=mock")
 			}
 			// Defense-in-depth: every mock-mode subprocess inherits this
 			// env var. Generated commands that perform visible side
@@ -602,6 +620,14 @@ func startMockServer(spec *openAPISpec) (*httptest.Server, string) {
 	return server, server.URL
 }
 
+// templateVarReadRe matches the shape config.go.tmpl emits for each
+// EndpointTemplateVars entry: `os.Getenv("X")` immediately followed by a
+// `cfg.TemplateVars["..."] = v` assignment. Auth-bearing env reads land in
+// named cfg fields; template-var reads land in this map. Used by both
+// discoverCLIEnvVars (to exclude template names from the auth set) and
+// discoverCLITemplateVarEnvs (to recover them for mock-mode injection).
+var templateVarReadRe = regexp.MustCompile(`(?s)os\.Getenv\("([^"]+)"\)[^{]*\{\s*cfg\.TemplateVars\[`)
+
 // discoverCLIEnvVars reads the CLI's config.go and extracts env var names
 // from os.Getenv() calls. This discovers what the CLI actually reads, which
 // may differ from what the spec declares or the API name implies.
@@ -611,8 +637,23 @@ func discoverCLIEnvVars(dir string) []string {
 	if err != nil {
 		return nil
 	}
+	body := string(data)
+
+	// Endpoint template vars (Shopify's SHOPIFY_SHOP / SHOPIFY_API_VERSION
+	// shape) feed Config.TemplateVars, NOT the auth header. The verifier's
+	// --api-key path overwrites every discovered auth env var with the API
+	// key, so leaking a template-var name into authEnvVars rewrites the
+	// resolved hostname to the API key string and routes the live request
+	// at the wrong URL. Match the template-var shape and exclude those
+	// names from the discovered set; mock-mode injection lives separately
+	// in discoverCLITemplateVarEnvs.
+	templateVarNames := map[string]bool{}
+	for _, m := range templateVarReadRe.FindAllStringSubmatch(body, -1) {
+		templateVarNames[m[1]] = true
+	}
+
 	re := regexp.MustCompile(`os\.Getenv\("([^"]+)"\)`)
-	matches := re.FindAllStringSubmatch(string(data), -1)
+	matches := re.FindAllStringSubmatch(body, -1)
 	seen := map[string]bool{}
 	var envVars []string
 	for _, m := range matches {
@@ -621,12 +662,39 @@ func discoverCLIEnvVars(dir string) []string {
 		if strings.HasSuffix(name, "_BASE_URL") || strings.HasSuffix(name, "_CONFIG") {
 			continue
 		}
+		if templateVarNames[name] {
+			continue
+		}
 		if !seen[name] {
 			seen[name] = true
 			envVars = append(envVars, name)
 		}
 	}
 	return envVars
+}
+
+// discoverCLITemplateVarEnvs returns the env var names that feed
+// Config.TemplateVars (the {placeholder} markers in BaseURL or the request
+// path). Mock-mode verification needs these so buildURL doesn't fail on
+// unresolved {var} markers — without injection, a templated GraphQL path
+// like /admin/api/{api_version}/graphql.json returns TemplateVarError
+// before the mock server ever sees a request.
+func discoverCLITemplateVarEnvs(dir string) []string {
+	configPath := filepath.Join(dir, "internal", "config", "config.go")
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		return nil
+	}
+	seen := map[string]bool{}
+	var names []string
+	for _, m := range templateVarReadRe.FindAllStringSubmatch(string(data), -1) {
+		name := m[1]
+		if !seen[name] {
+			seen[name] = true
+			names = append(names, name)
+		}
+	}
+	return names
 }
 
 // camelToKebab is defined in verify.go

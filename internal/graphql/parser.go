@@ -70,9 +70,16 @@ func parseSDLContent(source, raw string) (*spec.APISpec, error) {
 	}
 
 	name := deriveAPIName(source)
-	baseURL, auth := knownGraphQLDefaults(name, source)
+	baseURL, endpointPath, auth := knownGraphQLDefaults(name, source)
 	if baseURL == "" {
-		baseURL = "https://api.example.com/graphql"
+		baseURL = "https://api.example.com"
+	}
+	if endpointPath == "" {
+		// Default to the canonical "/graphql" path so existing GraphQL specs
+		// regenerate to a working client without spec-author intervention.
+		// Specs that need a different path (Shopify's
+		// "/admin/api/{version}/graphql.json") populate the field directly.
+		endpointPath = "/graphql"
 	}
 	if auth.Type == "" {
 		auth = spec.AuthConfig{
@@ -83,10 +90,11 @@ func parseSDLContent(source, raw string) (*spec.APISpec, error) {
 	}
 
 	apiSpec := &spec.APISpec{
-		Name:        name,
-		Description: "Generated from GraphQL schema",
-		BaseURL:     baseURL,
-		Auth:        auth,
+		Name:                name,
+		Description:         "Generated from GraphQL schema",
+		BaseURL:             baseURL,
+		GraphQLEndpointPath: endpointPath,
+		Auth:                auth,
 		Config: spec.ConfigSpec{
 			Format: "toml",
 			Path:   fmt.Sprintf("~/.config/%s-pp-cli/config.toml", name),
@@ -772,28 +780,33 @@ func deriveAPIName(source string) string {
 	return base
 }
 
-func knownGraphQLDefaults(name, source string) (string, spec.AuthConfig) {
+// knownGraphQLDefaults returns the (baseURL, graphqlEndpointPath, auth) tuple
+// for APIs the parser recognizes by name or source URL. The split between
+// baseURL and endpointPath lets the generated client build per-tenant or
+// versioned URLs at request time (PR-2 substitutes {var} placeholders) rather
+// than baking the path into the BaseURL string.
+func knownGraphQLDefaults(name, source string) (string, string, spec.AuthConfig) {
 	match := strings.ToLower(name + " " + source)
 	switch {
 	case strings.Contains(match, "linear"):
-		return "https://api.linear.app/graphql", spec.AuthConfig{
+		return "https://api.linear.app", "/graphql", spec.AuthConfig{
 			Type:    "api_key",
 			Header:  "Authorization",
 			EnvVars: []string{"LINEAR_API_KEY"},
 		}
 	case strings.Contains(match, "github"):
-		return "https://api.github.com/graphql", spec.AuthConfig{
+		return "https://api.github.com", "/graphql", spec.AuthConfig{
 			Type:    "bearer_token",
 			Header:  "Authorization",
 			EnvVars: []string{"GITHUB_TOKEN"},
 		}
 	case strings.Contains(match, "shopify"):
-		return "https://shopify.dev/graphql", spec.AuthConfig{
+		return "https://shopify.dev", "/graphql", spec.AuthConfig{
 			Type:    "api_key",
 			Header:  "X-Shopify-Access-Token",
 			EnvVars: []string{"SHOPIFY_ACCESS_TOKEN"},
 		}
 	default:
-		return "", spec.AuthConfig{}
+		return "", "", spec.AuthConfig{}
 	}
 }
