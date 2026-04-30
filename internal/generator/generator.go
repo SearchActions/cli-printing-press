@@ -760,8 +760,8 @@ func hasWriteCommands(resources map[string]spec.Resource) bool {
 }
 
 func resourceHasWriteCommand(resource spec.Resource) bool {
-	for _, endpoint := range resource.Endpoints {
-		if methodIsWrite(endpoint.Method) {
+	for name, endpoint := range resource.Endpoints {
+		if endpointIsWriteCommand(endpoint, name) {
 			return true
 		}
 	}
@@ -773,6 +773,8 @@ func resourceHasWriteCommand(resource spec.Resource) bool {
 	return false
 }
 
+// methodIsWrite is the verb-only fallback. Prefer endpointIsWriteCommand
+// when an Endpoint is in hand.
 func methodIsWrite(method string) bool {
 	switch strings.ToUpper(strings.TrimSpace(method)) {
 	case "POST", "PUT", "PATCH", "DELETE":
@@ -780,6 +782,120 @@ func methodIsWrite(method string) bool {
 	default:
 		return false
 	}
+}
+
+// readOperationIDPrefixes signal a read regardless of HTTP verb. Matched
+// against the leading camelCase token of the operation id, case-insensitive.
+// Whole-token (not substring) matching avoids false reads on names like
+// "getter" or "listenerStart" while still catching "getUser", "listOrders".
+var readOperationIDPrefixes = map[string]bool{
+	"get":      true,
+	"list":     true,
+	"search":   true,
+	"find":     true,
+	"query":    true,
+	"count":    true,
+	"describe": true,
+	"fetch":    true,
+}
+
+// writeOperationIDFragments name mutations. When a read-shaped leading token
+// is followed by one of these (e.g. getOrCreate, fetchAndUpdate), the
+// classifier flips back to write — the leading verb was misleading.
+var writeOperationIDFragments = map[string]bool{
+	"create": true,
+	"update": true,
+	"delete": true,
+	"remove": true,
+	"add":    true,
+	"insert": true,
+	"set":    true,
+	"upsert": true,
+	"save":   true,
+}
+
+// readBodyParamNames are filter-shape body field names. A POST whose body
+// params are entirely drawn from this set is acting as a query, not a
+// mutation; mixing in any unknown name flips the endpoint back to write.
+var readBodyParamNames = map[string]bool{
+	"query":     true,
+	"querytext": true,
+	"q":         true,
+	"filter":    true,
+	"filters":   true,
+	"limit":     true,
+	"offset":    true,
+	"from":      true,
+	"size":      true,
+	"cursor":    true,
+	"page":      true,
+	"pagesize":  true,
+	"sort":      true,
+	"sortby":    true,
+	"orderby":   true,
+}
+
+// endpointIsWriteCommand returns true when the endpoint mutates external
+// state. Read signals are checked in cost order: annotation, verb, name
+// token, body shape. Fail-closed when none fire so unknown shapes stay
+// classified as writes.
+//
+// opName is the map key from Resource.Endpoints (the operation id).
+func endpointIsWriteCommand(endpoint spec.Endpoint, opName string) bool {
+	if v, ok := endpoint.Meta["mcp:read-only"]; ok && strings.EqualFold(strings.TrimSpace(v), "true") {
+		return false
+	}
+	if !methodIsWrite(endpoint.Method) {
+		return false
+	}
+	tokens := camelCaseTokens(strings.TrimSpace(opName))
+	if len(tokens) > 0 && readOperationIDPrefixes[strings.ToLower(tokens[0])] {
+		for _, tok := range tokens[1:] {
+			if writeOperationIDFragments[strings.ToLower(tok)] {
+				return true
+			}
+		}
+		return false
+	}
+	return !bodyIsAllFilterShape(endpoint.Body)
+}
+
+// camelCaseTokens splits "getOrCreate" → ["get", "Or", "Create"] and
+// "searchAll" → ["search", "All"]. Non-letter runes (digits, separators)
+// stay attached to the preceding token.
+func camelCaseTokens(s string) []string {
+	if s == "" {
+		return nil
+	}
+	var tokens []string
+	var cur []rune
+	for _, r := range s {
+		if unicode.IsUpper(r) && len(cur) > 0 {
+			tokens = append(tokens, string(cur))
+			cur = []rune{r}
+			continue
+		}
+		cur = append(cur, r)
+	}
+	if len(cur) > 0 {
+		tokens = append(tokens, string(cur))
+	}
+	return tokens
+}
+
+// bodyIsAllFilterShape reports whether every body param's name is in
+// readBodyParamNames. Returns false for empty bodies so a POST with no body
+// (the fail-closed default) stays classified as a write.
+func bodyIsAllFilterShape(body []spec.Param) bool {
+	if len(body) == 0 {
+		return false
+	}
+	for _, p := range body {
+		if !readBodyParamNames[strings.ToLower(strings.TrimSpace(p.Name))] {
+			return false
+		}
+	}
+	return true
 }
 
 func (g *Generator) templateData() *generatorTemplateData {
