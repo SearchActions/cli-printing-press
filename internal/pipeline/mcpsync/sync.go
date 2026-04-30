@@ -16,6 +16,8 @@ import (
 	"github.com/mvanhorn/cli-printing-press/v2/internal/openapi"
 	"github.com/mvanhorn/cli-printing-press/v2/internal/pipeline"
 	"github.com/mvanhorn/cli-printing-press/v2/internal/spec"
+	"golang.org/x/mod/modfile"
+	"golang.org/x/mod/semver"
 )
 
 var (
@@ -133,6 +135,18 @@ func Sync(cliDir string, opts Options) (Result, error) {
 		}
 		if err := ensureEndpointAnnotations(cliDir, parsed, features); err != nil {
 			return Result{}, err
+		}
+		// Cobratree templates (mcp_tools.go.tmpl, main_mcp.go.tmpl, etc.)
+		// use APIs added in mcp-go v0.47.0 (WithReadOnlyHintAnnotation,
+		// req.GetArguments). Older generated CLIs pin a lower version
+		// and won't compile after the surface regen below. Bump the
+		// pin in go.mod before generation so the resulting CLI builds.
+		bumpedFrom, err := ensureMCPGoMinVersion(cliDir)
+		if err != nil {
+			return Result{}, err
+		}
+		if bumpedFrom != "" {
+			fmt.Fprintf(os.Stderr, "mcp-sync: bumped mark3labs/mcp-go in go.mod from %s to %s for cobratree compatibility\n", bumpedFrom, minMCPGoVersionForCobratree)
 		}
 		// Older generator templates split MCP handlers into a separate
 		// internal/mcp/handlers.go file. The current template emits all
@@ -658,4 +672,64 @@ func writeFileAtomic(path string, data []byte) error {
 		return fmt.Errorf("replacing %s: %w", path, err)
 	}
 	return nil
+}
+
+// mcpGoModulePath identifies the mcp-go module across regex/lookup
+// sites. Single source so the import path stays in lockstep with the
+// constant it pairs with.
+const mcpGoModulePath = "github.com/mark3labs/mcp-go"
+
+// minMCPGoVersionForCobratree is the floor mark3labs/mcp-go version
+// the cobratree-era templates compile against. Pinned to whatever the
+// generator's go.mod template currently emits — bump both together.
+// TestMinMCPGoVersionMatchesGoModTemplate keeps them in lockstep.
+const minMCPGoVersionForCobratree = "v0.47.0"
+
+// ensureMCPGoMinVersion bumps the mark3labs/mcp-go require directive
+// in go.mod to minMCPGoVersionForCobratree when the existing pin is
+// older. Returns the prior version when a bump happened, the empty
+// string when no change was needed (already current, or dep absent).
+//
+// Older library CLIs predating cobratree pin v0.26.0 or similar; the
+// migration block above regenerates MCP source against the cobratree
+// templates which call APIs (WithReadOnlyHintAnnotation, GetArguments)
+// added in v0.47.0. Without the bump the regenerated CLI fails to
+// compile and the sync silently leaves a broken state.
+//
+// Uses modfile.Parse so a `replace` directive pointing the module at
+// a fork or local path is left alone — only the require entry moves.
+func ensureMCPGoMinVersion(cliDir string) (priorVersion string, err error) {
+	gomodPath := filepath.Join(cliDir, "go.mod")
+	data, err := os.ReadFile(gomodPath)
+	if err != nil {
+		return "", fmt.Errorf("reading go.mod: %w", err)
+	}
+	mf, err := modfile.Parse("go.mod", data, nil)
+	if err != nil {
+		return "", fmt.Errorf("parsing go.mod: %w", err)
+	}
+	var current string
+	for _, r := range mf.Require {
+		if r.Mod.Path == mcpGoModulePath {
+			current = r.Mod.Version
+			break
+		}
+	}
+	if current == "" {
+		return "", nil
+	}
+	if !semver.IsValid(current) || semver.Compare(current, minMCPGoVersionForCobratree) >= 0 {
+		return "", nil
+	}
+	if err := mf.AddRequire(mcpGoModulePath, minMCPGoVersionForCobratree); err != nil {
+		return "", fmt.Errorf("updating mcp-go require: %w", err)
+	}
+	rewritten, err := mf.Format()
+	if err != nil {
+		return "", fmt.Errorf("formatting go.mod: %w", err)
+	}
+	if err := writeFileAtomic(gomodPath, rewritten); err != nil {
+		return "", fmt.Errorf("rewriting go.mod: %w", err)
+	}
+	return current, nil
 }

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"regexp"
 	"testing"
 
 	"github.com/mvanhorn/cli-printing-press/v2/internal/generator"
@@ -403,6 +404,130 @@ func TestReconcileSpecNameWithDirNoYAMLFallsThroughToValidator(t *testing.T) {
 	assert.Equal(t, "", renamedFrom)
 	assert.Equal(t, "weather", parsed.Name, "parsed.Name unchanged when auto-fix declines")
 	assert.Contains(t, err.Error(), "--force")
+}
+
+// TestEnsureMCPGoMinVersionBumpsOldPin — older library CLIs predating
+// the cobratree templates pin a v0.x version that lacks
+// WithReadOnlyHintAnnotation/GetArguments. mcp-sync bumps to the floor
+// before regenerating MCP source so the generated CLI compiles.
+func TestEnsureMCPGoMinVersionBumpsOldPin(t *testing.T) {
+	t.Parallel()
+	cliDir := t.TempDir()
+	gomod := `module example.com/foo
+
+go 1.23.0
+
+require github.com/mark3labs/mcp-go v0.26.0
+`
+	require.NoError(t, os.WriteFile(filepath.Join(cliDir, "go.mod"), []byte(gomod), 0o644))
+
+	prior, err := ensureMCPGoMinVersion(cliDir)
+	require.NoError(t, err)
+	assert.Equal(t, "v0.26.0", prior, "must report the prior pin so callers can log it")
+
+	updated, err := os.ReadFile(filepath.Join(cliDir, "go.mod"))
+	require.NoError(t, err)
+	assert.Contains(t, string(updated), "github.com/mark3labs/mcp-go v0.47.0")
+	assert.NotContains(t, string(updated), "github.com/mark3labs/mcp-go v0.26.0")
+	// Surrounding directives must be preserved.
+	assert.Contains(t, string(updated), "module example.com/foo")
+	assert.Contains(t, string(updated), "go 1.23.0")
+}
+
+// TestEnsureMCPGoMinVersionNoOpAtOrAboveFloor — at or above the floor,
+// no-op even if exactly equal. Avoids spurious go.mod rewrites on
+// already-current CLIs.
+func TestEnsureMCPGoMinVersionNoOpAtOrAboveFloor(t *testing.T) {
+	t.Parallel()
+	for _, version := range []string{"v0.47.0", "v0.48.0", "v1.0.0"} {
+		t.Run(version, func(t *testing.T) {
+			t.Parallel()
+			cliDir := t.TempDir()
+			gomod := "module example.com/foo\nrequire github.com/mark3labs/mcp-go " + version + "\n"
+			require.NoError(t, os.WriteFile(filepath.Join(cliDir, "go.mod"), []byte(gomod), 0o644))
+
+			prior, err := ensureMCPGoMinVersion(cliDir)
+			require.NoError(t, err)
+			assert.Equal(t, "", prior, "must report no-rename when already at or above floor")
+
+			after, err := os.ReadFile(filepath.Join(cliDir, "go.mod"))
+			require.NoError(t, err)
+			assert.Equal(t, gomod, string(after), "go.mod must be byte-identical when no bump needed")
+		})
+	}
+}
+
+// TestEnsureMCPGoMinVersionNoOpWhenDepAbsent — a CLI without mcp-go
+// in go.mod (e.g., a CLI generated before MCP support was added)
+// must not have the dep injected. Other migration steps (or a future
+// `go mod tidy`) handle that.
+func TestEnsureMCPGoMinVersionNoOpWhenDepAbsent(t *testing.T) {
+	t.Parallel()
+	cliDir := t.TempDir()
+	gomod := "module example.com/foo\n\ngo 1.23.0\n"
+	require.NoError(t, os.WriteFile(filepath.Join(cliDir, "go.mod"), []byte(gomod), 0o644))
+
+	prior, err := ensureMCPGoMinVersion(cliDir)
+	require.NoError(t, err)
+	assert.Equal(t, "", prior)
+
+	after, err := os.ReadFile(filepath.Join(cliDir, "go.mod"))
+	require.NoError(t, err)
+	assert.Equal(t, gomod, string(after))
+}
+
+// TestEnsureMCPGoMinVersionLeavesReplaceDirectiveAlone — a `replace`
+// directive that pins mcp-go to a fork or local checkout must survive
+// the bump. Only the require entry moves; the replace target is
+// independent and may legitimately point at any version.
+func TestEnsureMCPGoMinVersionLeavesReplaceDirectiveAlone(t *testing.T) {
+	t.Parallel()
+	cliDir := t.TempDir()
+	gomod := `module example.com/foo
+
+go 1.23.0
+
+require github.com/mark3labs/mcp-go v0.26.0
+
+replace github.com/mark3labs/mcp-go => github.com/myfork/mcp-go v0.30.0
+`
+	require.NoError(t, os.WriteFile(filepath.Join(cliDir, "go.mod"), []byte(gomod), 0o644))
+
+	prior, err := ensureMCPGoMinVersion(cliDir)
+	require.NoError(t, err)
+	assert.Equal(t, "v0.26.0", prior)
+
+	updated, err := os.ReadFile(filepath.Join(cliDir, "go.mod"))
+	require.NoError(t, err)
+	assert.Contains(t, string(updated), "github.com/mark3labs/mcp-go v0.47.0",
+		"require entry must be bumped to the floor")
+	assert.Contains(t, string(updated), "github.com/myfork/mcp-go v0.30.0",
+		"replace directive's target must be untouched")
+}
+
+// TestMinMCPGoVersionMatchesGoModTemplate is the drift-detection
+// gate: minMCPGoVersionForCobratree (used by ensureMCPGoMinVersion to
+// decide whether an existing pin is too old) must match the version
+// the generator's go.mod.tmpl actually emits. If they drift, freshly
+// generated CLIs and freshly migrated CLIs end up on different mcp-go
+// versions — silent inconsistency.
+func TestMinMCPGoVersionMatchesGoModTemplate(t *testing.T) {
+	t.Parallel()
+	// The template lives at internal/generator/templates/go.mod.tmpl;
+	// this test runs from internal/pipeline/mcpsync/.
+	tmplPath := filepath.Join("..", "..", "..", "internal", "generator", "templates", "go.mod.tmpl")
+	data, err := os.ReadFile(tmplPath)
+	require.NoError(t, err, "go.mod.tmpl must be readable from the test cwd")
+
+	// Match the bare require directive: `require github.com/mark3labs/mcp-go vX.Y.Z`.
+	// The template emits the directive literally (no Go template
+	// interpolation in the version), so a regex over the raw source
+	// is sufficient.
+	re := regexp.MustCompile(`(?m)^require[ \t]+github\.com/mark3labs/mcp-go[ \t]+(v[0-9][^\s]+)`)
+	m := re.FindSubmatch(data)
+	require.NotNil(t, m, "go.mod.tmpl must contain a `require github.com/mark3labs/mcp-go vX.Y.Z` line")
+	assert.Equal(t, minMCPGoVersionForCobratree, string(m[1]),
+		"minMCPGoVersionForCobratree drifted from the version pinned in go.mod.tmpl — bump both together")
 }
 
 // TestRemoveStaleMCPHandlersFile locks behavior for the food52 case:
