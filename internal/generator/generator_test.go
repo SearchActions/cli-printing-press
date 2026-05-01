@@ -1499,6 +1499,161 @@ func TestGenerateStoreWithBatchResourceDoesNotDuplicateUpsertBatch(t *testing.T)
 // generates a spec with a typed table, then runs the generated store
 // tests — the emitted TestUpsertBatch_Populates*Table tests fail if the
 // dispatch ever regresses.
+// TestSyncExtractPaginationNestedCursor verifies the emitted
+// extractPaginationFromEnvelope finds cursors inside well-known wrapper
+// objects (Slack response_metadata, etc.). Combines a generator-level
+// emission canary with a behavioral test written into the generated
+// tree, since either tier alone misses real regressions.
+func TestSyncExtractPaginationNestedCursor(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := &spec.APISpec{
+		Name:    "slacky",
+		Version: "0.1.0",
+		BaseURL: "https://slacky.example.com",
+		Auth:    spec.AuthConfig{Type: "none"},
+		Config: spec.ConfigSpec{
+			Format: "toml",
+			Path:   "~/.config/slacky-pp-cli/config.toml",
+		},
+		Resources: map[string]spec.Resource{
+			"messages": {
+				Description: "Messages",
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:      "GET",
+						Path:        "/messages",
+						Description: "List messages",
+						Response:    spec.ResponseDef{Type: "array"},
+						Params: []spec.Param{
+							{Name: "channel", Type: "string"},
+							{Name: "cursor", Type: "string"},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	gen.VisionSet = VisionTemplateSet{Store: true, Sync: true}
+	require.NoError(t, gen.Generate())
+
+	syncSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "sync.go"))
+	require.NoError(t, err)
+	src := string(syncSrc)
+
+	// Tier 1: emission canary. The wrapper-key recursion must ship.
+	assert.Contains(t, src, "paginationWrapperKeys",
+		"sync.go must declare paginationWrapperKeys for nested-cursor support")
+	assert.Contains(t, src, `"response_metadata"`,
+		"paginationWrapperKeys must include response_metadata (Slack's envelope)")
+	assert.Contains(t, src, `"pagination"`,
+		"paginationWrapperKeys must include pagination (MongoDB Atlas-style)")
+
+	// Tier 2: behavioral test, written into the generated tree as a
+	// same-package _test.go so it can call the unexported helper.
+	const inlineTest = `package cli
+
+import (
+	"encoding/json"
+	"testing"
+)
+
+func TestExtractPageItemsSlackEnvelope(t *testing.T) {
+	body := []byte(` + "`" + `{
+		"ok": true,
+		"messages": [{"text":"hello"},{"text":"world"}],
+		"response_metadata": {"next_cursor": "abc123"}
+	}` + "`" + `)
+	items, cursor, hasMore := extractPageItems(json.RawMessage(body), "cursor")
+	if len(items) != 2 {
+		t.Fatalf("want 2 items, got %d", len(items))
+	}
+	if cursor != "abc123" {
+		t.Fatalf("want cursor abc123, got %q", cursor)
+	}
+	if !hasMore {
+		t.Fatalf("want hasMore=true when cursor is present")
+	}
+}
+
+func TestExtractPageItemsMongoPaginationEnvelope(t *testing.T) {
+	body := []byte(` + "`" + `{
+		"results": [{"_id":"a"},{"_id":"b"}],
+		"pagination": {"next_page_token": "tok-2"}
+	}` + "`" + `)
+	items, cursor, hasMore := extractPageItems(json.RawMessage(body), "cursor")
+	if len(items) != 2 {
+		t.Fatalf("want 2 items, got %d", len(items))
+	}
+	if cursor != "tok-2" {
+		t.Fatalf("want cursor tok-2, got %q", cursor)
+	}
+	if !hasMore {
+		t.Fatalf("want hasMore=true when nested cursor is present")
+	}
+}
+
+// Fast path: top-level cursor with no wrapper present at all. Proves
+// the common case (Stripe, GitHub, Linear, Notion) doesn't enter the
+// wrapper recursion. Pairs with TopLevelCursorWinsOverWrapper which
+// pairs both forms; this isolates the no-wrapper shape.
+func TestExtractPageItemsTopLevelCursorOnly(t *testing.T) {
+	body := []byte(` + "`" + `{
+		"items": [{"id":1},{"id":2}],
+		"next_cursor": "page-2"
+	}` + "`" + `)
+	items, cursor, hasMore := extractPageItems(json.RawMessage(body), "cursor")
+	if len(items) != 2 {
+		t.Fatalf("want 2 items, got %d", len(items))
+	}
+	if cursor != "page-2" {
+		t.Fatalf("want top-level cursor page-2, got %q", cursor)
+	}
+	if !hasMore {
+		t.Fatalf("want hasMore=true when cursor is present")
+	}
+}
+
+// Negative case: top-level cursor should still win even when a
+// non-cursor field happens to live in a wrapper-named key.
+func TestExtractPageItemsTopLevelCursorWinsOverWrapper(t *testing.T) {
+	body := []byte(` + "`" + `{
+		"items": [{"id":1}],
+		"next_cursor": "top-level-wins",
+		"meta": {"next_cursor": "should-not-be-used"}
+	}` + "`" + `)
+	_, cursor, _ := extractPageItems(json.RawMessage(body), "cursor")
+	if cursor != "top-level-wins" {
+		t.Fatalf("want top-level cursor, got %q", cursor)
+	}
+}
+
+// Negative case: no cursor anywhere returns empty without spurious
+// nested matches on unrelated wrapper-named objects.
+func TestExtractPageItemsNoCursor(t *testing.T) {
+	body := []byte(` + "`" + `{
+		"items": [{"id":1}],
+		"meta": {"count": 1, "page": 1}
+	}` + "`" + `)
+	_, cursor, hasMore := extractPageItems(json.RawMessage(body), "cursor")
+	if cursor != "" {
+		t.Fatalf("want empty cursor, got %q", cursor)
+	}
+	if hasMore {
+		t.Fatalf("want hasMore=false when no cursor present")
+	}
+}
+`
+	testPath := filepath.Join(outputDir, "internal", "cli", "sync_pagination_test.go")
+	require.NoError(t, os.WriteFile(testPath, []byte(inlineTest), 0o644))
+
+	runGoCommandRequired(t, outputDir, "mod", "tidy")
+	runGoCommandRequired(t, outputDir, "test", "-run", "TestExtractPageItems", "./internal/cli")
+}
+
 func TestGenerateStoreUpsertBatchDispatchesToTypedTable(t *testing.T) {
 	t.Parallel()
 
