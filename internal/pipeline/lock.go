@@ -42,15 +42,40 @@ func LocksDir() string {
 	return filepath.Join(PressHome(), locksDir)
 }
 
-// LockFilePath returns the lock file path for a given CLI name.
+// LockFilePath returns the lock file path for a given CLI name. Callers may
+// pass either the slug or the binary name; both forms resolve to the same
+// file. Caller is responsible for validating the name first via
+// validateCLIName — LockFilePath itself does not check.
 func LockFilePath(cliName string) string {
-	return filepath.Join(LocksDir(), cliName+".lock")
+	return filepath.Join(LocksDir(), normalizeLockName(cliName)+".lock")
+}
+
+func normalizeLockName(cliName string) string {
+	if naming.IsCLIDirName(cliName) {
+		return cliName
+	}
+	return naming.CLI(cliName)
+}
+
+// validateCLIName rejects names that would escape LocksDir() once joined as
+// a filename. naming.IsValidLibraryDirName covers path separators, "..",
+// NUL, dotfile prefixes, and non-slug shapes. The lock helpers below call
+// this at entry so a malicious or buggy --cli value can never reach
+// filepath.Join with traversal characters intact.
+func validateCLIName(cliName string) error {
+	if !naming.IsValidLibraryDirName(cliName) {
+		return fmt.Errorf("invalid cli name %q", cliName)
+	}
+	return nil
 }
 
 // AcquireLock attempts to acquire a build lock for the given CLI.
 // It auto-reclaims stale locks. If force is true, it overrides even fresh
 // locks held by a different scope.
 func AcquireLock(cliName, scope string, force bool) (*LockState, error) {
+	if err := validateCLIName(cliName); err != nil {
+		return nil, err
+	}
 	lockPath := LockFilePath(cliName)
 
 	if err := os.MkdirAll(LocksDir(), 0o755); err != nil {
@@ -112,6 +137,9 @@ func AcquireLock(cliName, scope string, force bool) (*LockState, error) {
 
 // UpdateLock refreshes the heartbeat and phase of an existing lock.
 func UpdateLock(cliName, phase string) error {
+	if err := validateCLIName(cliName); err != nil {
+		return err
+	}
 	lockPath := LockFilePath(cliName)
 
 	existing, err := readLock(lockPath)
@@ -127,9 +155,15 @@ func UpdateLock(cliName, phase string) error {
 }
 
 // LockStatus returns the current lock state for a CLI, including whether
-// a completed CLI exists in the library.
+// a completed CLI exists in the library. An invalid cliName returns the
+// zero result (no lock held, no library CLI) — safe behavior at this
+// boundary since the function has no error channel.
 func LockStatus(cliName string) LockStatusResult {
 	result := LockStatusResult{}
+
+	if err := validateCLIName(cliName); err != nil {
+		return result
+	}
 
 	// Check library for completed CLI (slug-keyed directory).
 	slug := naming.TrimCLISuffix(cliName)
@@ -161,6 +195,9 @@ func LockStatus(cliName string) LockStatusResult {
 
 // ReleaseLock removes the lock file for a CLI. It is idempotent.
 func ReleaseLock(cliName string) error {
+	if err := validateCLIName(cliName); err != nil {
+		return err
+	}
 	lockPath := LockFilePath(cliName)
 	err := os.Remove(lockPath)
 	if err != nil && !os.IsNotExist(err) {
@@ -174,6 +211,9 @@ func ReleaseLock(cliName string) error {
 // Uses a staging directory with atomic swap so the previous library copy
 // survives if any step fails.
 func PromoteWorkingCLI(cliName, workingDir string, state *PipelineState) error {
+	if err := validateCLIName(cliName); err != nil {
+		return err
+	}
 	if workingDir == "" {
 		return fmt.Errorf("working directory is empty")
 	}

@@ -211,6 +211,105 @@ func TestReleaseLock_Idempotent(t *testing.T) {
 	assert.NoError(t, err)
 }
 
+// LockFilePath must produce the same path regardless of whether the caller
+// passes the slug ("notion") or the binary name ("notion-pp-cli"). A mixed-
+// form caller would otherwise silently miss an active lock acquired under
+// the other form.
+func TestLockFilePath_NormalizesSlugAndBinaryName(t *testing.T) {
+	setupLockTest(t)
+
+	assert.Equal(t, LockFilePath("notion-pp-cli"), LockFilePath("notion"))
+}
+
+// Pin LockFilePath's normalization output across the name-form edge cases
+// callers actually produce: bare slugs, binary names, legacy -cli suffix,
+// rerun forms (numeric suffix on either side of -pp-cli), and the empty
+// degenerate. These pin current behavior so a future refactor of the
+// underlying naming helpers can't quietly drift the lock-file naming.
+func TestLockFilePath_NormalizationEdgeCases(t *testing.T) {
+	setupLockTest(t)
+
+	cases := []struct {
+		name     string
+		input    string
+		expected string
+	}{
+		{"bare slug appends -pp-cli", "foo", "foo-pp-cli.lock"},
+		{"binary name kept verbatim", "foo-pp-cli", "foo-pp-cli.lock"},
+		{"legacy -cli suffix kept verbatim", "foo-cli", "foo-cli.lock"},
+		{"rerun binary form (suffix-then-number) kept", "foo-pp-cli-2", "foo-pp-cli-2.lock"},
+		{"rerun library form gets -pp-cli appended", "foo-2", "foo-2-pp-cli.lock"},
+		{"empty string degenerates to bare suffix", "", "-pp-cli.lock"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.expected, filepath.Base(LockFilePath(tc.input)))
+		})
+	}
+}
+
+// Lock helpers must reject cliName values that would escape LocksDir() or
+// otherwise behave as filesystem-traversal payloads. Without this guard a
+// caller passing "../foo" via `printing-press lock --cli ...` would write
+// the lock file outside LocksDir() once filepath.Join resolved the "..".
+func TestLockHelpers_RejectInvalidCLIName(t *testing.T) {
+	setupLockTest(t)
+
+	cases := []struct {
+		name  string
+		input string
+	}{
+		{"path traversal with dotdot", "../foo"},
+		{"forward slash", "foo/bar"},
+		{"dotfile prefix", ".hidden"},
+		{"embedded dotdot", "foo..bar"},
+		{"empty string", ""},
+		{"uppercase rejected by slug grammar", "FooBar"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := AcquireLock(tc.input, "scope-1", false)
+			assert.Error(t, err, "AcquireLock must reject %q", tc.input)
+
+			err = UpdateLock(tc.input, "build")
+			assert.Error(t, err, "UpdateLock must reject %q", tc.input)
+
+			err = ReleaseLock(tc.input)
+			assert.Error(t, err, "ReleaseLock must reject %q", tc.input)
+
+			status := LockStatus(tc.input)
+			assert.False(t, status.Held, "LockStatus must return zero result for %q", tc.input)
+			assert.False(t, status.HasCLI, "LockStatus must return zero result for %q", tc.input)
+		})
+	}
+}
+
+// AcquireLock with the binary name and LockStatus with the slug (or vice
+// versa) must observe the same lock. This is the polish-skill safety net:
+// when polish is invoked mid-pipeline, its lock check needs to detect the
+// build's lock regardless of which name form polish derives.
+func TestLockStatus_SeesLockAcquiredByOtherNameForm(t *testing.T) {
+	setupLockTest(t)
+
+	// Build acquires under the binary name.
+	_, err := AcquireLock("notion-pp-cli", "build-scope", false)
+	require.NoError(t, err)
+
+	// Polish queries with the slug (basename of $PRESS_LIBRARY/notion).
+	status := LockStatus("notion")
+	assert.True(t, status.Held, "lock acquired as binary name must be visible by slug")
+	assert.Equal(t, "build-scope", status.Scope)
+
+	// And the reverse: lock acquired by slug must be visible by binary name.
+	require.NoError(t, ReleaseLock("notion-pp-cli"))
+	_, err = AcquireLock("notion", "polish-scope", false)
+	require.NoError(t, err)
+
+	status = LockStatus("notion-pp-cli")
+	assert.True(t, status.Held, "lock acquired by slug must be visible by binary name")
+	assert.Equal(t, "polish-scope", status.Scope)
+}
+
 func TestPromoteWorkingCLI(t *testing.T) {
 	tmp := t.TempDir()
 	t.Setenv("PRINTING_PRESS_HOME", tmp)
