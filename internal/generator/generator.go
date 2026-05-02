@@ -242,10 +242,12 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 		"humanName":   naming.HumanName,
 		"envPrefix":   naming.EnvPrefix,
 		"mcpToolName": naming.SnakeIdentifier,
-		"lookupEndpoint": func(resources map[string]spec.Resource, ref string) spec.Endpoint {
+		"lookupEndpoint": func(resources map[string]spec.Resource, ref string) templateEndpoint {
 			e, _ := lookupEndpointForTemplate(resources, ref)
 			return e
 		},
+		"effectiveEndpointPath":    effectiveEndpointPath,
+		"effectiveSubEndpointPath": effectiveSubEndpointPath,
 		"enumLiteral": func(values []string) string {
 			// Render a string slice as a Go []string literal for template embedding.
 			// Example: ["asc","desc"] → `"asc", "desc"`. Returns empty string when
@@ -3191,32 +3193,69 @@ func graphqlFieldSelection(typeName string, types map[string]spec.TypeDef) []str
 	return fields
 }
 
+type templateEndpoint struct {
+	spec.Endpoint
+	EffectivePath string
+}
+
 // lookupEndpointForTemplate resolves a dotted "resource.endpoint" (or
 // "resource.sub_resource.endpoint") reference from the spec's resource map.
 // Templates use it when rendering intent handler dispatch tables so each
-// step's HTTP method and path are known at generate time.
-func lookupEndpointForTemplate(resources map[string]spec.Resource, ref string) (spec.Endpoint, bool) {
+// step's HTTP method and effective path are known at generate time.
+func lookupEndpointForTemplate(resources map[string]spec.Resource, ref string) (templateEndpoint, bool) {
 	parts := strings.Split(ref, ".")
 	switch len(parts) {
 	case 2:
 		r, ok := resources[parts[0]]
 		if !ok {
-			return spec.Endpoint{}, false
+			return templateEndpoint{}, false
 		}
 		e, ok := r.Endpoints[parts[1]]
-		return e, ok
+		if !ok {
+			return templateEndpoint{}, false
+		}
+		return templateEndpoint{
+			Endpoint:      e,
+			EffectivePath: effectiveEndpointPath(r, e),
+		}, true
 	case 3:
 		r, ok := resources[parts[0]]
 		if !ok {
-			return spec.Endpoint{}, false
+			return templateEndpoint{}, false
 		}
 		sub, ok := r.SubResources[parts[1]]
 		if !ok {
-			return spec.Endpoint{}, false
+			return templateEndpoint{}, false
 		}
 		e, ok := sub.Endpoints[parts[2]]
-		return e, ok
+		if !ok {
+			return templateEndpoint{}, false
+		}
+		return templateEndpoint{
+			Endpoint:      e,
+			EffectivePath: effectiveSubEndpointPath(r, sub, e),
+		}, true
 	default:
-		return spec.Endpoint{}, false
+		return templateEndpoint{}, false
 	}
+}
+
+func effectiveEndpointPath(resource spec.Resource, endpoint spec.Endpoint) string {
+	return endpointPathWithBase(resource.BaseURL, endpoint.Path)
+}
+
+func effectiveSubEndpointPath(parent spec.Resource, sub spec.Resource, endpoint spec.Endpoint) string {
+	baseURL := sub.BaseURL
+	if baseURL == "" {
+		baseURL = parent.BaseURL
+	}
+	return endpointPathWithBase(baseURL, endpoint.Path)
+}
+
+func endpointPathWithBase(baseURL, path string) string {
+	baseURL = strings.TrimRight(baseURL, "/")
+	if baseURL == "" {
+		return path
+	}
+	return baseURL + path
 }
