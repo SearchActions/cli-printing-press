@@ -338,7 +338,19 @@ func runOneFeatureCheck(cliDir, binaryPath string, f NovelFeature, timeout time.
 	if runErr != nil {
 		var exitErr *exec.ExitError
 		if errors.As(runErr, &exitErr) {
-			return fail(fmt.Sprintf("exit %d: %s", exitErr.ExitCode(), trimOutput(stderrCap.String())))
+			stderr := stderrCap.String()
+			if isGracefulEmptyResponse(stderr, args) {
+				// CLI exited non-zero gracefully on "no record matches this
+				// input" — that's the CORRECT behavior for an unknown slug
+				// (research.json's LLM-authored example slugs decay over
+				// time on content-rotating APIs). Don't penalize a feature
+				// that handled the empty case well. See issue #484.
+				result.Status = StatusPass
+				result.Reason = "graceful empty: " + trimOutput(stderr)
+				result.OutputSample = sampleOutput(stderr)
+				return result
+			}
+			return fail(fmt.Sprintf("exit %d: %s", exitErr.ExitCode(), trimOutput(stderr)))
 		}
 		return fail("run error: " + runErr.Error())
 	}
@@ -613,6 +625,68 @@ func trimOutput(s string) string {
 		s = s[:300] + "..."
 	}
 	return s
+}
+
+// gracefulEmptyPhrases is the closed vocabulary of stderr substrings that
+// signal "the CLI looked up the user's input and found no matching record."
+// Kept short and explicit to avoid false positives on generic error prose.
+// Lower-cased; matched case-insensitively against stderr.
+var gracefulEmptyPhrases = []string{
+	"not found",
+	"no results",
+	"no match",
+	"no record",
+	"no such",
+}
+
+// isGracefulEmptyResponse reports whether a non-zero exit + stderr indicates
+// the CLI gracefully handled an "input maps to no record" case rather than
+// hit an actual bug. Two conditions must both hold:
+//
+//  1. stderr contains one of gracefulEmptyPhrases.
+//  2. stderr echoes at least one of the user-supplied positional args
+//     (≥ 3 chars). This is the key boundary — it filters out generic
+//     failures like "config file not found" or "authentication required"
+//     that happen to contain a graceful phrase but don't reference user
+//     input. Flag values written as "--key value" count as positional
+//     candidates because a CLI echoing a flag's value (e.g. --query notion
+//     → "no match for query: notion") is still strong evidence that user
+//     input was processed.
+//
+// Caller contract: invoke only on non-zero exits. See issue #484.
+func isGracefulEmptyResponse(stderr string, args []string) bool {
+	lower := strings.ToLower(stderr)
+	if !containsAnyOf(lower, gracefulEmptyPhrases) {
+		return false
+	}
+	for _, arg := range args {
+		if strings.HasPrefix(arg, "-") {
+			continue
+		}
+		a := strings.ToLower(arg)
+		if len(a) < 3 {
+			// Skip short tokens to avoid coincidental substring matches.
+			// Three chars is the same threshold outputMentionsQuery uses.
+			continue
+		}
+		if strings.Contains(lower, a) {
+			return true
+		}
+	}
+	return false
+}
+
+// containsAnyOf reports whether any of needles is a substring of s. The
+// "any-of" suffix distinguishes this from dogfood.go's containsAny, which
+// has the inverse signature ([]string sources, string needle). Caller is
+// expected to pass a pre-lowered s when matching case-insensitively.
+func containsAnyOf(s string, needles []string) bool {
+	for _, n := range needles {
+		if strings.Contains(s, n) {
+			return true
+		}
+	}
+	return false
 }
 
 // InsightCapFromLiveCheck returns the maximum Insight score a CLI should

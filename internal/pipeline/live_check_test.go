@@ -602,3 +602,86 @@ func TestDetectRawHTMLEntities_TruncatesLongMatchInMessage(t *testing.T) {
 	require.NotEmpty(t, msg)
 	require.LessOrEqual(t, len(msg), 200, "warning message should stay bounded regardless of match length")
 }
+
+// TestLiveCheck_PassOnGracefulEmpty proves the wiring: when the CLI exits
+// non-zero with stderr that gracefully reports "no matching record" and
+// echoes the user's input, RunLiveCheck counts it as PASS rather than FAIL
+// (issue #484). One canonical case here; per-phrase coverage lives in
+// TestIsGracefulEmptyResponse, which exercises the helper directly.
+func TestLiveCheck_PassOnGracefulEmpty(t *testing.T) {
+	dir := t.TempDir()
+	writeStubBinary(t, dir, "stub",
+		`echo "Error: post not found: my-launch-slug" >&2; exit 1`)
+	writeTestResearchJSON(t, dir, []NovelFeature{
+		{Name: "Lookup", Command: "posts get",
+			Example: `stub posts get my-launch-slug --json`},
+	})
+	result := RunLiveCheck(LiveCheckOptions{
+		CLIDir: dir, BinaryName: "stub", Timeout: 5 * time.Second,
+	})
+	require.Equal(t, 1, result.Passed, "graceful empty should count as PASS")
+	require.Equal(t, 0, result.Failed, "graceful empty must not count as FAIL")
+	require.Contains(t, result.Features[0].Reason, "graceful empty",
+		"reason should label the graceful-empty branch so reviewers know why it passed")
+}
+
+// TestLiveCheck_FailOnGenericExitErrorWithoutArgEcho proves the negative
+// wiring: a non-zero exit whose stderr lacks the arg echo (a config error,
+// auth failure, or generic error) still counts as FAIL. One canonical case
+// here; the boundary cases live in TestIsGracefulEmptyResponse.
+func TestLiveCheck_FailOnGenericExitErrorWithoutArgEcho(t *testing.T) {
+	dir := t.TempDir()
+	writeStubBinary(t, dir, "stub", `echo "config file not found" >&2; exit 1`)
+	writeTestResearchJSON(t, dir, []NovelFeature{
+		{Name: "Lookup", Command: "posts get",
+			Example: `stub posts get my-launch-slug --json`},
+	})
+	result := RunLiveCheck(LiveCheckOptions{
+		CLIDir: dir, BinaryName: "stub", Timeout: 5 * time.Second,
+	})
+	require.Equal(t, 0, result.Passed, "phrase-without-arg-echo must NOT pass via graceful-empty")
+	require.Equal(t, 1, result.Failed)
+}
+
+// TestIsGracefulEmptyResponse exercises the helper directly across phrase
+// and arg-echo dimensions. Table-driven to keep the boundary explicit.
+// Caller contract guarantees non-zero exit, so no exit-code dimension here.
+func TestIsGracefulEmptyResponse(t *testing.T) {
+	cases := []struct {
+		name   string
+		stderr string
+		args   []string
+		want   bool
+	}{
+		{"phrase + arg echo → graceful",
+			"Error: post not found: my-launch-slug",
+			[]string{"posts", "get", "my-launch-slug"}, true},
+		{"phrase but no arg echo → not graceful (config error case)",
+			"config file not found",
+			[]string{"posts", "get", "my-launch-slug"}, false},
+		{"arg echo but no phrase → not graceful",
+			"Error: 500 internal server error processing my-launch-slug",
+			[]string{"posts", "get", "my-launch-slug"}, false},
+		{"no positional args → not graceful (no input to echo)",
+			"Error: post not found", []string{"posts", "list"}, false},
+		{"flag-only args → not graceful",
+			"Error: post not found", []string{"--limit", "5"}, false},
+		{"no results phrase + arg echo → graceful",
+			"no results for cursor-ide", []string{"posts", "get", "cursor-ide"}, true},
+		{"empty stderr → not graceful",
+			"", []string{"posts", "get", "my-slug"}, false},
+		{"case-insensitive phrase match",
+			"Post NOT FOUND: my-slug", []string{"posts", "get", "my-slug"}, true},
+		{"short positional args (< 3 chars) skipped to avoid coincidence",
+			"no results for go", []string{"posts", "get", "go"}, false},
+		{"flag value as arg-echo candidate is fine",
+			"no match for query: notion",
+			[]string{"posts", "search", "--query", "notion"}, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := isGracefulEmptyResponse(tc.stderr, tc.args)
+			require.Equal(t, tc.want, got)
+		})
+	}
+}
