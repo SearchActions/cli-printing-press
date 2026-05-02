@@ -4,6 +4,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/mvanhorn/cli-printing-press/v3/internal/naming"
 )
 
 // Thresholds for the tool-design dimension. Intent-grouping is only worth
@@ -31,35 +33,51 @@ type mcpSurface struct {
 	intentTools     int    // count of intent tool registrations inside intents.go
 }
 
+// mcpMainPath returns the path to the canonical cmd/<cli>-pp-mcp/main.go, or
+// "" when none exists. Prefers the dir derived from .printing-press.json's
+// cli_name so duplicate or shadow dirs left behind by spec/name rewrites
+// can't shadow the canonical surface. Falls back to the first dir matching
+// naming.MCPSuffix when the manifest is missing — preserves the legacy
+// behavior for fixtures and trees that never had a manifest written.
+//
+// Always stats the candidate before returning so callers can trust the path.
+func mcpMainPath(dir string) string {
+	cmdDir := filepath.Join(dir, "cmd")
+	if cli := ReadCLIBinaryName(dir); strings.HasSuffix(cli, naming.CurrentCLISuffix) {
+		candidate := filepath.Join(cmdDir, naming.MCP(naming.TrimCLISuffix(cli)), "main.go")
+		if _, err := os.Stat(candidate); err == nil {
+			return candidate
+		}
+	}
+	entries, err := os.ReadDir(cmdDir)
+	if err != nil {
+		return ""
+	}
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		if strings.HasSuffix(e.Name(), naming.MCPSuffix) {
+			candidate := filepath.Join(cmdDir, e.Name(), "main.go")
+			if _, err := os.Stat(candidate); err == nil {
+				return candidate
+			}
+		}
+	}
+	return ""
+}
+
 // detectMCPSurface walks the printed CLI's generated layout and returns a
 // summary of the MCP surface. A nil return (present=false) signals that the
 // CLI does not emit an MCP server — the caller should mark every MCP-only
 // dimension as unscored.
 func detectMCPSurface(dir string) mcpSurface {
 	var s mcpSurface
-
-	// Find the cmd/<name>-pp-mcp/main.go by matching the suffix rather than
-	// deriving the name; keeps this scorer decoupled from naming.CLI / naming.MCP.
-	cmdDir := filepath.Join(dir, "cmd")
-	entries, err := os.ReadDir(cmdDir)
-	if err != nil {
+	s.mainPath = mcpMainPath(dir)
+	if s.mainPath == "" {
 		return s
 	}
-	for _, e := range entries {
-		if !e.IsDir() {
-			continue
-		}
-		if strings.HasSuffix(e.Name(), "-pp-mcp") {
-			s.mainPath = filepath.Join(cmdDir, e.Name(), "main.go")
-			if _, err := os.Stat(s.mainPath); err == nil {
-				s.present = true
-			}
-			break
-		}
-	}
-	if !s.present {
-		return s
-	}
+	s.present = true
 
 	s.toolsPath = filepath.Join(dir, "internal", "mcp", "tools.go")
 	if data, err := os.ReadFile(s.toolsPath); err == nil {

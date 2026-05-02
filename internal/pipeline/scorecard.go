@@ -810,7 +810,7 @@ func scoreLocalCache(dir string) int {
 // scoreCacheFreshness rewards the discrawl-inspired Phase 1-3 capabilities.
 // Returns (score, true) when the CLI has a local store; (0, false) otherwise
 // so the dimension is marked N/A and excluded from the tier1 denominator.
-// Each sub-capability is worth 2-3 points; the total is capped at 10.
+// Each sub-capability is worth 2-5 points; the total is capped at 10.
 //
 // The signals are string-matched against well-known template artifacts
 // rather than imported symbols because the scorer must not depend on
@@ -841,23 +841,15 @@ func scoreCacheFreshness(dir string) (int, bool) {
 
 	// (c) Auto-refresh wired: the PersistentPreRunE hook invokes
 	// autoRefreshIfStale, and the cliutil freshness helper exists. Worth
-	// 3 pts because this is the user's headline ask.
+	// 5 pts because this is the user's headline ask — a CLI that ships
+	// schema gating + doctor cache + auto-refresh has perfect freshness
+	// behavior and should top the dimension out at 10/10.
 	autoRefreshPath := filepath.Join(dir, "internal", "cli", "auto_refresh.go")
 	autoRefreshContent := readFileContent(autoRefreshPath)
 	freshnessPath := filepath.Join(dir, "internal", "cliutil", "freshness.go")
 	freshnessContent := readFileContent(freshnessPath)
 	if strings.Contains(autoRefreshContent, "autoRefreshIfStale") && strings.Contains(freshnessContent, "EnsureFresh") {
-		score += 3
-	}
-
-	// (d) Share export/import present: internal/share/share.go + share
-	// subcommands provide the git-backed sharing surface.
-	sharePath := filepath.Join(dir, "internal", "share", "share.go")
-	shareContent := readFileContent(sharePath)
-	shareCmdsPath := filepath.Join(dir, "internal", "cli", "share_commands.go")
-	shareCmdsContent := readFileContent(shareCmdsPath)
-	if strings.Contains(shareContent, "func Export") && strings.Contains(shareCmdsContent, "newShareCmd") {
-		score += 2
+		score += 5
 	}
 
 	if score > 10 {
@@ -1176,6 +1168,36 @@ func scoreVision(dir string) int {
 	return score
 }
 
+// cobraUseLeafRe extracts the first whitespace-delimited token from a Cobra
+// `Use: "..."` literal — the leaf command name (e.g., `"trajectory <slug>"`
+// → `trajectory`).
+var cobraUseLeafRe = regexp.MustCompile(`Use:\s*"([^"\s]+)`)
+
+// manifestNovelFeatureLeaves returns the leaves of every novel_features[].command
+// in dir/.printing-press.json. Returns nil when the manifest is missing,
+// unparseable, or carries no novel features.
+func manifestNovelFeatureLeaves(dir string) map[string]bool {
+	data, err := os.ReadFile(filepath.Join(dir, CLIManifestFilename))
+	if err != nil {
+		return nil
+	}
+	var m CLIManifest
+	if err := json.Unmarshal(data, &m); err != nil {
+		return nil
+	}
+	if len(m.NovelFeatures) == 0 {
+		return nil
+	}
+	leaves := make(map[string]bool, len(m.NovelFeatures))
+	for _, nf := range m.NovelFeatures {
+		_, leaf := splitCommandPath(commandPath(nf.Command))
+		if leaf != "" {
+			leaves[leaf] = true
+		}
+	}
+	return leaves
+}
+
 // registeredCommandFiles returns the set of cli/*.go filenames whose command
 // constructor is referenced by root.go. Files without a registered constructor
 // should not inflate workflow/insight scores even if they match prefix or
@@ -1341,6 +1363,11 @@ func scoreInsight(dir string) int {
 		"stats", "conflicts", "stale", "analytics", "busiest", "velocity",
 		"utilization", "coverage", "gaps", "noshow"}
 
+	// novelLeaves credits files whose Cobra Use matches an agent-declared
+	// transcendence command. The prefix list above can't enumerate every
+	// reasonable insight verb across APIs.
+	novelLeaves := manifestNovelFeatureLeaves(dir)
+
 	found := 0
 	for _, e := range entries {
 		if e.IsDir() || !strings.HasSuffix(e.Name(), ".go") {
@@ -1354,7 +1381,7 @@ func scoreInsight(dir string) int {
 		}
 		name := strings.ToLower(e.Name())
 
-		// Signal 1: filename prefix match (supplementary — kept for backward compat)
+		// Signal 1: filename prefix match
 		prefixMatch := false
 		for _, prefix := range insightPrefixes {
 			if strings.HasPrefix(name, prefix) {
@@ -1372,7 +1399,15 @@ func scoreInsight(dir string) int {
 			continue
 		}
 
-		// Signal 2 (existing): store + SQL aggregation
+		// Signal 2: file declares a Cobra Use: matching an agent-declared novel feature.
+		if len(novelLeaves) > 0 {
+			if m := cobraUseLeafRe.FindStringSubmatch(content); m != nil && novelLeaves[strings.ToLower(m[1])] {
+				found++
+				continue
+			}
+		}
+
+		// Signal 3: store + SQL aggregation
 		usesStore := strings.Contains(content, "/store") || strings.Contains(content, "store.Open") || strings.Contains(content, "store.New")
 		rateRe := regexp.MustCompile(`\brate\b|\bRate\b`)
 		hasSQLAgg := strings.Contains(content, "COUNT(") || strings.Contains(content, "SUM(") ||
@@ -1383,7 +1418,7 @@ func scoreInsight(dir string) int {
 			continue
 		}
 
-		// Signal 3 (new): behavioral — command produces derived/aggregated output.
+		// Signal 4: behavioral — command produces derived/aggregated output.
 		// Detects Go-level aggregation: sorting, percentage calculations, comparisons,
 		// summary statistics. Requires multi-source input (2+ API calls or store usage)
 		// to avoid counting simple pass-through commands.
