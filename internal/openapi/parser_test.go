@@ -180,11 +180,29 @@ paths:
 	assert.Equal(t, "Brand Name", parsed.DisplayName)
 }
 
-func TestParseLeavesDisplayNameEmptyWhenAbsent(t *testing.T) {
-	spec := []byte(`
+// TestParseDerivesDisplayNameFromTitle locks the dual contract when no
+// x-display-name extension is set: slug is ASCII-folded for filesystem and
+// shell safety, display_name keeps Unicode for the human-facing surfaces
+// (manifest.json, .printing-press.json, MCP server identity).
+func TestParseDerivesDisplayNameFromTitle(t *testing.T) {
+	cases := []struct {
+		name        string
+		title       string
+		wantSlug    string
+		wantDisplay string
+	}{
+		{name: "ascii", title: "Test API", wantSlug: "test", wantDisplay: "Test"},
+		{name: "precomposed_accent", title: "Café Bistro API", wantSlug: "cafe-bistro", wantDisplay: "Café Bistro"},
+		{name: "fused_diacritics", title: "Strüdel Service API", wantSlug: "strudel-service", wantDisplay: "Strüdel Service"},
+		{name: "non_latin_script", title: "東京 API", wantSlug: "dong-jing", wantDisplay: "東京"},
+		{name: "single_token_accent", title: "PokéAPI", wantSlug: "pokeapi", wantDisplay: "Pokéapi"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			spec := fmt.Appendf(nil, `
 openapi: "3.0.0"
 info:
-  title: Test API
+  title: %s
   version: "1.0"
 servers:
   - url: https://api.example.com
@@ -195,10 +213,13 @@ paths:
       responses:
         "200":
           description: OK
-`)
-	parsed, err := Parse(spec)
-	require.NoError(t, err)
-	assert.Equal(t, "", parsed.DisplayName)
+`, tc.title)
+			parsed, err := Parse(spec)
+			require.NoError(t, err)
+			assert.Equal(t, tc.wantSlug, parsed.Name)
+			assert.Equal(t, tc.wantDisplay, parsed.DisplayName)
+		})
+	}
 }
 
 func TestIsOpenAPI(t *testing.T) {
