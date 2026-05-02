@@ -385,8 +385,15 @@ func mapAuth(doc *openapi3.T, name string) spec.AuthConfig {
 				break
 			}
 		}
+		if auth.Type == "api_key" && strings.EqualFold(auth.In, "header") {
+			if prefix, ok := scheme.Extensions["x-prefix"].(string); ok {
+				if prefix = strings.TrimSpace(prefix); prefix != "" {
+					auth.Format = prefix + " {token}"
+				}
+			}
+		}
 		// Detect bot token pattern from scheme name (e.g. "BotToken")
-		if strings.Contains(strings.ToLower(schemeName), "bot") && strings.EqualFold(auth.Header, "Authorization") {
+		if auth.Format == "" && strings.Contains(strings.ToLower(schemeName), "bot") && strings.EqualFold(auth.Header, "Authorization") {
 			auth.Format = "Bot {bot_token}"
 		}
 	case "oauth2":
@@ -2115,7 +2122,11 @@ func mapTypes(doc *openapi3.T, out *spec.APISpec) {
 		}
 
 		properties := map[string]*openapi3.SchemaRef{}
-		collectTypeProperties(schemaRef, properties, map[*openapi3.Schema]struct{}{})
+		if isJSONAPIResourceSchema(schema) {
+			jsonAPIFlattenInto(schema, properties)
+		} else {
+			collectTypeProperties(schemaRef, properties, map[*openapi3.Schema]struct{}{})
+		}
 
 		fieldNames := make([]string, 0, len(properties))
 		for fieldName := range properties {
@@ -2287,6 +2298,68 @@ func isObjectSchema(schema *openapi3.Schema) bool {
 		return true
 	}
 	return len(schema.Properties) > 0 || len(schema.AllOf) > 0
+}
+
+// isJSONAPIResourceSchema reports whether the schema is a JSON:API
+// (jsonapi.org/format) Resource Object: a string `type` discriminator,
+// a string `id`, and an `attributes` object. The trio is tight enough
+// that vanilla REST specs (Stripe, HubSpot, Twilio) never accidentally
+// match — they don't co-locate type+id+attributes.
+func isJSONAPIResourceSchema(schema *openapi3.Schema) bool {
+	if !isObjectSchema(schema) {
+		return false
+	}
+	typeRef, hasType := schema.Properties["type"]
+	if !hasType {
+		return false
+	}
+	typeVal := schemaRefValue(typeRef)
+	if typeVal == nil || typeVal.Type == nil || !typeVal.Type.Includes(openapi3.TypeString) {
+		return false
+	}
+	idRef, hasID := schema.Properties["id"]
+	if !hasID {
+		return false
+	}
+	idVal := schemaRefValue(idRef)
+	if idVal == nil || idVal.Type == nil || !idVal.Type.Includes(openapi3.TypeString) {
+		return false
+	}
+	attrsRef, hasAttrs := schema.Properties["attributes"]
+	if !hasAttrs {
+		return false
+	}
+	if !isObjectSchema(schemaRefValue(attrsRef)) {
+		return false
+	}
+	return true
+}
+
+// jsonAPIFlattenInto populates properties with the canonical projection
+// of a JSON:API Resource Object: id (preserved), attributes.* (hoisted
+// to top-level), discriminator `type` dropped (constant per resource).
+// Relationships are intentionally omitted in this pass; foreign-key
+// extraction is a follow-up.
+func jsonAPIFlattenInto(schema *openapi3.Schema, properties map[string]*openapi3.SchemaRef) {
+	if schema == nil {
+		return
+	}
+	if idRef, ok := schema.Properties["id"]; ok && idRef != nil {
+		properties["id"] = idRef
+	}
+	attrsRef, ok := schema.Properties["attributes"]
+	if !ok || attrsRef == nil || attrsRef.Value == nil {
+		return
+	}
+	for name, prop := range attrsRef.Value.Properties {
+		if prop == nil {
+			continue
+		}
+		if strings.HasPrefix(name, "_") {
+			continue
+		}
+		properties[name] = prop
+	}
 }
 
 func isComplexBodyFieldSchema(schema *openapi3.Schema) bool {
@@ -3208,7 +3281,7 @@ func detectPagination(params []spec.Param, op *openapi3.Operation) *spec.Paginat
 	var pag spec.Pagination
 
 	// Detect limit param
-	for _, name := range []string{"limit", "maxresults", "pagesize", "page_size", "max_results", "per_page"} {
+	for _, name := range []string{"limit", "maxresults", "pagesize", "page_size", "max_results", "per_page", "page[size]"} {
 		if _, ok := paramNames[name]; ok {
 			pag.LimitParam = name
 			break
@@ -3225,7 +3298,7 @@ func detectPagination(params []spec.Param, op *openapi3.Operation) *spec.Paginat
 		}
 	}
 	if pag.Type == "" {
-		for _, name := range []string{"after", "cursor"} {
+		for _, name := range []string{"after", "cursor", "page[cursor]"} {
 			if _, ok := paramNames[name]; ok {
 				pag.CursorParam = name
 				pag.Type = "cursor"
