@@ -1176,13 +1176,12 @@ who uses this service, what their rituals are, and what questions they can't ans
 today. "What can SQLite do?" is the wrong question. "What would make a power user
 say 'I need this'?" is the right one.
 
-Read [references/absorb-scoring.md](references/absorb-scoring.md) Step 1.5c.5 for
-the **User-First Feature Discovery** framework: identify 2-4 specific user personas,
-map their rituals and frustrations, identify service-specific content patterns, then
-generate features that serve those personas.
+The actual brainstorming runs as a Task subagent in Step 1.5c.5 below — customer
+model → 2× candidates → adversarial cut. Step 1.5c is the motivation; do not
+generate transcendence features inline here.
 
-After the user-first pass, also check for compound use cases that are only possible
-with local data:
+The transcendence table in the manifest (Step 1.5d) renders rows in this shape,
+which the subagent's `### Survivors` output already matches:
 
 ```markdown
 ### Transcendence (only possible with our approach)
@@ -1195,15 +1194,30 @@ with local data:
 
 Minimum 5 transcendence features. These are the commands that differentiate the CLI.
 
-### Step 1.5c.5: Auto-Suggest Novel Features
+### Step 1.5c.5: Auto-Suggest Novel Features (subagent)
 
-**This step runs automatically.** Read [references/absorb-scoring.md](references/absorb-scoring.md)
-for the gap analysis framework, scoring dimensions, and candidate generation process.
+**Always spawn the subagent — first prints and reprints alike.** The subagent
+is the only path that produces this step's outputs (customer model, candidate
+list, adversarial cut, killed-candidate audit trail). There is no manual
+fallback. Specifically, do not:
 
-**On reprints, the same reference file's "Reprint Reconciliation" section runs as a forcing
-function**: every prior novel feature is re-scored against the current personas and tagged
-keep / reframe / drop with a one-line justification. Prior features are never silently
-absorbed and never silently dropped.
+- hand-curate the transcendence list from a prior manifest, even when the
+  prior looks complete. Prior `research.json` is INPUT to Pass 2(d), never
+  a substitute for the spawn.
+- fall back to inline brainstorming inside the SKILL.
+- skip on cost grounds. With a strong prior the subagent confirms or
+  reframes; with no prior it generates from scratch. Run it either way.
+- treat disclosure as authorization. Announcing a skip in the gate showcase
+  does not make the skip legal.
+
+Read [references/novel-features-subagent.md](references/novel-features-subagent.md)
+for the prior-research discovery snippet, input bundle, prompt template, and
+output contract. Run the discovery snippet as written — do not substitute an
+`ls` of the manuscripts directory. The snippet's `none` branch (no prior
+research) is a first print, not a skip signal.
+
+The only legitimate non-spawn outcome is the pre-flight HALT (brief lacks
+user research) defined in the reference file.
 
 ### Step 1.5d: Write the manifest artifact
 
