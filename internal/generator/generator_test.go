@@ -5549,6 +5549,93 @@ func TestGenerateMCPCodeOrchestrationSkippedByDefault(t *testing.T) {
 	assert.True(t, os.IsNotExist(err), "code_orch.go must not be emitted without orchestration: code")
 }
 
+// TestGenerateMCPNewClientSkipsCache proves that newMCPClient sets
+// c.NoCache = true. Agents calling through MCP need fresh data every call;
+// the on-disk response cache survives across MCP server invocations, so
+// without this the next GET after a DELETE/PATCH returns the pre-mutation
+// snapshot for up to the cache TTL. Interactive CLI commands construct
+// their own client and are unaffected.
+func TestGenerateMCPNewClientSkipsCache(t *testing.T) {
+	t.Parallel()
+
+	t.Run("default spec source", func(t *testing.T) {
+		t.Parallel()
+		assertNewMCPClientSkipsCache(t, "")
+	})
+
+	// SpecSource=sniffed takes the rate-limited branch in the template
+	// (client.New(cfg, 30*time.Second, 2) instead of ..., 0). The cache
+	// bypass must apply on both branches; this guards against a future
+	// edit moving NoCache=true inside one of the if/else arms.
+	t.Run("sniffed spec source", func(t *testing.T) {
+		t.Parallel()
+		assertNewMCPClientSkipsCache(t, "sniffed")
+	})
+
+	t.Run("interactive CLI client is not statically NoCache=true", func(t *testing.T) {
+		t.Parallel()
+		apiSpec, err := spec.Parse(filepath.Join("..", "..", "testdata", "loops.yaml"))
+		require.NoError(t, err)
+
+		outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+		require.NoError(t, New(apiSpec, outputDir).Generate())
+
+		rootData, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "root.go"))
+		require.NoError(t, err)
+		rootBody := string(rootData)
+
+		assert.Contains(t, rootBody, "c.NoCache = f.noCache",
+			"interactive CLI's newClient must drive cache from --no-cache flag, not statically")
+	})
+}
+
+// assertNewMCPClientSkipsCache generates a CLI from loops.yaml with the
+// given SpecSource and asserts the MCP server's newMCPClient bypasses the
+// response cache.
+func assertNewMCPClientSkipsCache(t *testing.T, specSource string) {
+	t.Helper()
+	apiSpec, err := spec.Parse(filepath.Join("..", "..", "testdata", "loops.yaml"))
+	require.NoError(t, err)
+	apiSpec.SpecSource = specSource
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+
+	toolsData, err := os.ReadFile(filepath.Join(outputDir, "internal", "mcp", "tools.go"))
+	require.NoError(t, err)
+	assert.Contains(t, string(toolsData), "c.NoCache = true",
+		"newMCPClient must disable the response cache so MCP-driven reads see fresh state across mutations")
+}
+
+// TestGenerateMCPCodeOrchKeywordsHasStopwordFilter proves the keyword
+// extractor in the code-orchestration thin surface filters short tokens
+// and a stopword set. Without this, two-letter substrings like "is"/"in"
+// inside endpoint descriptions match every query token via the
+// substring-contains rank rule, polluting search results.
+func TestGenerateMCPCodeOrchKeywordsHasStopwordFilter(t *testing.T) {
+	t.Parallel()
+
+	apiSpec, err := spec.Parse(filepath.Join("..", "..", "testdata", "loops.yaml"))
+	require.NoError(t, err)
+	apiSpec.MCP = spec.MCPConfig{Orchestration: "code"}
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	require.NoError(t, gen.Generate())
+
+	codeOrchData, err := os.ReadFile(filepath.Join(outputDir, "internal", "mcp", "code_orch.go"))
+	require.NoError(t, err)
+	body := string(codeOrchData)
+
+	assert.Contains(t, body, "var codeOrchStopwords = map[string]bool{",
+		"code_orch.go must declare codeOrchStopwords")
+	assert.Contains(t, body, `len(tok) < 3 || codeOrchStopwords[tok]`,
+		"keyword extractor must filter short tokens and stopwords")
+	for _, sw := range []string{`"is"`, `"in"`, `"the"`, `"and"`} {
+		assert.Contains(t, body, sw, "stopword set missing %q", sw)
+	}
+}
+
 // TestGenerateMCPIntentsEmittedWhenDeclared proves that a spec with mcp.intents
 // emits internal/mcp/intents.go, wires the intent handler into RegisterTools
 // via RegisterIntents, and keeps endpoint-mirror tools by default.
