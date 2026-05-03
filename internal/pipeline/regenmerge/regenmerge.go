@@ -125,8 +125,12 @@ type GoModMerge struct {
 	Merged              bool     `json:"merged"`
 	PreservedModulePath string   `json:"preserved_module_path"`
 	AddedRequires       []string `json:"added_requires,omitempty"`
-	RemovedRequires     []string `json:"removed_requires,omitempty"`
-	PreservedReplaces   []string `json:"preserved_replaces,omitempty"`
+	// PreservedRequires lists requires present in published but absent from
+	// fresh that the merge keeps. Typical case: deps the agent added after
+	// the original generation (e.g., `go get modernc.org/sqlite` for a
+	// hand-built local store).
+	PreservedRequires []string `json:"preserved_requires,omitempty"`
+	PreservedReplaces []string `json:"preserved_replaces,omitempty"`
 }
 
 // MergeReport is the full output of Classify (and Apply, with applied flags
@@ -186,7 +190,18 @@ func Classify(publishedDir, freshDir string, opts Options) (*MergeReport, error)
 	}
 	report.Files = files
 
-	regs, err := extractLostRegistrations(pubAbs, freshAbs)
+	// Build a verdict map keyed by relative path so the lost-registration
+	// extractor can skip hosts that Apply preserves verbatim. Without this,
+	// AddCommand calls in TEMPLATED-BODY-DRIFT or TEMPLATED-WITH-ADDITIONS
+	// host files (root.go after Phase-3 hand-edits is the canonical case)
+	// get flagged as "lost" and re-injected by Apply on top of the
+	// preserved file — producing duplicate AddCommand lines that crash
+	// at startup with "command is already added".
+	verdicts := make(map[string]Verdict, len(files))
+	for _, fc := range files {
+		verdicts[fc.Path] = fc.Verdict
+	}
+	regs, err := extractLostRegistrations(pubAbs, freshAbs, verdicts)
 	if err != nil {
 		return nil, fmt.Errorf("extracting lost registrations: %w", err)
 	}

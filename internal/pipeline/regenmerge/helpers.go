@@ -70,15 +70,16 @@ func shouldWalkDir(name string) bool {
 }
 
 // shouldClassifyFile returns true for files that participate in classification.
-// Includes .go and a small allowlist of root-level config files. Compiled
-// binaries (no extension at the CLI dir root) and other non-source files are
-// skipped.
+// Includes .go and a small allowlist of root-level generator-owned files.
+// spec.yaml / spec.json are generator-owned (downstream tools — mcp-sync,
+// dogfood, scorecard — re-parse them at runtime), so source-spec changes
+// must propagate via Apply's TEMPLATED-CLEAN path.
 func shouldClassifyFile(rel string) bool {
 	if strings.HasSuffix(rel, ".go") {
 		return true
 	}
 	switch filepath.Base(rel) {
-	case "go.mod", "go.sum":
+	case "go.mod", "go.sum", "spec.yaml", "spec.json":
 		return true
 	}
 	return false
