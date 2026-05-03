@@ -567,6 +567,200 @@ func TestGeneratedOutput_READMEBearerTokenMCPSetup(t *testing.T) {
 	assert.NotContains(t, content, "bearer-pp-cli auth login\n\nclaude mcp add bearer bearer-pp-mcp")
 }
 
+func TestGenerateOAuth2ClientCredentialsAuthTemplate(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := &spec.APISpec{
+		Name:    "ccgrant",
+		Version: "0.1.0",
+		BaseURL: "https://api.example.com",
+		Auth: spec.AuthConfig{
+			Type:        "bearer_token",
+			Header:      "Authorization",
+			Format:      "Bearer {token}",
+			OAuth2Grant: spec.OAuth2GrantClientCredentials,
+			TokenURL:    "https://api.example.com/oauth/token",
+			EnvVars:     []string{"CCGRANT_API_KEY", "CCGRANT_SECRET_KEY"},
+		},
+		Config: spec.ConfigSpec{Format: "toml", Path: "~/.config/ccgrant-pp-cli/config.toml"},
+		Resources: map[string]spec.Resource{
+			"items": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {Method: "GET", Path: "/items"},
+				},
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	require.NoError(t, gen.Generate())
+
+	authBytes, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "auth.go"))
+	require.NoError(t, err)
+	body := string(authBytes)
+
+	// New login command with the right token URL hardcoded.
+	assert.Contains(t, body, `newAuthLoginCmd(flags)`,
+		"client_credentials template emits a login command")
+	assert.Contains(t, body, `"https://api.example.com/oauth/token"`,
+		"login command POSTs to the spec's TokenURL")
+	assert.Contains(t, body, `"grant_type":    {"client_credentials"}`,
+		"login command uses client_credentials grant")
+	assert.Contains(t, body, `os.Getenv("CCGRANT_API_KEY")`,
+		"client-id defaults to first env var")
+	assert.Contains(t, body, `os.Getenv("CCGRANT_SECRET_KEY")`,
+		"client-secret defaults to second env var")
+	// Verify-env short-circuit is present so the side-effect classifier
+	// doesn't false-positive during shipcheck.
+	assert.Contains(t, body, `cliutil.IsVerifyEnv()`,
+		"login command short-circuits under PRINTING_PRESS_VERIFY=1")
+	assert.Contains(t, body, `Annotations: map[string]string{"mcp:hidden": "true"}`,
+		"auth login is hidden from MCP")
+}
+
+func TestGenerateOAuth2AuthorizationCodeRegression(t *testing.T) {
+	t.Parallel()
+
+	// Spec with OAuth2 authorization_code (the existing 3-legged flow):
+	// AuthorizationURL non-empty, OAuth2Grant unset (defaults to
+	// authorization_code). Must continue to select auth.go.tmpl, NOT
+	// auth_client_credentials.go.tmpl.
+	apiSpec := &spec.APISpec{
+		Name:    "ac3legged",
+		Version: "0.1.0",
+		BaseURL: "https://api.example.com",
+		Auth: spec.AuthConfig{
+			Type:             "bearer_token",
+			Header:           "Authorization",
+			Format:           "Bearer {token}",
+			AuthorizationURL: "https://api.example.com/oauth/authorize",
+			TokenURL:         "https://api.example.com/oauth/token",
+			EnvVars:          []string{"AC3LEGGED_TOKEN"},
+		},
+		Config: spec.ConfigSpec{Format: "toml", Path: "~/.config/ac3legged-pp-cli/config.toml"},
+		Resources: map[string]spec.Resource{
+			"items": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {Method: "GET", Path: "/items"},
+				},
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	require.NoError(t, gen.Generate())
+
+	authBytes, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "auth.go"))
+	require.NoError(t, err)
+	body := string(authBytes)
+
+	// auth.go.tmpl emits the authorization_code grant body — should be
+	// present, NOT the client_credentials body.
+	assert.Contains(t, body, `"grant_type":   {"authorization_code"}`,
+		"authorization_code spec keeps the existing 3-legged template")
+	assert.NotContains(t, body, `"grant_type":    {"client_credentials"}`,
+		"authorization_code spec must NOT pick the client_credentials template")
+}
+
+func TestGenerateOAuth2ClientCredentialsClientRefresh(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := &spec.APISpec{
+		Name:    "ccclient",
+		Version: "0.1.0",
+		BaseURL: "https://api.example.com",
+		Auth: spec.AuthConfig{
+			Type:        "bearer_token",
+			Header:      "Authorization",
+			Format:      "Bearer {token}",
+			OAuth2Grant: spec.OAuth2GrantClientCredentials,
+			TokenURL:    "https://api.example.com/oauth/token",
+			EnvVars:     []string{"CCCLIENT_API_KEY", "CCCLIENT_SECRET_KEY"},
+		},
+		Config: spec.ConfigSpec{Format: "toml", Path: "~/.config/ccclient-pp-cli/config.toml"},
+		Resources: map[string]spec.Resource{
+			"items": {
+				Endpoints: map[string]spec.Endpoint{"list": {Method: "GET", Path: "/items"}},
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	require.NoError(t, gen.Generate())
+
+	clientBytes, err := os.ReadFile(filepath.Join(outputDir, "internal", "client", "client.go"))
+	require.NoError(t, err)
+	body := string(clientBytes)
+
+	assert.Contains(t, body, "func needsClientCredentialsMint",
+		"client_credentials spec emits the safety-window helper")
+	assert.Contains(t, body, "func resolveClientCredentials",
+		"client_credentials spec emits the env-var-fallback resolver")
+	assert.Contains(t, body, "func (c *Client) mintClientCredentials",
+		"client_credentials spec emits the proactive-mint helper")
+	assert.Contains(t, body, `"grant_type":    {"client_credentials"}`,
+		"refresh path uses client_credentials grant, not refresh_token")
+	assert.Contains(t, body, `"https://api.example.com/oauth/token"`,
+		"mint POSTs to the spec's TokenURL")
+	assert.Contains(t, body, "time.Until(cfg.TokenExpiry) < 60*time.Second",
+		"60-second proactive refresh window")
+	assert.Contains(t, body, `os.Getenv("CCCLIENT_API_KEY")`,
+		"client-id resolver falls back to first env var")
+	assert.Contains(t, body, `os.Getenv("CCCLIENT_SECRET_KEY")`,
+		"client-secret resolver falls back to second env var")
+	assert.Contains(t, body, "ccMu sync.Mutex",
+		"client_credentials spec emits a mutex to serialize concurrent mints")
+	assert.Contains(t, body, "c.ccMu.Lock()",
+		"authHeader takes the mint mutex before re-checking the window")
+}
+
+func TestGenerateOAuth2AuthorizationCodeClientRefreshUnchanged(t *testing.T) {
+	t.Parallel()
+
+	// Spec with the existing 3-legged flow (AuthorizationURL non-empty,
+	// no OAuth2Grant). The client.go template's refresh path must keep
+	// using the refresh_token grant — no regression.
+	apiSpec := &spec.APISpec{
+		Name:    "acclient",
+		Version: "0.1.0",
+		BaseURL: "https://api.example.com",
+		Auth: spec.AuthConfig{
+			Type:             "bearer_token",
+			Header:           "Authorization",
+			Format:           "Bearer {token}",
+			AuthorizationURL: "https://api.example.com/oauth/authorize",
+			TokenURL:         "https://api.example.com/oauth/token",
+			EnvVars:          []string{"ACCLIENT_TOKEN"},
+		},
+		Config: spec.ConfigSpec{Format: "toml", Path: "~/.config/acclient-pp-cli/config.toml"},
+		Resources: map[string]spec.Resource{
+			"items": {
+				Endpoints: map[string]spec.Endpoint{"list": {Method: "GET", Path: "/items"}},
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	require.NoError(t, gen.Generate())
+
+	clientBytes, err := os.ReadFile(filepath.Join(outputDir, "internal", "client", "client.go"))
+	require.NoError(t, err)
+	body := string(clientBytes)
+
+	assert.Contains(t, body, `"grant_type":    {"refresh_token"}`,
+		"authorization_code spec keeps refresh_token grant in refresh path")
+	assert.NotContains(t, body, "func mintClientCredentials",
+		"authorization_code spec must NOT emit client_credentials helpers")
+	assert.NotContains(t, body, "func needsClientCredentialsMint",
+		"authorization_code spec must NOT emit safety-window helper")
+	assert.NotContains(t, body, "ccMu sync.Mutex",
+		"authorization_code spec must NOT emit the client_credentials mint mutex")
+}
+
 func TestGenerateAPIKeyAuthFormatSupportsTokenPlaceholder(t *testing.T) {
 	t.Parallel()
 

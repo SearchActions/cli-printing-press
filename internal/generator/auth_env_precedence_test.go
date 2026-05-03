@@ -11,10 +11,47 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestAuthHeader_EnvVarWinsOverFileToken pins that the generated
-// Config.AuthHeader() checks the env-var-backed field BEFORE the
-// file-stored AccessToken for bearer_token, cookie, and composed auth
-// types — env > config convention (kubectl, gh, aws, gcloud).
+// TestAuthHeader_ClientCredentialsAccessTokenWinsOverEnv pins that under
+// OAuth2 client_credentials the cached AccessToken wins over the env-var
+// fallback. The env var is the Client ID, not a usable bearer JWT.
+func TestAuthHeader_ClientCredentialsAccessTokenWinsOverEnv(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("cc-precedence")
+	apiSpec.Auth = spec.AuthConfig{
+		Type:        "bearer_token",
+		Header:      "Authorization",
+		EnvVars:     []string{"CC_AUTH_TEST_CLIENT_ID"},
+		OAuth2Grant: spec.OAuth2GrantClientCredentials,
+		TokenURL:    "https://example.com/token",
+	}
+
+	outputDir := filepath.Join(t.TempDir(), "cc-precedence-pp-cli")
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+
+	cfgSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "config", "config.go"))
+	require.NoError(t, err)
+	content := string(cfgSrc)
+
+	envCheck := "if c." + resolveEnvVarField("CC_AUTH_TEST_CLIENT_ID") + ` != ""`
+	tokenCheck := `if c.AccessToken != ""`
+
+	require.Contains(t, content, envCheck, "AuthHeader must keep the env-var fallback")
+	require.Contains(t, content, tokenCheck, "AuthHeader must check AccessToken")
+
+	body := authHeaderBody(t, content)
+	envIdx := strings.Index(body, envCheck)
+	tokenIdx := strings.Index(body, tokenCheck)
+	require.NotEqual(t, -1, envIdx)
+	require.NotEqual(t, -1, tokenIdx)
+	assert.Less(t, tokenIdx, envIdx,
+		"AccessToken check must appear BEFORE env-var fallback under OAuth2 client_credentials")
+}
+
+// TestAuthHeader_EnvVarWinsOverFileToken pins env-first precedence for
+// the non-client_credentials cases — plain bearer_token (PAT-style),
+// cookie, and composed all follow the env > config convention so a
+// freshly-rotated env var wins over a stale on-disk AccessToken.
 func TestAuthHeader_EnvVarWinsOverFileToken(t *testing.T) {
 	t.Parallel()
 
@@ -49,27 +86,28 @@ func TestAuthHeader_EnvVarWinsOverFileToken(t *testing.T) {
 			envCheck := "if c." + resolveEnvVarField(tc.envVar) + ` != ""`
 			tokenCheck := `if c.AccessToken != ""`
 
-			require.Contains(t, content, envCheck,
-				"AuthHeader must check the env-var field for type %q", tc.authType)
-			require.Contains(t, content, tokenCheck,
-				"AuthHeader must still check AccessToken for type %q", tc.authType)
+			require.Contains(t, content, envCheck)
+			require.Contains(t, content, tokenCheck)
 
-			authHeaderStart := strings.Index(content, "func (c *Config) AuthHeader() string {")
-			require.NotEqual(t, -1, authHeaderStart, "AuthHeader function must be emitted")
-			body := content[authHeaderStart:]
-			// Bound the search to AuthHeader's body. Skip the first byte so
-			// the "next func" lookup finds the func AFTER AuthHeader, not
-			// AuthHeader's own opener.
-			if next := strings.Index(body[1:], "\nfunc "); next != -1 {
-				body = body[:next+1]
-			}
-
+			body := authHeaderBody(t, content)
 			envIdx := strings.Index(body, envCheck)
 			tokenIdx := strings.Index(body, tokenCheck)
-			require.NotEqual(t, -1, envIdx)
-			require.NotEqual(t, -1, tokenIdx)
 			assert.Less(t, envIdx, tokenIdx,
-				"env-var check must appear BEFORE AccessToken check in AuthHeader for type %q", tc.authType)
+				"env-var check must appear BEFORE AccessToken check for type %q", tc.authType)
 		})
 	}
+}
+
+// authHeaderBody slices out just the AuthHeader function body so precedence
+// assertions can't be tricked by a matching pattern in unrelated code
+// further down the file.
+func authHeaderBody(t *testing.T, content string) string {
+	t.Helper()
+	start := strings.Index(content, "func (c *Config) AuthHeader() string {")
+	require.NotEqual(t, -1, start, "AuthHeader function must be emitted")
+	body := content[start:]
+	if next := strings.Index(body[1:], "\nfunc "); next != -1 {
+		body = body[:next+1]
+	}
+	return body
 }

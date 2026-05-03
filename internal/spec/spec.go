@@ -366,6 +366,43 @@ type AuthConfig struct {
 	TokenParamIn       string `yaml:"token_param_in,omitempty" json:"token_param_in,omitempty"`             // "query" or "header"; default "query"
 	InvalidateOnStatus []int  `yaml:"invalidate_on_status,omitempty" json:"invalidate_on_status,omitempty"` // HTTP status codes that should invalidate the cached token and re-bootstrap (e.g. [401, 403])
 	SessionTTLHours    int    `yaml:"session_ttl_hours,omitempty" json:"session_ttl_hours,omitempty"`       // how long to trust a cached session (default 24)
+
+	// OAuth2Grant selects the OAuth2 sub-flow when Type=="oauth2". Defaults
+	// to authorization_code; ignored for non-oauth2 types. Read via
+	// EffectiveOAuth2Grant() so the default lives in one place.
+	OAuth2Grant string `yaml:"oauth2_grant,omitempty" json:"oauth2_grant,omitempty"`
+}
+
+// OAuth2GrantAuthorizationCode is the 3-legged user-OAuth flow (browser
+// redirect, callback server, code exchange at TokenURL).
+const OAuth2GrantAuthorizationCode = "authorization_code"
+
+// OAuth2GrantClientCredentials is the 2-legged server-to-server flow used
+// by M2M APIs (Auth0 Management, Microsoft Graph daemon apps): POST to
+// TokenURL with form-encoded client_id/client_secret, no user redirect.
+const OAuth2GrantClientCredentials = "client_credentials"
+
+// EffectiveOAuth2Grant returns the configured OAuth2 grant type, defaulting
+// to OAuth2GrantAuthorizationCode when unset.
+func (c AuthConfig) EffectiveOAuth2Grant() string {
+	if strings.TrimSpace(c.OAuth2Grant) == "" {
+		return OAuth2GrantAuthorizationCode
+	}
+	return c.OAuth2Grant
+}
+
+// validateOAuth2Grant ensures OAuth2Grant is empty or one of the supported
+// values. Empty is accepted (treated as the default). Cross-checking against
+// AuthConfig.Type is intentionally skipped: the field is ignored for
+// non-oauth2 types, matching how SessionTTLHours and similar fields behave.
+func validateOAuth2Grant(c AuthConfig) error {
+	switch c.OAuth2Grant {
+	case "", OAuth2GrantAuthorizationCode, OAuth2GrantClientCredentials:
+		return nil
+	default:
+		return fmt.Errorf("auth.oauth2_grant %q is not recognized (valid: %q, %q)",
+			c.OAuth2Grant, OAuth2GrantAuthorizationCode, OAuth2GrantClientCredentials)
+	}
 }
 
 type ConfigSpec struct {
@@ -1083,6 +1120,9 @@ func (s *APISpec) Validate() error {
 		return err
 	}
 	if err := validateThrottling(s.Throttling); err != nil {
+		return err
+	}
+	if err := validateOAuth2Grant(s.Auth); err != nil {
 		return err
 	}
 	if s.ClientPattern == "proxy-envelope" && s.HasResourceBaseURLOverride() {
