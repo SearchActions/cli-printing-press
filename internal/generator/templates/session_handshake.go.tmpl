@@ -33,6 +33,7 @@ import (
 const (
 	sessionBootstrapURL  = "{{.Auth.BootstrapURL}}"
 	sessionTokenURL      = "{{.Auth.SessionTokenURL}}"
+	sessionDataBaseURL   = "{{.BaseURL}}"
 	sessionTokenFormat   = "{{if .Auth.TokenFormat}}{{.Auth.TokenFormat}}{{else}}text{{end}}"
 	sessionTokenJSONPath = "{{.Auth.TokenJSONPath}}"
 	sessionUserAgent     = "Mozilla/5.0 (compatible; {{.Name}}-pp-cli)"
@@ -65,11 +66,17 @@ type SessionManager struct {
 
 // newSessionManager constructs a SessionManager with a cookie jar attached to
 // its HTTP client. Any cached session on disk is loaded immediately.
+//
+// The bootstrap and token-fetch calls go through the same newHTTPClient as the
+// data path so a browser-impersonated transport (Surf, when configured) is
+// applied to the handshake itself — otherwise the very calls that establish
+// the session run as a vanilla net/http client and get rate-limited away
+// even when the data client would have cleared the bot wall.
 func newSessionManager(timeout time.Duration) *SessionManager {
 	jar, _ := cookiejar.New(nil)
 	m := &SessionManager{
 		jar:    jar,
-		client: &http.Client{Timeout: timeout, Jar: jar},
+		client: newHTTPClient(timeout, jar),
 	}
 	m.loadFromDisk()
 	return m
@@ -264,12 +271,30 @@ func (m *SessionManager) saveToDisk() {
 	tok := m.token
 	m.mu.Unlock()
 
+	// Persist cookies for every host the session interacts with. cookiejar
+	// strips Domain on Cookies(u), so a single-host snapshot drops cookies
+	// scoped to a parent domain that other hosts in the handshake also rely
+	// on. Re-snapshot per host so each destination has the cookies it needs
+	// after restore.
 	var cookies []jarCookie
-	// Persist cookies for the token endpoint host (broadest plausible scope).
-	if u, err := url.Parse(sessionTokenURL); err == nil {
+	seen := make(map[string]bool)
+	for _, host := range []string{sessionBootstrapURL, sessionTokenURL, sessionDataBaseURL} {
+		if host == "" {
+			continue
+		}
+		u, err := url.Parse(host)
+		if err != nil || u.Host == "" {
+			continue
+		}
+		rootURL := u.Scheme + "://" + u.Host + "/"
 		for _, ck := range m.jar.Cookies(u) {
+			key := rootURL + "|" + ck.Name + "=" + ck.Value
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
 			cookies = append(cookies, jarCookie{
-				URL:     u.Scheme + "://" + u.Host + "/",
+				URL:     rootURL,
 				Name:    ck.Name,
 				Value:   ck.Value,
 				Path:    ck.Path,
