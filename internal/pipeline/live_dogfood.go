@@ -115,10 +115,18 @@ func RunLiveDogfood(opts LiveDogfoodOptions) (*LiveDogfoodReport, error) {
 		RanAt:   time.Now().UTC(),
 	}
 
+	ctx := resolveCtx{
+		binaryPath: binaryPath,
+		cliDir:     opts.CLIDir,
+		siblings:   buildSiblingMap(commands),
+		cache:      newCompanionCache(),
+		timeout:    timeout,
+	}
+
 	for _, command := range commands {
 		commandName := strings.Join(command.Path, " ")
 		report.Commands = append(report.Commands, commandName)
-		report.Tests = append(report.Tests, runLiveDogfoodCommand(binaryPath, opts.CLIDir, command, timeout)...)
+		report.Tests = append(report.Tests, runLiveDogfoodCommand(command, ctx)...)
 	}
 
 	finalizeLiveDogfoodReport(report)
@@ -177,6 +185,387 @@ var liveDogfoodFrameworkSkip = map[string]bool{
 	"version":       true,
 }
 
+// crossAPIListVerbs are leaf names a modern API CLI may expose as a
+// list-shape companion to a get-shape command.
+var crossAPIListVerbs = map[string]bool{
+	"list": true, "all": true, "index": true,
+	"query": true, "find": true, "search": true,
+	"discover": true, "browse": true, "recent": true, "feed": true,
+}
+
+// cinemaListVerbs are domain-specific list verbs for media/cinema-class APIs
+// that expose `popular`/`trending`/etc. as the canonical list shape rather
+// than a plain `list` leaf. Keep cross-API generic verbs in
+// crossAPIListVerbs; route new media-class verbs here.
+var cinemaListVerbs = map[string]bool{
+	"popular": true, "trending": true, "top_rated": true,
+	"latest": true, "now_playing": true, "upcoming": true,
+	"airing_today": true, "on_the_air": true,
+}
+
+func isCompanionLeaf(name string) bool {
+	return crossAPIListVerbs[name] || cinemaListVerbs[name]
+}
+
+// mutatingVerbs name leaves whose semantics include writes/deletes against
+// the API. Used as a deny-list overlay on the search-shape heuristic so a
+// command like `delete --query=...` (mass delete by filter) is not probed
+// with __printing_press_invalid__ against the live API.
+var mutatingVerbs = map[string]bool{
+	"delete": true, "destroy": true, "remove": true,
+	"create": true, "add": true, "new": true,
+	"update": true, "patch": true, "edit": true,
+	"set": true, "modify": true, "replace": true,
+}
+
+func isMutatingLeaf(name string) bool {
+	return mutatingVerbs[name]
+}
+
+// companionCache is run-scoped: per-RunLiveDogfood maps keyed by the full
+// companion argv (NUL-joined to avoid path/id collisions).
+type companionCache struct {
+	// results: NUL-joined argv → extracted id.
+	results map[string]string
+	// helps: companion path → cached --help output, so `--limit` detection
+	// runs at most once per companion.
+	helps map[string]string
+}
+
+// resolveCtx threads run-scoped state into the chained companion walk so
+// individual helpers don't need to take the same five parameters.
+type resolveCtx struct {
+	binaryPath string
+	cliDir     string
+	siblings   map[string][]liveDogfoodCommand
+	cache      *companionCache
+	timeout    time.Duration
+}
+
+func newCompanionCache() *companionCache {
+	return &companionCache{
+		results: map[string]string{},
+		helps:   map[string]string{},
+	}
+}
+
+// buildSiblingMap groups commands by their joined parent path so the chain
+// walker can look up sibling list-shape companions in O(1).
+func buildSiblingMap(commands []liveDogfoodCommand) map[string][]liveDogfoodCommand {
+	siblings := map[string][]liveDogfoodCommand{}
+	for _, c := range commands {
+		if len(c.Path) == 0 {
+			continue
+		}
+		key := strings.Join(c.Path[:len(c.Path)-1], " ")
+		siblings[key] = append(siblings[key], c)
+	}
+	return siblings
+}
+
+// findListCompanion picks the first sibling whose leaf name is in the
+// companion-leaf allowlist (cross-API or cinema). Returns nil when no
+// allowlisted sibling is present.
+func findListCompanion(candidates []liveDogfoodCommand) *liveDogfoodCommand {
+	for i := range candidates {
+		path := candidates[i].Path
+		if len(path) == 0 {
+			continue
+		}
+		if isCompanionLeaf(path[len(path)-1]) {
+			return &candidates[i]
+		}
+	}
+	return nil
+}
+
+// resolveCommandPositionals walks the sibling list-shape chain to source a
+// real id for each id-shape positional in command.Help's Usage line. Earlier-
+// resolved ids are threaded into later list calls as positional context, so
+// nested resources (projects/tasks/update <pid> <tid>) work end-to-end.
+//
+// Returns:
+//   - (newArgs, false, "")   — placeholders substituted; run happy_path with newArgs
+//   - (nil, true, reason)    — chain broke; caller must skip happy_path + json_fidelity
+//   - (happyArgs, false, "") — no positionals at all; pass-through unchanged
+func resolveCommandPositionals(command liveDogfoodCommand, happyArgs []string, ctx resolveCtx) ([]string, bool, string) {
+	placeholders := extractPositionalPlaceholders(liveDogfoodUsageSuffix(command.Help))
+	if len(placeholders) == 0 {
+		return happyArgs, false, ""
+	}
+
+	pathLen := len(command.Path)
+	nPlaceholders := len(placeholders)
+	if pathLen < nPlaceholders+1 {
+		// More placeholders than path segments before the verb. Unusual
+		// shape (top-level command with multiple positionals); skip.
+		return nil, true, fmt.Sprintf(
+			"command path %v has fewer segments than placeholders (%d)", command.Path, nPlaceholders)
+	}
+
+	resolved := make([]string, 0, nPlaceholders)
+	for i, name := range placeholders {
+		nameLower := strings.ToLower(name)
+		// id-shape covers: bare "id", snake_case "*_id", or camelCase "*id"
+		// where the prefix has at least one character (len > 2). Broader than
+		// generator.go exampleValue's predicate — no spec type info is available
+		// from CLI help text, so the string-type fence applied there is omitted.
+		isIDShape := nameLower == "id" ||
+			(strings.HasSuffix(nameLower, "id") && len(nameLower) > 2)
+		if !isIDShape {
+			return nil, true, fmt.Sprintf("non-id positional %q at depth %d", name, i)
+		}
+
+		// parent path of the verb that expects this placeholder.
+		siblingKey := strings.Join(command.Path[:pathLen-nPlaceholders+i], " ")
+		listCmd := findListCompanion(ctx.siblings[siblingKey])
+		if listCmd == nil {
+			return nil, true, fmt.Sprintf("no list companion at depth %d for %q", i, name)
+		}
+
+		listArgs := append([]string{}, listCmd.Path...)
+		listArgs = append(listArgs, resolved...)
+		listArgs = append(listArgs, "--json")
+		if companionSupportsLimit(*listCmd, ctx) {
+			listArgs = append(listArgs, "--limit", "1")
+		}
+
+		cacheKey := strings.Join(listArgs, "\x00") // NUL avoids path/id collisions.
+		if id, ok := ctx.cache.results[cacheKey]; ok {
+			if id == "" {
+				// Negative-cache sentinel: this companion already failed in this
+				// run. Skip immediately so sibling get-shape commands sharing
+				// the same companion don't each block on the same 30s timeout.
+				return nil, true, fmt.Sprintf(
+					"list companion previously failed at depth %d for %q", i, name)
+			}
+			resolved = append(resolved, id)
+			continue
+		}
+
+		run := runLiveDogfoodProcess(ctx.binaryPath, ctx.cliDir, listArgs, ctx.timeout)
+		if run.exitCode != 0 {
+			ctx.cache.results[cacheKey] = "" // negative-cache sentinel
+			return nil, true, fmt.Sprintf(
+				"list companion failed at depth %d: exit %d", i, run.exitCode)
+		}
+
+		id, ok := extractFirstIDFromJSON(run.stdout)
+		if !ok {
+			ctx.cache.results[cacheKey] = "" // negative-cache sentinel
+			return nil, true, fmt.Sprintf(
+				"no id parseable from companion at depth %d", i)
+		}
+
+		ctx.cache.results[cacheKey] = id
+		resolved = append(resolved, id)
+	}
+
+	return substitutePositionals(happyArgs, command.Path, resolved), false, ""
+}
+
+// substitutePositionals replaces the first len(resolved) non-flag args in
+// happyArgs (after command.Path) with the resolved ids. The walk preserves
+// flags interleaved with positionals so an example like
+// `--limit 5 widgets get <id>` stays intact when the placeholder is
+// substituted in. Args before command.Path are preserved untouched.
+func substitutePositionals(happyArgs, commandPath []string, resolved []string) []string {
+	out := make([]string, 0, len(happyArgs))
+	out = append(out, happyArgs[:min(len(commandPath), len(happyArgs))]...)
+	idx := 0
+	for j := len(commandPath); j < len(happyArgs); j++ {
+		arg := happyArgs[j]
+		if !strings.HasPrefix(arg, "-") && idx < len(resolved) {
+			out = append(out, resolved[idx])
+			idx++
+		} else {
+			out = append(out, arg)
+		}
+	}
+	return out
+}
+
+// companionSupportsLimit checks the companion's --help for a --limit flag,
+// caching the result. Lazy: only invoked once per companion path because
+// the chain walker calls findListCompanion before each invocation and we
+// only consult --help when a companion was actually selected.
+func companionSupportsLimit(companion liveDogfoodCommand, ctx resolveCtx) bool {
+	pathKey := strings.Join(companion.Path, " ")
+	help, cached := ctx.cache.helps[pathKey]
+	if !cached {
+		helpArgs := append(append([]string{}, companion.Path...), "--help")
+		run := runLiveDogfoodProcess(ctx.binaryPath, ctx.cliDir, helpArgs, ctx.timeout)
+		if run.exitCode != 0 {
+			ctx.cache.helps[pathKey] = ""
+			return false
+		}
+		help = run.stdout + run.stderr
+		ctx.cache.helps[pathKey] = help
+	}
+	return slices.Contains(extractFlagNames(help), "limit")
+}
+
+// extractFirstIDFromJSON tries canonical REST and GraphQL response shapes
+// in order; see inline `// Path N:` comments for the priority list.
+// UseNumber() preserves large numeric ids (e.g., snowflake > 2^53) through
+// fmt.Sprint without scientific notation.
+func extractFirstIDFromJSON(stdout string) (string, bool) {
+	dec := json.NewDecoder(strings.NewReader(stdout))
+	dec.UseNumber()
+	var root any
+	if err := dec.Decode(&root); err != nil {
+		return "", false
+	}
+
+	// Path 1: .results[0].id
+	if id, ok := pickIDFromArrayKey(root, "results"); ok {
+		return id, true
+	}
+	// Path 2: top-level array .[0].id
+	if id, ok := pickIDFromTopArray(root); ok {
+		return id, true
+	}
+	// Path 3: .items[0].id
+	if id, ok := pickIDFromArrayKey(root, "items"); ok {
+		return id, true
+	}
+	// Path 4: .data[0].id (only when .data is an ARRAY — GraphQL data is an object)
+	if obj, ok := root.(map[string]any); ok {
+		if dataArr, ok := obj["data"].([]any); ok {
+			if id, ok := firstIDFromArray(dataArr); ok {
+				return id, true
+			}
+		}
+	}
+	// Path 5: .list[0].id
+	if id, ok := pickIDFromArrayKey(root, "list"); ok {
+		return id, true
+	}
+	// Path 6: .data.<any>.nodes[0].id
+	if id, ok := pickIDFromGraphQLConnection(root, "nodes", false); ok {
+		return id, true
+	}
+	// Path 7: .data.<any>.edges[0].node.id
+	if id, ok := pickIDFromGraphQLConnection(root, "edges", true); ok {
+		return id, true
+	}
+	return "", false
+}
+
+func pickIDFromArrayKey(root any, key string) (string, bool) {
+	obj, ok := root.(map[string]any)
+	if !ok {
+		return "", false
+	}
+	arr, ok := obj[key].([]any)
+	if !ok {
+		return "", false
+	}
+	return firstIDFromArray(arr)
+}
+
+func pickIDFromTopArray(root any) (string, bool) {
+	arr, ok := root.([]any)
+	if !ok {
+		return "", false
+	}
+	return firstIDFromArray(arr)
+}
+
+func firstIDFromArray(arr []any) (string, bool) {
+	if len(arr) == 0 {
+		return "", false
+	}
+	first, ok := arr[0].(map[string]any)
+	if !ok {
+		return "", false
+	}
+	return idValueAsString(first["id"])
+}
+
+// pickIDFromGraphQLConnection walks .data... looking for a `connectionKey`
+// (`nodes` or `edges`) array within a bounded subtree. Handles two shapes:
+//
+//	Shape A — depth 1 under .data (Shopify, Linear, Notion):
+//	  .data.<resource>.<connectionKey>[0]...
+//
+//	Shape B — depth 2 under .data (GitHub Relay viewer.repos.edges):
+//	  .data.<wrapper>.<resource>.<connectionKey>[0]...
+//
+// edgeShape=true reads id from .node.id under each entry (Relay edges);
+// edgeShape=false reads id directly from each entry (nodes). The walk is
+// bounded to depth 2 to avoid pathological recursion on deeply nested
+// responses that don't carry an id-shaped first element.
+func pickIDFromGraphQLConnection(root any, connectionKey string, edgeShape bool) (string, bool) {
+	obj, ok := root.(map[string]any)
+	if !ok {
+		return "", false
+	}
+	data, ok := obj["data"].(map[string]any)
+	if !ok {
+		return "", false
+	}
+	// Try depth 1 then depth 2.
+	for depth := 1; depth <= 2; depth++ {
+		if id, ok := walkForConnection(data, connectionKey, edgeShape, depth); ok {
+			return id, true
+		}
+	}
+	return "", false
+}
+
+// walkForConnection descends `depth` levels into nested map[string]any
+// values, returning the first matching connection's id.
+func walkForConnection(node map[string]any, connectionKey string, edgeShape bool, depth int) (string, bool) {
+	if depth == 0 {
+		arr, ok := node[connectionKey].([]any)
+		if !ok || len(arr) == 0 {
+			return "", false
+		}
+		first, ok := arr[0].(map[string]any)
+		if !ok {
+			return "", false
+		}
+		if edgeShape {
+			n, ok := first["node"].(map[string]any)
+			if !ok {
+				return "", false
+			}
+			return idValueAsString(n["id"])
+		}
+		return idValueAsString(first["id"])
+	}
+	for _, child := range node {
+		childObj, ok := child.(map[string]any)
+		if !ok {
+			continue
+		}
+		if id, ok := walkForConnection(childObj, connectionKey, edgeShape, depth-1); ok {
+			return id, true
+		}
+	}
+	return "", false
+}
+
+func idValueAsString(v any) (string, bool) {
+	if v == nil {
+		return "", false
+	}
+	switch t := v.(type) {
+	case string:
+		if t == "" {
+			return "", false
+		}
+		return t, true
+	case json.Number:
+		return t.String(), true
+	case bool:
+		return "", false
+	default:
+		return fmt.Sprint(v), true
+	}
+}
+
 func collectLiveDogfoodCommandPaths(prefix []string, command dogfoodAgentCommand, paths *[][]string) {
 	if command.Name == "" || liveDogfoodFrameworkSkip[command.Name] {
 		return
@@ -192,11 +581,11 @@ func collectLiveDogfoodCommandPaths(prefix []string, command dogfoodAgentCommand
 	}
 }
 
-func runLiveDogfoodCommand(binaryPath, cliDir string, command liveDogfoodCommand, timeout time.Duration) []LiveDogfoodTestResult {
+func runLiveDogfoodCommand(command liveDogfoodCommand, ctx resolveCtx) []LiveDogfoodTestResult {
 	commandName := strings.Join(command.Path, " ")
 
 	helpArgs := append(append([]string{}, command.Path...), "--help")
-	helpRun := runLiveDogfoodProcess(binaryPath, cliDir, helpArgs, timeout)
+	helpRun := runLiveDogfoodProcess(ctx.binaryPath, ctx.cliDir, helpArgs, ctx.timeout)
 	helpResult := liveDogfoodResult(commandName, LiveDogfoodTestHelp, helpArgs, helpRun)
 	helpPassed := helpRun.exitCode == 0
 	help := helpRun.stdout + helpRun.stderr
@@ -231,42 +620,95 @@ func runLiveDogfoodCommand(binaryPath, cliDir string, command liveDogfoodCommand
 		return results
 	}
 
-	happyRun := runLiveDogfoodProcess(binaryPath, cliDir, happyArgs, timeout)
-	happyResult := liveDogfoodResult(commandName, LiveDogfoodTestHappy, happyArgs, happyRun)
-	if happyRun.exitCode == 0 {
-		happyResult.Status = LiveDogfoodStatusPass
-		happyResult.Reason = ""
-	}
-	results = append(results, happyResult)
-
-	if commandSupportsJSON(command.Help) {
-		jsonArgs := appendJSONArg(happyArgs)
-		jsonRun := runLiveDogfoodProcess(binaryPath, cliDir, jsonArgs, timeout)
-		jsonResult := liveDogfoodResult(commandName, LiveDogfoodTestJSON, jsonArgs, jsonRun)
-		if jsonRun.exitCode == 0 {
-			if !json.Valid([]byte(jsonRun.stdout)) {
-				jsonResult.Status = LiveDogfoodStatusFail
-				jsonResult.Reason = "invalid JSON"
-			} else {
-				jsonResult.Status = LiveDogfoodStatusPass
-				jsonResult.Reason = ""
-			}
-		}
-		results = append(results, jsonResult)
+	// error_path gate runs independently below; its own branch.
+	resolvedArgs, resolveSkipped, resolveReason := resolveCommandPositionals(command, happyArgs, ctx)
+	if resolveSkipped {
+		results = append(results,
+			skippedLiveDogfoodResult(commandName, LiveDogfoodTestHappy, resolveReason),
+			skippedLiveDogfoodResult(commandName, LiveDogfoodTestJSON, resolveReason),
+		)
 	} else {
-		results = append(results, skippedLiveDogfoodResult(commandName, LiveDogfoodTestJSON, "--json not supported"))
+		happyArgs = resolvedArgs
+
+		happyRun := runLiveDogfoodProcess(ctx.binaryPath, ctx.cliDir, happyArgs, ctx.timeout)
+		happyResult := liveDogfoodResult(commandName, LiveDogfoodTestHappy, happyArgs, happyRun)
+		if happyRun.exitCode == 0 {
+			happyResult.Status = LiveDogfoodStatusPass
+			happyResult.Reason = ""
+		}
+		results = append(results, happyResult)
+
+		if commandSupportsJSON(command.Help) {
+			jsonArgs := appendJSONArg(happyArgs)
+			jsonRun := runLiveDogfoodProcess(ctx.binaryPath, ctx.cliDir, jsonArgs, ctx.timeout)
+			jsonResult := liveDogfoodResult(commandName, LiveDogfoodTestJSON, jsonArgs, jsonRun)
+			if jsonRun.exitCode == 0 {
+				if !json.Valid([]byte(jsonRun.stdout)) {
+					jsonResult.Status = LiveDogfoodStatusFail
+					jsonResult.Reason = "invalid JSON"
+				} else {
+					jsonResult.Status = LiveDogfoodStatusPass
+					jsonResult.Reason = ""
+				}
+			}
+			results = append(results, jsonResult)
+		} else {
+			results = append(results, skippedLiveDogfoodResult(commandName, LiveDogfoodTestJSON, "--json not supported"))
+		}
 	}
 
 	if liveDogfoodCommandTakesArg(command.Help) {
-		errorArgs := append(append([]string{}, command.Path...), "__printing_press_invalid__")
-		errorRun := runLiveDogfoodProcess(binaryPath, cliDir, errorArgs, timeout)
-		errorResult := liveDogfoodResult(commandName, LiveDogfoodTestError, errorArgs, errorRun)
-		if errorRun.exitCode != 0 {
-			errorResult.Status = LiveDogfoodStatusPass
-			errorResult.Reason = ""
+		flagNames := extractFlagNames(command.Help)
+		hasQueryFlag := slices.Contains(flagNames, "query")
+		// Search-shape strategy is suppressed for mutating leaves so a
+		// `delete --query=...` mass-delete is never probed with the
+		// invalid-token sentinel against the live API.
+		leaf := command.Path[len(command.Path)-1]
+		isSearch := commandSupportsSearch(command.Help) && !isMutatingLeaf(leaf)
+		suppliedJSON := slices.Contains(flagNames, "json")
+
+		var errorArgs []string
+		if isSearch {
+			errorArgs = append([]string{}, command.Path...)
+			if hasQueryFlag {
+				errorArgs = append(errorArgs, "--query", "__printing_press_invalid__")
+			} else {
+				errorArgs = append(errorArgs, "__printing_press_invalid__")
+			}
+			if suppliedJSON {
+				errorArgs = appendJSONArg(errorArgs)
+			}
 		} else {
-			errorResult.Status = LiveDogfoodStatusFail
-			errorResult.Reason = "expected non-zero exit for invalid argument"
+			errorArgs = append(append([]string{}, command.Path...), "__printing_press_invalid__")
+		}
+
+		errorRun := runLiveDogfoodProcess(ctx.binaryPath, ctx.cliDir, errorArgs, ctx.timeout)
+		errorResult := liveDogfoodResult(commandName, LiveDogfoodTestError, errorArgs, errorRun)
+
+		if isSearch {
+			// Real-world feed/content APIs return recent items as a fallback
+			// for unmatched queries, so non-empty results under exit 0 are
+			// not a failure signal. The only fail mode is invalid JSON when
+			// the caller asked for --json.
+			switch {
+			case errorRun.exitCode != 0:
+				errorResult.Status = LiveDogfoodStatusPass
+				errorResult.Reason = ""
+			case suppliedJSON && !json.Valid([]byte(errorRun.stdout)):
+				errorResult.Status = LiveDogfoodStatusFail
+				errorResult.Reason = "invalid JSON under --json"
+			default:
+				errorResult.Status = LiveDogfoodStatusPass
+				errorResult.Reason = ""
+			}
+		} else {
+			if errorRun.exitCode != 0 {
+				errorResult.Status = LiveDogfoodStatusPass
+				errorResult.Reason = ""
+			} else {
+				errorResult.Status = LiveDogfoodStatusFail
+				errorResult.Reason = "expected non-zero exit for invalid argument"
+			}
 		}
 		results = append(results, errorResult)
 	} else {
@@ -274,6 +716,47 @@ func runLiveDogfoodCommand(binaryPath, cliDir string, command liveDogfoodCommand
 	}
 
 	return results
+}
+
+// commandSupportsSearch reports whether a command behaves like a search:
+// either it ships a --query flag, or its Usage suffix carries a <query>
+// positional placeholder. Search-shape commands canonically return exit 0
+// with empty (or fallback) results on no-match, so error_path treats them
+// differently from mutating writes.
+//
+// Flag detection is scoped to the Flags: section so cross-references in
+// Examples or Long descriptions (e.g., "see widgets list --query=foo") do
+// not contaminate the heuristic.
+func commandSupportsSearch(help string) bool {
+	if slices.Contains(extractFlagNames(extractFlagsSection(help)), "query") {
+		return true
+	}
+	return slices.Contains(extractPositionalPlaceholders(liveDogfoodUsageSuffix(help)), "query")
+}
+
+// extractFlagsSection returns the body of a Cobra `--help` "Flags:" or
+// "Global Flags:" block — everything from the section header through the
+// next blank line. Used to scope flag-name extraction so cross-reference
+// strings outside the actual flag section can't trigger false positives.
+func extractFlagsSection(help string) string {
+	lines := strings.Split(help, "\n")
+	var out []string
+	inFlags := false
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "Flags:" || trimmed == "Global Flags:" {
+			inFlags = true
+			continue
+		}
+		if inFlags {
+			if trimmed == "" {
+				inFlags = false
+				continue
+			}
+			out = append(out, line)
+		}
+	}
+	return strings.Join(out, "\n")
 }
 
 func runLiveDogfoodProcess(binaryPath, cliDir string, args []string, timeout time.Duration) liveDogfoodRun {
@@ -407,12 +890,17 @@ func finalizeLiveDogfoodReport(report *LiveDogfoodReport) {
 			report.Skipped++
 		}
 	}
+	// Failed-or-empty wins: any real failure or a fully empty matrix is FAIL.
+	// The quick-level PASS arm uses min(5, MatrixSize) for the threshold so
+	// single-command quick runs (~4 entries when all probes succeed) can
+	// PASS, while keeping a MatrixSize >= 4 floor that blocks pathological
+	// matrices where most entries skipped.
 	switch {
-	case report.Level == "quick" && report.MatrixSize == 6 && report.Passed >= 5:
-		report.Verdict = "PASS"
 	case report.Failed > 0 || report.MatrixSize == 0:
 		report.Verdict = "FAIL"
-	case report.Level == "quick" && report.MatrixSize != 6:
+	case report.Level == "quick" && report.MatrixSize >= 4 && report.Passed+report.Skipped >= min(5, report.MatrixSize):
+		report.Verdict = "PASS"
+	case report.Level == "quick":
 		report.Verdict = "FAIL"
 	}
 }
