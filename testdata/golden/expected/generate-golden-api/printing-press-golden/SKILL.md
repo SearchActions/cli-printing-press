@@ -3,7 +3,15 @@ name: pp-printing-press-golden
 description: "Printing Press CLI for Printing Press Golden. Purpose-built fixture for golden generation coverage."
 argument-hint: "<command> [args] | install cli|mcp"
 allowed-tools: "Read Bash"
-metadata: '{"openclaw":{"requires":{"bins":["printing-press-golden-pp-cli"]},"install":[{"id":"go","kind":"shell","command":"go install github.com/mvanhorn/printing-press-library/library/other/printing-press-golden-pp-cli/cmd/printing-press-golden-pp-cli@latest","bins":["printing-press-golden-pp-cli"],"label":"Install via go install"}]}}'
+metadata:
+  openclaw:
+    requires:
+      bins:
+        - printing-press-golden-pp-cli
+    install:
+      - kind: go
+        bins: [printing-press-golden-pp-cli]
+        module: github.com/mvanhorn/printing-press-library/library/other/printing-press-golden/cmd/printing-press-golden-pp-cli
 ---
 
 # Printing Press Golden — Printing Press CLI
@@ -144,7 +152,7 @@ Parse `$ARGUMENTS`:
 1. Check Go is installed: `go version` (requires Go 1.23+)
 2. Install:
    ```bash
-   go install github.com/mvanhorn/printing-press-library/library/other/printing-press-golden-pp-cli/cmd/printing-press-golden-pp-cli@latest
+   go install github.com/mvanhorn/printing-press-library/library/other/printing-press-golden/cmd/printing-press-golden-pp-cli@latest
    ```
 3. Verify: `printing-press-golden-pp-cli --version`
 4. Ensure `$GOPATH/bin` (or `$HOME/go/bin`) is on `$PATH`.
@@ -153,7 +161,7 @@ Parse `$ARGUMENTS`:
 
 1. Install the MCP server:
    ```bash
-   go install github.com/mvanhorn/printing-press-library/library/other/printing-press-golden-pp-cli/cmd/printing-press-golden-pp-mcp@latest
+   go install github.com/mvanhorn/printing-press-library/library/other/printing-press-golden/cmd/printing-press-golden-pp-mcp@latest
    ```
 2. Register with Claude Code:
    ```bash
