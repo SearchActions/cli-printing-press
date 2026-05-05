@@ -244,12 +244,13 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 		"graphqlFieldSelection": func(typeName string, types map[string]spec.TypeDef) []string {
 			return graphqlFieldSelection(typeName, types)
 		},
-		"isGraphQL":   isGraphQLSpec,
-		"backtick":    func() string { return "`" },
-		"kebab":       toKebab,
-		"humanName":   naming.HumanName,
-		"envPrefix":   naming.EnvPrefix,
-		"mcpToolName": naming.SnakeIdentifier,
+		"isGraphQL":           isGraphQLSpec,
+		"exportableResources": exportableResources,
+		"backtick":            func() string { return "`" },
+		"kebab":               toKebab,
+		"humanName":           naming.HumanName,
+		"envPrefix":           naming.EnvPrefix,
+		"mcpToolName":         naming.SnakeIdentifier,
 		"lookupEndpoint": func(api *spec.APISpec, ref string) templateEndpoint {
 			e, _ := lookupEndpointForTemplate(api, ref)
 			return e
@@ -645,6 +646,7 @@ type readmeTemplateData struct {
 	HasDataLayer      bool
 	HasAsyncJobs      bool
 	HasWriteCommands  bool
+	HasDelete         bool
 	HasAuth           bool
 	FreshnessCommands []string
 	TrafficAnalysis   *trafficAnalysisTemplateData
@@ -699,6 +701,7 @@ func (g *Generator) readmeData() *readmeTemplateData {
 		HasDataLayer:          g.VisionSet.Store,
 		HasAsyncJobs:          len(g.AsyncJobs) > 0,
 		HasWriteCommands:      hasWriteCommands(g.Spec.Resources),
+		HasDelete:             computeHelperFlags(g.Spec).HasDelete,
 		HasAuth:               hasAuth(g.Spec.Auth),
 		FreshnessCommands:     g.freshnessCommandPaths(),
 		TrafficAnalysis:       g.trafficAnalysisData(),
@@ -1199,6 +1202,7 @@ func (g *Generator) prepareOutput() error {
 	if g.profile == nil {
 		g.profile = profiler.Profile(g.Spec)
 	}
+	g.VisionSet = constrainVisionTemplates(g.Spec, g.VisionSet)
 	if err := g.validateFreshnessCommandCoverage(); err != nil {
 		return err
 	}
@@ -2070,6 +2074,7 @@ func (g *Generator) renderRootProjectFiles(promotedCommands []PromotedCommand, p
 	// rootCmd.AddCommand(newAuthCmd) so the root binary does not reference an
 	// undefined symbol when auth.go was skipped.
 	hasAuthCommand := g.shouldEmitAuth()
+	helperFlags := computeHelperFlags(g.Spec)
 
 	rootData := struct {
 		*spec.APISpec
@@ -2085,6 +2090,7 @@ func (g *Generator) renderRootProjectFiles(promotedCommands []PromotedCommand, p
 		HasAsyncJobs          bool
 		AsyncJobCount         int
 		HasAuthCommand        bool
+		HasDelete             bool
 	}{
 		APISpec:               g.Spec,
 		VisionSet:             g.VisionSet,
@@ -2099,6 +2105,7 @@ func (g *Generator) renderRootProjectFiles(promotedCommands []PromotedCommand, p
 		HasAsyncJobs:          len(g.AsyncJobs) > 0,
 		AsyncJobCount:         len(g.AsyncJobs),
 		HasAuthCommand:        hasAuthCommand,
+		HasDelete:             helperFlags.HasDelete,
 	}
 	if err := g.renderTemplate("root.go.tmpl", filepath.Join("internal", "cli", "root.go"), rootData); err != nil {
 		return fmt.Errorf("rendering root: %w", err)
