@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/mvanhorn/cli-printing-press/v3/internal/pipeline"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -126,73 +127,92 @@ func TestResolveManuscriptDir(t *testing.T) {
 	})
 }
 
+// withManuscriptsRoot wires a temp dir as PRINTING_PRESS_HOME and returns the
+// manuscripts/ path, giving tests deterministic control over what
+// resolveManuscripts sees on disk.
+func withManuscriptsRoot(t *testing.T) string {
+	t.Helper()
+	t.Setenv("PRINTING_PRESS_HOME", t.TempDir())
+	msRoot := pipeline.PublishedManuscriptsRoot()
+	require.NoError(t, os.MkdirAll(msRoot, 0o755))
+	return msRoot
+}
+
 func TestManuscriptLookupPriority(t *testing.T) {
-	// Simulates the full lookup chain: CLI name → API name → fuzzy resolve
-	// This is what the publish package command does.
+	// Exercises resolveManuscripts directly: API-slug (SKILL convention)
+	// wins over CLI-name (legacy binary convention); fuzzy is the last resort.
 
-	t.Run("prefers CLI name over API name", func(t *testing.T) {
-		msRoot := t.TempDir()
+	t.Run("prefers API name over CLI name when both exist", func(t *testing.T) {
+		msRoot := withManuscriptsRoot(t)
+		createRunDir(t, msRoot, "steam-web", "run-api-recent")
+		createRunDir(t, msRoot, "steam-web-pp-cli", "run-cli-old")
+
+		dir, runID := resolveManuscripts("steam-web-pp-cli", "steam-web")
+		assert.Equal(t, filepath.Join(msRoot, "steam-web"), dir)
+		assert.Equal(t, "run-api-recent", runID)
+	})
+
+	t.Run("falls back to CLI name when API name dir missing (legacy fallback)", func(t *testing.T) {
+		msRoot := withManuscriptsRoot(t)
 		createRunDir(t, msRoot, "steam-web-pp-cli", "run-cli")
-		createRunDir(t, msRoot, "steam-web", "run-api")
-		createRunDir(t, msRoot, "steam", "run-slug")
 
-		cliName := "steam-web-pp-cli"
-
-		// Step 1: CLI name
-		cliDir := filepath.Join(msRoot, cliName)
-		runID, err := findMostRecentRun(cliDir)
-		assert.NoError(t, err)
-		assert.Equal(t, "run-cli", runID) // CLI name wins
+		dir, runID := resolveManuscripts("steam-web-pp-cli", "steam-web")
+		assert.Equal(t, filepath.Join(msRoot, "steam-web-pp-cli"), dir)
+		assert.Equal(t, "run-cli", runID)
 	})
 
-	t.Run("falls back to API name when CLI name missing", func(t *testing.T) {
-		msRoot := t.TempDir()
-		// No CLI name directory
+	t.Run("returns API name dir when only API name exists", func(t *testing.T) {
+		msRoot := withManuscriptsRoot(t)
 		createRunDir(t, msRoot, "steam-web", "run-api")
-		createRunDir(t, msRoot, "steam", "run-slug")
 
-		cliName := "steam-web-pp-cli"
-
-		// Step 1: CLI name — fails
-		cliDir := filepath.Join(msRoot, cliName)
-		cliRunID, _ := findMostRecentRun(cliDir)
-		assert.Empty(t, cliRunID)
-
-		// Step 2: API name
-		apiDir := filepath.Join(msRoot, "steam-web")
-		apiRunID, err := findMostRecentRun(apiDir)
-		assert.NoError(t, err)
-		assert.Equal(t, "run-api", apiRunID) // API name is second priority
+		dir, runID := resolveManuscripts("steam-web-pp-cli", "steam-web")
+		assert.Equal(t, filepath.Join(msRoot, "steam-web"), dir)
+		assert.Equal(t, "run-api", runID)
 	})
 
-	t.Run("falls back to fuzzy when both CLI and API names missing", func(t *testing.T) {
-		msRoot := t.TempDir()
+	t.Run("falls back to fuzzy when neither named key has runs", func(t *testing.T) {
+		msRoot := withManuscriptsRoot(t)
 		createRunDir(t, msRoot, "steam", "run-slug")
 
-		apiName := "steam-web"
-
-		// Steps 1+2 fail, step 3: fuzzy resolve
-		dir, runID := resolveManuscriptDir(msRoot, apiName)
+		dir, runID := resolveManuscripts("steam-web-pp-cli", "steam-web")
 		assert.Equal(t, filepath.Join(msRoot, "steam"), dir)
 		assert.Equal(t, "run-slug", runID)
 	})
 
 	t.Run("returns empty when nothing matches", func(t *testing.T) {
-		msRoot := t.TempDir()
+		msRoot := withManuscriptsRoot(t)
 		createRunDir(t, msRoot, "notion", "run-notion")
 
-		cliName := "steam-web-pp-cli"
-		apiName := "steam-web"
-
-		cliDir := filepath.Join(msRoot, cliName)
-		runID, _ := findMostRecentRun(cliDir)
+		dir, runID := resolveManuscripts("steam-web-pp-cli", "steam-web")
+		assert.Empty(t, dir)
 		assert.Empty(t, runID)
+	})
 
-		apiDir := filepath.Join(msRoot, apiName)
-		runID, _ = findMostRecentRun(apiDir)
-		assert.Empty(t, runID)
+	t.Run("regression: cal-com prefers API-slug recent run over stale CLI-name run", func(t *testing.T) {
+		// Pre-fix, resolveManuscripts returned the stale CLI-name run instead.
+		msRoot := withManuscriptsRoot(t)
+		createRunDir(t, msRoot, "cal-com", "20260504-205634")
+		createRunDir(t, msRoot, "cal-com-pp-cli", "20260405-183800")
 
-		_, runID = resolveManuscriptDir(msRoot, apiName)
+		dir, runID := resolveManuscripts("cal-com-pp-cli", "cal-com")
+		assert.Equal(t, filepath.Join(msRoot, "cal-com"), dir)
+		assert.Equal(t, "20260504-205634", runID)
+	})
+
+	t.Run("empty apiName falls back to TrimCLISuffix(cliName)", func(t *testing.T) {
+		msRoot := withManuscriptsRoot(t)
+		createRunDir(t, msRoot, "steam-web", "run-derived")
+
+		dir, runID := resolveManuscripts("steam-web-pp-cli", "")
+		assert.Equal(t, filepath.Join(msRoot, "steam-web"), dir)
+		assert.Equal(t, "run-derived", runID)
+	})
+
+	t.Run("empty manuscripts root returns empty without erroring", func(t *testing.T) {
+		_ = withManuscriptsRoot(t)
+
+		dir, runID := resolveManuscripts("steam-web-pp-cli", "steam-web")
+		assert.Empty(t, dir)
 		assert.Empty(t, runID)
 	})
 }
