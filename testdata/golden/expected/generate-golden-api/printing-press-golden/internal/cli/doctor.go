@@ -97,16 +97,26 @@ func newDoctorCmd(flags *rootFlags) *cobra.Command {
 			}
 
 			// Check auth environment variables
-			authEnvChecked := 0
-			authEnvSet := 0
-			authEnvChecked++
+			authEnvSet := []string{}
+			authEnvRequiredMissing := []string{}
+			authEnvInfo := []string{}
+			authEnvOptionalNames := []string{}
+			// Validation rejects multi-OR-group specs upstream, so the single optional-satisfied state is sufficient at runtime.
+			authEnvOptionalSatisfied := false
 			if os.Getenv("PRINTING_PRESS_GOLDEN_API_KEY") != "" {
-				authEnvSet++
-			}
-			if authEnvSet == 0 {
-				report["env_vars"] = fmt.Sprintf("none set (checked %d)", authEnvChecked)
+				authEnvSet = append(authEnvSet, "PRINTING_PRESS_GOLDEN_API_KEY")
 			} else {
-				report["env_vars"] = fmt.Sprintf("%d/%d set", authEnvSet, authEnvChecked)
+				authEnvRequiredMissing = append(authEnvRequiredMissing, "PRINTING_PRESS_GOLDEN_API_KEY")
+			}
+			switch {
+			case len(authEnvRequiredMissing) > 0:
+				report["env_vars"] = "ERROR missing required: " + strings.Join(authEnvRequiredMissing, ", ")
+			case len(authEnvOptionalNames) > 1 && !authEnvOptionalSatisfied:
+				report["env_vars"] = "INFO set one of: " + strings.Join(authEnvOptionalNames, " or ")
+			case len(authEnvInfo) > 0:
+				report["env_vars"] = "INFO " + strings.Join(authEnvInfo, "; ")
+			default:
+				report["env_vars"] = fmt.Sprintf("OK %d/%d available", len(authEnvSet), 1)
 			}
 
 			// Check API connectivity and validate credentials.
@@ -216,6 +226,7 @@ func newDoctorCmd(flags *rootFlags) *cobra.Command {
 			checkKeys := []struct{ key, label string }{
 				{"config", "Config"},
 				{"auth", "Auth"},
+				{"env_vars", "Env Vars"},
 				{"api", "API"},
 				{"credentials", "Credentials"},
 			}
@@ -227,6 +238,10 @@ func newDoctorCmd(flags *rootFlags) *cobra.Command {
 				s := fmt.Sprintf("%v", v)
 				indicator := green("OK")
 				switch {
+				case strings.HasPrefix(s, "INFO"):
+					indicator = yellow("INFO")
+				case strings.HasPrefix(s, "ERROR"):
+					indicator = red("FAIL")
 				case strings.HasPrefix(s, "optional"):
 					// Optional-auth CLI with no key set — informational, not a failure.
 					indicator = yellow("INFO")

@@ -357,7 +357,15 @@ func handleContext(_ context.Context, _ mcplib.CallToolRequest) (*mcplib.CallToo
 		"tool_surface": "MCP exposes typed endpoint tools plus a runtime mirror of user-facing CLI commands. Endpoint tools keep typed schemas; command-mirror tools shell out to the companion printing-press-golden-pp-cli binary.",
 		"auth": map[string]any{
 			"type": "api_key",
-			"env_vars": []string{"PRINTING_PRESS_GOLDEN_API_KEY",  },
+			"env_vars": []map[string]any{
+				{
+					"name": "PRINTING_PRESS_GOLDEN_API_KEY",
+					"kind": "per_call",
+					"required": true,
+					"sensitive": true,
+					"description": "Set to your API credential.",
+				},
+			},
 		},
 		"resources": []map[string]any{
 			{

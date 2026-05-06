@@ -189,7 +189,10 @@ Verifies configuration, credentials, and connectivity to the API.
 Config file: `~/.config/printing-press-golden-pp-cli/config.toml`
 
 Environment variables:
-- `PRINTING_PRESS_GOLDEN_API_KEY`
+
+| Name | Kind | Required | Description |
+| --- | --- | --- | --- |
+| `PRINTING_PRESS_GOLDEN_API_KEY` | per_call | Yes | Set to your API credential. |
 
 ## Troubleshooting
 **Authentication errors (exit code 4)**

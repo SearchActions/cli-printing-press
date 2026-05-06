@@ -6,8 +6,13 @@ allowed-tools: "Read Bash"
 metadata:
   openclaw:
     requires:
+      env: ["PRINTING_PRESS_GOLDEN_API_KEY"]
       bins:
         - printing-press-golden-pp-cli
+    envVars:
+      - name: PRINTING_PRESS_GOLDEN_API_KEY
+        required: true
+        description: "PRINTING_PRESS_GOLDEN_API_KEY credential."
     install:
       - kind: go
         bins: [printing-press-golden-pp-cli]
@@ -49,7 +54,6 @@ printing-press-golden-pp-cli which "<capability in your own words>"
 `which` resolves a natural-language capability query to the best matching command from this CLI's curated feature index. Exit code `0` means at least one match; exit code `2` means no confident match — fall back to `--help` or use a narrower query.
 
 ## Auth Setup
-
 Set your API key via environment variable:
 
 ```bash

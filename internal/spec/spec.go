@@ -404,22 +404,23 @@ func (c BearerRefreshConfig) Enabled() bool {
 }
 
 type AuthConfig struct {
-	Type             string   `yaml:"type" json:"type"` // api_key, oauth2, bearer_token, cookie, composed, session_handshake, none
-	Header           string   `yaml:"header" json:"header"`
-	Format           string   `yaml:"format" json:"format"`
-	EnvVars          []string `yaml:"env_vars" json:"env_vars"`
-	Optional         bool     `yaml:"optional,omitempty" json:"optional,omitempty"` // true when the key enhances a subset of features (e.g., USDA nutrition backfill) rather than gating core functionality; doctor treats unconfigured optional auth as INFO not FAIL and README frames the section as "Optional"
-	Scheme           string   `yaml:"scheme,omitempty" json:"scheme,omitempty"`     // OpenAPI security scheme name
-	In               string   `yaml:"in,omitempty" json:"in,omitempty"`             // header, query, cookie
-	KeyURL           string   `yaml:"key_url,omitempty" json:"key_url,omitempty"`   // URL where users can register for an API key
-	Title            string   `yaml:"title,omitempty" json:"title,omitempty"`       // user-facing credential field title for install/config surfaces
-	Description      string   `yaml:"description,omitempty" json:"description,omitempty"`
-	AuthorizationURL string   `yaml:"authorization_url,omitempty" json:"authorization_url,omitempty"`
-	TokenURL         string   `yaml:"token_url,omitempty" json:"token_url,omitempty"`
-	Scopes           []string `yaml:"scopes,omitempty" json:"scopes,omitempty"`
-	CookieDomain     string   `yaml:"cookie_domain,omitempty" json:"cookie_domain,omitempty"` // domain to read browser cookies from (e.g. ".notion.so")
-	Cookies          []string `yaml:"cookies,omitempty" json:"cookies,omitempty"`             // named cookies to extract for composed auth (e.g. ["customerId", "authToken"])
-	Inferred         bool     `yaml:"inferred,omitempty" json:"inferred,omitempty"`           // true when auth was inferred from spec description, not declared in securitySchemes
+	Type             string       `yaml:"type" json:"type"` // api_key, oauth2, bearer_token, cookie, composed, session_handshake, none
+	Header           string       `yaml:"header" json:"header"`
+	Format           string       `yaml:"format" json:"format"`
+	EnvVars          []string     `yaml:"env_vars" json:"env_vars"`
+	EnvVarSpecs      []AuthEnvVar `yaml:"env_var_specs,omitempty" json:"env_var_specs,omitempty"`
+	Optional         bool         `yaml:"optional,omitempty" json:"optional,omitempty"` // true when the key enhances a subset of features (e.g., USDA nutrition backfill) rather than gating core functionality; doctor treats unconfigured optional auth as INFO not FAIL and README frames the section as "Optional"
+	Scheme           string       `yaml:"scheme,omitempty" json:"scheme,omitempty"`     // OpenAPI security scheme name
+	In               string       `yaml:"in,omitempty" json:"in,omitempty"`             // header, query, cookie
+	KeyURL           string       `yaml:"key_url,omitempty" json:"key_url,omitempty"`   // URL where users can register for an API key
+	Title            string       `yaml:"title,omitempty" json:"title,omitempty"`       // user-facing credential field title for install/config surfaces
+	Description      string       `yaml:"description,omitempty" json:"description,omitempty"`
+	AuthorizationURL string       `yaml:"authorization_url,omitempty" json:"authorization_url,omitempty"`
+	TokenURL         string       `yaml:"token_url,omitempty" json:"token_url,omitempty"`
+	Scopes           []string     `yaml:"scopes,omitempty" json:"scopes,omitempty"`
+	CookieDomain     string       `yaml:"cookie_domain,omitempty" json:"cookie_domain,omitempty"` // domain to read browser cookies from (e.g. ".notion.so")
+	Cookies          []string     `yaml:"cookies,omitempty" json:"cookies,omitempty"`             // named cookies to extract for composed auth (e.g. ["customerId", "authToken"])
+	Inferred         bool         `yaml:"inferred,omitempty" json:"inferred,omitempty"`           // true when auth was inferred from spec description, not declared in securitySchemes
 
 	// VerifyPath is an optional path appended to base_url that the doctor
 	// command probes to validate credentials. Set this to a known-good
@@ -461,6 +462,176 @@ type AuthConfig struct {
 	// to authorization_code; ignored for non-oauth2 types. Read via
 	// EffectiveOAuth2Grant() so the default lives in one place.
 	OAuth2Grant string `yaml:"oauth2_grant,omitempty" json:"oauth2_grant,omitempty"`
+}
+
+type AuthEnvVar struct {
+	Name        string         `yaml:"name" json:"name"`
+	Kind        AuthEnvVarKind `yaml:"kind,omitempty" json:"kind,omitempty"`
+	Required    bool           `yaml:"required" json:"required"`
+	Sensitive   bool           `yaml:"sensitive" json:"sensitive"` // orthogonal to Kind; drives redaction policy
+	Description string         `yaml:"description,omitempty" json:"description,omitempty"`
+	Inferred    bool           `yaml:"inferred,omitempty" json:"inferred,omitempty"`
+}
+
+type AuthEnvVarKind string
+
+const (
+	AuthEnvVarKindPerCall       AuthEnvVarKind = "per_call"
+	AuthEnvVarKindAuthFlowInput AuthEnvVarKind = "auth_flow_input"
+	AuthEnvVarKindHarvested     AuthEnvVarKind = "harvested"
+)
+
+func (k AuthEnvVarKind) SensitivePlaceholder() string {
+	switch k {
+	case AuthEnvVarKindPerCall:
+		return "Set to your API credential."
+	case AuthEnvVarKindAuthFlowInput:
+		return "Set during initial auth setup."
+	case AuthEnvVarKindHarvested:
+		return "Populated automatically by auth login."
+	default:
+		return ""
+	}
+}
+
+func (v AuthEnvVar) MarkdownDescription() string {
+	if v.Sensitive {
+		return v.Kind.SensitivePlaceholder()
+	}
+	description := strings.ReplaceAll(v.Description, "|", `\|`)
+	description = strings.ReplaceAll(description, "\r\n", " ")
+	description = strings.ReplaceAll(description, "\n", " ")
+	return strings.ReplaceAll(description, "\r", " ")
+}
+
+// CanonicalEnvVar returns the deterministic canonical entry for human-prose surfaces.
+func (c *AuthConfig) CanonicalEnvVar() *AuthEnvVar {
+	if c == nil {
+		return nil
+	}
+	c.NormalizeEnvVarSpecs("")
+	for i := range c.EnvVarSpecs {
+		if c.EnvVarSpecs[i].Kind == AuthEnvVarKindPerCall && c.EnvVarSpecs[i].Required {
+			return &c.EnvVarSpecs[i]
+		}
+	}
+	if len(c.EnvVarSpecs) > 0 {
+		return &c.EnvVarSpecs[0]
+	}
+	return nil
+}
+
+// IsAuthEnvVarORCase reports whether all EnvVarSpecs are non-required per_call vars.
+// In this shape, no single var is the canonical credential; the runtime tries each
+// in turn and returns the first non-empty value. Returns false when EnvVarSpecs has
+// fewer than 2 entries, any entry is Required, or any entry is not Kind=per_call.
+func (c *AuthConfig) IsAuthEnvVarORCase() bool {
+	if c == nil || len(c.EnvVarSpecs) < 2 {
+		return false
+	}
+	for _, ev := range c.EnvVarSpecs {
+		if ev.Kind != AuthEnvVarKindPerCall || ev.Required {
+			return false
+		}
+	}
+	return true
+}
+
+func (c *AuthConfig) NormalizeEnvVarSpecs(context string) {
+	if c == nil {
+		return
+	}
+	if len(c.EnvVarSpecs) > 0 {
+		canonicalNames := make([]string, 0, len(c.EnvVarSpecs))
+		canonical := true
+		for _, envVar := range c.EnvVarSpecs {
+			name := strings.TrimSpace(envVar.Name)
+			if name == "" {
+				continue
+			}
+			if envVar.Name != name || envVar.Kind == "" {
+				canonical = false
+				break
+			}
+			canonicalNames = append(canonicalNames, name)
+		}
+		if canonical {
+			envVarNames := make([]string, 0, len(c.EnvVars))
+			for _, name := range c.EnvVars {
+				if name = strings.TrimSpace(name); name != "" {
+					envVarNames = append(envVarNames, name)
+				}
+			}
+			if sameStringSlice(envVarNames, canonicalNames) {
+				return
+			}
+		}
+	}
+	if len(c.EnvVarSpecs) == 0 {
+		if len(c.EnvVars) == 0 {
+			return
+		}
+		c.EnvVarSpecs = make([]AuthEnvVar, 0, len(c.EnvVars))
+		for _, name := range c.EnvVars {
+			if name = strings.TrimSpace(name); name != "" {
+				c.EnvVarSpecs = append(c.EnvVarSpecs, AuthEnvVar{
+					Name:      name,
+					Kind:      AuthEnvVarKindPerCall,
+					Required:  true,
+					Sensitive: true,
+					Inferred:  true,
+				})
+			}
+		}
+		return
+	}
+
+	specNames := make([]string, 0, len(c.EnvVarSpecs))
+	for i := range c.EnvVarSpecs {
+		c.EnvVarSpecs[i].Name = strings.TrimSpace(c.EnvVarSpecs[i].Name)
+		if c.EnvVarSpecs[i].Name == "" {
+			continue
+		}
+		if c.EnvVarSpecs[i].Kind == "" {
+			c.EnvVarSpecs[i].Kind = AuthEnvVarKindPerCall
+		}
+		specNames = append(specNames, c.EnvVarSpecs[i].Name)
+	}
+	if len(c.EnvVars) > 0 && !sameStringSlice(c.EnvVars, specNames) && !AllAuthEnvVarSpecsInferred(c.EnvVarSpecs) {
+		if context == "" {
+			context = "auth"
+		}
+		fmt.Fprintf(os.Stderr, "warning: %s env_vars disagree with env_var_specs; using env_var_specs\n", context)
+		c.EnvVars = specNames
+		return
+	}
+	if len(c.EnvVars) == 0 || sameStringSlice(c.EnvVars, specNames) {
+		c.EnvVars = specNames
+	}
+}
+
+func AllAuthEnvVarSpecsInferred(envVarSpecs []AuthEnvVar) bool {
+	if len(envVarSpecs) == 0 {
+		return false
+	}
+	for _, envVar := range envVarSpecs {
+		if !envVar.Inferred {
+			return false
+		}
+	}
+	return true
+}
+
+func sameStringSlice(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if strings.TrimSpace(a[i]) != strings.TrimSpace(b[i]) {
+			return false
+		}
+	}
+	return true
 }
 
 // OAuth2GrantAuthorizationCode is the 3-legged user-OAuth flow (browser
@@ -1008,6 +1179,8 @@ func snakeToPascal(s string) string {
 // fragments accidentally embedded in path strings.
 var pathParamRe = regexp.MustCompile(`\{([A-Za-z_][A-Za-z0-9_]*)\}`)
 
+var orGroupTokenRe = regexp.MustCompile(`\b[A-Z][A-Z0-9_]*\b`)
+
 // enrichPathParams walks every resource and sub-resource endpoint and ensures
 // each `{paramName}` placeholder in the endpoint path is represented in
 // Endpoint.Params with Positional: true, Required: true. The expandOperations
@@ -1209,6 +1382,7 @@ func singularize(s string) string {
 }
 
 func (s *APISpec) Validate() error {
+	s.NormalizeAuthEnvVarSpecs()
 	if s.Name == "" {
 		return fmt.Errorf("name is required")
 	}
@@ -1246,6 +1420,9 @@ func (s *APISpec) Validate() error {
 		return err
 	}
 	if err := validateSessionHandshake(s.Auth); err != nil {
+		return err
+	}
+	if err := validateAuthEnvVarSpecs("auth", s.Auth); err != nil {
 		return err
 	}
 	if err := validateTierRouting(s); err != nil {
@@ -1287,6 +1464,127 @@ func (s *APISpec) Validate() error {
 		}
 	}
 	return nil
+}
+
+func (s *APISpec) NormalizeAuthEnvVarSpecs() {
+	if s == nil {
+		return
+	}
+	s.Auth.NormalizeEnvVarSpecs("auth")
+	if !s.HasTierRouting() {
+		return
+	}
+	for name, tier := range s.TierRouting.Tiers {
+		tier.Auth.NormalizeEnvVarSpecs(fmt.Sprintf("tier_routing.tiers.%s.auth", name))
+		s.TierRouting.Tiers[name] = tier
+	}
+}
+
+func validateAuthEnvVarSpecs(context string, auth AuthConfig) error {
+	seen := map[string]struct{}{}
+	for i, envVar := range auth.EnvVarSpecs {
+		name := strings.TrimSpace(envVar.Name)
+		if name == "" {
+			return fmt.Errorf("%s.env_var_specs[%d].name is required", context, i)
+		}
+		if _, ok := seen[name]; ok {
+			return fmt.Errorf("%s.env_var_specs contains duplicate name %q", context, name)
+		}
+		seen[name] = struct{}{}
+		switch envVar.Kind {
+		case "", AuthEnvVarKindPerCall, AuthEnvVarKindAuthFlowInput, AuthEnvVarKindHarvested:
+		default:
+			return fmt.Errorf("%s.env_var_specs[%d].kind %q is not recognized (valid: %q, %q, %q)",
+				context, i, envVar.Kind, AuthEnvVarKindPerCall, AuthEnvVarKindAuthFlowInput, AuthEnvVarKindHarvested)
+		}
+	}
+	if example, ok := independentAuthORGroupsExample(auth.EnvVarSpecs); ok {
+		return fmt.Errorf("%s: detected 2+ independent OR-groups in EnvVarSpecs (e.g., %s). The current model encodes OR-group membership via per-var Required=false + description text and supports at most one OR-group per auth block; multi-OR-group specs are not supported. Either consolidate to a single OR-group (mark all non-required entries as members of one group via cross-referencing descriptions), or require all credentials (Required=true)", context, example)
+	}
+	return nil
+}
+
+func independentAuthORGroupsExample(envVarSpecs []AuthEnvVar) (string, bool) {
+	names := make(map[string]struct{}, len(envVarSpecs))
+	for _, envVar := range envVarSpecs {
+		name := strings.TrimSpace(envVar.Name)
+		if name != "" {
+			names[name] = struct{}{}
+		}
+	}
+
+	members := make([]AuthEnvVar, 0, len(envVarSpecs))
+	for _, envVar := range envVarSpecs {
+		name := strings.TrimSpace(envVar.Name)
+		if name == "" || envVar.Kind != AuthEnvVarKindPerCall || envVar.Required || !strings.Contains(envVar.Description, " OR ") {
+			continue
+		}
+		referencesSibling := false
+		for _, token := range orGroupTokenRe.FindAllString(envVar.Description, -1) {
+			if token == name {
+				continue
+			}
+			if _, ok := names[token]; ok {
+				referencesSibling = true
+				break
+			}
+		}
+		if !referencesSibling {
+			continue
+		}
+		members = append(members, envVar)
+	}
+	if len(members) < 2 {
+		return "", false
+	}
+
+	parent := make(map[string]string, len(members))
+	for _, member := range members {
+		parent[member.Name] = member.Name
+	}
+	var find func(string) string
+	find = func(name string) string {
+		if parent[name] != name {
+			parent[name] = find(parent[name])
+		}
+		return parent[name]
+	}
+	union := func(a, b string) {
+		rootA, rootB := find(a), find(b)
+		if rootA != rootB {
+			parent[rootB] = rootA
+		}
+	}
+
+	for _, member := range members {
+		for _, token := range orGroupTokenRe.FindAllString(member.Description, -1) {
+			if token == member.Name {
+				continue
+			}
+			if _, inGroup := parent[token]; inGroup {
+				union(member.Name, token)
+			}
+		}
+	}
+
+	groups := map[string][]string{}
+	order := make([]string, 0, len(members))
+	for _, member := range members {
+		root := find(member.Name)
+		if _, ok := groups[root]; !ok {
+			order = append(order, root)
+		}
+		groups[root] = append(groups[root], member.Name)
+	}
+	if len(groups) < 2 {
+		return "", false
+	}
+
+	parts := make([]string, 0, len(order))
+	for _, root := range order {
+		parts = append(parts, strings.Join(groups[root], " OR "))
+	}
+	return strings.Join(parts, "; "), true
 }
 
 func validateBearerRefresh(s *APISpec) error {
@@ -1341,6 +1639,9 @@ func validateTierRouting(s *APISpec) error {
 		if strings.TrimSpace(tier.BaseURL) != "" {
 			anyTierBaseURL = true
 		}
+		if err := validateAuthEnvVarSpecs(fmt.Sprintf("tier_routing.tiers.%s.auth", name), tier.Auth); err != nil {
+			return err
+		}
 		if err := validateTier(name, tier, s.BaseURL); err != nil {
 			return err
 		}
@@ -1366,8 +1667,8 @@ func validateTier(name string, tier TierConfig, specBaseURL string) error {
 	if !tierAuthRequiresCredential(tier.Auth) {
 		return nil
 	}
-	if len(tier.Auth.EnvVars) == 0 {
-		return fmt.Errorf("tier_routing tier %q auth.env_vars is required for %s auth", name, authType)
+	if len(tier.Auth.EnvVars) == 0 && len(tier.Auth.EnvVarSpecs) == 0 {
+		return fmt.Errorf("tier_routing tier %q auth.env_vars or auth.env_var_specs is required for %s auth", name, authType)
 	}
 	if err := validateTierAuthPlacement(name, tier.Auth); err != nil {
 		return err

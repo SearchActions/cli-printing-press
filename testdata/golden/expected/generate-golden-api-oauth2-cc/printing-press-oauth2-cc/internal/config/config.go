@@ -23,7 +23,8 @@ type Config struct {
 	ClientID       string `toml:"client_id"`
 	ClientSecret   string `toml:"client_secret"`
 	Path           string `toml:"-"`
-	PrintingPressOauth2Oauth2Cc string `toml:"press_oauth2_oauth2_cc"`
+	PrintingPressOauth2ClientId string `toml:"press_oauth2_client_id"`
+	PrintingPressOauth2ClientSecret string `toml:"press_oauth2_client_secret"`
 }
 
 func Load(configPath string) (*Config, error) {
@@ -51,9 +52,13 @@ func Load(configPath string) (*Config, error) {
 	}
 
 	// Env var overrides
-	if v := os.Getenv("PRINTING_PRESS_OAUTH2_OAUTH2_CC"); v != "" {
-		cfg.PrintingPressOauth2Oauth2Cc = v
-		cfg.AuthSource = "env:PRINTING_PRESS_OAUTH2_OAUTH2_CC"
+	if v := os.Getenv("PRINTING_PRESS_OAUTH2_CLIENT_ID"); v != "" {
+		cfg.PrintingPressOauth2ClientId = v
+		cfg.AuthSource = "env:PRINTING_PRESS_OAUTH2_CLIENT_ID"
+	}
+	if v := os.Getenv("PRINTING_PRESS_OAUTH2_CLIENT_SECRET"); v != "" {
+		cfg.PrintingPressOauth2ClientSecret = v
+		cfg.AuthSource = "env:PRINTING_PRESS_OAUTH2_CLIENT_SECRET"
 	}
 
 	// Base URL override (used by printing-press verify to point at mock/test servers)
@@ -73,9 +78,9 @@ func (c *Config) AuthHeader() string {
 		c.AuthSource = "oauth2"
 		return "Bearer " + c.AccessToken
 	}
-	if c.PrintingPressOauth2Oauth2Cc != "" {
-		c.AuthSource = "env:PRINTING_PRESS_OAUTH2_OAUTH2_CC"
-		return "Bearer " + c.PrintingPressOauth2Oauth2Cc
+	if c.PrintingPressOauth2ClientId != "" {
+		c.AuthSource = "env:PRINTING_PRESS_OAUTH2_CLIENT_ID"
+		return "Bearer " + c.PrintingPressOauth2ClientId
 	}
 	return ""
 }

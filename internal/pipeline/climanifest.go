@@ -49,23 +49,24 @@ type CLIManifest struct {
 	// Owner is the attribution recorded in generated copyright headers
 	// (for example "hiten-shah"). Persisted here so subsequent regens
 	// preserve attribution regardless of who's running the generator.
-	Owner                string   `json:"owner,omitempty"`
-	SpecURL              string   `json:"spec_url,omitempty"`
-	SpecPath             string   `json:"spec_path,omitempty"`
-	SpecFormat           string   `json:"spec_format,omitempty"`
-	SpecChecksum         string   `json:"spec_checksum,omitempty"`
-	RunID                string   `json:"run_id,omitempty"`
-	CatalogEntry         string   `json:"catalog_entry,omitempty"`
-	Category             string   `json:"category,omitempty"`
-	Description          string   `json:"description,omitempty"`
-	MCPBinary            string   `json:"mcp_binary,omitempty"`
-	MCPToolCount         int      `json:"mcp_tool_count,omitempty"`
-	MCPPublicToolCount   int      `json:"mcp_public_tool_count,omitempty"`
-	MCPReady             string   `json:"mcp_ready,omitempty"`
-	APIVersion           string   `json:"api_version,omitempty"` // from the spec's info.version — provenance only, not the CLI version
-	AuthType             string   `json:"auth_type,omitempty"`
-	AuthEnvVars          []string `json:"auth_env_vars,omitempty"`
-	EndpointTemplateVars []string `json:"endpoint_template_vars,omitempty"`
+	Owner                string            `json:"owner,omitempty"`
+	SpecURL              string            `json:"spec_url,omitempty"`
+	SpecPath             string            `json:"spec_path,omitempty"`
+	SpecFormat           string            `json:"spec_format,omitempty"`
+	SpecChecksum         string            `json:"spec_checksum,omitempty"`
+	RunID                string            `json:"run_id,omitempty"`
+	CatalogEntry         string            `json:"catalog_entry,omitempty"`
+	Category             string            `json:"category,omitempty"`
+	Description          string            `json:"description,omitempty"`
+	MCPBinary            string            `json:"mcp_binary,omitempty"`
+	MCPToolCount         int               `json:"mcp_tool_count,omitempty"`
+	MCPPublicToolCount   int               `json:"mcp_public_tool_count,omitempty"`
+	MCPReady             string            `json:"mcp_ready,omitempty"`
+	APIVersion           string            `json:"api_version,omitempty"` // from the spec's info.version — provenance only, not the CLI version
+	AuthType             string            `json:"auth_type,omitempty"`
+	AuthEnvVars          []string          `json:"auth_env_vars,omitempty"`
+	AuthEnvVarSpecs      []spec.AuthEnvVar `json:"auth_env_var_specs,omitempty"`
+	EndpointTemplateVars []string          `json:"endpoint_template_vars,omitempty"`
 	// AuthKeyURL is the page where users register for an API key. Used by
 	// downstream emitters (MCPB manifest user_config descriptions, doctor
 	// hints) to point users at the right credential source.
@@ -268,7 +269,11 @@ func populateMCPMetadata(m *CLIManifest, parsed *spec.APISpec) {
 	m.MCPPublicToolCount = public
 	m.MCPReady = computeMCPReady(parsed.Auth.Type)
 	m.AuthType = parsed.Auth.Type
-	m.AuthEnvVars = manifestAuthEnvVars(parsed)
+	envVarSpecs := manifestAuthEnvVarSpecs(parsed)
+	m.AuthEnvVars = manifestAuthEnvVarNames(parsed, envVarSpecs)
+	if !spec.AllAuthEnvVarSpecsInferred(envVarSpecs) {
+		m.AuthEnvVarSpecs = envVarSpecs
+	}
 	m.EndpointTemplateVars = parsed.EndpointTemplateVars
 	m.AuthKeyURL = parsed.Auth.KeyURL
 	m.AuthTitle = parsed.Auth.Title
@@ -290,9 +295,12 @@ func populateMCPMetadata(m *CLIManifest, parsed *spec.APISpec) {
 	}
 }
 
-func manifestAuthEnvVars(parsed *spec.APISpec) []string {
+func manifestAuthEnvVarNames(parsed *spec.APISpec, envVarSpecs []spec.AuthEnvVar) []string {
 	if parsed == nil {
 		return nil
+	}
+	if len(envVarSpecs) > 0 {
+		return authEnvVarSpecNames(envVarSpecs)
 	}
 	seen := make(map[string]struct{})
 	var names []string
@@ -318,6 +326,43 @@ func manifestAuthEnvVars(parsed *spec.APISpec) []string {
 		add(parsed.TierRouting.Tiers[name].Auth.EnvVars)
 	}
 	return names
+}
+
+func manifestAuthEnvVarSpecs(parsed *spec.APISpec) []spec.AuthEnvVar {
+	if parsed == nil {
+		return nil
+	}
+	seen := make(map[string]int)
+	var specs []spec.AuthEnvVar
+	add := func(envVarSpecs []spec.AuthEnvVar) {
+		for _, envVar := range envVarSpecs {
+			if envVar.Name == "" {
+				continue
+			}
+			if idx, ok := seen[envVar.Name]; ok {
+				specs[idx] = envVar
+				continue
+			}
+			seen[envVar.Name] = len(specs)
+			specs = append(specs, envVar)
+		}
+	}
+
+	parsed.Auth.NormalizeEnvVarSpecs("")
+	add(parsed.Auth.EnvVarSpecs)
+
+	tierNames := make([]string, 0, len(parsed.TierRouting.Tiers))
+	for name := range parsed.TierRouting.Tiers {
+		tierNames = append(tierNames, name)
+	}
+	sort.Strings(tierNames)
+	for _, name := range tierNames {
+		tier := parsed.TierRouting.Tiers[name]
+		tier.Auth.NormalizeEnvVarSpecs("")
+		parsed.TierRouting.Tiers[name] = tier
+		add(tier.Auth.EnvVarSpecs)
+	}
+	return specs
 }
 
 // GenerateManifestParams holds the information available at generate time

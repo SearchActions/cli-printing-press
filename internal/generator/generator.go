@@ -212,6 +212,9 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 		"resolveEnvVarField":     resolveEnvVarField,
 		"authPlacement":          authPlacement,
 		"authParameterName":      authParameterName,
+		"authCommandShort":       authCommandShort,
+		"authHarvestedEnvHint":   authHarvestedEnvHint,
+		"hasAuthEnvVarKind":      hasAuthEnvVarKind,
 		"effectiveTier":          effectiveTier,
 		"effectiveSubTier":       effectiveSubTier,
 		"add":                    func(a, b int) int { return a + b },
@@ -796,6 +799,39 @@ func authParameterName(auth spec.AuthConfig) string {
 		return "api_key"
 	}
 	return "Authorization"
+}
+
+func authCommandShort(api *spec.APISpec) string {
+	displayName := "this API"
+	if api != nil && strings.TrimSpace(api.EffectiveDisplayName()) != "" {
+		displayName = api.EffectiveDisplayName()
+	}
+	if api != nil && api.Auth.Optional {
+		return "Manage optional authentication for " + displayName
+	}
+	return "Manage authentication for " + displayName
+}
+
+func authHarvestedEnvHint(auth spec.AuthConfig) string {
+	switch {
+	case auth.Type == "cookie" || auth.Type == "composed":
+		return "populated automatically by auth login --chrome"
+	case auth.EffectiveOAuth2Grant() == spec.OAuth2GrantClientCredentials && auth.TokenURL != "":
+		return "populated automatically by auth login --client-id/--client-secret"
+	case auth.AuthorizationURL != "":
+		return "populated automatically by auth login"
+	default:
+		return "set with auth set-token"
+	}
+}
+
+func hasAuthEnvVarKind(envVarSpecs []spec.AuthEnvVar, kind string) bool {
+	for _, envVar := range envVarSpecs {
+		if string(envVar.Kind) == kind {
+			return true
+		}
+	}
+	return false
 }
 
 func effectiveTier(api *spec.APISpec, resource spec.Resource, endpoint spec.Endpoint) string {

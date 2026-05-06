@@ -2,9 +2,13 @@ package authdoctor
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"sort"
+	"strings"
 
 	"github.com/mvanhorn/cli-printing-press/v3/internal/pipeline"
+	"github.com/mvanhorn/cli-printing-press/v3/internal/spec"
 )
 
 // minLengthByType gives the minimum expected length of a well-formed
@@ -69,7 +73,11 @@ func classifyAuthBlock(slug string, auth pipeline.ManifestAuth, env getEnv, tier
 		return nil
 	}
 	displayAuthType := scopedAuthType(tierName, authType)
-	if len(auth.EnvVars) == 0 {
+	if len(auth.EnvVarSpecs) > 0 && len(auth.EnvVars) > 0 && !sameAuthEnvVarNames(auth.EnvVars, auth.EnvVarSpecs) {
+		fmt.Fprintln(os.Stderr, "warning: tools-manifest auth env_vars disagree with env_var_specs; using env_var_specs")
+	}
+	envVarSpecs := auth.EffectiveEnvVarSpecs()
+	if len(envVarSpecs) == 0 {
 		findings := []Finding{{
 			API:    slug,
 			Type:   displayAuthType,
@@ -82,14 +90,45 @@ func classifyAuthBlock(slug string, auth pipeline.ManifestAuth, env getEnv, tier
 		return findings
 	}
 
-	findings := make([]Finding, 0, len(auth.EnvVars))
-	for _, envVar := range auth.EnvVars {
-		findings = append(findings, classifyEnv(slug, displayAuthType, envVar, env))
+	findings := make([]Finding, 0, len(envVarSpecs))
+	harvestedAuthFileExists := false
+	if hasHarvestedEnvVar(envVarSpecs) {
+		harvestedAuthFileExists = authFileExists(slug)
+	}
+	for _, envVar := range envVarSpecs {
+		findings = append(findings, classifyEnvSpec(slug, displayAuthType, authType, envVar, env, harvestedAuthFileExists))
 	}
 	if auth.RequiresBrowserSession {
 		findings = append(findings, browserSessionProofFinding(slug, displayAuthType))
 	}
 	return findings
+}
+
+func hasHarvestedEnvVar(envVarSpecs []spec.AuthEnvVar) bool {
+	for _, envVar := range envVarSpecs {
+		if envVar.Kind == spec.AuthEnvVarKindHarvested {
+			return true
+		}
+	}
+	return false
+}
+
+func sameAuthEnvVarNames(envVars []string, envVarSpecs []spec.AuthEnvVar) bool {
+	if len(envVars) != len(envVarSpecs) {
+		return false
+	}
+	counts := make(map[string]int, len(envVars))
+	for _, envVar := range envVars {
+		counts[strings.TrimSpace(envVar)]++
+	}
+	for _, envVarSpec := range envVarSpecs {
+		name := strings.TrimSpace(envVarSpec.Name)
+		if counts[name] == 0 {
+			return false
+		}
+		counts[name]--
+	}
+	return true
 }
 
 func scopedAuthType(tierName, authType string) string {
@@ -133,6 +172,74 @@ func classifyEnv(slug, authType, envVar string, env getEnv) Finding {
 	base.Status = StatusOK
 	base.Fingerprint = Fingerprint(value)
 	return base
+}
+
+func classifyEnvSpec(slug, displayAuthType, authType string, envVar spec.AuthEnvVar, env getEnv, harvestedAuthFileExists bool) Finding {
+	kind := envVar.Kind
+	if kind == "" {
+		kind = spec.AuthEnvVarKindPerCall
+	}
+	switch kind {
+	case spec.AuthEnvVarKindAuthFlowInput:
+		return classifyInfoEnv(slug, displayAuthType, envVar.Name, env, "only needed during auth login")
+	case spec.AuthEnvVarKindHarvested:
+		if env(envVar.Name) != "" {
+			return classifyEnv(slug, displayAuthType, envVar.Name, env)
+		}
+		if harvestedAuthFileExists {
+			return Finding{
+				API:    slug,
+				Type:   displayAuthType,
+				EnvVar: envVar.Name,
+				Status: StatusOK,
+				Reason: "auth file present",
+			}
+		}
+		return Finding{
+			API:    slug,
+			Type:   displayAuthType,
+			EnvVar: envVar.Name,
+			Status: StatusInfo,
+			Reason: harvestedAuthReason(authType),
+		}
+	default:
+		if !envVar.Required && env(envVar.Name) == "" {
+			return classifyInfoEnv(slug, displayAuthType, envVar.Name, env, "optional auth env var is not set")
+		}
+		return classifyEnv(slug, displayAuthType, envVar.Name, env)
+	}
+}
+
+func harvestedAuthReason(authType string) string {
+	switch authType {
+	case "cookie", "composed":
+		return "populated by auth login; run auth login --chrome"
+	default:
+		return "populated by auth login; run the printed CLI's auth command"
+	}
+}
+
+func classifyInfoEnv(slug, authType, envVar string, env getEnv, reason string) Finding {
+	if env(envVar) != "" {
+		return classifyEnv(slug, authType, envVar, env)
+	}
+	return Finding{
+		API:    slug,
+		Type:   authType,
+		EnvVar: envVar,
+		Status: StatusInfo,
+		Reason: reason,
+	}
+}
+
+func authFileExists(slug string) bool {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return false
+	}
+	path := filepath.Join(home, ".config", slug+"-pp-cli", "config.toml")
+	info, err := os.Stat(path)
+	return err == nil && !info.IsDir()
 }
 
 // suspiciousReason returns a non-empty reason when a set value looks
