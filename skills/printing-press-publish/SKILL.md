@@ -26,9 +26,12 @@ Publish a generated CLI from your local library to the [printing-press-library](
 The public library treats `library/<category>/<api-slug>/.printing-press.json`
 and `manifest.json` as the source of truth for registry-display fields. Do not
 edit `registry.json` or README catalog cells in publish PRs; the library's
-post-merge workflow regenerates them. Do regenerate and commit the
-`cli-skills/pp-<api-slug>/SKILL.md` mirror because PR CI verifies it against
-`library/<category>/<api-slug>/SKILL.md`.
+post-merge workflow refreshes them from the CLI tree. Do regenerate and commit
+the `cli-skills/pp-<api-slug>/SKILL.md` mirror from
+`library/<category>/<api-slug>/SKILL.md` because PR CI verifies mirror parity.
+If a brand-new CLI's mirror is pruned because `registry.json` is behind, fix the
+library mirror generator to discover from `library/`; do not add a registry
+entry solely to satisfy mirror parity.
 
 ## Setup
 
@@ -390,7 +393,7 @@ cp -r "$STAGING_DIR/library/<category>/<cli-name>" "$PUBLISH_REPO_DIR/library/<c
 # Remove binaries (should not be committed)
 rm -f "$PUBLISH_REPO_DIR/library/<category>/<api-slug>/<api-slug>" "$PUBLISH_REPO_DIR/library/<category>/<api-slug>/<cli-name>"
 
-# Regenerate the flat cli-skills mirror so library PR CI passes mirror parity.
+# Regenerate the flat cli-skills mirror from the library tree so library PR CI passes mirror parity.
 if [ -f "$PUBLISH_REPO_DIR/tools/generate-skills/main.go" ]; then
   (cd "$PUBLISH_REPO_DIR" && go run ./tools/generate-skills/main.go)
 fi
