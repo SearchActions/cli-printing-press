@@ -21,6 +21,7 @@ import (
 	"github.com/mvanhorn/cli-printing-press/v3/internal/naming"
 	"github.com/mvanhorn/cli-printing-press/v3/internal/profiler"
 	"github.com/mvanhorn/cli-printing-press/v3/internal/spec"
+	"github.com/mvanhorn/cli-printing-press/v3/internal/version"
 	"golang.org/x/text/cases"
 	"golang.org/x/text/language"
 )
@@ -167,6 +168,16 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 		}
 		return -1
 	}, s.Owner)
+
+	// OwnerName is the prose-shaped display name (e.g. "Trevin Chow") that
+	// flows into Hermes author:, README byline, and other human-facing
+	// surfaces. Distinct from s.Owner (the slug) above. No sanitization —
+	// the value is preserved verbatim and must be YAML-escaped at template
+	// emission time. Empty values are validated in Generate() before any
+	// file writes.
+	if s.OwnerName == "" {
+		s.OwnerName = resolveOwnerNameForExisting(outputDir)
+	}
 	g := &Generator{
 		Spec:      s,
 		OutputDir: outputDir,
@@ -243,6 +254,21 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 				return g.ModulePath
 			}
 			return naming.CLI(s.Name)
+		},
+		// pressVersion returns the Press version that produced the SKILL.md
+		// being rendered. Two-tier: read .printing-press.json's
+		// printing_press_version when the manifest exists (regen / sweep
+		// path — preserves the version that originally produced the file
+		// on Press releases that don't touch this CLI), else fall back to
+		// the live version.Version (fresh-print path — manifest is written
+		// during publish, after templates render). The value bumps on
+		// regen of the CLI, stays stable on Press releases that leave it
+		// alone.
+		"pressVersion": func() string {
+			if v := readManifestPressVersion(g.OutputDir); v != "" {
+				return v
+			}
+			return version.Version
 		},
 		"graphqlQueryField": graphqlQueryField,
 		"graphqlFieldSelection": func(typeName string, types map[string]spec.TypeDef) []string {
@@ -1451,6 +1477,23 @@ func (g *Generator) renderOptionalSupportFiles() error {
 
 func (g *Generator) Generate() error {
 	warnUnenrichedLargeMCPSurface(g.Spec, os.Stderr)
+	if g.Spec.OwnerName == "" {
+		// OwnerName flows into Hermes `author:` and other prose
+		// surfaces. We don't hard-fail on an empty value because the
+		// generator package is reused by many callers (tests, mcp-sync,
+		// regen-merge) where setting it is awkward. Instead, fall back
+		// to the slug-shaped Owner so emission is non-empty, and warn
+		// loudly so a real-print operator catches the misconfiguration.
+		// The library-wide sweep tool overrides this via its own per-CLI
+		// authorship mapping, so this fallback only ever lands on fresh
+		// prints by users who haven't set `git config user.name`.
+		fmt.Fprintf(os.Stderr,
+			"WARNING: spec.OwnerName is empty; falling back to slug-shaped Owner (%q) for `author:` field. "+
+				"Set `git config user.name` (display name, e.g. \"Trevin Chow\") to populate this correctly.\n",
+			g.Spec.Owner,
+		)
+		g.Spec.OwnerName = g.Spec.Owner
+	}
 	if err := g.prepareOutput(); err != nil {
 		return err
 	}
