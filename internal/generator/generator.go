@@ -177,6 +177,15 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 	if s.OwnerName == "" {
 		s.OwnerName = resolveOwnerNameForExisting(outputDir)
 	}
+
+	// Preserve printer attribution from the manifest before consulting git config.
+	if s.Printer == "" {
+		s.Printer = resolvePrinterForExisting(outputDir)
+	}
+	// Preserve the prose-shaped printer display name when regenerating a CLI.
+	if s.PrinterName == "" {
+		s.PrinterName = resolvePrinterNameForExisting(outputDir)
+	}
 	g := &Generator{
 		Spec:      s,
 		OutputDir: outputDir,
@@ -1543,6 +1552,13 @@ func (g *Generator) Generate() error {
 			g.Spec.Owner,
 		)
 		g.Spec.OwnerName = g.Spec.Owner
+	}
+	if g.Spec.Printer == "" {
+		// Publish enforces this so self-owned CLIs can still use matching owner/printer slugs.
+		fmt.Fprintf(os.Stderr,
+			"WARNING: spec.Printer is empty; README printer attribution will be omitted. "+
+				"Set `git config github.user` (your GitHub @handle) to populate this correctly before publishing.\n",
+		)
 	}
 	if err := g.prepareOutput(); err != nil {
 		return err

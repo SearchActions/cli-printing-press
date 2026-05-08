@@ -400,6 +400,17 @@ cp -r "$STAGING_DIR/library/<category>/<cli-name>" "$PUBLISH_REPO_DIR/library/<c
 # Remove binaries (should not be committed)
 rm -f "$PUBLISH_REPO_DIR/library/<category>/<api-slug>/<api-slug>" "$PUBLISH_REPO_DIR/library/<category>/<api-slug>/<cli-name>"
 
+# Strict-validate printer attribution before it reaches README and registry surfaces.
+PRINTER=$(jq -r '.printer // ""' "$PUBLISH_REPO_DIR/library/<category>/<api-slug>/.printing-press.json")
+if [ -z "$PRINTER" ]; then
+  echo "ERROR: manifest .printer is empty. Set 'git config --global github.user <your-handle>' and re-print before publishing."
+  exit 1
+fi
+if [ "$PRINTER" = "USER" ] || [ "$PRINTER" = "user" ]; then
+  echo "ERROR: manifest .printer is the literal sentinel \"$PRINTER\" (git config github.user was unset at print time). Set it and re-print before publishing."
+  exit 1
+fi
+
 # Regenerate the flat cli-skills mirror from the library tree so library PR CI passes mirror parity.
 if [ -f "$PUBLISH_REPO_DIR/tools/generate-skills/main.go" ]; then
   (cd "$PUBLISH_REPO_DIR" && go run ./tools/generate-skills/main.go)

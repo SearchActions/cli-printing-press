@@ -49,7 +49,11 @@ type CLIManifest struct {
 	// Owner is the attribution recorded in generated copyright headers
 	// (for example "hiten-shah"). Persisted here so subsequent regens
 	// preserve attribution regardless of who's running the generator.
-	Owner                string            `json:"owner,omitempty"`
+	Owner string `json:"owner,omitempty"`
+	// Printer is the original printer's GitHub handle, preserved across regens.
+	Printer string `json:"printer,omitempty"`
+	// PrinterName is the optional display name rendered beside the printer handle.
+	PrinterName          string            `json:"printer_name,omitempty"`
 	SpecURL              string            `json:"spec_url,omitempty"`
 	SpecPath             string            `json:"spec_path,omitempty"`
 	SpecFormat           string            `json:"spec_format,omitempty"`
@@ -379,6 +383,8 @@ type GenerateManifestParams struct {
 	DocsURL       string   // --docs URL, if used
 	OutputDir     string
 	Owner         string                 // resolved owner attribution (manifest preserve > copyright parse > git config)
+	Printer       string                 // resolved printer @handle (manifest preserve > git config github.user > empty)
+	PrinterName   string                 // resolved printer display name (manifest preserve > git config user.name > empty)
 	RunID         string                 // YYYYMMDD-HHMMSS, derived from --research-dir basename when empty
 	Spec          *spec.APISpec          // parsed spec for MCP metadata (nil if unavailable)
 	NovelFeatures []NovelFeatureManifest // transcendence features from research (nil if unavailable)
@@ -417,6 +423,8 @@ func WriteManifestForGenerate(p GenerateManifestParams) error {
 		CLIName:              naming.CLI(p.APIName),
 		RunID:                p.RunID,
 		Owner:                p.Owner,
+		Printer:              p.Printer,
+		PrinterName:          p.PrinterName,
 	}
 
 	// Populate spec_url / spec_path from the first spec source.

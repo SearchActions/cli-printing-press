@@ -411,3 +411,46 @@ func sanitizeOwner(s string) string {
 		return -1
 	}, s)
 }
+
+// resolvePrinterForExisting preserves the original printer before consulting git config.
+func resolvePrinterForExisting(outputDir string) string {
+	if p := readManifestPrinter(outputDir); p != "" {
+		return p
+	}
+	return resolvePrinterForNew()
+}
+
+// readManifestPrinter returns the `printer` @handle from the manifest.
+func readManifestPrinter(outputDir string) string {
+	return readManifestField(outputDir, "printer")
+}
+
+// resolvePrinterForNew returns "" instead of a sentinel when github.user is unset.
+func resolvePrinterForNew() string {
+	if out, err := exec.Command("git", "config", "github.user").Output(); err == nil && len(out) > 0 {
+		return strings.TrimSpace(string(out))
+	}
+	return ""
+}
+
+// resolvePrinterNameForExisting preserves the printer display name on regen.
+func resolvePrinterNameForExisting(outputDir string) string {
+	if name := readManifestPrinterName(outputDir); name != "" {
+		return name
+	}
+	return resolvePrinterNameForNew()
+}
+
+// readManifestPrinterName returns the manifest printer display-name field.
+func readManifestPrinterName(outputDir string) string {
+	return readManifestField(outputDir, "printer_name")
+}
+
+// resolvePrinterNameForNew returns raw git user.name for a fresh print.
+func resolvePrinterNameForNew() string {
+	out, err := exec.Command("git", "config", "user.name").Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
+}
