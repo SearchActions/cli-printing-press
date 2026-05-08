@@ -628,6 +628,17 @@ type authTemplateData struct {
 type clientTemplateData struct {
 	*spec.APISpec
 	HasGraphQLPersistedQueries bool
+	// Populated by Generator.shouldEmitAuth() so this template gate stays in
+	// sync with auth.go emission, root.go registration, and scoreAuth.
+	HasAuthCommand bool
+}
+
+// configTemplateData wraps APISpec with a precomputed auth-surface flag so
+// config.go.tmpl can gate token-management fields and helpers on the same
+// predicate the auth-command emission and root.go registration use.
+type configTemplateData struct {
+	*spec.APISpec
+	HasAuthCommand bool
 }
 
 // endpointTemplateData is the data passed to command_endpoint.go.tmpl
@@ -1372,6 +1383,12 @@ func (g *Generator) renderSingleFiles() error {
 			data = &clientTemplateData{
 				APISpec:                    g.Spec,
 				HasGraphQLPersistedQueries: g.hasTrafficAnalysisHint("graphql_persisted_query"),
+				HasAuthCommand:             g.shouldEmitAuth(),
+			}
+		case "config.go.tmpl":
+			data = &configTemplateData{
+				APISpec:        g.Spec,
+				HasAuthCommand: g.shouldEmitAuth(),
 			}
 		case "agent_context.go.tmpl":
 			data = g.templateData()
