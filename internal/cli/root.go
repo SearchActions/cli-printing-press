@@ -260,11 +260,7 @@ func newGenerateCmd() *cobra.Command {
 
 				var apiSpec *spec.APISpec
 				if openapi.IsOpenAPI(data) {
-					if lenient {
-						apiSpec, err = openapi.ParseLenient(data)
-					} else {
-						apiSpec, err = openapi.Parse(data)
-					}
+					apiSpec, err = parseOpenAPISpec(specFile, data, lenient)
 				} else if graphql.IsGraphQLSDL(data) {
 					apiSpec, err = graphql.ParseSDLBytes(specFile, data)
 				} else {
@@ -644,7 +640,7 @@ func inferTrafficAnalysisPath(specFiles []string, specSource string) string {
 		return ""
 	}
 	specPath := specFiles[0]
-	if strings.HasPrefix(specPath, "http://") || strings.HasPrefix(specPath, "https://") {
+	if openapi.IsRemoteSpecSource(specPath) {
 		return ""
 	}
 	candidate := browsersniff.DefaultTrafficAnalysisPath(specPath)
@@ -657,7 +653,7 @@ func inferTrafficAnalysisPath(specFiles []string, specSource string) string {
 func readSpec(specFile string, refresh bool, skipCache bool) ([]byte, error) {
 	var data []byte
 	var err error
-	if strings.HasPrefix(specFile, "http://") || strings.HasPrefix(specFile, "https://") {
+	if openapi.IsRemoteSpecSource(specFile) {
 		data, err = fetchOrCacheSpec(specFile, refresh, skipCache)
 	} else {
 		data, err = os.ReadFile(specFile)
@@ -669,6 +665,19 @@ func readSpec(specFile string, refresh bool, skipCache bool) ([]byte, error) {
 		return nil, rejectErr
 	}
 	return data, nil
+}
+
+func parseOpenAPISpec(specFile string, data []byte, lenient bool) (*spec.APISpec, error) {
+	if openapi.IsRemoteSpecSource(specFile) {
+		if lenient {
+			return openapi.ParseLenient(data)
+		}
+		return openapi.Parse(data)
+	}
+	if lenient {
+		return openapi.ParseWithPathLenient(data, specFile)
+	}
+	return openapi.ParseWithPath(data, specFile)
 }
 
 func mergeSpecs(specs []*spec.APISpec, name string) *spec.APISpec {

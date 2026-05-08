@@ -3,6 +3,7 @@ package openapi
 import (
 	"encoding/json"
 	"fmt"
+	"sort"
 
 	"gopkg.in/yaml.v3"
 )
@@ -34,7 +35,7 @@ func normalizeSpecData(data []byte) ([]byte, error) {
 		return nil, fmt.Errorf("normalize spec: yaml unmarshal: %w", err)
 	}
 	root = convertToStringKeyed(root)
-	flattenObjectDescriptions(root, "")
+	normalizeSpecTree(root, "", false)
 	out, err := json.Marshal(root)
 	if err != nil {
 		return nil, fmt.Errorf("normalize spec: json marshal: %w", err)
@@ -71,9 +72,10 @@ func convertToStringKeyed(node any) any {
 	}
 }
 
-// flattenObjectDescriptions walks the decoded spec tree and replaces any
-// `description` key whose value is a map or slice with an empty string. Scalar
-// descriptions (the common case) pass through untouched.
+// normalizeSpecTree walks the decoded spec tree and applies tolerant rewrites
+// kin-openapi needs before loading real-world specs. It replaces non-scalar
+// `description` fields with an empty string and normalizes schema `examples`
+// values to the array shape OpenAPI expects.
 //
 // Skips the flatten when the immediate parent key is one whose children are
 // user-named entries (Schema property names, response codes, pattern regexes,
@@ -83,7 +85,7 @@ func convertToStringKeyed(node any) any {
 // ... } }` that hits this case; flattening there would replace the entry's
 // schema with an empty string and produce
 // `cannot unmarshal string into field Schema.properties of type openapi3.Schema`.
-func flattenObjectDescriptions(node any, parentKey string) {
+func normalizeSpecTree(node any, parentKey string, inSchema bool) {
 	switch v := node.(type) {
 	case map[string]any:
 		if !isNameKeyedParent(parentKey) {
@@ -94,14 +96,59 @@ func flattenObjectDescriptions(node any, parentKey string) {
 				}
 			}
 		}
+		if inSchema {
+			if examples, ok := v["examples"]; ok {
+				v["examples"] = normalizeExamplesValue(examples)
+			}
+		}
 		for key, value := range v {
-			flattenObjectDescriptions(value, key)
+			normalizeSpecTree(value, key, childIsSchema(parentKey, key))
 		}
 	case []any:
 		for _, item := range v {
-			flattenObjectDescriptions(item, "")
+			normalizeSpecTree(item, "", schemaArrayItems(parentKey))
 		}
 	}
+}
+
+func normalizeExamplesValue(examples any) any {
+	switch v := examples.(type) {
+	case []any:
+		return v
+	case map[string]any:
+		keys := make([]string, 0, len(v))
+		for key := range v {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+		out := make([]any, 0, len(keys))
+		for _, key := range keys {
+			out = append(out, v[key])
+		}
+		return out
+	default:
+		return []any{v}
+	}
+}
+
+func childIsSchema(parentKey, key string) bool {
+	switch parentKey {
+	case "schemas", "definitions", "properties", "patternProperties":
+		return true
+	}
+	switch key {
+	case "schema", "items", "additionalProperties", "not":
+		return true
+	}
+	return false
+}
+
+func schemaArrayItems(parentKey string) bool {
+	switch parentKey {
+	case "allOf", "oneOf", "anyOf":
+		return true
+	}
+	return false
 }
 
 // isNameKeyedParent reports whether children of the given parent key are

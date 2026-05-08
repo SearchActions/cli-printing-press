@@ -56,7 +56,11 @@ func main() {
 	var parsed *spec.APISpec
 	switch format {
 	case "openapi":
-		parsed, err = openapi.ParseLenient(data)
+		if openapi.IsRemoteSpecSource(*specFlag) {
+			parsed, err = openapi.ParseLenient(data)
+		} else {
+			parsed, err = openapi.ParseWithPathLenient(data, *specFlag)
+		}
 	case "internal":
 		parsed, err = spec.ParseBytes(data)
 	case "graphql":
@@ -107,7 +111,7 @@ func main() {
 }
 
 func loadSpec(source string) ([]byte, error) {
-	if strings.HasPrefix(source, "http://") || strings.HasPrefix(source, "https://") {
+	if openapi.IsRemoteSpecSource(source) {
 		resp, err := http.Get(source)
 		if err != nil {
 			return nil, fmt.Errorf("fetching %s: %w", source, err)

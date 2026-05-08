@@ -8,6 +8,7 @@ import (
 	"maps"
 	"net/url"
 	"os"
+	"path/filepath"
 	"regexp"
 	"slices"
 	"sort"
@@ -147,19 +148,63 @@ func Parse(data []byte) (*spec.APISpec, error) {
 	return parse(data, false)
 }
 
+// ParseFile parses an OpenAPI spec from a file and resolves local external
+// refs relative to that file.
+func ParseFile(path string) (*spec.APISpec, error) {
+	return parseFile(path, false)
+}
+
+// ParseWithPath parses OpenAPI spec bytes and resolves local external refs
+// relative to the given file path.
+func ParseWithPath(data []byte, path string) (*spec.APISpec, error) {
+	return parseWithPath(data, path, false)
+}
+
 // ParseLenient parses an OpenAPI spec, skipping validation errors from broken $refs.
 // It logs warnings to stderr for any issues found but continues parsing.
 func ParseLenient(data []byte) (*spec.APISpec, error) {
 	return parse(data, true)
 }
 
+// ParseFileLenient parses an OpenAPI spec from a file and skips validation
+// errors from broken $refs after resolving local external refs relative to
+// that file.
+func ParseFileLenient(path string) (*spec.APISpec, error) {
+	return parseFile(path, true)
+}
+
+// ParseWithPathLenient parses OpenAPI spec bytes, resolving local external refs
+// relative to the given file path and skipping validation errors from broken
+// refs.
+func ParseWithPathLenient(data []byte, path string) (*spec.APISpec, error) {
+	return parseWithPath(data, path, true)
+}
+
+func parseFile(path string, lenient bool) (*spec.APISpec, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("reading OpenAPI spec: %w", err)
+	}
+	return parseWithPath(data, path, lenient)
+}
+
+func parseWithPath(data []byte, path string, lenient bool) (*spec.APISpec, error) {
+	location, err := fileLocation(path)
+	if err != nil {
+		return nil, err
+	}
+	return parseWithLocation(data, lenient, location)
+}
+
 func parse(data []byte, lenient bool) (*spec.APISpec, error) {
+	return parseWithLocation(data, lenient, nil)
+}
+
+func parseWithLocation(data []byte, lenient bool, location *url.URL) (*spec.APISpec, error) {
 	if normalized, err := normalizeSpecData(data); err == nil {
 		data = normalized
 	}
-	loader := openapi3.NewLoader()
-	loader.IsExternalRefsAllowed = lenient
-	doc, err := loader.LoadFromData(data)
+	doc, err := loadOpenAPIDoc(data, lenient, location)
 	if err != nil {
 		if !lenient {
 			return nil, fmt.Errorf("loading OpenAPI spec: %w", err)
@@ -172,7 +217,7 @@ func parse(data []byte, lenient bool) (*spec.APISpec, error) {
 				break // stripBrokenRefs couldn't remove anything
 			}
 			data = cleaned
-			doc, err = loader.LoadFromData(data)
+			doc, err = loadOpenAPIDoc(data, lenient, location)
 		}
 		if err != nil {
 			return nil, fmt.Errorf("loading OpenAPI spec (even after cleanup): %w", err)
@@ -687,6 +732,49 @@ func authVarsExtension(raw any) ([]spec.AuthEnvVar, error) {
 		})
 	}
 	return out, nil
+}
+
+func loadOpenAPIDoc(data []byte, lenient bool, location *url.URL) (*openapi3.T, error) {
+	loader := openapi3.NewLoader()
+	loader.IsExternalRefsAllowed = lenient || location != nil
+	allowLocalExternalRefs := location != nil
+	loader.ReadFromURIFunc = func(loader *openapi3.Loader, refLocation *url.URL) ([]byte, error) {
+		if !lenient {
+			if !allowLocalExternalRefs || !isFileURI(refLocation) {
+				return nil, fmt.Errorf("encountered disallowed external reference: %q", refLocation.String())
+			}
+		}
+		data, err := openapi3.DefaultReadFromURI(loader, refLocation)
+		if err != nil {
+			return nil, err
+		}
+		if normalized, err := normalizeSpecData(data); err == nil {
+			return normalized, nil
+		}
+		return data, nil
+	}
+	if location != nil {
+		return loader.LoadFromDataWithPath(data, location)
+	}
+	return loader.LoadFromData(data)
+}
+
+func isFileURI(location *url.URL) bool {
+	return location != nil && location.Path != "" && location.Host == "" &&
+		(location.Scheme == "" || location.Scheme == "file")
+}
+
+func fileLocation(path string) (*url.URL, error) {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return nil, fmt.Errorf("resolving OpenAPI spec path: %w", err)
+	}
+	return &url.URL{Scheme: "file", Path: filepath.ToSlash(abs)}, nil
+}
+
+// IsRemoteSpecSource reports whether a spec source should be loaded as a URL.
+func IsRemoteSpecSource(source string) bool {
+	return strings.HasPrefix(source, "http://") || strings.HasPrefix(source, "https://")
 }
 
 func requiredStringField(m map[string]any, name string) (string, bool) {
