@@ -167,8 +167,13 @@ func Profile(s *spec.APISpec) *APIProfile {
 	}
 
 	resourceNames, resourceNameIndex := collectResourceNameMetadata(s.Resources)
-	syncable := make(map[string]syncableMeta)      // resource name -> chosen list endpoint metadata
-	parameterized := make(map[string]syncableMeta) // resource name -> parameterized list endpoint metadata (excluded from flat sync; carries IDField/Critical for dependent-resource emission)
+	syncable := make(map[string]syncableMeta) // resource name -> chosen list endpoint metadata
+	// Keyed by "<parent>/<leaf>" so the same leaf under multiple parents
+	// survives instead of first-seen-wins.
+	parameterized := make(map[string]parameterizedEntry)
+	// Mirrors the schema builder's table-naming so DependentResource.Name
+	// lines up byte-for-byte.
+	shardedSubResources := spec.SubResourceShardedNames(s)
 	searchable := make(map[string]map[string]struct{})
 	listResources := make(map[string]struct{})
 
@@ -182,8 +187,8 @@ func Profile(s *spec.APISpec) *APIProfile {
 	dateRangeParams := make(map[string]int)
 	responsePaths := make(map[string]int)
 
-	var walk func(name string, r spec.Resource, inheritedTier string)
-	walk = func(name string, r spec.Resource, inheritedTier string) {
+	var walk func(name string, r spec.Resource, inheritedTier string, parentName string)
+	walk = func(name string, r spec.Resource, inheritedTier string, parentName string) {
 		if r.Tier == "" {
 			r.Tier = inheritedTier
 		}
@@ -333,9 +338,15 @@ func Profile(s *spec.APISpec) *APIProfile {
 						// them for dependent-resource detection below. Carry the
 						// endpoint's metadata so x-resource-id and x-critical
 						// annotations on a child path-item flow into the override
-						// and critical-resource maps.
-						if _, ok := parameterized[resourceName]; !ok {
-							parameterized[resourceName] = metaFromEndpoint(s, r, endpoint, s.Types, resourceNameIndex)
+						// and critical-resource maps. Store raw names so
+						// detectDependentResources can snake-case downstream.
+						key := parentName + "/" + name
+						if _, ok := parameterized[key]; !ok {
+							parameterized[key] = parameterizedEntry{
+								name:       name,
+								parentName: parentName,
+								meta:       metaFromEndpoint(s, r, endpoint, s.Types, resourceNameIndex),
+							}
 						}
 					} else {
 						// Paginated endpoints override the path set above — they have
@@ -413,12 +424,12 @@ func Profile(s *spec.APISpec) *APIProfile {
 		subNames := sortedKeys(r.SubResources)
 		for _, subName := range subNames {
 			sub := r.SubResources[subName]
-			walk(subName, sub, r.Tier)
+			walk(subName, sub, r.Tier, name)
 		}
 	}
 
 	for name, resource := range s.Resources {
-		walk(name, resource, "")
+		walk(name, resource, "", "")
 	}
 
 	if p.TotalEndpoints > 0 {
@@ -438,7 +449,7 @@ func Profile(s *spec.APISpec) *APIProfile {
 	p.NeedsSearch = len(listResources) >= 3 && float64(searchEndpointCount)/float64(len(listResources)) < 0.5
 
 	p.SyncableResources = sortedSyncableResources(syncable)
-	p.DependentSyncResources = detectDependentResources(parameterized, syncable)
+	p.DependentSyncResources = detectDependentResources(parameterized, syncable, shardedSubResources)
 	for resource, fields := range searchable {
 		p.SearchableFields[resource] = sortedKeys(fields)
 	}
@@ -924,51 +935,45 @@ func sortedKeys[V any](m map[string]V) []string {
 	return keys
 }
 
-// detectDependentResources examines parameterized paths and identifies parent-child
-// relationships. For example, /channels/{channel_id}/messages becomes a dependent
-// resource of "channels" (only one level of nesting).
-func detectDependentResources(parameterized map[string]syncableMeta, syncable map[string]syncableMeta) []DependentResource {
+// detectDependentResources examines parameterized paths and identifies
+// parent-child relationships. For example, /channels/{channel_id}/messages
+// becomes a dependent resource of "channels" (only one level of nesting).
+// When the same leaf appears under multiple parents (or collides with a
+// top-level resource), each parent emits a sharded Name so its shard syncs
+// to its own table.
+func detectDependentResources(parameterized map[string]parameterizedEntry, syncable map[string]syncableMeta, shardedSubResources spec.SubResourceShards) []DependentResource {
 	var deps []DependentResource
-	for childName, meta := range parameterized {
-		path := meta.Path
-		// Extract the first {param} from the path
-		start := strings.Index(path, "{")
-		end := strings.Index(path, "}")
-		if start < 0 || end < 0 || end <= start {
+	for _, entry := range parameterized {
+		paramName, ok := firstPathParam(entry.meta.Path)
+		if !ok {
 			continue
 		}
-		paramName := path[start+1 : end]
-
-		// Derive the parent resource name by stripping trailing Id/_id from the param.
-		// e.g., "channel_id" -> "channel", "channelId" -> "channel"
-		parentCandidate := paramName
-		parentCandidate = strings.TrimSuffix(parentCandidate, "_id")
-		parentCandidate = strings.TrimSuffix(parentCandidate, "Id")
-		parentCandidate = strings.TrimSuffix(parentCandidate, "ID")
-		parentCandidate = strings.ToLower(parentCandidate)
-
-		// Check if a flat syncable resource exists matching the parent name
-		// (try both singular and common plural forms).
-		parentResource := ""
-		for _, candidate := range []string{parentCandidate, parentCandidate + "s", parentCandidate + "es"} {
-			if _, ok := syncable[candidate]; ok {
-				parentResource = candidate
-				break
-			}
-		}
+		parentResource := resolveParentResource(entry.parentName, paramName, syncable)
 		if parentResource == "" {
 			continue
 		}
 
+		emittedName := spec.ToSnakeCase(entry.name)
+		if shardedSubResources.IsSharded(entry.name) {
+			// Prefer the spec-walk parent so multi-param paths
+			// (e.g. /repos/{owner}/{repo}/commits) pick the right shard
+			// prefix; the path-param fallback would derive "owner".
+			shardParent := parentResource
+			if entry.parentName != "" {
+				shardParent = entry.parentName
+			}
+			emittedName = spec.ShardedSubResourceTableName(shardParent, entry.name)
+		}
+
 		deps = append(deps, DependentResource{
-			Name:           childName,
+			Name:           emittedName,
 			ParentResource: parentResource,
 			ParentIDParam:  paramName,
-			Path:           path,
-			Tier:           meta.Tier,
-			IDField:        meta.IDField,
-			Critical:       meta.Critical,
-			Discriminator:  meta.Discriminator,
+			Path:           entry.meta.Path,
+			Tier:           entry.meta.Tier,
+			IDField:        entry.meta.IDField,
+			Critical:       entry.meta.Critical,
+			Discriminator:  entry.meta.Discriminator,
 		})
 	}
 	// Sort for deterministic output
@@ -976,6 +981,40 @@ func detectDependentResources(parameterized map[string]syncableMeta, syncable ma
 		return deps[i].Name < deps[j].Name
 	})
 	return deps
+}
+
+// firstPathParam returns the name of the first {param} in a path template.
+func firstPathParam(path string) (string, bool) {
+	start := strings.Index(path, "{")
+	end := strings.Index(path, "}")
+	if start < 0 || end < 0 || end <= start {
+		return "", false
+	}
+	return path[start+1 : end], true
+}
+
+// resolveParentResource picks a parent name that matches a syncable resource.
+// Prefers the spec-walk parent (correct for multi-param paths like
+// /repos/{owner}/{repo}/commits) and falls back to stripping Id/_id from the
+// path param. Returns "" when no candidate matches.
+func resolveParentResource(walkParent, paramName string, syncable map[string]syncableMeta) string {
+	if walkParent != "" {
+		candidate := strings.ToLower(walkParent)
+		if _, ok := syncable[candidate]; ok {
+			return candidate
+		}
+	}
+	stem := paramName
+	stem = strings.TrimSuffix(stem, "_id")
+	stem = strings.TrimSuffix(stem, "Id")
+	stem = strings.TrimSuffix(stem, "ID")
+	stem = strings.ToLower(stem)
+	for _, candidate := range []string{stem, stem + "s", stem + "es"} {
+		if _, ok := syncable[candidate]; ok {
+			return candidate
+		}
+	}
+	return ""
 }
 
 // syncableMeta carries the chosen list endpoint's metadata while the profiler
@@ -987,6 +1026,16 @@ type syncableMeta struct {
 	IDField       string
 	Critical      bool
 	Discriminator DiscriminatorDispatch
+}
+
+// parameterizedEntry pairs a parameterized list endpoint with the parent
+// resource it was discovered under during the spec walk. parentName is
+// empty for top-level resources whose paths happen to be parameterized;
+// detectDependentResources then falls back to the path-param heuristic.
+type parameterizedEntry struct {
+	name       string
+	parentName string
+	meta       syncableMeta
 }
 
 // metaFromEndpoint extracts the IDField and Critical fields a parser populated

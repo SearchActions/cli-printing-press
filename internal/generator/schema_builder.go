@@ -3,7 +3,6 @@ package generator
 import (
 	"sort"
 	"strings"
-	"unicode"
 
 	"github.com/mvanhorn/cli-printing-press/v4/internal/spec"
 )
@@ -55,6 +54,9 @@ func BuildSchema(s *spec.APISpec) []TableDef {
 		resourceNames = append(resourceNames, name)
 	}
 	sort.Strings(resourceNames)
+
+	// Sharded names must agree with the profiler; both call SubResourceShardedNames.
+	subResourceShards := spec.SubResourceShardedNames(s)
 
 	for _, name := range resourceNames {
 		resource := s.Resources[name]
@@ -126,14 +128,24 @@ func BuildSchema(s *spec.APISpec) []TableDef {
 		sort.Strings(subNames)
 		for _, subName := range subNames {
 			subResource := resource.SubResources[subName]
-			subTable := buildSubResourceTable(subName, subResource, tableName)
+			// effectiveName is sharded only when the leaf collides; bare
+			// otherwise keeps existing CLIs byte-identical.
+			effectiveName := subName
+			if subResourceShards.IsSharded(subName) {
+				effectiveName = spec.ShardedSubResourceTableName(name, subName)
+			}
+			subTable := buildSubResourceTable(effectiveName, subResource, tableName)
 			tables = append(tables, subTable)
 		}
 	}
 
-	// Deduplicate tables by name (sub-resources from different parents can collide)
+	// Defensive dedup. Sharding handles the common collisions, but a spec
+	// author naming a top-level resource the same thing the shard synthesizes
+	// (e.g. top-level "gists_commits" plus a multi-parent "commits" under
+	// "gists") would otherwise emit two CREATE TABLE statements and two
+	// duplicate Upsert<X>Tx methods, breaking the build on regen.
 	seen := make(map[string]bool)
-	var deduped []TableDef
+	deduped := make([]TableDef, 0, len(tables))
 	for _, t := range tables {
 		if !seen[t.Name] {
 			seen[t.Name] = true
@@ -424,25 +436,7 @@ func sqlStringLiteral(s string) string {
 	return `'` + strings.ReplaceAll(s, `'`, `''`) + `'`
 }
 
-// toSnakeCase converts camelCase, PascalCase, or kebab-case to snake_case.
-// Expects ASCII input — callers are SQL identifier paths whose inputs come
-// from parsed APISpec types/fields that already passed through the
-// openapi parser's ASCIIFold chokepoints.
+// toSnakeCase aliases spec.ToSnakeCase; shared so profiler/schema agree.
 func toSnakeCase(s string) string {
-	s = strings.ReplaceAll(s, ".", "_")
-	s = strings.ReplaceAll(s, "-", "_")
-
-	var result strings.Builder
-	for i, r := range s {
-		if unicode.IsUpper(r) && i > 0 {
-			prev := rune(s[i-1])
-			if unicode.IsLower(prev) || unicode.IsDigit(prev) {
-				result.WriteRune('_')
-			} else if unicode.IsUpper(prev) && i+1 < len(s) && unicode.IsLower(rune(s[i+1])) {
-				result.WriteRune('_')
-			}
-		}
-		result.WriteRune(unicode.ToLower(r))
-	}
-	return result.String()
+	return spec.ToSnakeCase(s)
 }
