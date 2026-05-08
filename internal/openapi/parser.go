@@ -38,6 +38,7 @@ const (
 	extensionSpeakeasyExample = "x-speakeasy-example"
 	extensionTierRouting      = "x-tier-routing"
 	extensionTier             = "x-tier"
+	extensionMCP              = "x-mcp"
 	extensionAPIName          = "x-api-name"
 	extensionDisplayName      = "x-display-name"
 	extensionWebsite          = "x-website"
@@ -278,7 +279,12 @@ func parse(data []byte, lenient bool) (*spec.APISpec, error) {
 		auth = spec.AuthConfig{Type: "none"}
 	}
 
-	tierRouting, err := parseTierRoutingExtension(doc)
+	tierRouting, err := parseTypedExtension[spec.TierRoutingConfig](doc, extensionTierRouting)
+	if err != nil {
+		return nil, err
+	}
+
+	mcpConfig, err := parseTypedExtension[spec.MCPConfig](doc, extensionMCP)
 	if err != nil {
 		return nil, err
 	}
@@ -295,6 +301,7 @@ func parse(data []byte, lenient bool) (*spec.APISpec, error) {
 		ProxyRoutes:                 proxyRoutes,
 		Auth:                        auth,
 		TierRouting:                 tierRouting,
+		MCP:                         mcpConfig,
 		Config: spec.ConfigSpec{
 			Format: "toml",
 			Path:   fmt.Sprintf("~/.config/%s-pp-cli/config.toml", name),
@@ -329,18 +336,25 @@ func parse(data []byte, lenient bool) (*spec.APISpec, error) {
 	return result, nil
 }
 
-func parseTierRoutingExtension(doc *openapi3.T) (spec.TierRoutingConfig, error) {
-	raw, ok := lookupOpenAPIExtension(doc, extensionTierRouting)
+// parseTypedExtension bridges kin-openapi's untyped any-tree to a typed
+// config struct via a JSON marshal/unmarshal roundtrip; callers rely on
+// T's json tags for field mapping. Reach for it when the extension's
+// value is a YAML/JSON object that maps to a Go struct (x-tier-routing,
+// x-mcp). Use direct lookupOpenAPIExtension + type assertion for scalar
+// extensions (string, bool, []string) where the roundtrip would be waste.
+func parseTypedExtension[T any](doc *openapi3.T, key string) (T, error) {
+	var zero T
+	raw, ok := lookupOpenAPIExtension(doc, key)
 	if !ok {
-		return spec.TierRoutingConfig{}, nil
+		return zero, nil
 	}
 	data, err := json.Marshal(raw)
 	if err != nil {
-		return spec.TierRoutingConfig{}, fmt.Errorf("marshaling %s: %w", extensionTierRouting, err)
+		return zero, fmt.Errorf("marshaling %s: %w", key, err)
 	}
-	var cfg spec.TierRoutingConfig
+	var cfg T
 	if err := json.Unmarshal(data, &cfg); err != nil {
-		return spec.TierRoutingConfig{}, fmt.Errorf("parsing %s: %w", extensionTierRouting, err)
+		return zero, fmt.Errorf("parsing %s: %w", key, err)
 	}
 	return cfg, nil
 }
