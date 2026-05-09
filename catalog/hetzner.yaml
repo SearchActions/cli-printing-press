@@ -1,0 +1,16 @@
+name: hetzner
+display_name: Hetzner Cloud
+description: Cloud infrastructure API for servers, networks, load balancers, volumes, and DNS
+category: cloud
+spec_url: https://docs.hetzner.cloud/cloud.spec.json
+spec_format: json
+openapi_version: "3.0"
+tier: official
+verified_date: "2026-05-09"
+homepage: https://docs.hetzner.cloud/
+notes: Large spec (~3.4 MB) covering Cloud servers, images, ISOs, SSH keys, networks, load balancers, volumes, firewalls, and placement groups.
+known_alternatives:
+  - name: hcloud
+    url: https://github.com/hetznercloud/cli
+    language: go
+sandbox_endpoint: https://api.hetzner.cloud/v1
