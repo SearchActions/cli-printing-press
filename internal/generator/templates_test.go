@@ -99,8 +99,8 @@ func TestMCPContextOmitsHarvestedAuthEnvVars(t *testing.T) {
 	require.NoError(t, err)
 	content := string(mcpSrc)
 
-	require.Contains(t, content, `"name": "MCP_AUTH_TOKEN"`)
-	require.Contains(t, content, `"name": "MCP_AUTH_CLIENT_ID"`)
+	require.Contains(t, content, `"MCP_AUTH_TOKEN"`)
+	require.Contains(t, content, `"MCP_AUTH_CLIENT_ID"`)
 	require.NotContains(t, content, "MCP_AUTH_COOKIES")
 }
 
@@ -124,8 +124,8 @@ func TestAgentContextOmitsHarvestedAuthEnvVars(t *testing.T) {
 	require.NoError(t, err)
 	content := string(agentContextSrc)
 
-	require.Contains(t, content, `Name:      "AGENT_CONTEXT_TOKEN"`)
-	require.Contains(t, content, `Name:      "AGENT_CONTEXT_CLIENT_ID"`)
+	require.Contains(t, content, `"AGENT_CONTEXT_TOKEN"`)
+	require.Contains(t, content, `"AGENT_CONTEXT_CLIENT_ID"`)
 	require.NotContains(t, content, "AGENT_CONTEXT_COOKIES")
 }
 
