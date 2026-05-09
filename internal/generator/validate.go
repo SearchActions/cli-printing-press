@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
@@ -24,6 +25,9 @@ const qualityGateTimeout = 5 * time.Minute
 
 func (g *Generator) Validate() error {
 	binPath := filepath.Join(g.OutputDir, naming.ValidationBinary(g.Spec.Name))
+	if runtime.GOOS == "windows" {
+		binPath += ".exe"
+	}
 	if err := artifacts.CleanupGeneratedCLI(g.OutputDir, artifacts.CleanupOptions{
 		RemoveValidationBinaries: true,
 		RemoveRecursiveCopies:    true,

@@ -1,6 +1,7 @@
 package generator
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -90,10 +91,14 @@ func GenerateFromPlan(planSpec *PlanSpec, outputDir string) error {
 	}
 
 	render := func(tmplName, outPath string, data any) error {
-		content, err := templateFS.ReadFile(filepath.Join("templates", tmplName))
+		content, err := templateFS.ReadFile("templates/" + tmplName)
 		if err != nil {
 			return fmt.Errorf("reading template %s: %w", tmplName, err)
 		}
+		// Normalize CRLF -> LF: matches generator.go's template() so plan-driven
+		// renders produce identical bytes to spec-driven renders on Windows
+		// checkouts where git autocrlf=true rewrites .tmpl files.
+		content = bytes.ReplaceAll(content, []byte("\r\n"), []byte("\n"))
 		tmpl, err := template.New(tmplName).Funcs(funcs).Parse(string(content))
 		if err != nil {
 			return fmt.Errorf("parsing template %s: %w", tmplName, err)

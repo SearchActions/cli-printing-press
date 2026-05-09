@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"slices"
 	"sort"
 	"strings"
@@ -1704,6 +1705,9 @@ func buildDogfoodBinary(dir, cliName string) (string, error) {
 	buildPath, err := filepath.Abs(filepath.Join(dir, cliName+"-dogfood"))
 	if err != nil {
 		return "", fmt.Errorf("resolving dogfood binary path: %w", err)
+	}
+	if runtime.GOOS == "windows" {
+		buildPath += ".exe"
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()

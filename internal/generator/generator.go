@@ -2703,10 +2703,15 @@ func (g *Generator) template(tmplName string) (*template.Template, error) {
 		return tmpl, nil
 	}
 
-	content, err := templateFS.ReadFile(filepath.Join("templates", tmplName))
+	content, err := templateFS.ReadFile("templates/" + tmplName)
 	if err != nil {
 		return nil, fmt.Errorf("reading template %s: %w", tmplName, err)
 	}
+	// Normalize CRLF -> LF in template source. On Windows checkouts with
+	// git autocrlf=true, .tmpl files come down with \r\n which then leaks
+	// into every generated artifact and breaks downstream byte-exact
+	// comparisons (verify-skill canonical-sections, golden harness).
+	content = bytes.ReplaceAll(content, []byte("\r\n"), []byte("\n"))
 
 	tmpl, err := template.New(tmplName).Funcs(g.funcs).Parse(string(content))
 	if err != nil {

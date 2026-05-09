@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
@@ -156,7 +157,11 @@ func shipcheckResearchPath(o *shipcheckOpts) string {
 }
 
 func shipcheckCLIPath(o *shipcheckOpts) string {
-	return filepath.Join(o.dir, filepath.Base(o.dir))
+	p := filepath.Join(o.dir, filepath.Base(o.dir))
+	if runtime.GOOS == "windows" {
+		p += ".exe"
+	}
+	return p
 }
 
 // shipcheckLegResult is the per-leg outcome of one umbrella run.
