@@ -6,16 +6,16 @@ package cli
 import (
 	"encoding/json"
 	"fmt"
+	"github.com/spf13/cobra"
 	"net/url"
 	"os"
+	"printing-press-golden-pp-cli/internal/store"
 	"regexp"
 	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
-	"printing-press-golden-pp-cli/internal/store"
-	"github.com/spf13/cobra"
 )
 
 // syncResult holds the outcome of syncing a single resource.
@@ -713,8 +713,7 @@ type discriminatorDispatch struct {
 	Values map[string]string
 }
 
-var discriminatorDispatchers = map[string]discriminatorDispatch{
-}
+var discriminatorDispatchers = map[string]discriminatorDispatch{}
 
 func upsertResourceBatch(db *store.Store, resource string, items []json.RawMessage) (int, int, error) {
 	if _, ok := discriminatorDispatchers[resource]; !ok {
@@ -831,7 +830,7 @@ func defaultSyncResources() []string {
 func syncResourcePath(resource string) (string, error) {
 	paths := map[string]string{
 		"currencies": "/currencies",
-		"projects": "/projects",
+		"projects":   "/projects",
 	}
 	if p, ok := paths[resource]; ok {
 		return p, nil
@@ -1064,7 +1063,7 @@ func syncDependentResource(c interface {
 // flat paths.
 var resourceIDFieldOverrides = map[string]string{
 	"projects": "id",
-	"tasks": "id",
+	"tasks":    "id",
 }
 
 // genericIDFieldFallbacks is the runtime safety net for resources that did

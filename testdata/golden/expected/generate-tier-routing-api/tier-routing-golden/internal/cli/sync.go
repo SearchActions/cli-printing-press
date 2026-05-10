@@ -6,6 +6,7 @@ package cli
 import (
 	"encoding/json"
 	"fmt"
+	"github.com/spf13/cobra"
 	"net/url"
 	"os"
 	"regexp"
@@ -13,10 +14,9 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
-	"time"
 	"tier-routing-golden-pp-cli/internal/client"
 	"tier-routing-golden-pp-cli/internal/store"
-	"github.com/spf13/cobra"
+	"time"
 )
 
 // syncResult holds the outcome of syncing a single resource.
@@ -690,8 +690,7 @@ type discriminatorDispatch struct {
 	Values map[string]string
 }
 
-var discriminatorDispatchers = map[string]discriminatorDispatch{
-}
+var discriminatorDispatchers = map[string]discriminatorDispatch{}
 
 func upsertResourceBatch(db *store.Store, resource string, items []json.RawMessage) (int, int, error) {
 	if _, ok := discriminatorDispatchers[resource]; !ok {
@@ -828,8 +827,7 @@ func syncClientForResource(c *client.Client, resource string) *client.Client {
 // Includes both flat resources and dependent (parent-child) resources so
 // annotations on a child path-item are honored at runtime, not just on
 // flat paths.
-var resourceIDFieldOverrides = map[string]string{
-}
+var resourceIDFieldOverrides = map[string]string{}
 
 // genericIDFieldFallbacks is the runtime safety net for resources that did
 // NOT receive a templated IDField. API-specific names belong in spec
@@ -844,8 +842,7 @@ var genericIDFieldFallbacks = []string{"id", "ID", "name", "uuid", "slug", "key"
 // Includes both flat resources and dependent (parent-child) resources so a
 // failed child sync flagged x-critical: true exits non-zero just like a
 // flat-resource critical failure.
-var criticalResources = map[string]bool{
-}
+var criticalResources = map[string]bool{}
 
 // extractID resolves an item's primary-key field. It consults the
 // per-resource templated override first; on miss, it falls through to the
