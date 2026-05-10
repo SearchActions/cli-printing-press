@@ -5,6 +5,7 @@ import (
 	"embed"
 	"encoding/json"
 	"fmt"
+	"go/format"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -2643,6 +2644,21 @@ func (g *Generator) renderTemplate(tmplName, outPath string, data any) error {
 
 	rendered := bytes.TrimRight(buf.Bytes(), " \t\r\n")
 	rendered = append(rendered, '\n')
+	if strings.HasSuffix(outPath, ".go") {
+		// gofmt is best-effort. format.Source returns an error when the
+		// rendered Go is unparseable — typically a pre-existing template
+		// escape bug surfaced by tricky input. The downstream `go build`
+		// quality gate is the authoritative correctness check; gofmt
+		// here is purely cosmetic and must not mask render failures
+		// behind a gofmt-stage error.
+		if formatted, err := format.Source(rendered); err == nil {
+			rendered = formatted
+		} else {
+			fmt.Fprintf(os.Stderr,
+				"WARNING: gofmt skipped for %s: %v (file written unformatted; downstream go build will catch syntax errors)\n",
+				outPath, err)
+		}
+	}
 	return os.WriteFile(fullPath, rendered, 0o644)
 }
 
@@ -2703,10 +2719,15 @@ func (g *Generator) template(tmplName string) (*template.Template, error) {
 		return tmpl, nil
 	}
 
-	content, err := templateFS.ReadFile(filepath.Join("templates", tmplName))
+	content, err := templateFS.ReadFile("templates/" + tmplName)
 	if err != nil {
 		return nil, fmt.Errorf("reading template %s: %w", tmplName, err)
 	}
+	// Normalize CRLF -> LF in template source. On Windows checkouts with
+	// git autocrlf=true, .tmpl files come down with \r\n which then leaks
+	// into every generated artifact and breaks downstream byte-exact
+	// comparisons (verify-skill canonical-sections, golden harness).
+	content = bytes.ReplaceAll(content, []byte("\r\n"), []byte("\n"))
 
 	tmpl, err := template.New(tmplName).Funcs(g.funcs).Parse(string(content))
 	if err != nil {
