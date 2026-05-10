@@ -108,7 +108,7 @@ func RegisterTools(s *server.MCPServer) {
 			mcplib.WithDestructiveHintAnnotation(false),
 			mcplib.WithOpenWorldHintAnnotation(true),
 		),
-		makeAPIHandler("GET", "<REPO>rts/{year}/summary", []mcpParamBinding{{PublicName: "year", WireName: "year", Location: "path"}}, []string{"year"}),
+		makeAPIHandler("GET", "/reports/{year}/summary", []mcpParamBinding{{PublicName: "year", WireName: "year", Location: "path"}}, []string{"year"}),
 	)
 	// Search tool — faster than iterating list endpoints for finding specific items
 	s.AddTool(
