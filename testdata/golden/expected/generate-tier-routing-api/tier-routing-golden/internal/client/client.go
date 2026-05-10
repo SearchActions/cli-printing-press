@@ -17,19 +17,19 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
-	"time"
 	"tier-routing-golden-pp-cli/internal/cliutil"
 	"tier-routing-golden-pp-cli/internal/config"
+	"time"
 )
 
 type Client struct {
-	BaseURL    string
-	Config     *config.Config
-	HTTPClient *http.Client
-	DryRun     bool
-	NoCache    bool
-	cacheDir   string
-	limiter    *cliutil.AdaptiveLimiter
+	BaseURL     string
+	Config      *config.Config
+	HTTPClient  *http.Client
+	DryRun      bool
+	NoCache     bool
+	cacheDir    string
+	limiter     *cliutil.AdaptiveLimiter
 	requestTier string
 	limiters    map[string]*cliutil.AdaptiveLimiter
 }
@@ -53,8 +53,8 @@ func (c *Client) WithTier(tier string) *Client {
 func newTierLimiters(rateLimit float64) map[string]*cliutil.AdaptiveLimiter {
 	return map[string]*cliutil.AdaptiveLimiter{
 		"enterprise": cliutil.NewAdaptiveLimiter(rateLimit),
-		"free": cliutil.NewAdaptiveLimiter(rateLimit),
-		"paid": cliutil.NewAdaptiveLimiter(rateLimit),
+		"free":       cliutil.NewAdaptiveLimiter(rateLimit),
+		"paid":       cliutil.NewAdaptiveLimiter(rateLimit),
 	}
 }
 
@@ -92,9 +92,9 @@ func (c *Client) authForRequest() (requestAuth, error) {
 			return requestAuth{In: "header", Name: "Authorization"}, nil
 		}
 		value := applyTierAuthFormat("Bearer {access_token}", map[string]string{
-			"token": tierValue0,
-			"access_token": tierValue0,
-			"enterprise_token": tierValue0,
+			"token":                 tierValue0,
+			"access_token":          tierValue0,
+			"enterprise_token":      tierValue0,
 			"TIER_ENTERPRISE_TOKEN": tierValue0,
 		})
 		return requestAuth{Value: value, In: "header", Name: "Authorization"}, nil
@@ -125,8 +125,6 @@ func applyTierAuthFormat(format string, replacements map[string]string) string {
 	}
 	return format
 }
-
-
 
 // APIError carries HTTP status information for structured exit codes.
 type APIError struct {
@@ -548,7 +546,6 @@ func sanitizeJSONResponse(body []byte) []byte {
 	}
 	return body
 }
-
 
 // maskToken redacts all but the last 4 characters of a token for safe display.
 func maskToken(token string) string {
