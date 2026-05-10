@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -457,6 +458,9 @@ func writeVerifySkillFixture(t *testing.T, dir string, files map[string]string, 
 func buildPrintingPressBinary(t *testing.T) string {
 	t.Helper()
 	out := filepath.Join(t.TempDir(), "printing-press")
+	if runtime.GOOS == "windows" {
+		out += ".exe"
+	}
 	cmd := exec.Command("go", "build", "-o", out, "./cmd/printing-press")
 	// The test runs from internal/cli; go up to repo root.
 	cmd.Dir = "../.."

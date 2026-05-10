@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
@@ -204,6 +205,9 @@ func MakeBestCLI(apiName, level, specFlag, specURL, outputDir, pressBinary strin
 
 	// Step 5: Dogfood
 	cliBinaryPath := filepath.Join(workingDir, naming.CLI(apiName))
+	if runtime.GOOS == "windows" {
+		cliBinaryPath += ".exe"
+	}
 	buildCmd := exec.Command("go", "build", "-o", cliBinaryPath, "./cmd/...")
 	buildCmd.Dir = workingDir
 	if buildErr := buildCmd.Run(); buildErr != nil {

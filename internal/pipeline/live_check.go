@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -210,6 +211,22 @@ func resolveBinaryPath(cliDir, name string) (string, error) {
 		base := filepath.Base(cliDir)
 		candidates = []string{base + "-pp-cli", base}
 	}
+	// On Windows the built binary carries an .exe suffix; probe both forms
+	// so callers can pass either bare or .exe-suffixed names.
+	if runtime.GOOS == "windows" {
+		expanded := make([]string, 0, len(candidates)*2)
+		for _, c := range candidates {
+			if c == "" {
+				continue
+			}
+			if strings.HasSuffix(c, ".exe") {
+				expanded = append(expanded, c, strings.TrimSuffix(c, ".exe"))
+			} else {
+				expanded = append(expanded, c+".exe", c)
+			}
+		}
+		candidates = expanded
+	}
 	for _, candidate := range candidates {
 		if candidate == "" {
 			continue
@@ -219,7 +236,9 @@ func resolveBinaryPath(cliDir, name string) (string, error) {
 		if err != nil {
 			continue
 		}
-		if info.Mode()&0o111 == 0 {
+		// Windows doesn't track the executable bit the same way; rely on the
+		// .exe suffix instead. Elsewhere, require any execute bit set.
+		if runtime.GOOS != "windows" && info.Mode()&0o111 == 0 {
 			return "", fmt.Errorf("binary %q is not executable", path)
 		}
 		return path, nil

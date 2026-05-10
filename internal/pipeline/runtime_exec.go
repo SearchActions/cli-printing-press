@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"time"
 
@@ -16,6 +17,9 @@ func buildCLI(dir string) (string, error) {
 	binaryPath, err := filepath.Abs(filepath.Join(dir, filepath.Base(dir)))
 	if err != nil {
 		return "", fmt.Errorf("resolving binary path: %w", err)
+	}
+	if runtime.GOOS == "windows" {
+		binaryPath += ".exe"
 	}
 	cmdDir, err := findCLICommandDir(dir)
 	if err != nil {

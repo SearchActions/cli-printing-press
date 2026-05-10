@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -18,6 +19,9 @@ import (
 func buildShipcheckStub(t *testing.T) string {
 	t.Helper()
 	out := filepath.Join(t.TempDir(), "shipcheck-stub")
+	if runtime.GOOS == "windows" {
+		out += ".exe"
+	}
 	cmd := exec.Command("go", "build", "-o", out, "./testdata/shipcheck-stub")
 	if buildOut, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("building shipcheck stub: %v\n%s", err, string(buildOut))

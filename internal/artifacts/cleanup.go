@@ -39,9 +39,9 @@ func CleanupGeneratedCLI(dir string, opts CleanupOptions) error {
 			}
 			name := entry.Name()
 			switch {
-			case opts.RemoveValidationBinaries && strings.HasSuffix(name, "-validation"):
+			case opts.RemoveValidationBinaries && (strings.HasSuffix(name, "-validation") || strings.HasSuffix(name, "-validation.exe")):
 				errs = append(errs, removeFileIfExists(filepath.Join(dir, name)))
-			case opts.RemoveDogfoodBinaries && strings.HasSuffix(name, "-dogfood"):
+			case opts.RemoveDogfoodBinaries && (strings.HasSuffix(name, "-dogfood") || strings.HasSuffix(name, "-dogfood.exe")):
 				errs = append(errs, removeFileIfExists(filepath.Join(dir, name)))
 			}
 		}
