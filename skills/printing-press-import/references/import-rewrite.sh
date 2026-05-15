@@ -44,9 +44,20 @@ if [[ "$PUBLIC_MODULE" == "$LOCAL_MODULE" ]]; then
   exit 0
 fi
 
-# Rewrite go.mod first (single-line replace, anchored).
-perl -pi -e "s|^module \Q${PUBLIC_MODULE}\E\$|module ${LOCAL_MODULE}|" \
+# Rewrite go.mod first. Use a whitespace-bounded match (not an end-anchor)
+# so we work correctly on CRLF line endings — the fetched library tarball
+# arrives with CRLF on Windows, and `$` anchors land before the `\r`,
+# silently missing the substitution.
+perl -pi -e "s|^module\s+\Q${PUBLIC_MODULE}\E|module ${LOCAL_MODULE}|" \
   "$STAGING/go.mod"
+
+# Assert the rewrite actually happened. Catches the CRLF-anchor class of
+# bugs at generation time instead of leaking a broken go.mod downstream.
+if ! grep -Eq "^module[[:space:]]+${LOCAL_MODULE}([[:space:]]|\$)" "$STAGING/go.mod"; then
+  echo "go.mod module-path rewrite failed: expected '${LOCAL_MODULE}', got:" >&2
+  head -1 "$STAGING/go.mod" >&2
+  exit 1
+fi
 
 # Rewrite import-style references in source files. Limit to the
 # extensions RewriteModulePath touches: .go, .yaml, .yml, .md.
