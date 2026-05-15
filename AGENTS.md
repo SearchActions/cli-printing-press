@@ -1,5 +1,15 @@
 # CLI Printing Press - Development Conventions
+# After Creating New CLI's
+After creating a CLI:
+- copy the files into D:\projects\cli\<name>-cli\ - this is a folder we sync to github and share with our team.  NOTE - you are keeping your local files as you created and simply copying the files to the CLI folder in projects. 
+- Publish to github.com/SearchActions/cli (never to the upstream repo we forked from)
+# After Updating Existing CLI's (Polish, etc)
+After updating an existing CLI:
+- copy the updated files into the existing folder in D:\projects\cli\ (D:\projects\cli\<name>-cli\).  If the folder doesn't exist, create a new folder.  The naming convention for this folder is D:\projects\cli\<name>-cli\.   
+- Publish to github.com/SearchActions/cli (never to the upstream repo we forked from)
 
+# Time Estimates
+Never consider time estimates when planning and researching.  We use AI agents to build and not humans, so time is not a consideration. 
 ## Machine vs Printed CLI
 This repo is **the machine** (generator, templates, binary, skills) that produces **printed CLIs**. When fixing a bug or adding a feature, ask: machine change or printed-CLI change?
 - **Machine changes** (generator, templates, parser, skills) affect every future CLI and must generalize across APIs, spec formats, and auth patterns.
