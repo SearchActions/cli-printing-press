@@ -1,0 +1,19 @@
+name: cloudflare
+display_name: Cloudflare
+description: Edge platform API for Workers, DNS, Zones, R2, KV, D1, Pages, Access, WAF, Stream, and Images
+category: cloud
+spec_url: https://raw.githubusercontent.com/cloudflare/api-schemas/main/openapi.json
+spec_format: json
+openapi_version: "3.0"
+tier: official
+verified_date: "2026-05-09"
+homepage: https://developers.cloudflare.com/api/
+notes: Very large spec (~9.7 MB) covering Workers, DNS, Zones, R2, KV, D1, Pages, Access, WAF, Stream, Images, Magic Transit, and Logpush. Generator truncates significantly.
+known_alternatives:
+  - name: wrangler
+    url: https://github.com/cloudflare/workers-sdk
+    language: typescript
+  - name: flarectl
+    url: https://github.com/cloudflare/cloudflare-go
+    language: go
+sandbox_endpoint: https://api.cloudflare.com/client/v4
