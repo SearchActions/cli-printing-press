@@ -8,6 +8,13 @@ catalog/specs/*.graphql
 /refactor/artifacts/
 /tests/artifacts/perf/
 /printing-press
+/printing-press.exe
 library/
 dist/
 claude-upgrade-progress.json
+
+# Local agent state — librarian cache, memento packets, gate/harden/audit output.
+# All scoped to the operator's machine; never source of truth.
+/.knowledge/
+/memory/
+/lifecycle/
