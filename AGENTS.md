@@ -2,10 +2,12 @@
 # After Creating New CLI's
 After creating a CLI:
 - copy the files into D:\projects\cli\<name>-cli\ - this is a folder we sync to github and share with our team.  NOTE - you are keeping your local files as you created and simply copying the files to the CLI folder in projects. 
+- install the global binary from the copied local source so "imported to monorepo" implies "installed": `cd D:\projects\cli\<name>-cli && go install ./cmd/<name>-pp-cli`, then confirm it landed in `$(go env GOPATH)/bin` (`.exe` on Windows). Local-source install needs no network and no GOPRIVATE; never use the dead `@latest` form against the private SearchActions/cli module.
 - Publish to github.com/SearchActions/cli (never to the upstream repo we forked from)
 # After Updating Existing CLI's (Polish, etc)
 After updating an existing CLI:
 - copy the updated files into the existing folder in D:\projects\cli\ (D:\projects\cli\<name>-cli\).  If the folder doesn't exist, create a new folder.  The naming convention for this folder is D:\projects\cli\<name>-cli\.   
+- re-install the global binary from the updated local source so the global binary is never stale: `cd D:\projects\cli\<name>-cli && go install ./cmd/<name>-pp-cli`, then confirm it landed in `$(go env GOPATH)/bin` (`.exe` on Windows).
 - Publish to github.com/SearchActions/cli (never to the upstream repo we forked from)
 
 # Time Estimates

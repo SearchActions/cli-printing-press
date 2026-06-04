@@ -203,6 +203,22 @@ go build ./... \
 make doctor 2>/dev/null \
   || ./bin/${API_SLUG}-pp-cli doctor 2>/dev/null \
   || true   # best-effort; not all CLIs have doctor wired the same way
+
+# Install the global binary from local source so "imported" => "installed".
+# Local-source install needs no network and no GOPRIVATE: the module path is
+# the local form (`module ${API_SLUG}-pp-cli`, confirmed above), so Go builds
+# from the working tree, never fetching the private SearchActions/cli module.
+go install ./cmd/${API_SLUG}-pp-cli \
+  || { echo "FAIL: go install ./cmd/${API_SLUG}-pp-cli"; exit 1; }
+
+# Confirm the binary landed in GOPATH/bin (.exe on Windows).
+GOBIN_DIR="$(go env GOPATH)/bin"
+if [[ -x "$GOBIN_DIR/${API_SLUG}-pp-cli" || -x "$GOBIN_DIR/${API_SLUG}-pp-cli.exe" ]]; then
+  echo "INSTALLED: ${API_SLUG}-pp-cli -> $GOBIN_DIR"
+else
+  echo "FAIL: ${API_SLUG}-pp-cli not found in $GOBIN_DIR after go install"
+  exit 1
+fi
 ```
 
 Report the import outcome:
@@ -212,6 +228,7 @@ Report the import outcome:
 - Manuscripts run-ids placed (count + names)
 - Backup zip path (if any)
 - Build status
+- Install status (binary in `$(go env GOPATH)/bin`; install fails the import if absent)
 
 ## Polish-side hint
 
