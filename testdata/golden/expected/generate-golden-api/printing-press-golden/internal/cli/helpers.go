@@ -10,6 +10,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
 	"io"
+	"net/url"
 	"os"
 	"path/filepath"
 	"printing-press-golden-pp-cli/internal/client"
@@ -264,8 +265,28 @@ func truncate(s string, max int) string {
 func newTabWriter(w io.Writer) *tabwriter.Writer {
 	return tabwriter.NewWriter(w, 2, 4, 2, ' ', 0)
 }
+
+// replacePathParam substitutes a templated path segment after percent-encoding
+// the caller's value. Per-segment escaping preserves the literal "/" in
+// composite resource names (e.g. Google REST "properties/456314183") that the
+// API treats as a real path separator — whole-value PathEscape would encode
+// those slashes to "%2F" and the API would 404. Empty, ".", or ".." segments
+// would survive per-segment escaping and let the URL router resolve traversal
+// inside the templated path, redirecting an authenticated request to a
+// different endpoint on the same host. Reject those by falling back to a
+// whole-value escape so the API 404s instead of silently serving an
+// attacker-chosen URL. See INC-2026-147.
 func replacePathParam(path, name, value string) string {
-	return strings.ReplaceAll(path, "{"+name+"}", value)
+	segments := strings.Split(value, "/")
+	for _, s := range segments {
+		if s == "" || s == "." || s == ".." {
+			return strings.ReplaceAll(path, "{"+name+"}", url.PathEscape(value))
+		}
+	}
+	for i, s := range segments {
+		segments[i] = url.PathEscape(s)
+	}
+	return strings.ReplaceAll(path, "{"+name+"}", strings.Join(segments, "/"))
 }
 
 // paginatedGet fetches pages and concatenates array results. The headers
