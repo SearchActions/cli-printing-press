@@ -22,6 +22,9 @@ The extracted developer docs are:
 - `docs/GOLDEN.md` — golden harness rubric and fixture conventions
 - `docs/GLOSSARY.md` — full canonical-term table
 - `docs/RELEASE.md` — release-please / goreleaser flow
+- `docs/ATTRIBUTION.md` — creator + contributors attribution model
 - `docs/CATALOG.md` — catalog validator rationale and wrapper-only shape
 - `docs/ARTIFACTS.md` — local library, manuscripts, and public-library flow
+- `docs/CURSOR.md` — using printed CLIs and skills in Cursor
 - `docs/DOCS.md` — this doc-authoring guidance
+- `docs/PLUGIN-DEV.md` — persistent local plugin development setup

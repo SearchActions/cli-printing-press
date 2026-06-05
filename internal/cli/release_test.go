@@ -78,6 +78,38 @@ func TestVersionConsistencyAcrossFiles(t *testing.T) {
 		"plugin.json and version.go hardcoded version must match")
 }
 
+func TestInternalSkillMinimumBinaryVersionsTrackMajor(t *testing.T) {
+	// Skill frontmatter `version` values are not release-managed. The
+	// executable compatibility contract is `min-binary-version`; keep the
+	// frontmatter and the duplicated setup-contract comment in sync.
+	want := fmt.Sprintf("%d.0.0", majorVersion(t, version.Version))
+	paths := []string{
+		"../../skills/printing-press/SKILL.md",
+		"../../skills/printing-press-catalog/SKILL.md",
+		"../../skills/printing-press-polish/SKILL.md",
+		"../../skills/printing-press-publish/SKILL.md",
+		"../../skills/printing-press-score/SKILL.md",
+	}
+
+	frontmatterRe := regexp.MustCompile(`(?m)^min-binary-version:\s*"?([^"\n]+)"?\s*$`)
+	commentRe := regexp.MustCompile(`(?m)^# min-binary-version:\s*([^\s]+)\s*$`)
+	for _, path := range paths {
+		t.Run(path, func(t *testing.T) {
+			data, err := os.ReadFile(path)
+			require.NoError(t, err)
+			content := string(data)
+
+			frontmatter := frontmatterRe.FindStringSubmatch(content)
+			require.Len(t, frontmatter, 2, "skill must declare min-binary-version frontmatter")
+			assert.Equal(t, want, frontmatter[1])
+
+			comment := commentRe.FindStringSubmatch(content)
+			require.Len(t, comment, 2, "setup contract must duplicate min-binary-version")
+			assert.Equal(t, frontmatter[1], comment[1])
+		})
+	}
+}
+
 func TestMarketplaceJSONHasNoPluginVersion(t *testing.T) {
 	// Guard against a reviewer (or release-please misconfiguration) re-adding
 	// a per-plugin version field to marketplace.json. Plugin versions live
@@ -141,6 +173,22 @@ func majorVersion(t *testing.T, v string) int {
 	major, err := strconv.Atoi(parts[0])
 	require.NoError(t, err, "Version major %q must be an integer", parts[0])
 	return major
+}
+
+func TestPlansDirectoryGitignored(t *testing.T) {
+	// The cli-printing-press repo is public. Plans in docs/plans/ frequently
+	// describe in-progress, unreleased, or third-party-collaborator work that
+	// should not be world-readable. The /docs/plans/ gitignore line enforces
+	// this; if someone removes it in a cleanup commit, plans silently start
+	// landing on GitHub again.
+	//
+	// See AGENTS.md "Plan documents stay local" for the rule.
+	data, err := os.ReadFile("../../.gitignore")
+	require.NoError(t, err)
+
+	gitignore := string(data)
+	assert.Contains(t, gitignore, "\n/docs/plans/",
+		".gitignore must ignore /docs/plans/ — see AGENTS.md 'Plan documents stay local'")
 }
 
 func TestPRTitleWorkflowAllowsReleasePleaseScope(t *testing.T) {

@@ -13,12 +13,13 @@ import (
 	"github.com/mvanhorn/cli-printing-press/v4/internal/mcpdesc"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/mcpoverrides"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/naming"
+	"github.com/mvanhorn/cli-printing-press/v4/internal/paramnames"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/spec"
 )
 
 // ToolsManifestFilename is the name of the tools manifest file written to each
-// published CLI directory. Consumed by `printing-press auth doctor` and
-// `printing-press mcp-audit` to inspect the published library without parsing
+// published CLI directory. Consumed by `cli-printing-press auth doctor` and
+// `cli-printing-press mcp-audit` to inspect the published library without parsing
 // the original spec.
 const ToolsManifestFilename = "tools-manifest.json"
 
@@ -30,10 +31,32 @@ type ToolsManifest struct {
 	Description     string           `json:"description"`
 	MCPReady        string           `json:"mcp_ready"`
 	HTTPTransport   string           `json:"http_transport,omitempty"`
+	MCP             *ManifestMCP     `json:"mcp,omitempty"`
 	Auth            ManifestAuth     `json:"auth"`
 	TierRouting     *ManifestTiers   `json:"tier_routing,omitempty"`
 	RequiredHeaders []ManifestHeader `json:"required_headers"`
 	Tools           []ManifestTool   `json:"tools"`
+}
+
+// ManifestMCP persists the endpoint visibility fields needed by manifest
+// consumers without coupling tools-manifest.json to the full spec MCP shape.
+type ManifestMCP struct {
+	EndpointTools string `json:"endpoint_tools,omitempty"`
+	Orchestration string `json:"orchestration,omitempty"`
+}
+
+// EndpointMirrorsVisible reports whether Tools entries are registered as
+// per-endpoint MCP tools. Hidden endpoint mirrors remain in the manifest as
+// endpoint metadata for code-orchestration search/execute, but agents do not
+// see them as individual tools.
+func (m *ToolsManifest) EndpointMirrorsVisible() bool {
+	if m == nil || m.MCP == nil {
+		return true
+	}
+	return spec.MCPConfig{
+		EndpointTools: m.MCP.EndpointTools,
+		Orchestration: m.MCP.Orchestration,
+	}.EndpointMirrorsVisible()
 }
 
 // ManifestAuth captures the auth configuration needed to make authenticated
@@ -47,6 +70,7 @@ type ManifestAuth struct {
 	EnvVarSpecs                    []spec.AuthEnvVar `json:"env_var_specs,omitempty"`
 	KeyURL                         string            `json:"key_url,omitempty"`
 	CookieDomain                   string            `json:"cookie_domain,omitempty"`
+	Cookies                        []string          `json:"cookies,omitempty"`
 	RequiresBrowserSession         bool              `json:"requires_browser_session,omitempty"`
 	BrowserSessionValidationPath   string            `json:"browser_session_validation_path,omitempty"`
 	BrowserSessionValidationMethod string            `json:"browser_session_validation_method,omitempty"`
@@ -147,9 +171,17 @@ func ReadToolsManifest(dir string) (*ToolsManifest, error) {
 // It iterates Resources/SubResources/Endpoints in sorted key order (matching
 // the MCP template's RegisterTools pattern) and writes deterministic JSON.
 func WriteToolsManifest(dir string, parsed *spec.APISpec) error {
+	return WriteToolsManifestWithDescription(dir, parsed, "")
+}
+
+// WriteToolsManifestWithDescription generates a tools-manifest.json using the
+// supplied manifestDescription when available. The parsed spec remains the
+// source for tools and auth metadata; .printing-press.json owns durable prose.
+func WriteToolsManifestWithDescription(dir string, parsed *spec.APISpec, manifestDescription string) error {
 	if parsed == nil {
 		return fmt.Errorf("parsed spec is nil")
 	}
+	parsed.ApplyLargeMCPSurfaceDefault()
 
 	endpoints := manifestEndpointRecords(parsed)
 	total, public := manifestToolCounts(endpoints)
@@ -166,6 +198,15 @@ func WriteToolsManifest(dir string, parsed *spec.APISpec) error {
 		Auth:            manifestAuth(parsed.Auth),
 		RequiredHeaders: make([]ManifestHeader, 0, len(parsed.RequiredHeaders)),
 		Tools:           make([]ManifestTool, 0),
+	}
+	if parsed.MCP.EndpointTools != "" || parsed.MCP.Orchestration != "" {
+		manifest.MCP = &ManifestMCP{
+			EndpointTools: parsed.MCP.EndpointTools,
+			Orchestration: parsed.MCP.Orchestration,
+		}
+	}
+	if description := strings.TrimSpace(manifestDescription); description != "" {
+		manifest.Description = description
 	}
 	if parsed.HasTierRouting() {
 		manifest.TierRouting = buildManifestTiers(parsed.TierRouting)
@@ -230,6 +271,7 @@ func manifestAuth(auth spec.AuthConfig) ManifestAuth {
 		EnvVarSpecs:                    auth.EnvVarSpecs,
 		KeyURL:                         auth.KeyURL,
 		CookieDomain:                   auth.CookieDomain,
+		Cookies:                        auth.Cookies,
 		RequiresBrowserSession:         auth.RequiresBrowserSession,
 		BrowserSessionValidationPath:   auth.BrowserSessionValidationPath,
 		BrowserSessionValidationMethod: auth.BrowserSessionValidationMethod,
@@ -326,6 +368,7 @@ func buildManifestTool(name, description string, ep spec.Endpoint, describeParam
 		NoAuth:      ep.NoAuth,
 		Params:      make([]ManifestParam, 0, len(ep.Params)+len(ep.Body)),
 	}
+	publicNames := reservedManifestParamNames(ep)
 
 	// Regular params. A param ends up at "path" when the runtime
 	// substitutes it into the URL — that's true for both positional
@@ -341,10 +384,14 @@ func buildManifestTool(name, description string, ep spec.Endpoint, describeParam
 		if p.Positional || p.PathParam {
 			loc = "path"
 		}
-		name := p.PublicInputName()
+		name := uniqueManifestParamName(p.PublicInputName(), publicNames)
+		wireName := p.WireName()
+		if loc == "path" {
+			wireName = p.Name
+		}
 		tool.Params = append(tool.Params, ManifestParam{
 			Name:        name,
-			WireName:    manifestWireName(name, p.Name),
+			WireName:    manifestWireName(name, wireName),
 			Type:        normalizeParamType(p.Type),
 			Location:    loc,
 			Description: describeParam(p),
@@ -353,12 +400,14 @@ func buildManifestTool(name, description string, ep spec.Endpoint, describeParam
 		})
 	}
 
-	// Body params → body.
-	for _, p := range ep.Body {
-		name := p.PublicInputName()
+	// Body params → body. JSON object bodies use the same nested field
+	// expansion as the generated CLI and MCP tools.
+	for _, bodyParam := range manifestBodyParams(ep) {
+		p := bodyParam.Param
+		name := uniqueManifestParamName(p.PublicInputName(), publicNames)
 		tool.Params = append(tool.Params, ManifestParam{
 			Name:        name,
-			WireName:    manifestWireName(name, p.Name),
+			WireName:    manifestWireName(name, bodyParam.WireName),
 			Type:        normalizeParamType(p.Type),
 			Location:    "body",
 			Description: describeParam(p),
@@ -379,6 +428,85 @@ func buildManifestTool(name, description string, ep spec.Endpoint, describeParam
 	}
 
 	return tool
+}
+
+type manifestBodyParam struct {
+	Param    spec.Param
+	WireName string
+}
+
+const manifestMaxBodyFlagDepth = 3
+
+func manifestBodyParams(ep spec.Endpoint) []manifestBodyParam {
+	if ep.BodyJSONFallback {
+		return nil
+	}
+	if manifestBodyUsesFlatEmission(ep) {
+		params := make([]manifestBodyParam, 0, len(ep.Body))
+		for _, p := range ep.Body {
+			params = append(params, manifestBodyParam{Param: p, WireName: p.BodyWireName()})
+		}
+		return params
+	}
+	body := paramnames.FlattenCollidingBodyFields(ep.Body)
+	params := make([]manifestBodyParam, 0, len(body))
+	collectManifestBodyParams(&params, body, 0, "", nil)
+	return params
+}
+
+func manifestBodyUsesFlatEmission(ep spec.Endpoint) bool {
+	contentType := strings.TrimSpace(strings.ToLower(ep.RequestContentType))
+	return contentType == "multipart/form-data" || contentType == "application/x-www-form-urlencoded"
+}
+
+func collectManifestBodyParams(params *[]manifestBodyParam, body []spec.Param, depth int, flagPrefix string, bodyPath []string) {
+	for _, p := range body {
+		if p.Type == "object" && len(p.Fields) > 0 {
+			if depth+1 >= manifestMaxBodyFlagDepth {
+				continue
+			}
+			nextPath := append(append([]string(nil), bodyPath...), p.BodyWireName())
+			collectManifestBodyParams(params, p.Fields, depth+1, naming.JoinFlag(flagPrefix, paramnames.PublicFlagName(p)), nextPath)
+			continue
+		}
+		if flagPrefix != "" {
+			p.FlagName = naming.JoinFlag(flagPrefix, paramnames.PublicFlagName(p))
+			p.Aliases = nil
+		}
+		wireName := p.BodyWireName()
+		if len(bodyPath) > 0 {
+			wireName = strings.Join(append(append([]string(nil), bodyPath...), p.BodyWireName()), ".")
+		}
+		*params = append(*params, manifestBodyParam{Param: p, WireName: wireName})
+	}
+}
+
+func uniqueManifestParamName(name string, used map[string]struct{}) string {
+	if name == "" {
+		name = "param"
+	}
+	if _, ok := used[name]; !ok {
+		used[name] = struct{}{}
+		return name
+	}
+	for n := 2; ; n++ {
+		candidate := fmt.Sprintf("%s-%d", name, n)
+		if _, ok := used[candidate]; !ok {
+			used[candidate] = struct{}{}
+			return candidate
+		}
+	}
+}
+
+// reservedManifestParamNames seeds generator-reserved public names only.
+// buildManifestTool adds endpoint params to the same map before body params.
+func reservedManifestParamNames(ep spec.Endpoint) map[string]struct{} {
+	names := map[string]struct{}{}
+	switch strings.ToUpper(ep.Method) {
+	case "POST", "PUT", "PATCH":
+		names["stdin"] = struct{}{}
+	}
+	return names
 }
 
 func manifestWireName(publicName, wireName string) string {
@@ -412,6 +540,10 @@ func normalizeAuthFormat(format string, envVars []string) string {
 			// Replace the derived placeholder with the env var name.
 			result = strings.ReplaceAll(result, "{"+derived+"}", "{"+envVar+"}")
 		}
+	}
+	if strings.Contains(strings.ToLower(format), "basic ") && len(envVars) >= 2 {
+		result = strings.ReplaceAll(result, "{username}", "{"+envVars[0]+"}")
+		result = strings.ReplaceAll(result, "{password}", "{"+envVars[1]+"}")
 	}
 	// Also replace common semantic aliases with the first env var.
 	first := envVars[0]

@@ -1,10 +1,12 @@
 package generator
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -14,6 +16,7 @@ import (
 	"time"
 
 	"github.com/mvanhorn/cli-printing-press/v4/internal/naming"
+	"github.com/mvanhorn/cli-printing-press/v4/internal/spec"
 	"golang.org/x/text/cases"
 	"golang.org/x/text/language"
 )
@@ -46,6 +49,8 @@ type planGoModData struct {
 	CLIName   string
 	VisionSet struct{ Store, MCP bool }
 	Config    struct{ Format string }
+	Auth      struct{ Type, Subtype string }
+	Streaming planStreamingData
 }
 
 func (planGoModData) UsesBrowserHTTPTransport() bool {
@@ -53,6 +58,12 @@ func (planGoModData) UsesBrowserHTTPTransport() bool {
 }
 
 func (planGoModData) HasHTMLExtraction() bool {
+	return false
+}
+
+type planStreamingData struct{}
+
+func (planStreamingData) Enabled() bool {
 	return false
 }
 
@@ -64,6 +75,10 @@ func GenerateFromPlan(planSpec *PlanSpec, outputDir string) error {
 	}
 
 	owner := resolveOwnerForExisting(outputDir)
+	// Creator drives the copyright header (display name + " and contributors");
+	// owner stays the slug for module path / Homebrew tap. The plan scaffold has
+	// no api_name to lineage-check against, so pass "" (no cross-lineage gate).
+	creator := resolveCreatorForExisting(outputDir, "")
 
 	// Create directory structure
 	dirs := []string{
@@ -78,19 +93,24 @@ func GenerateFromPlan(planSpec *PlanSpec, outputDir string) error {
 
 	// Build template FuncMap (subset of the full generator's FuncMap)
 	funcs := template.FuncMap{
-		"title":       cases.Title(language.English).String,
-		"lower":       strings.ToLower,
-		"upper":       strings.ToUpper,
-		"pascal":      toPascal,
-		"camel":       toCamel,
-		"snake":       naming.Snake,
-		"kebab":       toKebab,
-		"currentYear": func() string { return strconv.Itoa(time.Now().Year()) },
-		"modulePath":  func() string { return naming.CLI(cliName) },
+		"title":           cases.Title(language.English).String,
+		"lower":           strings.ToLower,
+		"upper":           strings.ToUpper,
+		"pascal":          toPascal,
+		"camel":           toCamel,
+		"snake":           naming.Snake,
+		"kebab":           toKebab,
+		"currentYear":     func() string { return strconv.Itoa(time.Now().Year()) },
+		"copyrightHolder": func() string { return copyrightHolderString(creator, "", owner) },
+		"modulePath":      func() string { return naming.CLI(cliName) },
+		// Stub: plan-generated scaffolds never declare auth env vars. The full
+		// generator's hasNonCookieAuth (which inspects the real spec.AuthConfig)
+		// is registered separately on its own FuncMap.
+		"hasNonCookieAuth": func(any) bool { return false },
 	}
 
 	render := func(tmplName, outPath string, data any) error {
-		content, err := templateFS.ReadFile(filepath.Join("templates", tmplName))
+		content, err := templateFS.ReadFile(path.Join("templates", tmplName))
 		if err != nil {
 			return fmt.Errorf("reading template %s: %w", tmplName, err)
 		}
@@ -98,16 +118,12 @@ func GenerateFromPlan(planSpec *PlanSpec, outputDir string) error {
 		if err != nil {
 			return fmt.Errorf("parsing template %s: %w", tmplName, err)
 		}
-		fullPath := filepath.Join(outputDir, outPath)
-		f, err := os.Create(fullPath)
-		if err != nil {
-			return fmt.Errorf("creating %s: %w", fullPath, err)
-		}
-		defer func() { _ = f.Close() }()
-		if err := tmpl.Execute(f, data); err != nil {
+		var buf bytes.Buffer
+		if err := tmpl.Execute(&buf, data); err != nil {
 			return fmt.Errorf("executing template %s: %w", tmplName, err)
 		}
-		return nil
+		fullPath := filepath.Join(outputDir, outPath)
+		return os.WriteFile(fullPath, normalizeRendered(buf.Bytes(), tmplName, outPath), 0o644)
 	}
 
 	// Partition commands into top-level and subcommands
@@ -224,6 +240,12 @@ func GenerateFromPlan(planSpec *PlanSpec, outputDir string) error {
 	tidyCmd.Stderr = os.Stderr
 	if err := tidyCmd.Run(); err != nil {
 		return fmt.Errorf("running go mod tidy: %w", err)
+	}
+
+	// Pin golang.org/x/net to a patched release when it resolved transitively
+	// below the safe version (see ensureSafeXNet).
+	if err := ensureSafeXNet(outputDir); err != nil {
+		return err
 	}
 
 	return nil
@@ -425,10 +447,23 @@ func readManifestPrinter(outputDir string) string {
 	return readManifestField(outputDir, "printer")
 }
 
-// resolvePrinterForNew returns "" instead of a sentinel when github.user is unset.
+// resolvePrinterForNew returns the printer @handle for a brand-new print.
+// Tries `git config github.user`, then `gh api user --jq .login` so a
+// logged-in `gh` covers machines without `git config github.user`. Returns
+// "" instead of a sentinel when both are unset.
 func resolvePrinterForNew() string {
-	if out, err := exec.Command("git", "config", "github.user").Output(); err == nil && len(out) > 0 {
-		return strings.TrimSpace(string(out))
+	if out, err := exec.Command("git", "config", "github.user").Output(); err == nil {
+		if v := strings.TrimSpace(string(out)); v != "" {
+			return v
+		}
+	}
+	if out, err := exec.Command("gh", "api", "user", "--jq", ".login").Output(); err == nil {
+		// jq emits the literal string "null" when .login is absent or JSON null;
+		// filter that explicitly so it doesn't survive into the printer field
+		// and re-fail publish-validate the way an empty printer would.
+		if v := strings.TrimSpace(string(out)); v != "" && v != "null" {
+			return v
+		}
 	}
 	return ""
 }
@@ -453,4 +488,148 @@ func resolvePrinterNameForNew() string {
 		return ""
 	}
 	return strings.TrimSpace(string(out))
+}
+
+// copyrightCreatorRe matches the current copyright header
+// `// Copyright YYYY <display name> and contributors.` and captures the
+// display name. It is tried before copyrightOwnerRe (the legacy slug form) so
+// a regen against a current-format tree recovers the prose name, while
+// pre-transition trees still resolve via the slug. The two patterns are
+// mirrored in internal/pipeline/regenmerge/owner.go and must stay aligned.
+var copyrightCreatorRe = regexp.MustCompile(`(?m)^//\s*Copyright\s+\d+\s+(.+?) and contributors\.`)
+
+// manifestAttribution captures every attribution field the resolver consults,
+// read in a single pass so resolveCreatorForExisting + resolveContributorsForExisting
+// open .printing-press.json once each instead of once per field.
+type manifestAttribution struct {
+	APIName      string        `json:"api_name"`
+	Creator      spec.Person   `json:"creator"`
+	Contributors []spec.Person `json:"contributors"`
+	Printer      string        `json:"printer"`
+	PrinterName  string        `json:"printer_name"`
+	Owner        string        `json:"owner"`
+	OwnerName    string        `json:"owner_name"`
+}
+
+// crossLineage reports whether an existing manifest belongs to a different API
+// than the one being generated. When true, the existing tree's attribution
+// must not be inherited — otherwise generating API B into a directory that
+// still holds API A's manifest would silently stamp B with A's creator.
+func crossLineage(existingAPIName, wantAPIName string) bool {
+	return existingAPIName != "" && wantAPIName != "" && existingAPIName != wantAPIName
+}
+
+// readManifestAttribution reads and decodes the attribution fields from
+// outputDir/.printing-press.json in one pass, returning the zero value when the
+// file is absent or malformed.
+func readManifestAttribution(outputDir string) manifestAttribution {
+	var a manifestAttribution
+	if data, err := os.ReadFile(filepath.Join(outputDir, ".printing-press.json")); err == nil {
+		_ = json.Unmarshal(data, &a)
+	}
+	return a
+}
+
+// resolveCreatorForExisting returns the creator for a regen against an existing
+// tree, preferring persisted attribution over re-derivation so a regen never
+// silently flips the creator to whoever is running the generator:
+//  1. manifest `creator` object
+//  2. manifest legacy fields (printer/printer_name, then owner/owner_name)
+//  3. copyright-header parse (manifest-less legacy trees)
+//  4. resolveCreatorForNew() (git config)
+func resolveCreatorForExisting(outputDir, apiName string) spec.Person {
+	a := readManifestAttribution(outputDir)
+	// A manifest (and copyright header) from a different API must not seed this
+	// generation's creator; fall straight through to git resolution.
+	if crossLineage(a.APIName, apiName) {
+		return resolveCreatorForNew()
+	}
+	switch {
+	case !a.Creator.IsZero():
+		return a.Creator
+	case a.Printer != "":
+		return spec.Person{Handle: a.Printer, Name: a.PrinterName}
+	case a.Owner != "":
+		return spec.Person{Handle: a.Owner, Name: a.OwnerName}
+	}
+	if c := parseCopyrightCreator(outputDir); !c.IsZero() {
+		return c
+	}
+	return resolveCreatorForNew()
+}
+
+// parseCopyrightCreator recovers the creator from a generated tree's copyright
+// header when no manifest is present. The current header carries the display
+// name (returned as Name); a legacy header carries the slug (returned as
+// Handle). Returns the zero Person on any failure.
+func parseCopyrightCreator(outputDir string) spec.Person {
+	data, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "root.go"))
+	if err != nil {
+		return spec.Person{}
+	}
+	if m := copyrightCreatorRe.FindSubmatch(data); m != nil {
+		return spec.Person{Name: string(m[1])}
+	}
+	if m := copyrightOwnerRe.FindSubmatch(data); m != nil {
+		return spec.Person{Handle: string(m[1])}
+	}
+	return spec.Person{}
+}
+
+// resolveCreatorForNew resolves a fresh creator from git config: the handle
+// mirrors printer resolution (github.user, then `gh api user`), the name is
+// the raw git user.name. Empty values are tolerated here and surfaced as a
+// soft warning in Generate().
+func resolveCreatorForNew() spec.Person {
+	return spec.Person{
+		Handle: resolvePrinterForNew(),
+		Name:   resolvePrinterNameForNew(),
+	}
+}
+
+// resolveContributorsForExisting returns the persisted contributors from the
+// manifest. The resolver never derives or appends contributors — accrual is a
+// deliberate contribution-flow action (publish/amend/reprint), and plain regen
+// preserves the existing list.
+func resolveContributorsForExisting(outputDir, apiName string) []spec.Person {
+	a := readManifestAttribution(outputDir)
+	if crossLineage(a.APIName, apiName) {
+		return nil
+	}
+	return a.Contributors
+}
+
+// copyrightHolderString builds the copyright-header holder: the creator
+// display name (falling back to a prose owner name, then the owner slug),
+// always followed by " and contributors" so the header is a constant shape
+// regardless of contributor count. Shared by the full generator and the
+// plan-scaffold func maps.
+// yamlDoubleQuoted escapes a string for safe embedding inside a YAML
+// double-quoted scalar. Handles the three failure modes we've seen from
+// LLM-authored narrative fields: unescaped " (breaks parser), unescaped \
+// (swallows next char), and raw newlines (terminates scalar). Leaves single
+// quotes alone — valid in double-quoted YAML. Shared by the HTTP and device
+// generator func maps so the .goreleaser.yaml homebrew description renders
+// identically from both.
+func yamlDoubleQuoted(s string) string {
+	s = strings.ReplaceAll(s, `\`, `\\`)
+	s = strings.ReplaceAll(s, `"`, `\"`)
+	s = strings.ReplaceAll(s, "\n", `\n`)
+	s = strings.ReplaceAll(s, "\r", `\r`)
+	s = strings.ReplaceAll(s, "\t", `\t`)
+	return s
+}
+
+func copyrightHolderString(creator spec.Person, ownerName, ownerSlug string) string {
+	holder := creator.Name
+	if holder == "" {
+		holder = ownerName
+	}
+	if holder == "" {
+		holder = ownerSlug
+	}
+	if holder == "" {
+		return "and contributors"
+	}
+	return holder + " and contributors"
 }

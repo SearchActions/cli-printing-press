@@ -18,16 +18,16 @@ metadata:
 
 This skill drives the `printing-press-golden-pp-cli` binary. **You must verify the CLI is installed before invoking any command from this skill.** If it is missing, install it first:
 
-1. Install via the Printing Press installer:
+1. Install via the Printing Press installer into a user bin directory:
    ```bash
-   npx -y @mvanhorn/printing-press install printing-press-golden --cli-only
+   npx -y @mvanhorn/printing-press-library install printing-press-golden --cli-only --bin-dir ~/.local/bin
    ```
 2. Verify: `printing-press-golden-pp-cli --version`
-3. Ensure `$GOPATH/bin` (or `$HOME/go/bin`) is on `$PATH`.
+3. Ensure `~/.local/bin` is on `$PATH` for the agent/runtime that will invoke this skill.
 
 If the `npx` install fails before this CLI has a public-library category, install Node or use the category-specific Go fallback after publish.
 
-If `--version` reports "command not found" after install, the install step did not put the binary on `$PATH`. Do not proceed with skill commands until verification succeeds.
+If `--version` reports "command not found" after install, the runtime cannot see the binary directory on `$PATH`. Do not proceed with skill commands until verification succeeds.
 
 Purpose-built fixture for golden generation coverage.
 
@@ -51,6 +51,23 @@ Purpose-built fixture for golden generation coverage.
 
 
 
+## Freshness Contract
+
+This printed CLI owns bounded freshness only for registered store-backed read command paths. In `--data-source auto` mode, those paths check `sync_state` and may run a bounded refresh before reading local data. `--data-source local` never refreshes. `--data-source live` reads the API and does not mutate the local store. Set `PRINTING_PRESS_GOLDEN_NO_AUTO_REFRESH=1` to skip the freshness hook without changing source selection.
+
+Covered paths:
+
+- `printing-press-golden-pp-cli currencies`
+- `printing-press-golden-pp-cli currencies get`
+- `printing-press-golden-pp-cli currencies list`
+- `printing-press-golden-pp-cli currencies search`
+- `printing-press-golden-pp-cli projects`
+- `printing-press-golden-pp-cli projects get`
+- `printing-press-golden-pp-cli projects list`
+- `printing-press-golden-pp-cli projects search`
+
+When JSON output uses the generated provenance envelope, freshness metadata appears at `meta.freshness`. Treat it as current-cache freshness for the covered command path, not a guarantee of complete historical backfill or API-specific enrichment.
+
 ### Finding the right command
 
 When you know what you want to do but not which command does it, ask the CLI directly:
@@ -62,7 +79,7 @@ printing-press-golden-pp-cli which "<capability in your own words>"
 `which` resolves a natural-language capability query to the best matching command from this CLI's curated feature index. Exit code `0` means at least one match; exit code `2` means no confident match — fall back to `--help` or use a narrower query.
 
 ## Auth Setup
-Set your API key via environment variable:
+Run `printing-press-golden-pp-cli auth setup` to print the URL and steps for getting a key (add `--launch` to open the URL). Then set:
 
 ```bash
 export PRINTING_PRESS_GOLDEN_API_KEY="<your-key>"
@@ -98,7 +115,7 @@ Commands that read from the local store or the API wrap output in a provenance e
 }
 ```
 
-Parse `.results` for data and `.meta.source` to know whether it's live or local. A human-readable `N results (live)` summary is printed to stderr only when stdout is a terminal — piped/agent consumers get pure JSON on stdout.
+Parse `.results` for data and `.meta.source` to know whether it's live or local. A human-readable `N results (live)` summary is printed to stderr only when stdout is a terminal AND no machine-format flag (`--json`, `--csv`, `--compact`, `--quiet`, `--plain`, `--select`) is set — piped/agent consumers and explicit-format runs get pure JSON on stdout.
 
 ## Agent Feedback
 
@@ -110,7 +127,7 @@ printing-press-golden-pp-cli feedback --stdin < notes.txt
 printing-press-golden-pp-cli feedback list --json --limit 10
 ```
 
-Entries are stored locally at `~/.printing-press-golden-pp-cli/feedback.jsonl`. They are never POSTed unless `PRINTING_PRESS_GOLDEN_FEEDBACK_ENDPOINT` is set AND either `--send` is passed or `PRINTING_PRESS_GOLDEN_FEEDBACK_AUTO_SEND=true`. Default behavior is local-only.
+Entries are stored locally at `~/.local/share/printing-press-golden-pp-cli/feedback.jsonl`. They are never POSTed unless `PRINTING_PRESS_GOLDEN_FEEDBACK_ENDPOINT` is set AND either `--send` is passed or `PRINTING_PRESS_GOLDEN_FEEDBACK_AUTO_SEND=true`. Default behavior is local-only.
 
 Write what *surprised* you, not a bug report. Short, specific, one line: that is the part that compounds.
 

@@ -39,7 +39,22 @@ Bugs that rule-based checks miss, typically surfaced by 5 minutes of hands-on te
 ### Step 1: Gather sample data
 
 ```bash
-printing-press scorecard --dir "$CLI_DIR" --live-check --json > /tmp/output-review-livecheck.json 2>&1 || true
+# Locate research.json. Adjacent to the binary covers the post-promote
+# layout (standalone polish, shipcheck against the library copy). The
+# grandparent fallback covers mid-pipeline invocations where $CLI_DIR is
+# $PRESS_RUNSTATE/runs/<id>/working/<cli> and research.json lives at
+# $PRESS_RUNSTATE/runs/<id>/research.json. Without the fallback, scorecard
+# reports `unable: true` mid-pipeline and we SKIP the most informative review.
+# Use a bash array so the flag survives paths with spaces.
+RESEARCH_ARGS=()
+if [ ! -f "$CLI_DIR/research.json" ]; then
+  _grandparent="$(dirname "$(dirname "$CLI_DIR")")"
+  if [ -f "$_grandparent/research.json" ]; then
+    RESEARCH_ARGS=(--research-dir "$_grandparent")
+  fi
+fi
+
+cli-printing-press scorecard --dir "$CLI_DIR" "${RESEARCH_ARGS[@]}" --live-check --json > /tmp/output-review-livecheck.json 2>&1 || true
 ```
 
 If the scorecard call fails or `/tmp/output-review-livecheck.json` is empty, return the SKIP result (Step 3) without dispatching the reviewer.
@@ -50,7 +65,7 @@ Use the Agent tool (general-purpose) with this prompt contract:
 
 > Review the sampled outputs from the shipped CLI at `$CLI_DIR`. You have these ground-truth sources:
 >
-> - Sampled command output: read `/tmp/output-review-livecheck.json` and inspect the `live_check.features[]` array. Each entry has the command, example invocation, actual stdout (in `output_sample`, bounded to ~4 KiB), the pass/fail reason, and a `warnings` array (populated by rule-based checks like the raw-HTML-entity detector).
+> - Sampled command output: read `/tmp/output-review-livecheck.json` and inspect the `live_check.features[]` array. Each entry has the command, example invocation, redacted stdout evidence (in `output_sample`, bounded to ~4 KiB), the redacted pass/fail reason, and a `warnings` array (populated by rule-based checks like the raw-HTML-entity detector). Treat `<redacted>` markers as privacy scrubbed values, not format bugs.
 > - **Review only `status: pass` entries.** Entries with `status: fail` either crashed, timed out, or had placeholder args (`<id>`, `<url>`) that never produced real output — their sample is empty and there's nothing for you to judge. Phase 5 dogfood handles test-coverage and exit-code concerns.
 > - `$CLI_DIR/research.json` `novel_features` (planned behavior per feature) and `novel_features_built` (verified built commands).
 > - The CLI binary at `$CLI_DIR/<cli-name>-pp-cli` — you may invoke additional commands to gather more output when a finding needs verification.

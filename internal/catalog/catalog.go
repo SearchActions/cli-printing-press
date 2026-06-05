@@ -15,6 +15,17 @@ import (
 
 var namePattern = regexp.MustCompile(`^[a-z0-9]+(?:-[a-z0-9]+)*$`)
 
+// authEnvVarPattern matches POSIX-shell-shaped environment variable names:
+// uppercase ASCII letters, digits, and underscores, starting with a letter.
+// Catalog-declared auth env vars feed directly into generated config.go reads,
+// so the validator rejects shapes the generator could not emit safely.
+var authEnvVarPattern = regexp.MustCompile(`^[A-Z][A-Z0-9_]*$`)
+
+// regionPattern accepts any two uppercase letters; the catalog does not
+// maintain a full ISO 3166-1 country-code allowlist.
+var regionPattern = regexp.MustCompile(`^[A-Z]{2}$`)
+var apiLanguagePattern = regexp.MustCompile(`^[A-Za-z]{2,8}(?:-[A-Za-z0-9]{1,8})*$`)
+
 // Public categories first, alphabetized. "other" and "example" are explicitly
 // special (catch-all / test-only) and kept at the end.
 var validCategories = map[string]struct{}{
@@ -25,6 +36,7 @@ var validCategories = map[string]struct{}{
 	"developer-tools":         {},
 	"devices":                 {},
 	"food-and-dining":         {},
+	"maps":                    {},
 	"marketing":               {},
 	"media-and-entertainment": {},
 	"monitoring":              {},
@@ -65,7 +77,8 @@ var validClientPatterns = map[string]struct{}{
 var validHTTPTransports = map[string]struct{}{
 	"standard":          {}, // Plain net/http, default for official APIs
 	"browser-http":      {}, // Plain net/http with HTTP/2 disabled for browser-facing websites
-	"browser-chrome":    {}, // Browser-compatible transport for web-discovered/non-official APIs
+	"browser-chrome":    {}, // Browser-compatible transport for web-discovered/non-official APIs (no version force; Chrome negotiates)
+	"browser-chrome-h2": {}, // Chrome-compatible HTTP transport forced through HTTP/2
 	"browser-chrome-h3": {}, // Chrome-compatible HTTP transport forced through HTTP/3
 }
 
@@ -108,26 +121,61 @@ var validIntegrationModes = map[string]struct{}{
 }
 
 type Entry struct {
-	Name              string     `yaml:"name"`
-	DisplayName       string     `yaml:"display_name"`
-	Description       string     `yaml:"description"`
-	Category          string     `yaml:"category"`
-	SpecURL           string     `yaml:"spec_url"`
-	SpecFormat        string     `yaml:"spec_format"`
-	OpenAPIVersion    string     `yaml:"openapi_version"`
-	Tier              string     `yaml:"tier"`
-	VerifiedDate      string     `yaml:"verified_date"`
-	Homepage          string     `yaml:"homepage"`
-	Notes             string     `yaml:"notes"`
-	Owner             string     `yaml:"owner,omitempty"`
-	OwnerName         string     `yaml:"owner_name,omitempty"`
-	KnownAlternatives []KnownAlt `yaml:"known_alternatives,omitempty"`
-	SandboxEndpoint   string     `yaml:"sandbox_endpoint,omitempty"`
+	Name           string `yaml:"name"`
+	DisplayName    string `yaml:"display_name"`
+	Description    string `yaml:"description"`
+	Category       string `yaml:"category"`
+	SpecURL        string `yaml:"spec_url"`
+	SpecFormat     string `yaml:"spec_format"`
+	OpenAPIVersion string `yaml:"openapi_version"`
+	BaseURL        string `yaml:"base_url,omitempty"`
+	Tier           string `yaml:"tier"`
+	VerifiedDate   string `yaml:"verified_date"`
+	Homepage       string `yaml:"homepage"`
+	Notes          string `yaml:"notes"`
+	// Creator overrides the resolved creator for this catalog entry. Legacy
+	// Owner/OwnerName remain for backward compatibility and read-fallback.
+	Creator           *spec.Person `yaml:"creator,omitempty"`
+	Owner             string       `yaml:"owner,omitempty"`
+	OwnerName         string       `yaml:"owner_name,omitempty"`
+	KnownAlternatives []KnownAlt   `yaml:"known_alternatives,omitempty"`
+	SandboxEndpoint   string       `yaml:"sandbox_endpoint,omitempty"`
 	// SpecSource describes how the spec was obtained. Empty defaults to "official".
 	// Values: official, community, sniffed, docs.
 	SpecSource string `yaml:"spec_source,omitempty"`
 	// AuthRequired indicates whether the API needs authentication. Empty means unknown.
 	AuthRequired *bool `yaml:"auth_required,omitempty"`
+	// AuthKeyURL is an HTTPS URL pointing the user at the page where they can
+	// obtain credentials (a personal access token, API key, OAuth client, etc.).
+	// Surfaces as "Get a key at: <URL>" in the printed CLI's auth prompts and
+	// doctor output. Overrides any URL inferred from the spec; the spec's
+	// x-auth-key-url and parser inference fallbacks are used when this is empty.
+	AuthKeyURL string `yaml:"auth_key_url,omitempty"`
+	// AuthInstructions is one-line free-form guidance shown alongside
+	// AuthKeyURL — e.g. "Settings → Personal access tokens → Generate new".
+	// Renders under the URL in auth prompts and doctor output, and is the
+	// human-readable companion to the URL when the URL is a generic docs page
+	// rather than a deep link to the keys UI. Overrides any spec-supplied
+	// x-auth-instructions value.
+	AuthInstructions string `yaml:"auth_instructions,omitempty"`
+	// AuthEnvVars lists canonical credential env var names this API's
+	// ecosystem already uses (e.g. STRIPE_SECRET_KEY for stripe-cli /
+	// stripe-go / stripe-node / stripe-python). The generator emits config.go
+	// reads in declared order so an operator who exports any one of them
+	// satisfies auth. Catalog-mode generation bypasses the spec-edit step
+	// that x-auth-env-vars covers, so this is the only place to declare the
+	// canonical names without hand-editing the generated CLI. The generator
+	// appends its name-derived fallback (e.g. STRIPE_BEARER_AUTH) as the last
+	// entry so operators on existing setups don't need a migration.
+	AuthEnvVars []string `yaml:"auth_env_vars,omitempty"`
+	// Regions lists geographic availability/scope tokens for this API.
+	// Use ISO-style two-letter region tokens (NL, IN), EU for pan-European
+	// services, or * for APIs that are explicitly global.
+	Regions []string `yaml:"regions,omitempty"`
+	// APILanguage is the API's native/domain language as a BCP 47 tag
+	// (for example "nl" or "en-US"). It describes upstream terms and
+	// payload vocabulary, not the generated CLI command language.
+	APILanguage string `yaml:"api_language,omitempty"`
 	// ClientPattern describes the HTTP client pattern needed. Empty defaults to "rest".
 	// Values: rest, proxy-envelope, graphql.
 	ClientPattern string `yaml:"client_pattern,omitempty"`
@@ -147,6 +195,13 @@ type Entry struct {
 	// can use as implementation backing when no official spec exists. When this
 	// list is non-empty, spec_url and spec_format are optional.
 	WrapperLibraries []WrapperLibrary `yaml:"wrapper_libraries,omitempty"`
+	// AuthPreference is the securityScheme name from the upstream spec the
+	// generator should pick when multiple schemes are advertised. Without it
+	// the parser's default selection wins (which favors OAuth2 with a full
+	// authorization-code flow). Set this to a simpler scheme (e.g. "basicAuth")
+	// when the API supports both OAuth2 and HTTP Basic and the printed CLI is
+	// meant for personal API-token use rather than a 3LO web flow.
+	AuthPreference string `yaml:"auth_preference,omitempty"`
 }
 
 // IsWrapperOnly reports whether this entry represents an API reached through
@@ -295,13 +350,87 @@ func (e *Entry) Validate() error {
 	}
 	if e.HTTPTransport != "" {
 		if _, ok := validHTTPTransports[e.HTTPTransport]; !ok {
-			return fmt.Errorf("http_transport must be one of: standard, browser-http, browser-chrome, browser-chrome-h3")
+			return fmt.Errorf("http_transport must be one of: standard, browser-http, browser-chrome, browser-chrome-h2, browser-chrome-h3")
 		}
+	}
+	if e.BaseURL != "" && !strings.HasPrefix(e.BaseURL, "https://") {
+		return fmt.Errorf(`base_url must start with "https://"`)
 	}
 	if err := validateBearerRefresh(e.BearerRefresh); err != nil {
 		return err
 	}
+	if e.AuthKeyURL != "" && !strings.HasPrefix(e.AuthKeyURL, "https://") {
+		return fmt.Errorf(`auth_key_url must start with "https://"`)
+	}
+	if err := validateAuthEnvVars(e.AuthEnvVars); err != nil {
+		return err
+	}
+	if err := validateRegions(e.Regions); err != nil {
+		return err
+	}
+	if err := validateAPILanguage(e.APILanguage); err != nil {
+		return err
+	}
 
+	return nil
+}
+
+func validateRegions(regions []string) error {
+	seen := make(map[string]struct{}, len(regions))
+	for i, region := range regions {
+		trimmed := strings.TrimSpace(region)
+		if trimmed == "" {
+			return fmt.Errorf("regions[%d] must not be empty", i)
+		}
+		if trimmed != region {
+			return fmt.Errorf("regions[%d] %q must not have leading or trailing whitespace", i, region)
+		}
+		if region != "*" && !regionPattern.MatchString(region) {
+			return fmt.Errorf("regions[%d] %q must be an uppercase two-letter region token, EU, or *", i, region)
+		}
+		if _, dup := seen[region]; dup {
+			return fmt.Errorf("regions[%d] %q is a duplicate", i, region)
+		}
+		seen[region] = struct{}{}
+	}
+	return nil
+}
+
+func validateAPILanguage(language string) error {
+	if language == "" {
+		return nil
+	}
+	trimmed := strings.TrimSpace(language)
+	if trimmed != language {
+		return fmt.Errorf("api_language %q must not have leading or trailing whitespace", language)
+	}
+	if !apiLanguagePattern.MatchString(language) {
+		return fmt.Errorf("api_language %q must be a BCP 47 language tag", language)
+	}
+	return nil
+}
+
+func validateAuthEnvVars(envVars []string) error {
+	if len(envVars) == 0 {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(envVars))
+	for i, name := range envVars {
+		trimmed := strings.TrimSpace(name)
+		if trimmed == "" {
+			return fmt.Errorf("auth_env_vars[%d] must not be empty", i)
+		}
+		if trimmed != name {
+			return fmt.Errorf("auth_env_vars[%d] %q must not have leading or trailing whitespace", i, name)
+		}
+		if !authEnvVarPattern.MatchString(name) {
+			return fmt.Errorf("auth_env_vars[%d] %q must be uppercase letters, digits, or underscores starting with a letter", i, name)
+		}
+		if _, dup := seen[name]; dup {
+			return fmt.Errorf("auth_env_vars[%d] %q is a duplicate", i, name)
+		}
+		seen[name] = struct{}{}
+	}
 	return nil
 }
 

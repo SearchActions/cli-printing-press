@@ -240,6 +240,48 @@ func TestValidatePhase5Gate_FullPassRejectsFailures(t *testing.T) {
 	assert.Contains(t, result.Detail, "full")
 }
 
+func TestValidatePhase5Gate_FullPassAcceptsAccountedSkips(t *testing.T) {
+	proofsDir := t.TempDir()
+	manifest := CLIManifest{APIName: "test", CLIName: "test-pp-cli", RunID: "run-1", AuthType: "none"}
+	writePhase5GateMarker(t, proofsDir, Phase5AcceptanceFilename, Phase5GateMarker{
+		SchemaVersion: 1,
+		APIName:       "test",
+		RunID:         "run-1",
+		Status:        "pass",
+		Level:         "full",
+		MatrixSize:    110,
+		TestsPassed:   66,
+		TestsSkipped:  44,
+		TestsFailed:   0,
+		AuthContext:   Phase5AuthContext{Type: "none"},
+	})
+
+	result := ValidatePhase5Gate(proofsDir, manifest)
+	require.True(t, result.Passed, result.Detail)
+	assert.Equal(t, "pass", result.Status)
+}
+
+func TestValidatePhase5Gate_FullPassRejectsSilentGaps(t *testing.T) {
+	proofsDir := t.TempDir()
+	manifest := CLIManifest{APIName: "test", CLIName: "test-pp-cli", RunID: "run-1", AuthType: "none"}
+	writePhase5GateMarker(t, proofsDir, Phase5AcceptanceFilename, Phase5GateMarker{
+		SchemaVersion: 1,
+		APIName:       "test",
+		RunID:         "run-1",
+		Status:        "pass",
+		Level:         "full",
+		MatrixSize:    110,
+		TestsPassed:   66,
+		TestsSkipped:  43,
+		TestsFailed:   0,
+		AuthContext:   Phase5AuthContext{Type: "none"},
+	})
+
+	result := ValidatePhase5Gate(proofsDir, manifest)
+	require.False(t, result.Passed)
+	assert.Contains(t, result.Detail, "accounted")
+}
+
 func TestValidatePhase5Gate_ManualLevelDocumentsAcceptedValues(t *testing.T) {
 	proofsDir := t.TempDir()
 	manifest := CLIManifest{APIName: "test", CLIName: "test-pp-cli", RunID: "run-1", AuthType: "none"}
@@ -294,13 +336,103 @@ func TestValidatePhase5Gate_NoAuthRequiresPassMarker(t *testing.T) {
 		RunID:         "run-1",
 		Status:        "skip",
 		Level:         "none",
-		SkipReason:    "auth_required_no_credential",
+		SkipReason:    phase5SkipReasonAuthRequiredNoCredential,
 		AuthContext:   Phase5AuthContext{Type: "none"},
 	})
 
 	result := ValidatePhase5Gate(proofsDir, manifest)
 	require.False(t, result.Passed)
 	assert.Contains(t, result.Detail, "no-auth")
+}
+
+func TestValidatePhase5Gate_NoAuthLANUnreachableSkipAllowed(t *testing.T) {
+	proofsDir := t.TempDir()
+	manifest := CLIManifest{APIName: "sonos", CLIName: "sonos-pp-cli", RunID: "run-1", AuthType: "none"}
+	writePhase5GateMarker(t, proofsDir, Phase5SkipFilename, Phase5GateMarker{
+		SchemaVersion: 1,
+		APIName:       "sonos",
+		RunID:         "run-1",
+		Status:        "skip",
+		Level:         "none",
+		SkipReason:    phase5SkipReasonLANUnreachableFromHost,
+		AuthContext:   Phase5AuthContext{Type: "none", LocalNetworkOnly: true},
+	})
+
+	result := ValidatePhase5Gate(proofsDir, manifest)
+	require.True(t, result.Passed, result.Detail)
+	assert.Equal(t, "skip", result.Status)
+}
+
+func TestValidatePhase5Gate_NoAuthLANUnreachableRequiresLANOnlyEvidence(t *testing.T) {
+	proofsDir := t.TempDir()
+	manifest := CLIManifest{APIName: "public-data", CLIName: "public-data-pp-cli", RunID: "run-1", AuthType: "none"}
+	writePhase5GateMarker(t, proofsDir, Phase5SkipFilename, Phase5GateMarker{
+		SchemaVersion: 1,
+		APIName:       "public-data",
+		RunID:         "run-1",
+		Status:        "skip",
+		Level:         "none",
+		SkipReason:    phase5SkipReasonLANUnreachableFromHost,
+		AuthContext:   Phase5AuthContext{Type: "none"},
+	})
+
+	result := ValidatePhase5Gate(proofsDir, manifest)
+	require.False(t, result.Passed)
+	assert.Contains(t, result.Detail, "local_network_only")
+}
+
+func TestValidatePhase5Gate_LocalDatastoreNoAuthAllowsSkipMarker(t *testing.T) {
+	proofsDir := t.TempDir()
+	manifest := CLIManifest{APIName: "test", CLIName: "test-pp-cli", RunID: "run-1", AuthType: "none", SpecFormat: "sqlite"}
+	writePhase5GateMarker(t, proofsDir, Phase5SkipFilename, Phase5GateMarker{
+		SchemaVersion: 1,
+		APIName:       "test",
+		RunID:         "run-1",
+		Status:        "skip",
+		Level:         "none",
+		SkipReason:    phase5SkipReasonLocalSourceRequiresDatabase,
+		AuthContext:   Phase5AuthContext{Type: "none", LocalSQLite: true},
+	})
+
+	result := ValidatePhase5Gate(proofsDir, manifest)
+	require.True(t, result.Passed, result.Detail)
+	assert.Equal(t, "skip", result.Status)
+}
+
+func TestValidatePhase5Gate_LocalDatastoreNoAuthRejectsUnrecognizedSkipReason(t *testing.T) {
+	proofsDir := t.TempDir()
+	manifest := CLIManifest{APIName: "test", CLIName: "test-pp-cli", RunID: "run-1", AuthType: "none", SpecFormat: "sqlite"}
+	writePhase5GateMarker(t, proofsDir, Phase5SkipFilename, Phase5GateMarker{
+		SchemaVersion: 1,
+		APIName:       "test",
+		RunID:         "run-1",
+		Status:        "skip",
+		Level:         "none",
+		SkipReason:    "operator deferred",
+		AuthContext:   Phase5AuthContext{Type: "none", LocalSQLite: true},
+	})
+
+	result := ValidatePhase5Gate(proofsDir, manifest)
+	require.False(t, result.Passed)
+	assert.Contains(t, result.Detail, "local datastore")
+}
+
+func TestValidatePhase5Gate_LocalDatastoreNoAuthRejectsLANUnreachableSkip(t *testing.T) {
+	proofsDir := t.TempDir()
+	manifest := CLIManifest{APIName: "test", CLIName: "test-pp-cli", RunID: "run-1", AuthType: "none", SpecFormat: "sqlite"}
+	writePhase5GateMarker(t, proofsDir, Phase5SkipFilename, Phase5GateMarker{
+		SchemaVersion: 1,
+		APIName:       "test",
+		RunID:         "run-1",
+		Status:        "skip",
+		Level:         "none",
+		SkipReason:    phase5SkipReasonLANUnreachableFromHost,
+		AuthContext:   Phase5AuthContext{Type: "none", LocalNetworkOnly: true},
+	})
+
+	result := ValidatePhase5Gate(proofsDir, manifest)
+	require.False(t, result.Passed)
+	assert.Contains(t, result.Detail, "local datastore")
 }
 
 func TestValidatePhase5Gate_APIKeyMissingSkipAllowed(t *testing.T) {
@@ -312,13 +444,32 @@ func TestValidatePhase5Gate_APIKeyMissingSkipAllowed(t *testing.T) {
 		RunID:         "run-1",
 		Status:        "skip",
 		Level:         "none",
-		SkipReason:    "auth_required_no_credential",
+		SkipReason:    phase5SkipReasonAuthRequiredNoCredential,
 		AuthContext:   Phase5AuthContext{Type: "api_key", APIKeyAvailable: false},
 	})
 
 	result := ValidatePhase5Gate(proofsDir, manifest)
 	require.True(t, result.Passed, result.Detail)
 	assert.Equal(t, "skip", result.Status)
+}
+
+func TestValidatePhase5Gate_CredentialAuthRejectsLANSkipReason(t *testing.T) {
+	proofsDir := t.TempDir()
+	manifest := CLIManifest{APIName: "test", CLIName: "test-pp-cli", RunID: "run-1", AuthType: "api_key"}
+	writePhase5GateMarker(t, proofsDir, Phase5SkipFilename, Phase5GateMarker{
+		SchemaVersion: 1,
+		APIName:       "test",
+		RunID:         "run-1",
+		Status:        "skip",
+		Level:         "none",
+		SkipReason:    phase5SkipReasonLANUnreachableFromHost,
+		AuthContext:   Phase5AuthContext{Type: "api_key", APIKeyAvailable: false},
+	})
+
+	result := ValidatePhase5Gate(proofsDir, manifest)
+	require.False(t, result.Passed)
+	assert.Contains(t, result.Detail, "not valid")
+	assert.Contains(t, result.Detail, "api_key")
 }
 
 func TestValidatePhase5Gate_CookieAuthNotSkippedByMissingAPIKey(t *testing.T) {
@@ -330,7 +481,7 @@ func TestValidatePhase5Gate_CookieAuthNotSkippedByMissingAPIKey(t *testing.T) {
 		RunID:         "run-1",
 		Status:        "skip",
 		Level:         "none",
-		SkipReason:    "auth_required_no_credential",
+		SkipReason:    phase5SkipReasonAuthRequiredNoCredential,
 		AuthContext:   Phase5AuthContext{Type: "cookie", APIKeyAvailable: false},
 	})
 
@@ -348,7 +499,7 @@ func TestValidatePhase5Gate_SkipCannotOverrideManifestAuthType(t *testing.T) {
 		RunID:         "run-1",
 		Status:        "skip",
 		Level:         "none",
-		SkipReason:    "auth_required_no_credential",
+		SkipReason:    phase5SkipReasonAuthRequiredNoCredential,
 		AuthContext:   Phase5AuthContext{Type: "api_key", APIKeyAvailable: false},
 	})
 
@@ -357,7 +508,11 @@ func TestValidatePhase5Gate_SkipCannotOverrideManifestAuthType(t *testing.T) {
 	assert.Contains(t, result.Detail, "does not match")
 }
 
-func TestValidatePhase5Gate_PassMarkerRequiresIdentityAndTestCount(t *testing.T) {
+func TestValidatePhase5Gate_PassMarkerRejectsEmptyIdentityWhenManifestIdentifies(t *testing.T) {
+	// Stale-marker protection: when the manifest identifies the CLI, an
+	// empty-identity marker would otherwise pass every future promote.
+	// Reject it so cross-check enforcement degrades only for the actual
+	// unidentified-manifest case.
 	proofsDir := t.TempDir()
 	manifest := CLIManifest{APIName: "test", CLIName: "test-pp-cli", RunID: "run-1", AuthType: "none"}
 	writePhase5GateMarker(t, proofsDir, Phase5AcceptanceFilename, Phase5GateMarker{
@@ -374,6 +529,50 @@ func TestValidatePhase5Gate_PassMarkerRequiresIdentityAndTestCount(t *testing.T)
 	assert.Contains(t, result.Detail, "api_name")
 }
 
+func TestValidatePhase5Gate_PassMarkerAllowsEmptyIdentityWhenManifestUnidentified(t *testing.T) {
+	// dogfood --write-acceptance may run for a foreign working dir with no
+	// manifest and no runstate; the marker then has no identity to record
+	// and the gate has no manifest identity to compare against either.
+	// The marker still validates because the cross-check has nothing to
+	// enforce.
+	proofsDir := t.TempDir()
+	manifest := CLIManifest{AuthType: "none"}
+	writePhase5GateMarker(t, proofsDir, Phase5AcceptanceFilename, Phase5GateMarker{
+		SchemaVersion: 1,
+		Status:        "pass",
+		Level:         "full",
+		MatrixSize:    1,
+		TestsPassed:   1,
+		AuthContext:   Phase5AuthContext{Type: "none"},
+	})
+
+	result := ValidatePhase5Gate(proofsDir, manifest)
+	require.True(t, result.Passed, result.Detail)
+	assert.Equal(t, "pass", result.Status)
+}
+
+func TestValidatePhase5Gate_PassMarkerCrossChecksIdentityWhenPresent(t *testing.T) {
+	// When the marker does carry identity, mismatches against the manifest
+	// must still be rejected — this is what prevents stale markers from a
+	// prior run leaking into a fresh promote.
+	proofsDir := t.TempDir()
+	manifest := CLIManifest{APIName: "stripe", CLIName: "stripe-pp-cli", RunID: "run-1", AuthType: "none"}
+	writePhase5GateMarker(t, proofsDir, Phase5AcceptanceFilename, Phase5GateMarker{
+		SchemaVersion: 1,
+		APIName:       "notion",
+		RunID:         "run-1",
+		Status:        "pass",
+		Level:         "full",
+		MatrixSize:    1,
+		TestsPassed:   1,
+		AuthContext:   Phase5AuthContext{Type: "none"},
+	})
+
+	result := ValidatePhase5Gate(proofsDir, manifest)
+	require.False(t, result.Passed)
+	assert.Contains(t, result.Detail, "does not match")
+}
+
 func TestValidatePhase5Gate_SkipMarkerRequiresIdentity(t *testing.T) {
 	proofsDir := t.TempDir()
 	manifest := CLIManifest{APIName: "test", CLIName: "test-pp-cli", RunID: "run-1", AuthType: "api_key"}
@@ -382,7 +581,7 @@ func TestValidatePhase5Gate_SkipMarkerRequiresIdentity(t *testing.T) {
 		APIName:       "test",
 		Status:        "skip",
 		Level:         "none",
-		SkipReason:    "auth_required_no_credential",
+		SkipReason:    phase5SkipReasonAuthRequiredNoCredential,
 		AuthContext:   Phase5AuthContext{Type: "api_key", APIKeyAvailable: false},
 	})
 

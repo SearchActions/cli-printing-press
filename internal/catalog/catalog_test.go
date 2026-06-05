@@ -18,11 +18,14 @@ category: developer-tools
 spec_url: https://example.com/openapi.yaml
 spec_format: yaml
 openapi_version: "3.0"
+base_url: https://api.example.com
 tier: community
 verified_date: "2026-03-23"
 homepage: https://example.com
 owner: test-owner
 owner_name: Trevin Chow
+regions: [NL, EU]
+api_language: nl
 mcp:
   transport: [stdio, http]
   orchestration: code
@@ -40,15 +43,40 @@ notes: Example fixture.
 	assert.Equal(t, "https://example.com/openapi.yaml", entry.SpecURL)
 	assert.Equal(t, "yaml", entry.SpecFormat)
 	assert.Equal(t, "3.0", entry.OpenAPIVersion)
+	assert.Equal(t, "https://api.example.com", entry.BaseURL)
 	assert.Equal(t, "community", entry.Tier)
 	assert.Equal(t, "2026-03-23", entry.VerifiedDate)
 	assert.Equal(t, "https://example.com", entry.Homepage)
 	assert.Equal(t, "test-owner", entry.Owner)
 	assert.Equal(t, "Trevin Chow", entry.OwnerName)
+	assert.Equal(t, []string{"NL", "EU"}, entry.Regions)
+	assert.Equal(t, "nl", entry.APILanguage)
 	assert.Equal(t, []string{"stdio", "http"}, entry.MCP.Transport)
 	assert.Equal(t, "code", entry.MCP.Orchestration)
 	assert.Equal(t, "hidden", entry.MCP.EndpointTools)
 	assert.Equal(t, "Example fixture.", entry.Notes)
+}
+
+func TestParseEntryAuthPreference(t *testing.T) {
+	// auth_preference is optional; when set it carries the upstream
+	// securityScheme name verbatim through the parser → generator pipeline.
+	data := []byte(`
+name: jira-like
+display_name: Jira-like
+description: Multi-scheme spec
+category: project-management
+spec_url: https://example.com/openapi.yaml
+spec_format: json
+openapi_version: "3.0"
+tier: official
+verified_date: "2026-05-09"
+homepage: https://example.com
+auth_preference: basicAuth
+`)
+
+	entry, err := ParseEntry(data)
+	require.NoError(t, err)
+	assert.Equal(t, "basicAuth", entry.AuthPreference)
 }
 
 func TestValidateEntry(t *testing.T) {
@@ -145,6 +173,13 @@ func TestValidateEntry(t *testing.T) {
 			wantErr: "http_transport must be one of",
 		},
 		{
+			name: "non https base url",
+			mutate: func(e *Entry) {
+				e.BaseURL = "http://api.example.com"
+			},
+			wantErr: `base_url must start with "https://"`,
+		},
+		{
 			name: "bearer refresh missing bundle URL",
 			mutate: func(e *Entry) {
 				e.BearerRefresh.Pattern = `AAAA[^"]+`
@@ -167,6 +202,83 @@ func TestValidateEntry(t *testing.T) {
 			},
 			wantErr: "bearer_refresh.pattern is not a valid regexp",
 		},
+		{
+			name: "non https auth_key_url",
+			mutate: func(e *Entry) {
+				e.AuthKeyURL = "http://example.com/keys"
+			},
+			wantErr: `auth_key_url must start with "https://"`,
+		},
+		{
+			name: "regions empty entry",
+			mutate: func(e *Entry) {
+				e.Regions = []string{"NL", ""}
+			},
+			wantErr: "regions[1] must not be empty",
+		},
+		{
+			name: "regions lowercase rejected",
+			mutate: func(e *Entry) {
+				e.Regions = []string{"nl"}
+			},
+			wantErr: "must be an uppercase two-letter region token",
+		},
+		{
+			name: "regions duplicate rejected",
+			mutate: func(e *Entry) {
+				e.Regions = []string{"NL", "NL"}
+			},
+			wantErr: `regions[1] "NL" is a duplicate`,
+		},
+		{
+			name: "api_language invalid tag rejected",
+			mutate: func(e *Entry) {
+				e.APILanguage = "not a tag"
+			},
+			wantErr: "must be a BCP 47 language tag",
+		},
+		{
+			name: "auth_env_vars empty entry",
+			mutate: func(e *Entry) {
+				e.AuthEnvVars = []string{"STRIPE_SECRET_KEY", " "}
+			},
+			wantErr: "auth_env_vars[1] must not be empty",
+		},
+		{
+			name: "auth_env_vars leading whitespace rejected",
+			mutate: func(e *Entry) {
+				e.AuthEnvVars = []string{"  STRIPE_KEY"}
+			},
+			wantErr: "must not have leading or trailing whitespace",
+		},
+		{
+			name: "auth_env_vars trailing whitespace rejected",
+			mutate: func(e *Entry) {
+				e.AuthEnvVars = []string{"STRIPE_KEY  "}
+			},
+			wantErr: "must not have leading or trailing whitespace",
+		},
+		{
+			name: "auth_env_vars lowercase rejected",
+			mutate: func(e *Entry) {
+				e.AuthEnvVars = []string{"stripe_secret_key"}
+			},
+			wantErr: "must be uppercase letters",
+		},
+		{
+			name: "auth_env_vars duplicate rejected",
+			mutate: func(e *Entry) {
+				e.AuthEnvVars = []string{"STRIPE_SECRET_KEY", "STRIPE_SECRET_KEY"}
+			},
+			wantErr: `auth_env_vars[1] "STRIPE_SECRET_KEY" is a duplicate`,
+		},
+		{
+			name: "auth_env_vars leading digit rejected",
+			mutate: func(e *Entry) {
+				e.AuthEnvVars = []string{"1STRIPE_KEY"}
+			},
+			wantErr: "must be uppercase letters",
+		},
 	}
 
 	for _, tt := range tests {
@@ -184,7 +296,7 @@ func TestValidateEntry(t *testing.T) {
 func TestAllPublicCategoriesAreValid(t *testing.T) {
 	publicCategories := []string{
 		"ai", "auth", "cloud", "commerce", "developer-tools", "devices",
-		"food-and-dining", "marketing", "media-and-entertainment", "monitoring",
+		"food-and-dining", "maps", "marketing", "media-and-entertainment", "monitoring",
 		"payments", "productivity", "project-management", "sales-and-crm",
 		"social-and-messaging", "travel", "other",
 	}
@@ -306,6 +418,38 @@ func TestOptionalFieldsOmittedValid(t *testing.T) {
 	assert.Empty(t, entry.BearerRefresh.BundleURL)
 }
 
+func TestAuthEnvVarsValid(t *testing.T) {
+	entry := Entry{
+		Name:        "stripe",
+		DisplayName: "Stripe",
+		Description: "Payments API",
+		Category:    "payments",
+		SpecURL:     "https://example.com/openapi.yaml",
+		SpecFormat:  "yaml",
+		Tier:        "official",
+		AuthEnvVars: []string{"STRIPE_SECRET_KEY", "STRIPE_API_KEY"},
+	}
+	require.NoError(t, entry.Validate())
+}
+
+func TestAuthEnvVarsParse(t *testing.T) {
+	data := []byte(`
+name: stripe
+display_name: Stripe
+description: Payments
+category: payments
+spec_url: https://example.com/openapi.yaml
+spec_format: yaml
+tier: official
+auth_env_vars:
+  - STRIPE_SECRET_KEY
+  - STRIPE_API_KEY
+`)
+	entry, err := ParseEntry(data)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"STRIPE_SECRET_KEY", "STRIPE_API_KEY"}, entry.AuthEnvVars)
+}
+
 func TestBearerRefreshValid(t *testing.T) {
 	entry := Entry{
 		Name:        "browser-api",
@@ -409,7 +553,12 @@ func TestEmbeddedCatalogParsesWrapperOnlyEntries(t *testing.T) {
 	entry, err := LookupFS(catalogfs.FS, "google-flights")
 	require.NoError(t, err)
 	assert.True(t, entry.IsWrapperOnly())
-	assert.NotEmpty(t, entry.WrapperLibraries)
+	assert.Equal(t, "travel", entry.Category)
+	require.Len(t, entry.WrapperLibraries, 2)
+	assert.Equal(t, "krisukox/google-flights-api", entry.WrapperLibraries[0].Name)
+	assert.Equal(t, "native", entry.WrapperLibraries[0].IntegrationMode)
+	assert.Equal(t, "punitarani/fli", entry.WrapperLibraries[1].Name)
+	assert.Equal(t, "subprocess", entry.WrapperLibraries[1].IntegrationMode)
 }
 
 func TestPublicCategoriesExcludeExample(t *testing.T) {

@@ -5,7 +5,9 @@ author: "{{yamlDoubleQuoted .OwnerName}}"
 license: "Apache-2.0"
 argument-hint: "<command> [args] | install cli|mcp"
 allowed-tools: "Read Bash"
-metadata:
+{{if .Regions}}regions: [{{range $i, $region := .Regions}}{{if $i}}, {{end}}"{{yamlDoubleQuoted $region}}"{{end}}]
+{{end}}{{if .APILanguage}}api_language: "{{yamlDoubleQuoted .APILanguage}}"
+{{end}}metadata:
   openclaw:
     requires:
       bins:
@@ -19,19 +21,20 @@ metadata:
 ---
 
 # {{.ProseName}} — Printing Press CLI
+{{- $deviceEnvVars := deviceCodeEnvVars .Auth}}
 
 ## Prerequisites: Install the CLI
 
 This skill drives the `{{.Name}}-pp-cli` binary. **You must verify the CLI is installed before invoking any command from this skill.** If it is missing, install it first:
 
-1. Install via the Printing Press installer:
+1. Install via the Printing Press installer into a user bin directory:
    ```bash
-   npx -y @mvanhorn/printing-press install {{.Name}} --cli-only
+   npx -y @mvanhorn/printing-press-library install {{.Name}} --cli-only --bin-dir ~/.local/bin
    ```
 2. Verify: `{{.Name}}-pp-cli --version`
-3. Ensure `$GOPATH/bin` (or `$HOME/go/bin`) is on `$PATH`.
+3. Ensure `~/.local/bin` is on `$PATH` for the agent/runtime that will invoke this skill.
 {{ if .Category}}
-If the `npx` install fails (no Node, offline, etc.), fall back to a direct Go install (requires Go 1.26.3 or newer):
+If the `npx` install fails (no Node, offline, etc.), fall back to a direct Go install (requires Go 1.26.4 or newer). This installs into `$GOPATH/bin` (default `$HOME/go/bin`), so add that directory to `$PATH` instead:
 
 ```bash
 go install github.com/mvanhorn/printing-press-library/library/{{.Category}}/{{.Name}}/cmd/{{.Name}}-pp-cli@latest
@@ -39,7 +42,7 @@ go install github.com/mvanhorn/printing-press-library/library/{{.Category}}/{{.N
 {{ else}}
 If the `npx` install fails before this CLI has a public-library category, install Node or use the category-specific Go fallback after publish.
 {{ end}}
-If `--version` reports "command not found" after install, the install step did not put the binary on `$PATH`. Do not proceed with skill commands until verification succeeds.
+If `--version` reports "command not found" after install, the runtime cannot see the binary directory on `$PATH`. Do not proceed with skill commands until verification succeeds.
 {{- if and .Narrative .Narrative.ValueProp}}
 
 {{.Narrative.ValueProp}}
@@ -53,7 +56,16 @@ If `--version` reports "command not found" after install, the install step did n
 
 {{.Narrative.WhenToUse}}
 {{- end}}
-{{- if not .HasWriteCommands}}
+{{- if and .Narrative .Narrative.AntiTriggers}}
+
+## Anti-triggers
+
+Do not use this CLI for:
+{{- range .Narrative.AntiTriggers}}
+- {{.}}
+{{- end}}
+{{- end}}
+{{- if and (not .HasWriteCommands) (not (and .Narrative .Narrative.AntiTriggers))}}
 
 ## When Not to Use This CLI
 
@@ -138,20 +150,13 @@ This CLI was generated with browser-observed traffic context.
 **{{$name}}** — {{$resource.Description}}
 {{range $eName, $endpoint := $resource.Endpoints}}
 {{- if index $.PromotedResourceNames $name}}
-- `{{$.Name}}-pp-cli {{$name}}{{positionalArgs $endpoint}}` — {{oneline $endpoint.Description}}
+- `{{$.Name}}-pp-cli {{kebab $name}}{{positionalArgs $endpoint}}` — {{oneline $endpoint.Description}}
 {{- else}}
-- `{{$.Name}}-pp-cli {{$name}} {{$eName}}` — {{oneline $endpoint.Description}}
+- `{{$.Name}}-pp-cli {{kebab $name}} {{kebab $eName}}` — {{oneline $endpoint.Description}}
 {{- end}}
 {{- end}}
 {{end}}
-{{- if .ExtraCommands}}
-
-**Hand-written commands**
-{{range .ExtraCommands}}
-- `{{$.Name}}-pp-cli {{.Name}}{{if .Args}} {{.Args}}{{end}}` — {{oneline .Description}}
-{{- end}}
-{{end}}
-{{- if and .HasDataLayer .Cache.Enabled}}
+{{- if and .HasDataLayer .HasAutoRefresh}}
 
 ## Freshness Contract
 
@@ -176,6 +181,15 @@ When you know what you want to do but not which command does it, ask the CLI dir
 ```
 
 `which` resolves a natural-language capability query to the best matching command from this CLI's curated feature index. Exit code `0` means at least one match; exit code `2` means no confident match — fall back to `--help` or use a narrower query.
+{{- if .ExtraCommands}}
+
+## Hand-written Extensions
+
+These commands are declared by the spec author and require separate hand-written wiring; the generator does not emit Cobra registration for them. They are listed here for discoverability and are intentionally outside `## Command Reference` so the verify-skill unknown-command check does not treat them as generator-owned paths.
+{{range .ExtraCommands}}
+- `{{$.Name}}-pp-cli {{.Name}}{{if .Args}} {{.Args}}{{end}}` — {{oneline .Description}}
+{{- end}}
+{{- end}}
 {{- if and .Narrative .Narrative.Recipes}}
 
 ## Recipes
@@ -201,7 +215,7 @@ When you know what you want to do but not which command does it, ask the CLI dir
 {{- else if eq .Auth.Type "api_key"}}
 
 {{- with $canonicalEnvVar}}
-Set your API key via environment variable:
+Run `{{$.Name}}-pp-cli auth setup` to print the URL and steps for getting a key (add `--launch` to open the URL). Then set:
 
 ```bash
 export {{.Name}}="<your-key>"
@@ -209,18 +223,43 @@ export {{.Name}}="<your-key>"
 
 Or persist it in `{{$.Config.Path}}`.
 {{- end}}
+{{- else if eq .Auth.EffectiveOAuth2Grant "device_code"}}
+
+Run `{{.Name}}-pp-cli auth setup` for setup details if needed. Then authenticate:
+
+```bash
+{{- if or .Auth.DefaultClientID (not $deviceEnvVars)}}
+{{.Name}}-pp-cli auth login --device-code
+{{- else}}
+export {{(index $deviceEnvVars 0).Name}}=<client-id>
+{{.Name}}-pp-cli auth login --device-code
+{{- end}}
+```
+
+Open the verification URL, enter the printed user code, and return to the CLI. Tokens are stored locally and refreshed automatically.
 {{- else if eq .Auth.Type "oauth2"}}
 
-Authenticate via the browser:
+Run `{{.Name}}-pp-cli auth setup` for the registration URL and steps (add `--launch` to open the URL). Then authenticate:
 
 ```bash
 {{.Name}}-pp-cli auth login
 ```
 
 Tokens are stored locally and refreshed automatically.
+{{- else if eq .Auth.Type "oauth2_refresh"}}
+
+This CLI uses OAuth2 with refresh-token rotation. Configure the client credentials and refresh token:
+
+```bash
+{{- range .Auth.EnvVarSpecs}}
+export {{.Name}}="{{authEnvPlaceholder .}}"
+{{- end}}
+```
+
+Access tokens are refreshed automatically before API calls.
 {{- else if eq .Auth.Type "bearer_token"}}
 
-Store your access token:
+Run `{{.Name}}-pp-cli auth setup` for the URL and steps to obtain a token (add `--launch` to open the URL). Then store it:
 
 ```bash
 {{.Name}}-pp-cli auth set-token YOUR_TOKEN_HERE
@@ -292,7 +331,42 @@ Commands that read from the local store or the API wrap output in a provenance e
 }
 ```
 
-Parse `.results` for data and `.meta.source` to know whether it's live or local. A human-readable `N results (live)` summary is printed to stderr only when stdout is a terminal — piped/agent consumers get pure JSON on stdout.
+Parse `.results` for data and `.meta.source` to know whether it's live or local. A human-readable `N results (live)` summary is printed to stderr only when stdout is a terminal AND no machine-format flag (`--json`, `--csv`, `--compact`, `--quiet`, `--plain`, `--select`) is set — piped/agent consumers and explicit-format runs get pure JSON on stdout.
+{{- end}}
+{{- if .Learn.Enabled}}
+
+## Automatic learning
+
+This CLI ships a self-learning loop: agents `recall` before doing discovery walks, and fire `teach` in the background after answering. Repeat questions skip discovery; structurally similar questions get answered via entity substitution.
+
+### Four-branch protocol
+
+For each user question:
+
+1. **Known taught pattern.** If `recall "<question>"` returns `found=true` with `results[0].entity_match == "exact"` and `results[0].confidence >= 2`, skip discovery and fetch the resources in `results[*].resource_id` directly.
+2. **Pattern match via entity substitution.** If recall misses but the query contains an entity that matches a registered seed (taught lookup or pre-seeded list), the loop's pattern engine tries substituting the entity into a stored template. If `Apply` succeeds, use the resolved resource id.
+3. **Cold start.** If both miss, run the normal discovery walk (search, list, drill). Once you've assembled the answer, fire `teach &` to record the mapping for next time.
+4. **Verification failure after a pattern apply.** If the pattern engine produced a candidate that turns out wrong when you fetch it, demote back to branch 3: re-run discovery and `teach` the correct resource so the next call doesn't repeat the mistake.
+
+Always read `warnings` on the recall envelope before trusting `results`. A non-empty `warnings` array means the validator flagged something (low confidence, parent-vs-child mismatch, store gap) and the row is a hint, not a skip-discovery hit.
+
+### Commands
+
+```bash
+{{.Name}}-pp-cli recall "<user's question>" --agent
+{{.Name}}-pp-cli teach --query "<user's question>" --resource-type <type> --resource <id> &
+{{.Name}}-pp-cli learnings list --agent
+{{.Name}}-pp-cli learnings forget "<query>" --resource <id>
+{{.Name}}-pp-cli teach-pattern --query-template "<template>" --resource-template "<template>" --resource-type <type>
+{{.Name}}-pp-cli teach-lookup --kind <kind> --canonical "<display>" --value <substitution>
+```
+
+`teach` is silent on success and safe to background with `&` — append it right before emitting the user-facing response so the write doesn't block. Errors only land in `~/.local/share/{{.Name}}-pp-cli/teach.log`.
+
+### Disabling learning
+
+- `--no-learn` on a single command short-circuits both `recall` and the `teach` write path. Use for deterministic agent flows or tests that must not be affected by accumulated learnings.
+- `{{envPrefix .Name}}_NO_LEARN=true` in the environment globally disables the pipeline.
 {{- end}}
 
 ## Agent Feedback
@@ -305,7 +379,7 @@ When you (or the agent) notice something off about this CLI, record it:
 {{.Name}}-pp-cli feedback list --json --limit 10
 ```
 
-Entries are stored locally at `~/.{{.Name}}-pp-cli/feedback.jsonl`. They are never POSTed unless `{{envName .Name}}_FEEDBACK_ENDPOINT` is set AND either `--send` is passed or `{{envName .Name}}_FEEDBACK_AUTO_SEND=true`. Default behavior is local-only.
+Entries are stored locally at `~/.local/share/{{.Name}}-pp-cli/feedback.jsonl`. They are never POSTed unless `{{envName .Name}}_FEEDBACK_ENDPOINT` is set AND either `--send` is passed or `{{envName .Name}}_FEEDBACK_AUTO_SEND=true`. Default behavior is local-only.
 
 Write what *surprised* you, not a bug report. Short, specific, one line: that is the part that compounds.
 

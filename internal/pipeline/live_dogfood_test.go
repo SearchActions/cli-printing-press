@@ -2,13 +2,16 @@ package pipeline
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/mvanhorn/cli-printing-press/v4/internal/generator"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -41,6 +44,26 @@ func TestRunLiveDogfoodDetectsJSONParseFailure(t *testing.T) {
 	require.NotNil(t, jsonFailure)
 	assert.Equal(t, LiveDogfoodStatusFail, jsonFailure.Status)
 	assert.Contains(t, jsonFailure.Reason, "invalid JSON")
+}
+
+func TestRunLiveDogfoodDetectsTruncatedJSONOutput(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test uses a shell script as the fake binary; skip on Windows")
+	}
+
+	dir, binaryName := writeLiveDogfoodLargeJSONFixture(t)
+	report, err := RunLiveDogfood(LiveDogfoodOptions{
+		CLIDir:     dir,
+		BinaryName: binaryName,
+		Level:      "full",
+		Timeout:    30 * time.Second,
+	})
+	require.NoError(t, err)
+
+	result := findResultByCommandKind(report, "widgets large", LiveDogfoodTestJSON)
+	require.NotNil(t, result)
+	assert.Equal(t, LiveDogfoodStatusFail, result.Status)
+	assert.Equal(t, "output exceeded capture cap", result.Reason)
 }
 
 func TestRunLiveDogfoodWritesAcceptanceMarkerOnPass(t *testing.T) {
@@ -82,7 +105,11 @@ func TestRunLiveDogfoodWritesAcceptanceMarkerOnPass(t *testing.T) {
 	assert.True(t, validation.Passed, validation.Detail)
 }
 
-func TestRunLiveDogfoodDoesNotWriteAcceptanceMarkerOnFail(t *testing.T) {
+// TestRunLiveDogfoodWritesFailMarkerOnFail covers the inverted contract from
+// issue #1384: --write-acceptance must emit a marker on every outcome, so the
+// Phase 5.6 gate has something to read (pass → promote, fail → hold-path)
+// instead of forcing operators to hand-author the FAIL marker.
+func TestRunLiveDogfoodWritesFailMarkerOnFail(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("test uses a shell script as the fake binary; skip on Windows")
 	}
@@ -100,8 +127,852 @@ func TestRunLiveDogfoodDoesNotWriteAcceptanceMarkerOnFail(t *testing.T) {
 	require.Equal(t, "FAIL", report.Verdict, report.Tests)
 	assert.Greater(t, report.Failed, 0)
 
-	_, statErr := os.Stat(markerPath)
-	assert.True(t, os.IsNotExist(statErr), "failed live dogfood must not write an acceptance marker")
+	data, err := os.ReadFile(markerPath)
+	require.NoError(t, err, "failed live dogfood must still write an acceptance marker for Phase 5.6")
+	var marker Phase5GateMarker
+	require.NoError(t, json.Unmarshal(data, &marker))
+	assert.Equal(t, "fail", marker.Status)
+	assert.Equal(t, report.Failed, marker.TestsFailed)
+	require.NotNil(t, marker.FailureSummary, "fail markers must carry a failure_summary block")
+	// The fixture's failing branch produces exit-nonzero results; the
+	// classifier may also bucket some as http_4xx/5xx depending on the
+	// fixture's emitted reason text. Either way, the aggregate failure
+	// count across all buckets must match report.Failed so no failure is
+	// silently dropped.
+	total := marker.FailureSummary.TransportError + marker.FailureSummary.HTTP4xx +
+		marker.FailureSummary.HTTP5xx + marker.FailureSummary.ExitNonzero +
+		marker.FailureSummary.OutputMismatch + marker.FailureSummary.Other
+	assert.Equal(t, report.Failed, total, "failure_summary buckets must account for every failed test")
+	assert.NotEmpty(t, marker.FailureSummary.Commands, "failure_summary must list at least one failing command")
+
+	// The Phase 5 gate must route this marker to the hold path, not pass it.
+	validation := ValidatePhase5Gate(filepath.Dir(markerPath), CLIManifest{APIName: marker.APIName, RunID: marker.RunID, AuthType: "none"})
+	assert.False(t, validation.Passed)
+	assert.Equal(t, "fail", validation.Status)
+}
+
+// TestClassifyLiveDogfoodFailure covers the per-test bucket assignment. The
+// classifier feeds failure_summary triage hints; missing a bucket silently
+// downgrades the operator signal, so each branch needs an explicit fixture.
+// HTTP ordering and the JSON-mismatch fall-through were Greptile findings on
+// the PR introducing this function and are pinned here as regressions.
+func TestClassifyLiveDogfoodFailure(t *testing.T) {
+	cases := []struct {
+		name string
+		in   LiveDogfoodTestResult
+		want string
+	}{
+		{
+			name: "http_4xx from reason",
+			in:   LiveDogfoodTestResult{Reason: "got HTTP 404 from upstream", ExitCode: 1},
+			want: "http_4xx",
+		},
+		{
+			name: "http_5xx from reason",
+			in:   LiveDogfoodTestResult{Reason: "got HTTP 503 from upstream", ExitCode: 1},
+			want: "http_5xx",
+		},
+		{
+			name: "4xx wins when both appear (retry log shadowing case)",
+			in:   LiveDogfoodTestResult{Reason: "retried http 5 times, status http 404", ExitCode: 1},
+			want: "http_4xx",
+		},
+		{
+			name: "transport_error on connection refused",
+			in:   LiveDogfoodTestResult{Reason: "dial tcp: connection refused", ExitCode: 1},
+			want: "transport_error",
+		},
+		{
+			name: "output_mismatch from bare 'invalid JSON' reason",
+			in:   LiveDogfoodTestResult{Reason: "invalid JSON", OutputSample: "<<not json>>", ExitCode: 1},
+			want: "output_mismatch",
+		},
+		{
+			name: "output_mismatch from 'not json' reason without 'output' word",
+			in:   LiveDogfoodTestResult{Reason: "response was not JSON", ExitCode: 1},
+			want: "output_mismatch",
+		},
+		{
+			name: "output_mismatch from output+mismatch conjunction",
+			in:   LiveDogfoodTestResult{Reason: "output mismatch vs schema", ExitCode: 1},
+			want: "output_mismatch",
+		},
+		{
+			name: "exit_nonzero fall-through",
+			in:   LiveDogfoodTestResult{Reason: "unknown failure", ExitCode: 2},
+			want: "exit_nonzero",
+		},
+		{
+			name: "other when nothing matches and exit code is zero",
+			in:   LiveDogfoodTestResult{Reason: "weird thing happened", ExitCode: 0},
+			want: "other",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, classifyLiveDogfoodFailure(tc.in))
+		})
+	}
+}
+
+// TestDogfoodEnvVarMatchesEmittedTemplate guards against the runner-side
+// const and the emitted-CLI helper drifting apart. They live in
+// separate Go modules so a shared import is impossible; this test reads
+// the template as text and asserts the literal matches dogfoodEnvVar.
+// Without it, a typo on either side would silently break every
+// IsDogfoodEnv() short-circuit in printed CLIs.
+func TestDogfoodEnvVarMatchesEmittedTemplate(t *testing.T) {
+	content, err := generator.TemplateFS.ReadFile("templates/cliutil_verifyenv.go.tmpl")
+	require.NoError(t, err)
+
+	re := regexp.MustCompile(`const\s+DogfoodEnvVar\s*=\s*"([^"]+)"`)
+	match := re.FindStringSubmatch(string(content))
+	require.Len(t, match, 2, "DogfoodEnvVar const not found in cliutil_verifyenv.go.tmpl")
+	assert.Equal(t, dogfoodEnvVar, match[1], "runner-side dogfoodEnvVar must match template-side DogfoodEnvVar literal")
+}
+
+// TestRunLiveDogfoodProcessSetsDogfoodEnvVar asserts the live-dogfood
+// subprocess inherits PRINTING_PRESS_DOGFOOD=1 so long-running commands
+// can short-circuit via cliutil.IsDogfoodEnv() to fit inside the
+// matrix's per-command timeout.
+func TestRunLiveDogfoodProcessSetsDogfoodEnvVar(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test uses a shell script as the fake binary; skip on Windows")
+	}
+
+	// Unset before the call so a CI runner that happens to have
+	// PRINTING_PRESS_DOGFOOD pre-set in its environment can't make the
+	// assertion pass via inheritance — the test must prove the runner's
+	// own append line is what gets the var into the subprocess.
+	t.Setenv("PRINTING_PRESS_DOGFOOD", "")
+
+	dir := t.TempDir()
+	binPath := filepath.Join(dir, "echo-env")
+	script := "#!/bin/sh\nprintf '%s' \"${PRINTING_PRESS_DOGFOOD:-}\"\n"
+	if err := os.WriteFile(binPath, []byte(script), 0o700); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+
+	run := runLiveDogfoodProcess(binPath, dir, nil, 30*time.Second)
+	require.NoError(t, run.err, "fixture: %s", run.stderr)
+	assert.Equal(t, "1", run.stdout, "live-dogfood subprocess should see PRINTING_PRESS_DOGFOOD=1")
+}
+
+func TestRunLiveDogfoodLocalDatastoreManifestPreservesOperatorHome(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test uses a shell script as the fake binary; skip on Windows")
+	}
+
+	home := t.TempDir()
+	cacheHome := t.TempDir()
+	configHome := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CACHE_HOME", cacheHome)
+	t.Setenv("XDG_CONFIG_HOME", configHome)
+	require.NoError(t, os.WriteFile(filepath.Join(home, "source.db"), []byte("fixture"), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(cacheHome, "snapshot.db"), []byte("fixture"), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(configHome, "source.conf"), []byte("fixture"), 0o600))
+
+	dir, binaryName := writeLiveDogfoodHomeProbeFixture(t, `if [ ! -f "$HOME/source.db" ]; then echo "missing local source" >&2; exit 3; fi
+  if [ ! -f "$XDG_CACHE_HOME/snapshot.db" ]; then echo "missing local cache" >&2; exit 3; fi
+  if [ ! -f "$XDG_CONFIG_HOME/source.conf" ]; then echo "missing local config" >&2; exit 3; fi`)
+	require.NoError(t, WriteCLIManifest(dir, CLIManifest{
+		SchemaVersion: 1,
+		APIName:       "fixture",
+		CLIName:       binaryName,
+		RunID:         "run-live-dogfood",
+		AuthType:      "none",
+		SpecFormat:    "sqlite",
+	}))
+
+	report, err := RunLiveDogfood(LiveDogfoodOptions{
+		CLIDir:     dir,
+		BinaryName: binaryName,
+		Level:      "quick",
+		Timeout:    2 * time.Second,
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "PASS", report.Verdict, report.Tests)
+}
+
+func TestRunLiveDogfoodAPICLIRetainsScopedHome(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test uses a shell script as the fake binary; skip on Windows")
+	}
+
+	home := t.TempDir()
+	cacheHome := t.TempDir()
+	configHome := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CACHE_HOME", cacheHome)
+	t.Setenv("XDG_CONFIG_HOME", configHome)
+	require.NoError(t, os.WriteFile(filepath.Join(home, "source.db"), []byte("fixture"), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(cacheHome, "snapshot.db"), []byte("fixture"), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(configHome, "source.conf"), []byte("fixture"), 0o600))
+
+	dir, binaryName := writeLiveDogfoodHomeProbeFixture(t, `if [ -f "$HOME/source.db" ]; then echo "operator home leaked" >&2; exit 3; fi
+  if [ -f "$XDG_CACHE_HOME/snapshot.db" ]; then echo "operator cache leaked" >&2; exit 3; fi
+  if [ -f "$XDG_CONFIG_HOME/source.conf" ]; then echo "operator config leaked" >&2; exit 3; fi`)
+	require.NoError(t, WriteCLIManifest(dir, CLIManifest{
+		SchemaVersion: 1,
+		APIName:       "fixture",
+		CLIName:       binaryName,
+		RunID:         "run-live-dogfood",
+		AuthType:      "none",
+		SpecFormat:    "openapi3",
+	}))
+
+	report, err := RunLiveDogfood(LiveDogfoodOptions{
+		CLIDir:     dir,
+		BinaryName: binaryName,
+		Level:      "quick",
+		Timeout:    2 * time.Second,
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "PASS", report.Verdict, report.Tests)
+}
+
+func TestRunLiveDogfoodAuthenticatedLocalDatastoreRetainsScopedHome(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test uses a shell script as the fake binary; skip on Windows")
+	}
+
+	home := t.TempDir()
+	cacheHome := t.TempDir()
+	configHome := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CACHE_HOME", cacheHome)
+	t.Setenv("XDG_CONFIG_HOME", configHome)
+	require.NoError(t, os.WriteFile(filepath.Join(home, "source.db"), []byte("fixture"), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(cacheHome, "snapshot.db"), []byte("fixture"), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(configHome, "source.conf"), []byte("fixture"), 0o600))
+
+	dir, binaryName := writeLiveDogfoodHomeProbeFixture(t, `if [ -f "$HOME/source.db" ]; then echo "operator home leaked" >&2; exit 3; fi
+  if [ -f "$XDG_CACHE_HOME/snapshot.db" ]; then echo "operator cache leaked" >&2; exit 3; fi
+  if [ -f "$XDG_CONFIG_HOME/source.conf" ]; then echo "operator config leaked" >&2; exit 3; fi`)
+	require.NoError(t, WriteCLIManifest(dir, CLIManifest{
+		SchemaVersion: 1,
+		APIName:       "fixture",
+		CLIName:       binaryName,
+		RunID:         "run-live-dogfood",
+		AuthType:      "api_key",
+		SpecFormat:    "sqlite",
+	}))
+
+	report, err := RunLiveDogfood(LiveDogfoodOptions{
+		CLIDir:     dir,
+		BinaryName: binaryName,
+		Level:      "quick",
+		Timeout:    2 * time.Second,
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "PASS", report.Verdict, report.Tests)
+}
+
+func TestRunLiveDogfoodMirrorsConfigAndCookieCredentialsIntoScopedHome(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test uses a shell script as the fake binary; skip on Windows")
+	}
+
+	const (
+		binaryName         = "fixture-pp-cli"
+		configCredential   = "real-config-token"
+		cookieCredential   = "real-cookie-token"
+		configOriginalBody = "auth_header = \"" + configCredential + "\"\n"
+		cookieOriginalBody = `[{"name":"session","value":"` + cookieCredential + `","domain":".example.test","path":"/","secure":true}]`
+	)
+
+	operatorHome := t.TempDir()
+	t.Setenv("HOME", operatorHome)
+	configPath := filepath.Join(operatorHome, ".config", binaryName, "config.toml")
+	cookiePath := filepath.Join(operatorHome, ".local", "share", binaryName, "cookies.json")
+	require.NoError(t, os.MkdirAll(filepath.Dir(configPath), 0o700))
+	require.NoError(t, os.MkdirAll(filepath.Dir(cookiePath), 0o700))
+	require.NoError(t, os.WriteFile(configPath, []byte(configOriginalBody), 0o600))
+	require.NoError(t, os.WriteFile(cookiePath, []byte(cookieOriginalBody), 0o600))
+
+	dir := t.TempDir()
+	require.NoError(t, WriteCLIManifest(dir, CLIManifest{
+		SchemaVersion: 1,
+		APIName:       "fixture",
+		RunID:         "run-live-dogfood",
+		AuthType:      "composed",
+		SpecFormat:    "openapi3",
+	}))
+	writeStubBinary(t, dir, binaryName, `set -u
+
+if [ "$1" = "agent-context" ]; then
+  cat <<'JSON'
+{
+  "commands": [
+    {"name":"account","subcommands":[{"name":"show"}]}
+  ]
+}
+JSON
+  exit 0
+fi
+
+if [ "$1" = "account" ] && [ "$2" = "show" ] && [ "${3:-}" = "--help" ]; then
+  cat <<'HELP'
+Show the authenticated account.
+
+Usage:
+  fixture-pp-cli account show [flags]
+
+Examples:
+  fixture-pp-cli account show
+
+Flags:
+      --json    Output JSON
+HELP
+  exit 0
+fi
+
+if [ "$1" = "account" ] && [ "$2" = "show" ]; then
+  config_path="$HOME/.config/fixture-pp-cli/config.toml"
+  cookie_path="$HOME/.local/share/fixture-pp-cli/cookies.json"
+  if ! grep -q 'real-config-token' "$config_path"; then
+    echo "missing mirrored config credential" >&2
+    exit 1
+  fi
+  if ! grep -q 'real-cookie-token' "$cookie_path"; then
+    echo "missing mirrored cookie credential" >&2
+    exit 1
+  fi
+  printf 'auth_header = "real-config-token-mutated"\n' > "$config_path"
+  printf '[{"name":"session","value":"real-cookie-token-mutated","domain":".example.test","path":"/","secure":true}]' > "$cookie_path"
+  if [ "${3:-}" = "--json" ]; then
+    echo '{"ok":true}'
+    exit 0
+  fi
+  echo 'ok'
+  exit 0
+fi
+
+echo "unexpected args: $*" >&2
+exit 99
+`)
+
+	report, err := RunLiveDogfood(LiveDogfoodOptions{
+		CLIDir:     dir,
+		BinaryName: binaryName,
+		Level:      "full",
+		Timeout:    2 * time.Second,
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "PASS", report.Verdict, report.Tests)
+
+	happy := findResultByCommandKind(report, "account show", LiveDogfoodTestHappy)
+	require.NotNil(t, happy)
+	assert.Equal(t, LiveDogfoodStatusPass, happy.Status, happy.Reason)
+	jsonResult := findResultByCommandKind(report, "account show", LiveDogfoodTestJSON)
+	require.NotNil(t, jsonResult)
+	assert.Equal(t, LiveDogfoodStatusPass, jsonResult.Status, jsonResult.Reason)
+
+	gotConfig, err := os.ReadFile(configPath)
+	require.NoError(t, err)
+	assert.Equal(t, configOriginalBody, string(gotConfig), "live dogfood must not mutate the operator's real config")
+	gotCookies, err := os.ReadFile(cookiePath)
+	require.NoError(t, err)
+	assert.Equal(t, cookieOriginalBody, string(gotCookies), "live dogfood must not mutate the operator's real cookies")
+}
+
+func TestRunLiveDogfoodSyncsOAuth2RefreshConfigBackToOperatorHome(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test uses a shell script as the fake binary; skip on Windows")
+	}
+
+	const (
+		binaryName         = "fixture-pp-cli"
+		configOriginalBody = "access_token = \"expired-access\"\nrefresh_token = \"old-refresh\"\n"
+		configRotatedBody  = "access_token = \"fresh-access\"\nrefresh_token = \"new-refresh\"\n"
+	)
+
+	operatorHome := t.TempDir()
+	t.Setenv("HOME", operatorHome)
+	configPath := filepath.Join(operatorHome, ".config", binaryName, "config.toml")
+	require.NoError(t, os.MkdirAll(filepath.Dir(configPath), 0o700))
+	require.NoError(t, os.WriteFile(configPath, []byte(configOriginalBody), 0o600))
+
+	dir := t.TempDir()
+	require.NoError(t, WriteCLIManifest(dir, CLIManifest{
+		SchemaVersion: 1,
+		APIName:       "fixture",
+		RunID:         "run-live-dogfood",
+		AuthType:      "oauth2_refresh",
+		SpecFormat:    "openapi3",
+	}))
+	writeStubBinary(t, dir, binaryName, `set -u
+
+if [ "$1" = "agent-context" ]; then
+  cat <<'JSON'
+{
+  "commands": [
+    {"name":"account","subcommands":[{"name":"show"}]}
+  ]
+}
+JSON
+  exit 0
+fi
+
+if [ "$1" = "account" ] && [ "$2" = "show" ] && [ "${3:-}" = "--help" ]; then
+  cat <<'HELP'
+Show the authenticated account.
+
+Usage:
+  fixture-pp-cli account show [flags]
+
+Examples:
+  fixture-pp-cli account show
+
+Flags:
+      --json    Output JSON
+HELP
+  exit 0
+fi
+
+if [ "$1" = "account" ] && [ "$2" = "show" ]; then
+  config_path="$HOME/.config/fixture-pp-cli/config.toml"
+  if ! grep -Eq 'old-refresh|new-refresh' "$config_path"; then
+    echo "missing mirrored refresh token" >&2
+    exit 1
+  fi
+  printf 'access_token = "fresh-access"\nrefresh_token = "new-refresh"\n' > "$config_path"
+  if [ "${3:-}" = "--json" ]; then
+    echo '{"ok":true}'
+    exit 0
+  fi
+  echo 'ok'
+  exit 0
+fi
+
+echo "unexpected args: $*" >&2
+exit 99
+`)
+
+	report, err := RunLiveDogfood(LiveDogfoodOptions{
+		CLIDir:     dir,
+		BinaryName: binaryName,
+		Level:      "full",
+		Timeout:    2 * time.Second,
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "PASS", report.Verdict, report.Tests)
+
+	gotConfig, err := os.ReadFile(configPath)
+	require.NoError(t, err)
+	assert.Equal(t, configRotatedBody, string(gotConfig), "rotated OAuth refresh tokens must survive live dogfood cleanup")
+}
+
+func TestRunLiveDogfoodSyncBackConflictStillReturnsReportAndWritesAcceptance(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test uses a shell script as the fake binary; skip on Windows")
+	}
+
+	const (
+		binaryName         = "fixture-pp-cli"
+		configOriginalBody = "access_token = \"expired-access\"\nrefresh_token = \"old-refresh\"\n"
+		configRotatedBody  = "access_token = \"fresh-access\"\nrefresh_token = \"new-refresh\"\n"
+		configConflictBody = "access_token = \"operator-edit\"\nrefresh_token = \"operator-refresh\"\n"
+	)
+
+	operatorHome := t.TempDir()
+	t.Setenv("HOME", operatorHome)
+	configPath := filepath.Join(operatorHome, ".config", binaryName, "config.toml")
+	require.NoError(t, os.MkdirAll(filepath.Dir(configPath), 0o700))
+	require.NoError(t, os.WriteFile(configPath, []byte(configOriginalBody), 0o600))
+	t.Setenv("OPERATOR_CONFIG_PATH", configPath)
+
+	dir := t.TempDir()
+	require.NoError(t, WriteCLIManifest(dir, CLIManifest{
+		SchemaVersion: 1,
+		APIName:       "fixture",
+		RunID:         "run-live-dogfood",
+		AuthType:      "oauth2_refresh",
+		SpecFormat:    "openapi3",
+	}))
+	writeStubBinary(t, dir, binaryName, `set -u
+
+if [ "$1" = "agent-context" ]; then
+  cat <<'JSON'
+{
+  "commands": [
+    {"name":"account","subcommands":[{"name":"show"}]}
+  ]
+}
+JSON
+  exit 0
+fi
+
+if [ "$1" = "account" ] && [ "$2" = "show" ] && [ "${3:-}" = "--help" ]; then
+  cat <<'HELP'
+Show the authenticated account.
+
+Usage:
+  fixture-pp-cli account show [flags]
+
+Examples:
+  fixture-pp-cli account show
+
+Flags:
+      --json    Output JSON
+HELP
+  exit 0
+fi
+
+if [ "$1" = "account" ] && [ "$2" = "show" ]; then
+  config_path="$HOME/.config/fixture-pp-cli/config.toml"
+  if ! grep -Eq 'old-refresh|new-refresh' "$config_path"; then
+    echo "missing mirrored refresh token" >&2
+    exit 1
+  fi
+  printf 'access_token = "operator-edit"\nrefresh_token = "operator-refresh"\n' > "$OPERATOR_CONFIG_PATH"
+  printf 'access_token = "fresh-access"\nrefresh_token = "new-refresh"\n' > "$config_path"
+  if [ "${3:-}" = "--json" ]; then
+    echo '{"ok":true}'
+    exit 0
+  fi
+  echo 'ok'
+  exit 0
+fi
+
+echo "unexpected args: $*" >&2
+exit 99
+`)
+
+	markerPath := filepath.Join(t.TempDir(), Phase5AcceptanceFilename)
+	report, err := RunLiveDogfood(LiveDogfoodOptions{
+		CLIDir:              dir,
+		BinaryName:          binaryName,
+		Level:               "full",
+		Timeout:             2 * time.Second,
+		WriteAcceptancePath: markerPath,
+	})
+	require.Error(t, err)
+	require.NotNil(t, report, "sync-back errors must not discard the completed live dogfood report")
+	assert.Contains(t, err.Error(), "operator config changed during dogfood")
+	assert.Equal(t, "PASS", report.Verdict, report.Tests)
+
+	gotConfig, err := os.ReadFile(configPath)
+	require.NoError(t, err)
+	assert.Equal(t, configConflictBody, string(gotConfig), "sync-back conflict must preserve the operator edit")
+
+	data, err := os.ReadFile(markerPath)
+	require.NoError(t, err, "sync-back errors must not suppress the Phase 5 acceptance marker")
+	var marker Phase5GateMarker
+	require.NoError(t, json.Unmarshal(data, &marker))
+	assert.Equal(t, "pass", marker.Status)
+	assert.Equal(t, report.MatrixSize, marker.MatrixSize)
+	assert.Equal(t, report.Passed, marker.TestsPassed)
+}
+
+func TestSyncLiveDogfoodCredentialMirrorsRejectsOperatorConfigConflict(t *testing.T) {
+	dir := t.TempDir()
+	src := filepath.Join(dir, "operator", "config.toml")
+	dst := filepath.Join(dir, "scoped", "config.toml")
+	require.NoError(t, os.MkdirAll(filepath.Dir(src), 0o700))
+	require.NoError(t, os.MkdirAll(filepath.Dir(dst), 0o700))
+	require.NoError(t, os.WriteFile(src, []byte("refresh_token = \"old\"\n"), 0o600))
+	require.NoError(t, os.WriteFile(dst, []byte("refresh_token = \"new\"\n"), 0o600))
+
+	mirror := liveDogfoodCredentialMirror{
+		src:      src,
+		dst:      dst,
+		original: []byte("refresh_token = \"original\"\n"),
+		mode:     0o600,
+	}
+
+	err := syncLiveDogfoodCredentialMirrors([]liveDogfoodCredentialMirror{mirror})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "operator config changed during dogfood")
+
+	got, readErr := os.ReadFile(src)
+	require.NoError(t, readErr)
+	assert.Equal(t, "refresh_token = \"old\"\n", string(got))
+}
+
+func TestRunLiveDogfoodProcessRetriesTransientAuth401(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test uses a shell script as the fake binary; skip on Windows")
+	}
+
+	dir := t.TempDir()
+	countPath := filepath.Join(dir, "count")
+	binPath := writeStubBinary(t, dir, "flaky-auth", `count_file="count"
+count=0
+if [ -f "$count_file" ]; then
+  count=$(cat "$count_file")
+fi
+count=$((count + 1))
+printf '%s' "$count" > "$count_file"
+if [ "$count" -eq 1 ]; then
+  echo 'Error: GET /api/v2/account/settings returned HTTP 401: {"error":"Couldn'\''t authenticate you"}' >&2
+  exit 1
+fi
+printf '{"ok":true}'
+`)
+
+	run := runLiveDogfoodProcess(binPath, dir, nil, 5*time.Second)
+	require.NoError(t, run.err, "fixture: %s", run.stderr)
+	assert.Equal(t, 0, run.exitCode)
+	assert.Equal(t, `{"ok":true}`, run.stdout)
+
+	count, err := os.ReadFile(countPath)
+	require.NoError(t, err)
+	assert.Equal(t, "2", string(count), "auth-shaped 401 should be retried once")
+}
+
+func TestRunLiveDogfoodSkipsPersistentAuth401AsRunnerCredentialUnavailable(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test uses a shell script as the fake binary; skip on Windows")
+	}
+
+	dir := t.TempDir()
+	binaryName := "fixture-pp-cli"
+	writeTestManifestForLiveDogfood(t, dir)
+	writeStubBinary(t, dir, binaryName, `if [ "$1" = "agent-context" ]; then
+  cat <<'JSON'
+{
+  "commands": [
+    {"name":"account","subcommands":[{"name":"show-settings"}]}
+  ]
+}
+JSON
+  exit 0
+fi
+
+if [ "$1" = "account" ] && [ "$2" = "show-settings" ] && [ "${3:-}" = "--help" ]; then
+  cat <<'HELP'
+Show account settings.
+
+Usage:
+  fixture-pp-cli account show-settings [flags]
+
+Examples:
+  fixture-pp-cli account show-settings
+
+Flags:
+      --json    Output JSON
+HELP
+  exit 0
+fi
+
+count_file="count"
+count=0
+if [ -f "$count_file" ]; then
+  count=$(cat "$count_file")
+fi
+count=$((count + 1))
+printf '%s' "$count" > "$count_file"
+echo 'Error: GET /api/v2/account/settings returned HTTP 401: {"error":"Could not authenticate you"}' >&2
+exit 1
+`)
+
+	report, err := RunLiveDogfood(LiveDogfoodOptions{
+		CLIDir:     dir,
+		BinaryName: binaryName,
+		Level:      "quick",
+		Timeout:    5 * time.Second,
+	})
+	require.NoError(t, err)
+
+	happy := findResultByCommandKind(report, "account show-settings", LiveDogfoodTestHappy)
+	require.NotNil(t, happy, "expected account show-settings happy_path result")
+	assert.Equal(t, LiveDogfoodStatusSkip, happy.Status)
+	assert.Equal(t, reasonUnavailableRunnerCredentials, happy.Reason)
+
+	jsonResult := findResultByCommandKind(report, "account show-settings", LiveDogfoodTestJSON)
+	require.NotNil(t, jsonResult, "expected account show-settings json_fidelity result")
+	assert.Equal(t, LiveDogfoodStatusSkip, jsonResult.Status)
+	assert.Equal(t, reasonUnavailableRunnerCredentials, jsonResult.Reason)
+
+	count, err := os.ReadFile(filepath.Join(dir, "count"))
+	require.NoError(t, err)
+	assert.Equal(t, "2", string(count), "persistent auth-shaped 401 should retry once before skip classification")
+}
+
+func TestRunLiveDogfoodSkipsRequiresTierMismatch(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test uses a shell script as the fake binary; skip on Windows")
+	}
+
+	dir, binaryName, argvLog := writeLiveDogfoodTierFixture(t, true, false, true)
+	t.Setenv("PRINTING_PRESS_TEST_ARGV_LOG", argvLog)
+	report, err := RunLiveDogfood(LiveDogfoodOptions{
+		CLIDir:     dir,
+		BinaryName: binaryName,
+		Level:      "quick",
+		Timeout:    2 * time.Second,
+	})
+	require.NoError(t, err)
+
+	assert.Equal(t, "PASS", report.Verdict, report.Tests)
+	happy := findResultByCommandKind(report, "administration get", LiveDogfoodTestHappy)
+	require.NotNil(t, happy)
+	assert.Equal(t, LiveDogfoodStatusSkip, happy.Status)
+	assert.Equal(t, `blocked-fixture: requires auth tier "accountant"`, happy.Reason)
+
+	jsonResult := findResultByCommandKind(report, "administration get", LiveDogfoodTestJSON)
+	require.NotNil(t, jsonResult)
+	assert.Equal(t, LiveDogfoodStatusSkip, jsonResult.Status)
+	assert.Equal(t, happy.Reason, jsonResult.Reason)
+
+	errorResult := findResultByCommandKind(report, "administration get", LiveDogfoodTestError)
+	require.NotNil(t, errorResult)
+	assert.Equal(t, LiveDogfoodStatusSkip, errorResult.Status)
+	assert.Equal(t, happy.Reason, errorResult.Reason)
+
+	lines := readArgvLog(t, argvLog)
+	assert.Equal(t, 0, countArgvLines(lines, "administration get", "--json"),
+		"json_fidelity must not invoke tier-gated endpoints when active auth tier mismatches")
+	assert.Equal(t, 0, countArgvLines(lines, "administration get")-countArgvLines(lines, "administration get --help"),
+		"happy_path must not invoke tier-gated endpoints when active auth tier mismatches")
+	assert.Equal(t, 0, countArgvLines(lines, "administration get", "__printing_press_invalid__"),
+		"error_path must not invoke tier-gated endpoints when active auth tier mismatches")
+}
+
+func TestRunLiveDogfoodSkipsRequiresTierMismatchWithoutRunnableExample(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test uses a shell script as the fake binary; skip on Windows")
+	}
+
+	dir, binaryName, _ := writeLiveDogfoodTierFixture(t, true, false, false)
+	report, err := RunLiveDogfood(LiveDogfoodOptions{
+		CLIDir:     dir,
+		BinaryName: binaryName,
+		Level:      "quick",
+		Timeout:    2 * time.Second,
+	})
+	require.NoError(t, err)
+
+	happy := findResultByCommandKind(report, "administration get", LiveDogfoodTestHappy)
+	require.NotNil(t, happy)
+	assert.Equal(t, LiveDogfoodStatusSkip, happy.Status)
+	assert.Equal(t, `blocked-fixture: requires auth tier "accountant"`, happy.Reason)
+	assert.Equal(t, "PASS", report.Verdict, report.Tests)
+}
+
+func TestRunLiveDogfoodRunsRequiresTierMatch(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test uses a shell script as the fake binary; skip on Windows")
+	}
+
+	dir, binaryName, _ := writeLiveDogfoodTierFixture(t, true, true, true)
+	report, err := RunLiveDogfood(LiveDogfoodOptions{
+		CLIDir:     dir,
+		BinaryName: binaryName,
+		Level:      "quick",
+		Timeout:    2 * time.Second,
+		AuthTier:   "accountant",
+	})
+	require.NoError(t, err)
+
+	happy := findResultByCommandKind(report, "administration get", LiveDogfoodTestHappy)
+	require.NotNil(t, happy)
+	assert.Equal(t, LiveDogfoodStatusPass, happy.Status, happy.Reason)
+	jsonResult := findResultByCommandKind(report, "administration get", LiveDogfoodTestJSON)
+	require.NotNil(t, jsonResult)
+	assert.Equal(t, LiveDogfoodStatusPass, jsonResult.Status, jsonResult.Reason)
+}
+
+func TestRunLiveDogfoodRunsRequiresTierMatchFromEnv(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test uses a shell script as the fake binary; skip on Windows")
+	}
+
+	dir, binaryName, _ := writeLiveDogfoodTierFixture(t, true, true, true)
+	t.Setenv("PP_AUTH_TIER", "accountant")
+	report, err := RunLiveDogfood(LiveDogfoodOptions{
+		CLIDir:     dir,
+		BinaryName: binaryName,
+		Level:      "quick",
+		Timeout:    2 * time.Second,
+	})
+	require.NoError(t, err)
+
+	happy := findResultByCommandKind(report, "administration get", LiveDogfoodTestHappy)
+	require.NotNil(t, happy)
+	assert.Equal(t, LiveDogfoodStatusPass, happy.Status, happy.Reason)
+	jsonResult := findResultByCommandKind(report, "administration get", LiveDogfoodTestJSON)
+	require.NotNil(t, jsonResult)
+	assert.Equal(t, LiveDogfoodStatusPass, jsonResult.Status, jsonResult.Reason)
+}
+
+func TestRunLiveDogfoodRequiresTierAbsentDoesNotSkip(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test uses a shell script as the fake binary; skip on Windows")
+	}
+
+	dir, binaryName, _ := writeLiveDogfoodTierFixture(t, false, false, true)
+	report, err := RunLiveDogfood(LiveDogfoodOptions{
+		CLIDir:     dir,
+		BinaryName: binaryName,
+		Level:      "quick",
+		Timeout:    2 * time.Second,
+	})
+	require.NoError(t, err)
+
+	happy := findResultByCommandKind(report, "administration get", LiveDogfoodTestHappy)
+	require.NotNil(t, happy)
+	assert.Equal(t, LiveDogfoodStatusFail, happy.Status)
+	assert.Contains(t, happy.OutputSample, "EP_001")
+}
+
+func TestRunLiveDogfoodProcessPreservesLargeJSONUnderCap(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test uses a shell script as the fake binary; skip on Windows")
+	}
+
+	dir := t.TempDir()
+	binPath := filepath.Join(dir, "large-json")
+	payloadBytes := liveDogfoodMaxOutputBytes / 5
+	script := `#!/bin/sh
+printf '{"data":"'
+head -c ` + fmt.Sprint(payloadBytes) + ` /dev/zero | tr '\0' 'x'
+printf '"}'
+`
+	require.NoError(t, os.WriteFile(binPath, []byte(script), 0o700))
+
+	run := runLiveDogfoodProcess(binPath, dir, nil, 5*time.Second)
+	require.NoError(t, run.err)
+	assert.False(t, run.stdoutTruncated)
+	assert.True(t, validLiveDogfoodJSONOutput(run.stdout))
+}
+
+func TestRunLiveDogfoodProcessTracksOutputTruncation(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test uses a shell script as the fake binary; skip on Windows")
+	}
+
+	dir := t.TempDir()
+	binPath := filepath.Join(dir, "huge-json")
+	script := fmt.Sprintf(`#!/bin/sh
+printf '{"data":"'
+head -c %d /dev/zero | tr '\0' 'x'
+printf '"}'
+`, liveDogfoodMaxOutputBytes+1024)
+	require.NoError(t, os.WriteFile(binPath, []byte(script), 0o700))
+
+	run := runLiveDogfoodProcess(binPath, dir, nil, 30*time.Second)
+	require.NoError(t, run.err)
+	assert.True(t, run.stdoutTruncated)
+	assert.False(t, validLiveDogfoodJSONOutput(run.stdout))
+	assert.Equal(t, "output exceeded capture cap", liveDogfoodInvalidJSONReason(run, "invalid JSON"))
+}
+
+func TestLiveDogfoodResultRedactsOutputSamplePII(t *testing.T) {
+	run := liveDogfoodRun{
+		stdout:   "{\"name\":\"Jane Doe\"}\n",
+		stderr:   "{\"email\":\"jane@example.com\"}",
+		exitCode: 0,
+	}
+
+	result := liveDogfoodResult("widgets list", LiveDogfoodTestHappy, []string{"widgets", "list"}, run)
+
+	require.NotContains(t, result.OutputSample, "Jane Doe")
+	require.NotContains(t, result.OutputSample, "jane@example.com")
+	require.Contains(t, result.OutputSample, `"name":"<redacted>"`)
+	require.Contains(t, result.OutputSample, `"email":"<redacted>"`)
 }
 
 func TestRunLiveDogfoodErrorPathAcceptsExpectedNonZeroExit(t *testing.T) {
@@ -166,6 +1037,569 @@ func TestLiveDogfoodCommandMutatesPrefersEndpointMethod(t *testing.T) {
 	}))
 }
 
+func TestHappyPathFileFixtureSkip(t *testing.T) {
+	t.Parallel()
+
+	cliDir := t.TempDir()
+	existing := filepath.Join(cliDir, "fixture.csv")
+	require.NoError(t, os.WriteFile(existing, []byte("header\nvalue\n"), 0o600))
+
+	cases := []struct {
+		name       string
+		args       []string
+		wantSkip   bool
+		wantPrefix string
+	}{
+		{
+			name:     "no file flag",
+			args:     []string{"sync", "--limit", "5"},
+			wantSkip: false,
+		},
+		{
+			name:       "missing csv fixture",
+			args:       []string{"vet", "--csv", "prospects.csv"},
+			wantSkip:   true,
+			wantPrefix: "file fixture required: --csv prospects.csv",
+		},
+		{
+			name:       "missing file fixture",
+			args:       []string{"import-csv", "--file", "accounts.csv"},
+			wantSkip:   true,
+			wantPrefix: "file fixture required: --file accounts.csv",
+		},
+		{
+			name:       "missing fixture via --flag=value form",
+			args:       []string{"import-csv", "--file=accounts.csv"},
+			wantSkip:   true,
+			wantPrefix: "file fixture required: --file accounts.csv",
+		},
+		{
+			name:     "existing fixture in cliDir",
+			args:     []string{"vet", "--csv", "fixture.csv"},
+			wantSkip: false,
+		},
+		{
+			name:     "URL value does not trigger skip",
+			args:     []string{"upload", "--file", "https://example.com/data.csv"},
+			wantSkip: false,
+		},
+		{
+			name:     "unrelated flag name ignored",
+			args:     []string{"resolve", "--query", "anything.csv"},
+			wantSkip: false,
+		},
+		{
+			name:     "case-insensitive flag match",
+			args:     []string{"upload", "--CSV", "missing.csv"},
+			wantSkip: true,
+		},
+		{
+			// --profile contains "file" as a substring but is not a file
+			// flag; spurious skips here would silently drop test signal.
+			name:     "profile flag does not trigger skip",
+			args:     []string{"deploy", "--profile", "staging"},
+			wantSkip: false,
+		},
+		{
+			name:     "hyphenated suffix matches",
+			args:     []string{"upload", "--input-file", "missing.txt"},
+			wantSkip: true,
+		},
+		{
+			name:     "underscore suffix matches",
+			args:     []string{"upload", "--output_file", "missing.txt"},
+			wantSkip: true,
+		},
+		{
+			name:     "csv suffix matches",
+			args:     []string{"import", "--import-csv", "missing.csv"},
+			wantSkip: true,
+		},
+		{
+			// --file-format takes a format identifier (csv/json), not a path.
+			// Greptile's suggestion correctly excludes the prefix shape.
+			name:     "file prefix without suffix anchor does not match",
+			args:     []string{"export", "--file-format", "csv"},
+			wantSkip: false,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := happyPathFileFixtureSkip(tc.args, cliDir)
+			if tc.wantSkip {
+				assert.NotEmpty(t, got, "expected skip reason")
+				if tc.wantPrefix != "" {
+					assert.Equal(t, tc.wantPrefix, got)
+				}
+			} else {
+				assert.Empty(t, got, "expected no skip")
+			}
+		})
+	}
+}
+
+func TestRunLiveDogfoodHappyPathHandlesShellCommentInExample(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test uses a shell script as the fake binary; skip on Windows")
+	}
+
+	dir, binaryName := writeLiveDogfoodShellCommentScript(t)
+	report, err := RunLiveDogfood(LiveDogfoodOptions{
+		CLIDir:     dir,
+		BinaryName: binaryName,
+		Level:      "full",
+		Timeout:    2 * time.Second,
+	})
+	require.NoError(t, err)
+
+	happy := findResultByCommandKind(report, "sync", LiveDogfoodTestHappy)
+	require.NotNil(t, happy, "expected sync happy_path result")
+	assert.Equal(t, LiveDogfoodStatusPass, happy.Status,
+		"trailing '# comment' in Cobra Example must not bleed into happy_path argv (reason=%q)", happy.Reason)
+	assert.Equal(t, []string{"sync"}, happy.Args,
+		"happy_path argv must contain only the subcommand path, not the comment text")
+}
+
+func writeLiveDogfoodShellCommentScript(t *testing.T) (dir string, binaryName string) {
+	t.Helper()
+
+	dir = t.TempDir()
+	binaryName = "fixture-pp-cli"
+	writeTestManifestForLiveDogfood(t, dir)
+
+	binPath := filepath.Join(dir, binaryName)
+	script := `#!/bin/sh
+set -u
+
+if [ "$1" = "agent-context" ]; then
+  cat <<'JSON'
+{
+  "commands": [
+    {"name":"sync"}
+  ]
+}
+JSON
+  exit 0
+fi
+
+if [ "$1" = "sync" ] && [ "${2:-}" = "--help" ]; then
+  cat <<'HELP'
+Refresh local cache.
+
+Usage:
+  fixture-pp-cli sync [flags]
+
+Examples:
+  fixture-pp-cli sync                       # full schema + records refresh
+
+Flags:
+      --json    Output JSON
+HELP
+  exit 0
+fi
+
+if [ "$1" = "sync" ]; then
+  # Anything past 'sync' means the example's trailing comment leaked into
+  # argv — fail loudly so the test catches the regression.
+  if [ "$#" -gt 1 ] && [ "${2}" != "--json" ]; then
+    echo "unexpected sync args: $*" >&2
+    exit 4
+  fi
+  if [ "${2:-}" = "--json" ]; then
+    echo '{"synced":true}'
+    exit 0
+  fi
+  echo 'synced'
+  exit 0
+fi
+
+echo "unexpected args: $*" >&2
+exit 99
+`
+	require.NoError(t, os.WriteFile(binPath, []byte(script), 0o755))
+	return dir, binaryName
+}
+
+func TestRunLiveDogfoodSkipsHappyPathOnMissingFileFixture(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test uses a shell script as the fake binary; skip on Windows")
+	}
+
+	dir, binaryName := writeLiveDogfoodFileFixtureScript(t)
+	report, err := RunLiveDogfood(LiveDogfoodOptions{
+		CLIDir:     dir,
+		BinaryName: binaryName,
+		Level:      "full",
+		Timeout:    2 * time.Second,
+	})
+	require.NoError(t, err)
+
+	happy := findResultByCommandKind(report, "import-csv", LiveDogfoodTestHappy)
+	require.NotNil(t, happy, "expected import-csv happy_path result")
+	assert.Equal(t, LiveDogfoodStatusSkip, happy.Status)
+	assert.Contains(t, happy.Reason, reasonFileFixtureRequired)
+	assert.Contains(t, happy.Reason, "accounts.csv")
+
+	json := findResultByCommandKind(report, "import-csv", LiveDogfoodTestJSON)
+	require.NotNil(t, json, "expected import-csv json_fidelity result")
+	assert.Equal(t, LiveDogfoodStatusSkip, json.Status)
+	assert.Contains(t, json.Reason, reasonFileFixtureRequired)
+
+	help := findResultByCommandKind(report, "import-csv", LiveDogfoodTestHelp)
+	require.NotNil(t, help, "expected import-csv help result")
+	assert.Equal(t, LiveDogfoodStatusPass, help.Status, "help check must still pass when the only failure is a missing fixture")
+}
+
+func TestRunLiveDogfoodSkipsHappyPathOnRequiredParam4xx(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test uses a shell script as the fake binary; skip on Windows")
+	}
+
+	dir, binaryName := writeLiveDogfoodRequiredParamFixture(t)
+	report, err := RunLiveDogfood(LiveDogfoodOptions{
+		CLIDir:     dir,
+		BinaryName: binaryName,
+		Level:      "full",
+		Timeout:    2 * time.Second,
+	})
+	require.NoError(t, err)
+
+	assert.Equal(t, "PASS", report.Verdict)
+
+	happy := findResultByCommandKind(report, "reports prospects", LiveDogfoodTestHappy)
+	require.NotNil(t, happy, "expected reports prospects happy_path result")
+	assert.Equal(t, LiveDogfoodStatusSkip, happy.Status)
+	assert.Equal(t, reasonRequiredParamFixture, happy.Reason)
+
+	json := findResultByCommandKind(report, "reports prospects", LiveDogfoodTestJSON)
+	require.NotNil(t, json, "expected reports prospects json_fidelity result")
+	assert.Equal(t, LiveDogfoodStatusSkip, json.Status)
+	assert.Equal(t, happy.Reason, json.Reason)
+
+	help := findResultByCommandKind(report, "reports prospects", LiveDogfoodTestHelp)
+	require.NotNil(t, help, "expected reports prospects help result")
+	assert.Equal(t, LiveDogfoodStatusPass, help.Status, "help check must still pass when the only failure is an unsupplied required API parameter")
+
+	summaryHappy := findResultByCommandKind(report, "reports summary", LiveDogfoodTestHappy)
+	require.NotNil(t, summaryHappy, "expected reports summary happy_path result")
+	assert.Equal(t, LiveDogfoodStatusPass, summaryHappy.Status)
+
+	summaryJSON := findResultByCommandKind(report, "reports summary", LiveDogfoodTestJSON)
+	require.NotNil(t, summaryJSON, "expected reports summary json_fidelity result")
+	assert.Equal(t, LiveDogfoodStatusSkip, summaryJSON.Status)
+	assert.Equal(t, reasonRequiredParamFixture, summaryJSON.Reason)
+}
+
+func TestRunLiveDogfoodSkipsMutatingCommandsWithoutRunnableExample(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test uses a shell script as the fake binary; skip on Windows")
+	}
+
+	dir, binaryName := writeLiveDogfoodMissingRunnableExampleFixture(t)
+	report, err := RunLiveDogfood(LiveDogfoodOptions{
+		CLIDir:     dir,
+		BinaryName: binaryName,
+		Level:      "full",
+		Timeout:    2 * time.Second,
+	})
+	require.NoError(t, err)
+
+	updateHelp := findResultByCommandKind(report, "templates update", LiveDogfoodTestHelp)
+	require.NotNil(t, updateHelp, "expected templates update help result")
+	assert.Equal(t, LiveDogfoodStatusPass, updateHelp.Status)
+
+	updateHappy := findResultByCommandKind(report, "templates update", LiveDogfoodTestHappy)
+	require.NotNil(t, updateHappy, "expected templates update happy_path result")
+	assert.Equal(t, LiveDogfoodStatusSkip, updateHappy.Status)
+	assert.Equal(t, reasonMutatingRunnableFixture, updateHappy.Reason)
+
+	updateJSON := findResultByCommandKind(report, "templates update", LiveDogfoodTestJSON)
+	require.NotNil(t, updateJSON, "expected templates update json_fidelity result")
+	assert.Equal(t, LiveDogfoodStatusSkip, updateJSON.Status)
+	assert.Equal(t, reasonMutatingRunnableFixture, updateJSON.Reason)
+
+	updateError := findResultByCommandKind(report, "templates update", LiveDogfoodTestError)
+	require.NotNil(t, updateError, "expected templates update error_path result")
+	assert.Equal(t, LiveDogfoodStatusSkip, updateError.Status)
+	assert.Equal(t, reasonMutatingRunnableFixture, updateError.Reason)
+
+	detailsHappy := findResultByCommandKind(report, "reports details", LiveDogfoodTestHappy)
+	require.NotNil(t, detailsHappy, "expected reports details happy_path result")
+	assert.Equal(t, LiveDogfoodStatusFail, detailsHappy.Status)
+	assert.Equal(t, "missing runnable example", detailsHappy.Reason)
+}
+
+func TestRunLiveDogfoodKeepsOrdinary4xxFailures(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test uses a shell script as the fake binary; skip on Windows")
+	}
+
+	dir, binaryName := writeLiveDogfoodOrdinary4xxFixture(t)
+	report, err := RunLiveDogfood(LiveDogfoodOptions{
+		CLIDir:     dir,
+		BinaryName: binaryName,
+		Level:      "full",
+		Timeout:    2 * time.Second,
+	})
+	require.NoError(t, err)
+
+	assert.Equal(t, "FAIL", report.Verdict)
+
+	happy := findResultByCommandKind(report, "reports broken-filter", LiveDogfoodTestHappy)
+	require.NotNil(t, happy, "expected reports broken-filter happy_path result")
+	assert.Equal(t, LiveDogfoodStatusFail, happy.Status)
+	assert.Contains(t, happy.OutputSample, "invalid filter")
+}
+
+func writeLiveDogfoodFileFixtureScript(t *testing.T) (dir string, binaryName string) {
+	t.Helper()
+
+	dir = t.TempDir()
+	binaryName = "fixture-pp-cli"
+	writeTestManifestForLiveDogfood(t, dir)
+
+	binPath := filepath.Join(dir, binaryName)
+	script := `#!/bin/sh
+set -u
+
+if [ "$1" = "agent-context" ]; then
+  cat <<'JSON'
+{
+  "commands": [
+    {"name":"import-csv"}
+  ]
+}
+JSON
+  exit 0
+fi
+
+if [ "$1" = "import-csv" ] && [ "${2:-}" = "--help" ]; then
+  cat <<'HELP'
+Import accounts from a CSV file.
+
+Usage:
+  fixture-pp-cli import-csv [flags]
+
+Examples:
+  fixture-pp-cli import-csv --file accounts.csv
+
+Flags:
+      --file string   Path to the CSV file
+      --json          Output JSON
+HELP
+  exit 0
+fi
+
+if [ "$1" = "import-csv" ]; then
+  # Without a real fixture, this would error out. The test exercises the
+  # skip path; the actual subprocess should never be invoked for happy_path.
+  echo 'open accounts.csv: no such file or directory' >&2
+  exit 1
+fi
+
+echo "unexpected args: $*" >&2
+exit 99
+`
+	require.NoError(t, os.WriteFile(binPath, []byte(script), 0o755))
+	return dir, binaryName
+}
+
+func writeLiveDogfoodRequiredParamFixture(t *testing.T) (dir string, binaryName string) {
+	t.Helper()
+
+	dir = t.TempDir()
+	binaryName = "fixture-pp-cli"
+	writeTestManifestForLiveDogfood(t, dir)
+
+	script := `set -u
+
+if [ "$1" = "agent-context" ]; then
+  cat <<'JSON'
+{
+  "commands": [
+    {"name":"reports","subcommands":[
+      {"name":"prospects"},
+      {"name":"summary"}
+    ]}
+  ]
+}
+JSON
+  exit 0
+fi
+
+if [ "$1" = "reports" ] && [ "$2" = "prospects" ] && [ "${3:-}" = "--help" ]; then
+  cat <<'HELP'
+List report prospects.
+
+Usage:
+  fixture-pp-cli reports prospects [flags]
+
+Examples:
+  fixture-pp-cli reports prospects
+
+Flags:
+      --json    Output JSON
+HELP
+  exit 0
+fi
+
+if [ "$1" = "reports" ] && [ "$2" = "prospects" ] && [ "${3:-}" = "--json" ]; then
+  echo 'unexpected reports prospects --json invocation' >&2
+  exit 9
+fi
+
+if [ "$1" = "reports" ] && [ "$2" = "prospects" ]; then
+  echo 'HTTP 400: {"error":"Please provide email"}' >&2
+  exit 1
+fi
+
+if [ "$1" = "reports" ] && [ "$2" = "summary" ] && [ "${3:-}" = "--help" ]; then
+  cat <<'HELP'
+Show report summary.
+
+Usage:
+  fixture-pp-cli reports summary [flags]
+
+Examples:
+  fixture-pp-cli reports summary
+
+Flags:
+      --json    Output JSON
+HELP
+  exit 0
+fi
+
+if [ "$1" = "reports" ] && [ "$2" = "summary" ] && [ "${3:-}" = "--json" ]; then
+  echo 'HTTP 400: {"error":"missing required parameter: email"}' >&2
+  exit 1
+fi
+
+if [ "$1" = "reports" ] && [ "$2" = "summary" ]; then
+  echo 'summary'
+  exit 0
+fi
+
+echo "unexpected args: $*" >&2
+exit 99
+`
+	writeStubBinary(t, dir, binaryName, script)
+	return dir, binaryName
+}
+
+func writeLiveDogfoodMissingRunnableExampleFixture(t *testing.T) (dir string, binaryName string) {
+	t.Helper()
+
+	dir = t.TempDir()
+	binaryName = "fixture-pp-cli"
+	writeTestManifestForLiveDogfood(t, dir)
+
+	script := `set -u
+
+if [ "$1" = "agent-context" ]; then
+  cat <<'JSON'
+{
+  "commands": [
+    {"name":"templates","subcommands":[
+      {"name":"update","annotations":{"pp:method":"PUT"}}
+    ]},
+    {"name":"reports","subcommands":[
+      {"name":"details","annotations":{"pp:method":"GET"}}
+    ]}
+  ]
+}
+JSON
+  exit 0
+fi
+
+if [ "$1" = "templates" ] && [ "$2" = "update" ] && [ "${3:-}" = "--help" ]; then
+  cat <<'HELP'
+Update a template.
+
+Usage:
+  fixture-pp-cli templates update [flags]
+
+Examples:
+  # Supply a real template id before running this write command.
+
+Flags:
+      --json    Output JSON
+HELP
+  exit 0
+fi
+
+if [ "$1" = "reports" ] && [ "$2" = "details" ] && [ "${3:-}" = "--help" ]; then
+  cat <<'HELP'
+Read report details.
+
+Usage:
+  fixture-pp-cli reports details [flags]
+
+Examples:
+  # No runnable example is documented for this read command.
+
+Flags:
+      --json    Output JSON
+HELP
+  exit 0
+fi
+
+echo "unexpected args: $*" >&2
+exit 99
+`
+	writeStubBinary(t, dir, binaryName, script)
+	return dir, binaryName
+}
+
+func writeLiveDogfoodOrdinary4xxFixture(t *testing.T) (dir string, binaryName string) {
+	t.Helper()
+
+	dir = t.TempDir()
+	binaryName = "fixture-pp-cli"
+	writeTestManifestForLiveDogfood(t, dir)
+
+	script := `set -u
+
+if [ "$1" = "agent-context" ]; then
+  cat <<'JSON'
+{
+  "commands": [
+    {"name":"reports","subcommands":[
+      {"name":"broken-filter"}
+    ]}
+  ]
+}
+JSON
+  exit 0
+fi
+
+if [ "$1" = "reports" ] && [ "$2" = "broken-filter" ] && [ "${3:-}" = "--help" ]; then
+  cat <<'HELP'
+Run a report with an invalid upstream filter.
+
+Usage:
+  fixture-pp-cli reports broken-filter [flags]
+
+Examples:
+  fixture-pp-cli reports broken-filter
+
+Flags:
+      --json    Output JSON
+HELP
+  exit 0
+fi
+
+if [ "$1" = "reports" ] && [ "$2" = "broken-filter" ]; then
+  echo 'HTTP 400: {"error":"invalid filter"}' >&2
+  exit 1
+fi
+
+echo "unexpected args: $*" >&2
+exit 99
+`
+	writeStubBinary(t, dir, binaryName, script)
+	return dir, binaryName
+}
+
 func TestValidLiveDogfoodJSONOutputAcceptsNDJSON(t *testing.T) {
 	t.Parallel()
 
@@ -180,7 +1614,66 @@ func TestLiveDogfoodUnavailableForRunnerDoesNotHideNotFound(t *testing.T) {
 
 	assert.True(t, liveDogfoodUnavailableForRunner(liveDogfoodRun{stderr: "HTTP 403 permission denied"}))
 	assert.True(t, liveDogfoodUnavailableForRunner(liveDogfoodRun{stderr: "your credentials are valid but lack access"}))
+	assert.True(t, liveDogfoodUnavailableForRunner(liveDogfoodRun{stderr: `HTTP 401: {"error":"Couldn't authenticate you"}`}))
 	assert.False(t, liveDogfoodUnavailableForRunner(liveDogfoodRun{stderr: "HTTP 404 NotFound"}))
+}
+
+func TestLiveDogfoodRequiredParamFixtureReason(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name string
+		run  liveDogfoodRun
+		want string
+	}{
+		{
+			name: "missing required parameter 4xx is blocked fixture",
+			run:  liveDogfoodRun{stderr: `HTTP 400: {"error":"missing required parameter: email"}`, exitCode: 1},
+			want: reasonRequiredParamFixture,
+		},
+		{
+			name: "please provide 4xx is blocked fixture",
+			run:  liveDogfoodRun{stderr: `HTTP 400: {"error":"Please provide email"}`, exitCode: 1},
+			want: reasonRequiredParamFixture,
+		},
+		{
+			name: "ordinary 4xx remains a failure",
+			run:  liveDogfoodRun{stderr: "HTTP 404 NotFound", exitCode: 1},
+		},
+		{
+			name: "401 auth requirement is not a blocked fixture",
+			run:  liveDogfoodRun{stderr: `HTTP 401: {"error":"api key is required"}`, exitCode: 1},
+		},
+		{
+			name: "403 subscription requirement is not a blocked fixture",
+			run:  liveDogfoodRun{stderr: `HTTP 403: {"error":"subscription is required"}`, exitCode: 1},
+		},
+		{
+			name: "404 not found requirement is not a blocked fixture",
+			run:  liveDogfoodRun{stderr: `HTTP 404: {"error":"widget id is required"}`, exitCode: 1},
+		},
+		{
+			name: "generic 400 requirement is not a blocked fixture",
+			run:  liveDogfoodRun{stderr: `HTTP 400: {"error":"subscription is required"}`, exitCode: 1},
+		},
+		{
+			name: "generic please provide 400 is not a blocked fixture",
+			run:  liveDogfoodRun{stderr: `HTTP 400: {"error":"Please provide subscription"}`, exitCode: 1},
+		},
+		{
+			name: "422 missing field validation is not a blocked fixture",
+			run:  liveDogfoodRun{stderr: `HTTP 422: {"error":"missing field: status"}`, exitCode: 1},
+		},
+		{
+			name: "successful output is not a blocked fixture",
+			run:  liveDogfoodRun{stderr: `HTTP 400: {"error":"missing required parameter: email"}`, exitCode: 0},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, liveDogfoodRequiredParamFixtureReason(tc.run))
+		})
+	}
 }
 
 func TestRunLiveDogfoodSkipsDestructiveByDefault(t *testing.T) {
@@ -246,23 +1739,86 @@ func TestRunLiveDogfoodExplicitBinaryNameMustExist(t *testing.T) {
 	assert.Contains(t, err.Error(), "missing-pp-cli")
 }
 
-func TestRunLiveDogfoodAcceptanceRequiresManifestIdentity(t *testing.T) {
+func TestRunLiveDogfoodAcceptanceWithoutManifestEmitsMarker(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("test uses a shell script as the fake binary; skip on Windows")
 	}
 
+	// Phase 5 dogfood runs before `lock promote` writes the manifest. With
+	// no .printing-press.json on disk and no runstate matching this temp
+	// fixture, --write-acceptance must still emit a marker carrying the
+	// dogfood run's own state. Identity stays empty; the gate cross-check
+	// in validatePhase5Marker only enforces identity when the manifest
+	// supplies it.
 	dir, binaryName := writeLiveDogfoodFixture(t, true)
 	require.NoError(t, os.Remove(filepath.Join(dir, CLIManifestFilename)))
 
-	_, err := RunLiveDogfood(LiveDogfoodOptions{
+	markerPath := filepath.Join(t.TempDir(), Phase5AcceptanceFilename)
+	report, err := RunLiveDogfood(LiveDogfoodOptions{
 		CLIDir:              dir,
 		BinaryName:          binaryName,
 		Level:               "full",
 		Timeout:             2 * time.Second,
-		WriteAcceptancePath: filepath.Join(t.TempDir(), Phase5AcceptanceFilename),
+		WriteAcceptancePath: markerPath,
 	})
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "CLI manifest")
+	require.NoError(t, err)
+	require.Equal(t, "PASS", report.Verdict, report.Tests)
+
+	data, err := os.ReadFile(markerPath)
+	require.NoError(t, err)
+	var marker Phase5GateMarker
+	require.NoError(t, json.Unmarshal(data, &marker))
+	assert.Equal(t, "pass", marker.Status)
+	assert.Equal(t, "full", marker.Level)
+	assert.Equal(t, report.MatrixSize, marker.MatrixSize)
+	assert.Equal(t, report.Passed, marker.TestsPassed)
+	assert.Empty(t, marker.APIName, "marker should not invent identity when neither manifest nor runstate supplies it")
+	assert.Empty(t, marker.RunID, "marker should not invent identity when neither manifest nor runstate supplies it")
+	assert.Equal(t, "none", marker.AuthContext.Type)
+
+	// Validation passes against an unidentified manifest because the
+	// cross-check has nothing to enforce.
+	validation := ValidatePhase5Gate(filepath.Dir(markerPath), CLIManifest{AuthType: "none"})
+	assert.True(t, validation.Passed, validation.Detail)
+}
+
+func TestRunLiveDogfoodAcceptanceFallsBackToRunstateIdentity(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test uses a shell script as the fake binary; skip on Windows")
+	}
+
+	// Pre-promote scenario from issue #963: working dir has no manifest but
+	// runstate identifies the CLI. The marker must record state's
+	// api_name/run_id so the gate cross-check at promote time matches the
+	// manifest lock promote will write.
+	setPressTestEnv(t)
+
+	dir, binaryName := writeLiveDogfoodFixture(t, true)
+	require.NoError(t, os.Remove(filepath.Join(dir, CLIManifestFilename)))
+
+	state := NewState("fixture", dir)
+	require.NoError(t, state.Save())
+
+	markerPath := filepath.Join(t.TempDir(), Phase5AcceptanceFilename)
+	report, err := RunLiveDogfood(LiveDogfoodOptions{
+		CLIDir:              dir,
+		BinaryName:          binaryName,
+		Level:               "full",
+		Timeout:             2 * time.Second,
+		WriteAcceptancePath: markerPath,
+	})
+	require.NoError(t, err)
+	require.Equal(t, "PASS", report.Verdict, report.Tests)
+
+	data, err := os.ReadFile(markerPath)
+	require.NoError(t, err)
+	var marker Phase5GateMarker
+	require.NoError(t, json.Unmarshal(data, &marker))
+	assert.Equal(t, "fixture", marker.APIName, "marker should record runstate api_name when manifest is absent")
+	assert.Equal(t, state.RunID, marker.RunID, "marker should record runstate run_id when manifest is absent")
+
+	validation := ValidatePhase5Gate(filepath.Dir(markerPath), CLIManifest{APIName: "fixture", RunID: state.RunID, AuthType: "none"})
+	assert.True(t, validation.Passed, validation.Detail)
 }
 
 // TestFinalizeLiveDogfoodReportVerdictGate exercises the quick-level verdict
@@ -402,6 +1958,59 @@ func TestFinalizeLiveDogfoodReportVerdictGate(t *testing.T) {
 				report.Passed, report.Failed, report.Skipped, report.MatrixSize)
 		})
 	}
+}
+
+func TestLiveDogfoodQuickCommandsSamplesAcrossFamilies(t *testing.T) {
+	commands := []liveDogfoodCommand{
+		{Path: []string{"across-admins"}},
+		{Path: []string{"administration", "get"}},
+		{Path: []string{"administration", "list"}},
+		{Path: []string{"contacts", "get"}},
+		{Path: []string{"contacts", "list"}},
+		{Path: []string{"invoices", "get"}},
+		{Path: []string{"ledger", "get"}},
+		{Path: []string{"mutations", "create"}},
+		{Path: []string{"relations", "get"}},
+		{Path: []string{"reports", "list"}},
+		{Path: []string{"transactions", "get"}},
+		{Path: []string{"transactions", "list"}},
+	}
+
+	got := liveDogfoodQuickCommands(commands)
+
+	require.Len(t, got, 6)
+	families := map[string]bool{}
+	for _, command := range got {
+		families[liveDogfoodCommandFamily(command)] = true
+	}
+	assert.GreaterOrEqual(t, len(families), 3)
+	assert.NotEqual(t, commands[:2], got,
+		"quick sampling should not collapse to the first two sorted commands")
+}
+
+func TestLiveDogfoodQuickCommandsDoesNotDeduplicateEmptyFamily(t *testing.T) {
+	commands := []liveDogfoodCommand{
+		{Path: nil},
+		{Path: []string{}},
+		{Path: []string{"administration", "get"}},
+		{Path: []string{"administration", "list"}},
+		{Path: []string{"contacts", "get"}},
+		{Path: []string{"contacts", "list"}},
+		{Path: []string{"invoices", "get"}},
+		{Path: []string{"invoices", "list"}},
+	}
+
+	got := liveDogfoodQuickCommands(commands)
+
+	require.Len(t, got, 6)
+	assert.Equal(t, []liveDogfoodCommand{
+		commands[0],
+		commands[1],
+		commands[2],
+		commands[4],
+		commands[6],
+		commands[3],
+	}, got)
 }
 
 func TestExtractFirstIDFromJSON(t *testing.T) {
@@ -930,6 +2539,373 @@ if [ "$1" = "widgets" ] && [ "$2" = "broken" ]; then
     exit 0
   fi
   echo 'broken'
+  exit 0
+fi
+
+echo "unexpected args: $*" >&2
+exit 99
+`
+	require.NoError(t, os.WriteFile(binPath, []byte(script), 0o755))
+	return dir, binaryName
+}
+
+func writeLiveDogfoodTierFixture(t *testing.T, annotate bool, adminPass bool, runnableExample bool) (dir string, binaryName string, argvLog string) {
+	t.Helper()
+
+	dir = t.TempDir()
+	binaryName = "fixture-pp-cli"
+	argvLog = filepath.Join(t.TempDir(), "argv.log")
+	writeTestManifestForLiveDogfood(t, dir)
+
+	annotation := ""
+	if annotate {
+		annotation = `,"annotations":{"pp:requires-tier":"accountant"}`
+	}
+	adminExample := "  fixture-pp-cli administration get adm_1"
+	if !runnableExample {
+		adminExample = "  fixture-pp-cli administration list --json"
+	}
+	adminBody := `echo 'Error: GET /v1/administration returned HTTP 400: {"type":"badrequest","code":"EP_001","title":"This endpoint is only available to accountants.","status":400}' >&2
+exit 5`
+	if adminPass {
+		adminBody = `if [ "${3:-}" = "__printing_press_invalid__" ]; then
+  echo 'invalid id' >&2
+  exit 2
+fi
+if [ "${4:-}" = "--json" ]; then
+  echo '{"id":"administration"}'
+  exit 0
+fi
+echo 'administration'
+exit 0`
+	}
+
+	binPath := filepath.Join(dir, binaryName)
+	script := `#!/bin/sh
+set -u
+
+if [ -n "${PRINTING_PRESS_TEST_ARGV_LOG:-}" ]; then
+  printf '%s\n' "$*" >> "$PRINTING_PRESS_TEST_ARGV_LOG"
+fi
+
+if [ "$1" = "agent-context" ]; then
+  cat <<'JSON'
+{
+	"commands": [
+	    {"name":"administration","subcommands":[
+	      {"name":"get"` + annotation + `},
+	      {"name":"list"}
+	    ]},
+	    {"name":"public","subcommands":[
+	      {"name":"list"}
+    ]}
+  ]
+}
+JSON
+  exit 0
+fi
+
+if [ "$1" = "administration" ] && [ "$2" = "get" ] && [ "${3:-}" = "--help" ]; then
+  cat <<'HELP'
+Get administration details.
+
+Usage:
+  fixture-pp-cli administration get <id> [flags]
+
+Examples:
+` + adminExample + `
+
+Flags:
+      --json    Output JSON
+HELP
+  exit 0
+fi
+
+if [ "$1" = "administration" ] && [ "$2" = "list" ] && [ "${3:-}" = "--help" ]; then
+  cat <<'HELP'
+List administration records.
+
+Usage:
+  fixture-pp-cli administration list [flags]
+
+Examples:
+  fixture-pp-cli administration list --json
+
+Flags:
+      --json       Output JSON
+      --limit int  Limit results
+HELP
+  exit 0
+fi
+
+if [ "$1" = "public" ] && [ "$2" = "list" ] && [ "${3:-}" = "--help" ]; then
+  cat <<'HELP'
+List public records.
+
+Usage:
+  fixture-pp-cli public list [flags]
+
+Examples:
+  fixture-pp-cli public list --json
+
+Flags:
+      --json    Output JSON
+HELP
+  exit 0
+fi
+
+if [ "$1" = "administration" ] && [ "$2" = "get" ]; then
+` + adminBody + `
+fi
+
+if [ "$1" = "administration" ] && [ "$2" = "list" ]; then
+  echo '{"results":[{"id":"adm_1"}]}'
+  exit 0
+fi
+
+if [ "$1" = "public" ] && [ "$2" = "list" ]; then
+  echo '{"results":[{"id":"pub_1"}]}'
+  exit 0
+fi
+
+echo "unexpected args: $*" >&2
+exit 99
+`
+	require.NoError(t, os.WriteFile(binPath, []byte(script), 0o755))
+	return dir, binaryName, argvLog
+}
+
+func writeLiveDogfoodHomeProbeFixture(t *testing.T, probe string) (dir string, binaryName string) {
+	t.Helper()
+
+	dir = t.TempDir()
+	binaryName = "fixture-pp-cli"
+	binPath := filepath.Join(dir, binaryName)
+	script := `#!/bin/sh
+set -u
+
+if [ "${1:-}" = "agent-context" ]; then
+  cat <<'JSON'
+{
+  "commands": [
+    {"name":"widgets","subcommands":[
+      {"name":"list"},
+      {"name":"recent"}
+    ]}
+  ]
+}
+JSON
+  exit 0
+fi
+
+if [ "${1:-}" = "widgets" ] && [ "${2:-}" = "list" ] && [ "${3:-}" = "--help" ]; then
+  cat <<'HELP'
+List widgets.
+
+Usage:
+  fixture-pp-cli widgets list [flags]
+
+Examples:
+  fixture-pp-cli widgets list --json
+
+Flags:
+      --json    Output JSON
+HELP
+  exit 0
+fi
+
+if [ "${1:-}" = "widgets" ] && [ "${2:-}" = "recent" ] && [ "${3:-}" = "--help" ]; then
+  cat <<'HELP'
+List recent widgets.
+
+Usage:
+  fixture-pp-cli widgets recent [flags]
+
+Examples:
+  fixture-pp-cli widgets recent --json
+
+Flags:
+      --json    Output JSON
+HELP
+  exit 0
+fi
+
+if [ "${1:-}" = "widgets" ] && { [ "${2:-}" = "list" ] || [ "${2:-}" = "recent" ]; }; then
+  ` + probe + `
+  if [ "${3:-}" = "--json" ]; then
+    echo '{"results":[{"id":"123"}]}'
+    exit 0
+  fi
+  echo 'widget 1'
+  exit 0
+fi
+
+echo "unexpected args: $*" >&2
+exit 99
+`
+	require.NoError(t, os.WriteFile(binPath, []byte(script), 0o755))
+	return dir, binaryName
+}
+
+func writeLiveDogfoodLargeJSONFixture(t *testing.T) (dir string, binaryName string) {
+	t.Helper()
+
+	dir = t.TempDir()
+	binaryName = "fixture-pp-cli"
+	writeTestManifestForLiveDogfood(t, dir)
+
+	binPath := filepath.Join(dir, binaryName)
+	script := fmt.Sprintf(`#!/bin/sh
+set -u
+
+if [ "$1" = "agent-context" ]; then
+  cat <<'JSON'
+{
+  "commands": [
+    {"name":"widgets","subcommands":[{"name":"large"}]}
+  ]
+}
+JSON
+  exit 0
+fi
+
+if [ "$1" = "widgets" ] && [ "$2" = "large" ] && [ "${3:-}" = "--help" ]; then
+  cat <<'HELP'
+Large widgets.
+
+Usage:
+  fixture-pp-cli widgets large [flags]
+
+Examples:
+  fixture-pp-cli widgets large --json
+
+Flags:
+      --json    Output JSON
+HELP
+  exit 0
+fi
+
+if [ "$1" = "widgets" ] && [ "$2" = "large" ]; then
+  if [ "${3:-}" = "--json" ]; then
+    printf '{"id":"first"}\n'
+    printf '{"data":"'
+    head -c %d /dev/zero | tr '\0' 'x'
+    printf '"}\n'
+    exit 0
+  fi
+  echo 'large widgets'
+  exit 0
+fi
+
+echo "unexpected args: $*" >&2
+exit 99
+`, liveDogfoodMaxOutputBytes+1024)
+	require.NoError(t, os.WriteFile(binPath, []byte(script), 0o755))
+	return dir, binaryName
+}
+
+func writeLiveDogfoodSoftFailureFixture(t *testing.T) (dir string, binaryName string) {
+	t.Helper()
+
+	dir = t.TempDir()
+	binaryName = "fixture-pp-cli"
+	writeTestManifestForLiveDogfood(t, dir)
+
+	binPath := filepath.Join(dir, binaryName)
+	script := `#!/bin/sh
+set -u
+
+if [ -n "${PRINTING_PRESS_TEST_ARGV_LOG:-}" ]; then
+  printf '%s\n' "$*" >> "$PRINTING_PRESS_TEST_ARGV_LOG"
+fi
+
+if [ "$1" = "agent-context" ]; then
+  cat <<'JSON'
+{
+  "commands": [
+    {"name":"widgets","subcommands":[
+      {"name":"list"},
+      {"name":"soft-lookup","annotations":{"pp:no-error-path-probe":"true"}},
+      {"name":"status","annotations":{"pp:no-error-path-probe":"true"}}
+    ]}
+  ]
+}
+JSON
+  exit 0
+fi
+
+if [ "$1" = "widgets" ] && [ "$2" = "list" ] && [ "${3:-}" = "--help" ]; then
+  cat <<'HELP'
+List widgets.
+
+Usage:
+  fixture-pp-cli widgets list [flags]
+
+Examples:
+  fixture-pp-cli widgets list --json
+
+Flags:
+      --json    Output JSON
+HELP
+  exit 0
+fi
+
+if [ "$1" = "widgets" ] && [ "$2" = "list" ]; then
+  if [ "${3:-}" = "--json" ]; then
+    echo '{"results":[{"id":"42"}]}'
+    exit 0
+  fi
+  echo 'widget 1'
+  exit 0
+fi
+
+if [ "$1" = "widgets" ] && [ "$2" = "soft-lookup" ] && [ "${3:-}" = "--help" ]; then
+  cat <<'HELP'
+Lookup a widget through a soft-failure endpoint.
+
+Usage:
+  fixture-pp-cli widgets soft-lookup <id> [flags]
+
+Examples:
+  fixture-pp-cli widgets soft-lookup 42
+
+Flags:
+      --json    Output JSON
+HELP
+  exit 0
+fi
+
+if [ "$1" = "widgets" ] && [ "$2" = "soft-lookup" ]; then
+  if [ "${4:-}" = "--json" ]; then
+    echo '{"id":"42","results":[]}'
+    exit 0
+  fi
+  echo "soft lookup $3"
+  exit 0
+fi
+
+if [ "$1" = "widgets" ] && [ "$2" = "status" ] && [ "${3:-}" = "--help" ]; then
+  cat <<'HELP'
+Show widget service status.
+
+Usage:
+  fixture-pp-cli widgets status [flags]
+
+Examples:
+  fixture-pp-cli widgets status
+
+Flags:
+      --json    Output JSON
+HELP
+  exit 0
+fi
+
+if [ "$1" = "widgets" ] && [ "$2" = "status" ]; then
+  if [ "${3:-}" = "--json" ]; then
+    echo '{"ok":true}'
+    exit 0
+  fi
+  echo 'ok'
   exit 0
 fi
 
@@ -1808,6 +3784,45 @@ func TestRunLiveDogfoodSearchErrorPathEmptyResults(t *testing.T) {
 	assert.Equal(t, LiveDogfoodStatusPass, got.Status, got.Reason)
 }
 
+func TestRunLiveDogfoodErrorPathSkipsAnnotatedSoftFailureCommand(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test uses a shell script as the fake binary; skip on Windows")
+	}
+	dir, binaryName := writeLiveDogfoodSoftFailureFixture(t)
+	argvLog := filepath.Join(t.TempDir(), "argv.log")
+	t.Setenv("PRINTING_PRESS_TEST_ARGV_LOG", argvLog)
+	report := runRichFixtureMatrix(t, dir, binaryName)
+
+	got := findResultByCommandKind(report, "widgets soft-lookup", LiveDogfoodTestError)
+	require.NotNil(t, got, "expected widgets soft-lookup error_path in report")
+	assert.Equal(t, LiveDogfoodStatusSkip, got.Status, got.Reason)
+	assert.Equal(t, reasonNoErrorPathProbeAnnotation, got.Reason)
+	assert.Empty(t, got.Args, "skipped error_path must not include executable args")
+
+	for _, kind := range []LiveDogfoodTestKind{LiveDogfoodTestHelp, LiveDogfoodTestHappy, LiveDogfoodTestJSON} {
+		result := findResultByCommandKind(report, "widgets soft-lookup", kind)
+		require.NotNil(t, result, "expected widgets soft-lookup %s in report", kind)
+		assert.Equal(t, LiveDogfoodStatusPass, result.Status, result.Reason)
+	}
+
+	lines := readArgvLog(t, argvLog)
+	assert.Equal(t, 0, countArgvLines(lines, "widgets soft-lookup", "__printing_press_invalid__"),
+		"error_path probe must not invoke the binary for annotated soft-failure commands")
+}
+
+func TestRunLiveDogfoodErrorPathAnnotationPreservesNoPositionalSkip(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test uses a shell script as the fake binary; skip on Windows")
+	}
+	dir, binaryName := writeLiveDogfoodSoftFailureFixture(t)
+	report := runRichFixtureMatrix(t, dir, binaryName)
+
+	got := findResultByCommandKind(report, "widgets status", LiveDogfoodTestError)
+	require.NotNil(t, got, "expected widgets status error_path skip in report")
+	assert.Equal(t, LiveDogfoodStatusSkip, got.Status, got.Reason)
+	assert.Equal(t, "no positional argument", got.Reason)
+}
+
 func TestRunLiveDogfoodSearchErrorPathFallbackResults(t *testing.T) {
 	dir, binaryName, _ := setupRichFixture(t)
 	t.Setenv("PRINTING_PRESS_TEST_WIDGETS_SEARCH_MODE", "fallback")
@@ -1885,18 +3900,27 @@ func TestRunLiveDogfoodSearchErrorPathInvalidJSON(t *testing.T) {
 }
 
 func TestRunLiveDogfoodSearchErrorPathMutationFallthrough(t *testing.T) {
-	dir, binaryName, _ := setupRichFixture(t)
+	dir, binaryName, argvLogPath := setupRichFixture(t)
 	report := runRichFixtureMatrix(t, dir, binaryName)
 
-	// widgets delete has no --query flag and no <query> positional, so
-	// commandSupportsSearch returns false. Even if it had --query (it
-	// doesn't), the mutating-leaf deny-list (delete is in mutatingVerbs)
-	// would still suppress search-shape and route to the existing
-	// non-zero-required strategy. Fixture exit 2 → Pass.
+	// widgets delete is a mutating leaf (in mutatingVerbs). The error_path
+	// probe is skipped without invoking the binary so that APIs which would
+	// accept __printing_press_invalid__ as a real id (and queue or perform
+	// the deletion) cannot mutate live data.
 	got := findResultByCommandKind(report, "widgets delete", LiveDogfoodTestError)
 	require.NotNil(t, got)
-	assert.Equal(t, LiveDogfoodStatusPass, got.Status, got.Reason)
-	assert.Equal(t, 2, got.ExitCode)
+	assert.Equal(t, LiveDogfoodStatusSkip, got.Status, got.Reason)
+	assert.Equal(t, reasonMutatingErrorPath, got.Reason)
+	assert.Empty(t, got.Args, "skipped error_path must not include executable mutation args")
+	assert.Equal(t, 0, got.ExitCode, "skipped error_path must not record a real exit code")
+
+	// Defense-in-depth: the binary must not have been invoked with the
+	// invalid-id sentinel. Status=Skip alone is structurally distinct from
+	// a Pass that ran the probe, but a direct argv-log check makes the
+	// "no live invocation" invariant explicit.
+	lines := readArgvLog(t, argvLogPath)
+	assert.Equal(t, 0, countArgvLines(lines, "delete", "__printing_press_invalid__"),
+		"error_path probe must not invoke the binary for a mutating command")
 }
 
 // writeLiveDogfoodDryRunFixture builds a CLI binary that exposes three
@@ -1924,6 +3948,12 @@ func writeLiveDogfoodDryRunFixture(t *testing.T) (dir string, binaryName string)
 	binPath := filepath.Join(dir, binaryName)
 	script := `#!/bin/sh
 set -u
+
+# Argv logging side channel — same convention as setupRichFixture. Tests
+# that don't set PRINTING_PRESS_TEST_ARGV_LOG see no behavior change.
+if [ -n "${PRINTING_PRESS_TEST_ARGV_LOG:-}" ]; then
+  printf '%s\n' "$*" >> "$PRINTING_PRESS_TEST_ARGV_LOG"
+fi
 
 if [ "$1" = "agent-context" ]; then
   cat <<'JSON'
@@ -2236,6 +4266,37 @@ func TestRunLiveDogfoodErrorPathRealSkipMatchesHappyPathReason(t *testing.T) {
 		"resolve-skipped reason should surface the list-companion gap")
 }
 
+func TestRunLiveDogfoodSkipsErrorPathForMutatorWithDryRun(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test uses a shell script as the fake binary; skip on Windows")
+	}
+	argvLogPath := filepath.Join(t.TempDir(), "argv.log")
+	t.Setenv("PRINTING_PRESS_TEST_ARGV_LOG", argvLogPath)
+	dir, binaryName := writeLiveDogfoodDryRunFixture(t)
+	report := runDryRunFixtureMatrix(t, dir, binaryName)
+
+	// widgets update <id> is a mutator that advertises --dry-run and takes a
+	// positional argument. The fixture is wired to exit 99 ("matrix should
+	// have skipped") if invoked. With the fix the error_path probe must
+	// skip outright instead of running `widgets update __printing_press_invalid__`
+	// against the live API — even though --dry-run could be injected, the
+	// error_path's invalid-argument semantics are not compatible with a
+	// dry-run preview, so the safe action is to skip.
+	got := findResultByCommandKind(report, "widgets update", LiveDogfoodTestError)
+	require.NotNil(t, got, "expected widgets update error_path result in matrix")
+	assert.Equal(t, LiveDogfoodStatusSkip, got.Status, got.Reason)
+	assert.Equal(t, reasonMutatingErrorPath, got.Reason)
+	assert.Empty(t, got.Args, "skipped error_path must not include executable mutation args")
+
+	// Defense-in-depth: assert the binary was never invoked with the
+	// invalid-id sentinel. The exit-99 sentinel in the fixture already
+	// catches regression via the Status/Args/ExitCode assertions, but
+	// stating the "no live invocation" invariant directly is clearer.
+	lines := readArgvLog(t, argvLogPath)
+	assert.Equal(t, 0, countArgvLines(lines, "update", "__printing_press_invalid__"),
+		"error_path probe must not invoke the binary for a mutating command")
+}
+
 // TestRunLiveDogfoodErrorPathRealReportContribution locks in the matrix
 // counters so the new test kind threads through finalizeLiveDogfoodReport
 // without weakening the verdict math (which counts by Status, not by Kind).
@@ -2252,4 +4313,45 @@ func TestRunLiveDogfoodErrorPathRealReportContribution(t *testing.T) {
 	assert.Equal(t, report.Passed+report.Failed, report.MatrixSize,
 		"MatrixSize should equal Passed + Failed (skipped entries do not contribute)")
 	assert.Equal(t, 0, report.Failed)
+}
+
+func TestLiveDogfoodHappyArgsHonorsPPHappyArgs(t *testing.T) {
+	// pp:happy-args supplies a real value, overriding the Example placeholder
+	// ("example-value") that strict upstream validators reject with HTTP 400.
+	flagCmd := liveDogfoodCommand{
+		Path:        []string{"users", "get-by-ids"},
+		Help:        "Usage:\n  cli users get-by-ids [flags]\n\nExamples:\n  cli users get-by-ids --ids example-value\n",
+		Annotations: map[string]string{happyArgsAnnotation: "--ids=12"},
+	}
+	args, ok := liveDogfoodHappyArgs(flagCmd)
+	require.True(t, ok)
+	assert.Equal(t, []string{"users", "get-by-ids", "--ids", "12"}, args,
+		"flag-form pp:happy-args must override the Example placeholder")
+
+	// Positional form: <name>=value contributes the value as a positional arg.
+	// resolveCommandPositionals must NOT re-resolve (or skip) it even when the
+	// Usage line carries an <id> placeholder and no list companion is reachable.
+	posCmd := liveDogfoodCommand{
+		Path:        []string{"tweets", "get"},
+		Help:        "Usage:\n  cli tweets get <id> [flags]\n",
+		Annotations: map[string]string{happyArgsAnnotation: "<id>=1750000000000000000"},
+	}
+	args, ok = liveDogfoodHappyArgs(posCmd)
+	require.True(t, ok)
+	assert.Equal(t, []string{"tweets", "get", "1750000000000000000"}, args)
+	resolved, skipped, reason := resolveCommandPositionals(posCmd, args, resolveCtx{})
+	assert.False(t, skipped, "pp:happy-args positional must not be skipped: %s", reason)
+	assert.Equal(t, []string{"tweets", "get", "1750000000000000000"}, resolved,
+		"resolveCommandPositionals must preserve the pp:happy-args positional value")
+
+	// Empty annotation falls through to the Example-derivation path.
+	emptyCmd := liveDogfoodCommand{
+		Path:        []string{"users", "get-by-ids"},
+		Help:        "Usage:\n  cli users get-by-ids [flags]\n\nExamples:\n  cli users get-by-ids --ids example-value\n",
+		Annotations: map[string]string{happyArgsAnnotation: ""},
+	}
+	args, ok = liveDogfoodHappyArgs(emptyCmd)
+	require.True(t, ok)
+	assert.Equal(t, []string{"users", "get-by-ids", "--ids", "example-value"}, args,
+		"empty pp:happy-args must fall through to Example derivation")
 }

@@ -1,7 +1,9 @@
 package pipeline
 
 import (
+	"encoding/json"
 	"fmt"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -60,6 +62,20 @@ func main() {
 	require.Error(t, err)
 	assert.Nil(t, report)
 	assert.FileExists(t, existingBinary)
+}
+
+func TestFindCLICommandDirResolvesRelativeDirFromCLIRoot(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "sample-cli")
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "cmd", "sample-cli"), 0o755))
+	writeTestFile(t, filepath.Join(dir, "cmd", "sample-cli", "main.go"), `package main
+func main() {}
+`)
+
+	t.Chdir(dir)
+
+	cmdDir, err := findCLICommandDir(".")
+	require.NoError(t, err)
+	assert.Equal(t, filepath.Join(dir, "cmd", "sample-cli"), cmdDir)
 }
 
 func TestRunFreshnessContractTestPassesGeneratedSurface(t *testing.T) {
@@ -128,6 +144,36 @@ func TestRunBrowserSessionProofTestPassesValidDoctorProof(t *testing.T) {
 	assert.Empty(t, result.Error)
 }
 
+// TestRunBrowserSessionProofTestPropagatesVerifyEnv guards the fix for
+// shipcheck FAIL-ing on cookie-auth CLIs: doctor must see
+// PRINTING_PRESS_VERIFY=1 so its synthetic browser-session proof
+// short-circuit fires. The stub binary returns a valid proof only when
+// the env var is set; without the probe's env augmentation it would
+// score 0.
+func TestRunBrowserSessionProofTestPropagatesVerifyEnv(t *testing.T) {
+	binary := buildVerifyEnvDoctorBinary(t)
+	// Fully unset PRINTING_PRESS_VERIFY for the duration of the test
+	// rather than t.Setenv(key, ""), which would leave PRINTING_PRESS_VERIFY=
+	// in os.Environ() and let it shadow the probe's later "=1" entry on
+	// platforms where the first env occurrence wins.
+	prev, had := os.LookupEnv("PRINTING_PRESS_VERIFY")
+	require.NoError(t, os.Unsetenv("PRINTING_PRESS_VERIFY"))
+	t.Cleanup(func() {
+		if had {
+			_ = os.Setenv("PRINTING_PRESS_VERIFY", prev)
+		}
+	})
+
+	result := runBrowserSessionProofTest(binary, apispec.AuthConfig{
+		RequiresBrowserSession:       true,
+		BrowserSessionValidationPath: "/api/items",
+	})
+
+	assert.Equal(t, 3, result.Score)
+	assert.True(t, result.Execute)
+	assert.Empty(t, result.Error)
+}
+
 func TestRunCommandTestsExecutesMockReadCommands(t *testing.T) {
 	binary := buildCommandProbeBinary(t)
 	cmd := discoveredCommand{Name: "items", Kind: "read"}
@@ -136,6 +182,329 @@ func TestRunCommandTestsExecutesMockReadCommands(t *testing.T) {
 	assert.True(t, result.Help)
 	assert.True(t, result.DryRun)
 	assert.False(t, result.Execute)
+}
+
+func TestRunCommandTestsUsesHappyArgsAnnotation(t *testing.T) {
+	binary := buildHappyArgsProbeBinary(t)
+	cmd := discoveredCommand{
+		Name: "whereabouts",
+		Kind: "read",
+		Args: []string{"mock-value"},
+		Annotations: map[string]string{
+			happyArgsAnnotation: "<person>=Alice;--query=sunset",
+		},
+	}
+
+	result := runCommandTests(binary, cmd, "mock", os.Environ())
+
+	assert.True(t, result.Help)
+	assert.True(t, result.DryRun)
+	assert.True(t, result.Execute)
+	assert.Equal(t, 3, result.Score)
+}
+
+func TestRunDataPipelineTestMockModeRequiresRows(t *testing.T) {
+	t.Run("fails when sync creates tables but stores no rows", func(t *testing.T) {
+		binary := buildDataPipelineProbeBinary(t, 0)
+
+		pass, detail := runDataPipelineTest(binary, "mock", os.Environ, 2)
+
+		assert.False(t, pass)
+		assert.Contains(t, detail, "1 domain tables created but 0 rows after sync")
+	})
+
+	t.Run("fails when nested mock sync stores fewer rows than served", func(t *testing.T) {
+		binary := buildDataPipelineProbeBinary(t, 1)
+
+		pass, detail := runDataPipelineTest(binary, "mock", os.Environ, 2)
+
+		assert.False(t, pass)
+		assert.Contains(t, detail, "items has 1 rows after sync, expected at least 2")
+	})
+
+	t.Run("passes when sync stores rows", func(t *testing.T) {
+		binary := buildDataPipelineProbeBinary(t, 2)
+
+		pass, detail := runDataPipelineTest(binary, "mock", os.Environ, 2)
+
+		assert.True(t, pass)
+		assert.Contains(t, detail, "items has 2 rows")
+	})
+
+	t.Run("passes when an auxiliary table is empty before populated data table", func(t *testing.T) {
+		binary := buildAuxiliaryFirstDataPipelineProbeBinary(t, 0, 2)
+
+		pass, detail := runDataPipelineTest(binary, "mock", os.Environ, 2)
+
+		assert.True(t, pass)
+		assert.Contains(t, detail, "items has 2 rows")
+	})
+
+	t.Run("passes when an auxiliary table has fewer rows before populated data table", func(t *testing.T) {
+		binary := buildAuxiliaryFirstDataPipelineProbeBinary(t, 1, 2)
+
+		pass, detail := runDataPipelineTest(binary, "mock", os.Environ, 2)
+
+		assert.True(t, pass)
+		assert.Contains(t, detail, "items has 2 rows")
+	})
+
+	t.Run("fails when only an auxiliary table satisfies expected rows", func(t *testing.T) {
+		binary := buildAuxiliaryFirstDataPipelineProbeBinary(t, 3, 0)
+
+		pass, detail := runDataPipelineTest(binary, "mock", os.Environ, 2)
+
+		assert.False(t, pass)
+		assert.Contains(t, detail, "items has 0 rows")
+	})
+}
+
+func TestFinalizeVerifyReportFailsRequiredDataPipeline(t *testing.T) {
+	report := &VerifyReport{
+		DataPipeline:       false,
+		DataPipelineDetail: "FAIL: 1 domain tables created but 0 rows after sync (mock mode)",
+		Results: []CommandResult{{
+			Command: "items",
+			Score:   3,
+		}},
+	}
+
+	finalizeVerifyReport(report, 80, true)
+
+	assert.Equal(t, "FAIL", report.Verdict)
+}
+
+func TestStartMockServerServesNestedDataEnvelopeFixtureFromSpec(t *testing.T) {
+	specPath := filepath.Join(t.TempDir(), "spec.yaml")
+	writeTestFile(t, specPath, `openapi: 3.0.0
+info:
+  title: Nested Data API
+  version: "1.0"
+paths:
+  /users/{user_id}/items:
+    get:
+      operationId: listItems
+      responses:
+        "200":
+          $ref: "#/components/responses/ListItems"
+components:
+  responses:
+    ListItems:
+      description: ok
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: "#/components/schemas/ListEnvelope"
+  schemas:
+    ListEnvelope:
+      type: object
+      properties:
+        success:
+          type: boolean
+        data:
+          type: object
+          properties:
+            items:
+              type: array
+              items:
+                type: object
+                properties:
+                  id:
+                    type: integer
+                  name:
+                    type: string
+            pagination:
+              type: object
+`)
+	spec, err := loadDogfoodOpenAPISpec(specPath)
+	require.NoError(t, err)
+
+	server, baseURL := startMockServer(spec)
+	defer server.Close()
+
+	resp, err := http.Get(baseURL + "/users/mock-user/items")
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	var body struct {
+		Success bool `json:"success"`
+		Data    struct {
+			Items      []map[string]any `json:"items"`
+			Pagination map[string]any   `json:"pagination"`
+		} `json:"data"`
+	}
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&body))
+	assert.True(t, body.Success)
+	assert.Len(t, body.Data.Items, 2)
+	assert.Equal(t, float64(2), body.Data.Pagination["total"])
+}
+
+func TestStartMockServerIgnoresNestedDataEnvelopeForNonJSONResponses(t *testing.T) {
+	specPath := filepath.Join(t.TempDir(), "spec.yaml")
+	writeTestFile(t, specPath, `openapi: 3.0.0
+info:
+  title: XML Data API
+  version: "1.0"
+paths:
+  /items:
+    get:
+      operationId: listItems
+      responses:
+        "200":
+          description: ok
+          content:
+            application/xml:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  data:
+                    type: object
+                    properties:
+                      items:
+                        type: array
+                        items:
+                          type: object
+`)
+	spec, err := loadDogfoodOpenAPISpec(specPath)
+	require.NoError(t, err)
+	assert.Empty(t, spec.NestedDataEnvelopes)
+
+	server, baseURL := startMockServer(spec)
+	defer server.Close()
+
+	resp, err := http.Get(baseURL + "/items")
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	var body []map[string]any
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&body))
+	assert.Len(t, body, 1)
+}
+
+func TestDetectNestedDataEnvelopeFixturesSortsHTTPMethods(t *testing.T) {
+	spec := []byte(`openapi: 3.0.0
+info:
+  title: Method Order API
+  version: "1.0"
+paths:
+  /items:
+    patch:
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      results:
+                        type: array
+                        items:
+                          type: object
+    get:
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      items:
+                        type: array
+                        items:
+                          type: object
+`)
+
+	fixtures := detectNestedDataEnvelopeFixtures(spec)
+
+	require.Contains(t, fixtures, "/items")
+	assert.Equal(t, "items", fixtures["/items"].ArrayKey)
+}
+
+func TestRunCommandTestsWithoutHappyArgsKeepsGenericFailure(t *testing.T) {
+	binary := buildHappyArgsProbeBinary(t)
+	cmd := discoveredCommand{
+		Name: "whereabouts",
+		Kind: "read",
+		Args: []string{"mock-value"},
+	}
+
+	result := runCommandTests(binary, cmd, "mock", os.Environ())
+
+	assert.True(t, result.Help)
+	assert.False(t, result.DryRun)
+	assert.False(t, result.Execute)
+	assert.Equal(t, 1, result.Score)
+}
+
+func TestRunSideEffectSafeCommandTestsUsesHappyArgsWithoutNoArgProbe(t *testing.T) {
+	logPath := filepath.Join(t.TempDir(), "invocations.log")
+	binary := buildHappyArgsProbeBinary(t)
+	cmd := discoveredCommand{
+		Name: "whereabouts",
+		Kind: "read",
+		Args: []string{"mock-value"},
+		Annotations: map[string]string{
+			happyArgsAnnotation: "<person>=Alice;--query=sunset",
+		},
+	}
+	env := append(os.Environ(), "PP_PROBE_LOG="+logPath)
+
+	result := runSideEffectSafeCommandTests(binary, cmd, env)
+
+	assert.True(t, result.Help)
+	assert.True(t, result.DryRun)
+	assert.True(t, result.Execute)
+	assert.Equal(t, 3, result.Score)
+
+	data, err := os.ReadFile(logPath)
+	require.NoError(t, err)
+	assert.NotContains(t, string(data), "whereabouts\n")
+}
+
+// buildVerifyEnvDoctorBinary builds a stub printed-CLI binary whose
+// `doctor --json` returns a valid browser-session proof only when its
+// process sees PRINTING_PRESS_VERIFY=1; otherwise it reports the proof
+// as missing. Used to verify env propagation from the verify probe.
+func buildVerifyEnvDoctorBinary(t *testing.T) string {
+	t.Helper()
+
+	dir := t.TempDir()
+	mainFile := filepath.Join(dir, "main.go")
+	writeTestFile(t, mainFile, `package main
+
+import (
+	"fmt"
+	"os"
+)
+
+func main() {
+	if len(os.Args) >= 3 && os.Args[1] == "doctor" && os.Args[2] == "--json" {
+		if os.Getenv("PRINTING_PRESS_VERIFY") == "1" {
+			fmt.Println(`+"`"+`{"browser_session_proof":"valid","browser_session_proof_detail":"synthetic"}`+"`"+`)
+			return
+		}
+		fmt.Println(`+"`"+`{"browser_session_proof":"missing","browser_session_proof_detail":"PRINTING_PRESS_VERIFY not set"}`+"`"+`)
+		return
+	}
+	os.Exit(1)
+}
+`)
+	binaryPath := filepath.Join(dir, "test-cli")
+	buildCmd := exec.Command("go", "build", "-o", binaryPath, mainFile)
+	out, err := buildCmd.CombinedOutput()
+	require.NoError(t, err, "building test binary: %s", string(out))
+	return binaryPath
 }
 
 func buildDoctorJSONBinary(t *testing.T, payload string) string {
@@ -185,6 +554,149 @@ func main() {
 	os.Exit(1)
 }
 `)
+	binaryPath := filepath.Join(dir, "test-cli")
+	buildCmd := exec.Command("go", "build", "-o", binaryPath, mainFile)
+	out, err := buildCmd.CombinedOutput()
+	require.NoError(t, err, "building test binary: %s", string(out))
+	return binaryPath
+}
+
+func buildHappyArgsProbeBinary(t *testing.T) string {
+	t.Helper()
+
+	dir := t.TempDir()
+	mainFile := filepath.Join(dir, "main.go")
+	writeTestFile(t, mainFile, `package main
+
+import (
+	"os"
+	"strings"
+)
+
+func main() {
+	args := os.Args[1:]
+	if logPath := os.Getenv("PP_PROBE_LOG"); logPath != "" {
+		f, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+		if err == nil {
+			_, _ = f.WriteString(strings.Join(args, " ") + "\n")
+			_ = f.Close()
+		}
+	}
+	if len(args) == 2 && args[0] == "whereabouts" && args[1] == "--help" {
+		return
+	}
+	if len(args) == 1 && args[0] == "whereabouts" {
+		os.Exit(42)
+	}
+	if len(args) != 5 || args[0] != "whereabouts" || args[1] != "Alice" || args[2] != "--query" || args[3] != "sunset" {
+		os.Exit(1)
+	}
+	switch args[4] {
+	case "--dry-run", "--json":
+		return
+	default:
+		os.Exit(1)
+	}
+}
+`)
+	binaryPath := filepath.Join(dir, "test-cli")
+	buildCmd := exec.Command("go", "build", "-o", binaryPath, mainFile)
+	out, err := buildCmd.CombinedOutput()
+	require.NoError(t, err, "building test binary: %s", string(out))
+	return binaryPath
+}
+
+func buildDataPipelineProbeBinary(t *testing.T, rowCount int) string {
+	t.Helper()
+
+	dir := t.TempDir()
+	mainFile := filepath.Join(dir, "main.go")
+	writeTestFile(t, mainFile, fmt.Sprintf(`package main
+
+import (
+	"fmt"
+	"os"
+	"strings"
+)
+
+func main() {
+	args := os.Args[1:]
+	if len(args) == 0 {
+		os.Exit(1)
+	}
+	switch args[0] {
+	case "sync":
+		return
+	case "sql":
+		if len(args) < 2 {
+			os.Exit(1)
+		}
+		query := args[1]
+		if strings.Contains(query, "sqlite_master") {
+			fmt.Println("items")
+			return
+		}
+		if strings.Contains(query, "count(*)") {
+			fmt.Println(%d)
+			return
+		}
+	}
+	os.Exit(1)
+}
+`, rowCount))
+	binaryPath := filepath.Join(dir, "test-cli")
+	buildCmd := exec.Command("go", "build", "-o", binaryPath, mainFile)
+	out, err := buildCmd.CombinedOutput()
+	require.NoError(t, err, "building test binary: %s", string(out))
+	return binaryPath
+}
+
+func buildAuxiliaryFirstDataPipelineProbeBinary(t *testing.T, settingsRows, itemRows int) string {
+	t.Helper()
+
+	dir := t.TempDir()
+	mainFile := filepath.Join(dir, "main.go")
+	writeTestFile(t, mainFile, fmt.Sprintf(`package main
+
+import (
+	"fmt"
+	"os"
+	"strings"
+)
+
+func main() {
+	args := os.Args[1:]
+	if len(args) == 0 {
+		os.Exit(1)
+	}
+	switch args[0] {
+	case "sync":
+		return
+	case "sql":
+		if len(args) < 2 {
+			os.Exit(1)
+		}
+		query := args[1]
+		if strings.Contains(query, "sqlite_master") {
+			fmt.Println("settings")
+			fmt.Println("items")
+			return
+		}
+		if strings.Contains(query, "count(*)") {
+			if strings.Contains(query, "\"settings\"") {
+				fmt.Println(%d)
+				return
+			}
+			if strings.Contains(query, "\"items\"") {
+				fmt.Println(%d)
+				return
+			}
+			os.Exit(1)
+		}
+	}
+	os.Exit(1)
+}
+`, settingsRows, itemRows))
 	binaryPath := filepath.Join(dir, "test-cli")
 	buildCmd := exec.Command("go", "build", "-o", binaryPath, mainFile)
 	out, err := buildCmd.CombinedOutput()
@@ -419,6 +931,31 @@ func TestExtractPositionalPlaceholders(t *testing.T) {
 			assert.Equal(t, tt.want, got)
 		})
 	}
+}
+
+func TestParseHappyArgsAnnotation(t *testing.T) {
+	got := parseHappyArgsAnnotation(" <person>= Alice ; --query= sunset ; --limit=10 ; invalid ; name=Bob ; --bad ")
+
+	assert.Equal(t, []string{"Alice"}, got.positionals)
+	assert.Equal(t, []string{"--query", "sunset", "--limit", "10"}, got.flags)
+}
+
+func TestMergeHappyPositionalsOverlaysInOrder(t *testing.T) {
+	assert.Equal(t,
+		[]string{"Alice", "mock-date"},
+		mergeHappyPositionals([]string{"mock-person", "mock-date"}, []string{"Alice"}),
+	)
+	assert.Equal(t,
+		[]string{"Alice", "2026-05-22"},
+		mergeHappyPositionals([]string{"mock-person"}, []string{"Alice", "2026-05-22"}),
+	)
+}
+
+func TestMergeHappyFlagsOverlaysByFlagName(t *testing.T) {
+	assert.Equal(t,
+		[]string{"--query", "sunset", "--limit", "10"},
+		mergeHappyFlags([]string{"--query", "mock-query"}, []string{"--query", "sunset", "--limit", "10"}),
+	)
 }
 
 func TestSyntheticArgValue(t *testing.T) {
@@ -727,6 +1264,73 @@ func newWhichCmd() *cobra.Command {
 	commands := enrichCommandAnnotationsFromSource(dir, []discoveredCommand{{Name: "which"}})
 	require.Len(t, commands, 1)
 	assert.Equal(t, "0,2", commands[0].Annotations[typedExitCodesAnnotation])
+}
+
+func TestEnrichCommandAnnotationsFromSourceReadsHappyArgsOnly(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "internal", "cli"), 0o755))
+	writeTestFile(t, filepath.Join(dir, "internal", "cli", "whereabouts.go"), `package cli
+
+import "github.com/spf13/cobra"
+
+func newWhereaboutsCmd() *cobra.Command {
+	return &cobra.Command{
+		Use: "whereabouts <person>",
+		Annotations: map[string]string{"pp:happy-args": "<person>=Alice;--query=sunset"},
+	}
+}
+`)
+
+	commands := enrichCommandAnnotationsFromSource(dir, []discoveredCommand{{Name: "whereabouts"}})
+	require.Len(t, commands, 1)
+	assert.Equal(t, "<person>=Alice;--query=sunset", commands[0].Annotations[happyArgsAnnotation])
+}
+
+func TestEnrichCommandAnnotationsFromSourceReadsAssignmentForm(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "internal", "cli"), 0o755))
+	writeTestFile(t, filepath.Join(dir, "internal", "cli", "whereabouts.go"), `package cli
+
+import "github.com/spf13/cobra"
+
+func newWhereaboutsCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use: "whereabouts <person>",
+	}
+	cmd.Annotations = map[string]string{"pp:happy-args": "<person>=Alice;--query=sunset"}
+	return cmd
+}
+`)
+
+	commands := enrichCommandAnnotationsFromSource(dir, []discoveredCommand{{Name: "whereabouts"}})
+	require.Len(t, commands, 1)
+	assert.Equal(t, "<person>=Alice;--query=sunset", commands[0].Annotations[happyArgsAnnotation])
+}
+
+func TestEnrichCommandAnnotationsFromSourceKeepsReassignedCommandAnnotations(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "internal", "cli"), 0o755))
+	writeTestFile(t, filepath.Join(dir, "internal", "cli", "whereabouts.go"), `package cli
+
+import "github.com/spf13/cobra"
+
+func newWhereaboutsCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use: "first <person>",
+	}
+	cmd.Annotations = map[string]string{"pp:happy-args": "<person>=Alice"}
+	cmd = &cobra.Command{
+		Use: "second <person>",
+	}
+	cmd.Annotations = map[string]string{"pp:happy-args": "<person>=Bob"}
+	return cmd
+}
+`)
+
+	commands := enrichCommandAnnotationsFromSource(dir, []discoveredCommand{{Name: "first"}, {Name: "second"}})
+	require.Len(t, commands, 2)
+	assert.Equal(t, "<person>=Alice", commands[0].Annotations[happyArgsAnnotation])
+	assert.Equal(t, "<person>=Bob", commands[1].Annotations[happyArgsAnnotation])
 }
 
 func TestSyntheticFlagValue(t *testing.T) {

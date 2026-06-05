@@ -10,16 +10,25 @@ import (
 	"time"
 
 	"github.com/mvanhorn/cli-printing-press/v4/internal/naming"
+	"github.com/mvanhorn/cli-printing-press/v4/internal/platform"
 )
 
 func buildCLI(dir string) (string, error) {
-	binaryPath, err := filepath.Abs(filepath.Join(dir, filepath.Base(dir)))
+	dir, err := filepath.Abs(dir)
 	if err != nil {
-		return "", fmt.Errorf("resolving binary path: %w", err)
+		return "", fmt.Errorf("resolving CLI directory: %w", err)
 	}
+	binaryPath := platform.ExecutablePath(filepath.Join(dir, filepath.Base(dir)))
+	if err := buildCLITo(dir, binaryPath); err != nil {
+		return "", err
+	}
+	return binaryPath, nil
+}
+
+func buildCLITo(dir, binaryPath string) error {
 	cmdDir, err := findCLICommandDir(dir)
 	if err != nil {
-		return "", err
+		return err
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
@@ -28,12 +37,16 @@ func buildCLI(dir string) (string, error) {
 	cmd.Dir = filepath.Dir(cmdDir)
 	cmd.Env = append(os.Environ(), "CGO_ENABLED=0")
 	if out, err := cmd.CombinedOutput(); err != nil {
-		return "", fmt.Errorf("go build: %s\n%s", err, string(out))
+		return fmt.Errorf("go build: %s\n%s", err, string(out))
 	}
-	return binaryPath, nil
+	return nil
 }
 
 func findCLICommandDir(dir string) (string, error) {
+	dir, err := filepath.Abs(dir)
+	if err != nil {
+		return "", fmt.Errorf("resolving CLI directory: %w", err)
+	}
 	name := filepath.Base(dir)
 	apiName := naming.TrimCLISuffix(name)
 	candidates := []string{
