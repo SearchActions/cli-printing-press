@@ -1,6 +1,10 @@
 package profiler
 
 import (
+	"fmt"
+	"maps"
+	"os"
+	"regexp"
 	"slices"
 	"sort"
 	"strings"
@@ -39,6 +43,7 @@ type DomainSignals struct {
 // PaginationProfile describes the detected pagination patterns across the API.
 type PaginationProfile struct {
 	CursorParam     string `json:"cursor_param"`      // most common cursor param name (after, cursor, page_token, offset)
+	CursorType      string `json:"cursor_type"`       // most common paginator class (cursor, page_token, offset, page, id_walk); drives runtime iteration strategy
 	PageSizeParam   string `json:"page_size_param"`   // most common page size param (limit, per_page, page_size, first)
 	SinceParam      string `json:"since_param"`       // temporal filter param (since, updated_after, modified_since)
 	DateRangeParam  string `json:"date_range_param"`  // date-range filter param (dates, date_range, dateRange)
@@ -52,6 +57,29 @@ type SearchBodyField struct {
 	Type     string `json:"type"`    // string, integer, boolean, array
 	Default  any    `json:"default"` // default value from spec, or synthesized from enum
 	Required bool   `json:"required"`
+}
+
+// SyncBodyField describes a request-body field on a syncable POST list endpoint.
+type SyncBodyField struct {
+	Name       string
+	WireName   string
+	Type       string
+	Default    any
+	HasDefault bool
+}
+
+func (f SyncBodyField) BodyWireName() string {
+	if f.WireName != "" {
+		return f.WireName
+	}
+	return f.Name
+}
+
+// FieldSelector describes a query param that asks sparse-response APIs to
+// include a richer set of response fields during sync.
+type FieldSelector struct {
+	Name    string
+	Default string
 }
 
 // DiscriminatorMapping routes one discriminator value to the concrete resource
@@ -70,9 +98,13 @@ type DiscriminatorDispatch struct {
 
 // SyncableResource describes a resource that supports list sync (paginated or single-page).
 type SyncableResource struct {
-	Name string
-	Path string
-	Tier string
+	Name   string
+	Path   string
+	Method string
+	Tier   string
+	// SkipDefaultSync keeps resources callable via --resources while excluding
+	// auth-flow endpoints from generated "sync all" defaults.
+	SkipDefaultSync bool
 	// IDField is the resolved primary-key field name for items returned by the
 	// list endpoint, populated from the chosen endpoint's resolved value (in
 	// turn populated by the OpenAPI parser's `x-resource-id` extension or the
@@ -83,6 +115,39 @@ type SyncableResource struct {
 	// should fail the whole run even under the new (non-strict) exit-code
 	// policy. Defaults to false.
 	Critical bool
+
+	// SinceParam is the actual query parameter name this resource's list
+	// endpoint declares for incremental temporal filtering (since,
+	// updated_after, modified_since, …). Empty when the endpoint declares
+	// no such parameter; the sync template skips temporal filtering for
+	// those resources and emits one resource_not_incremental warning per
+	// run when --since/incremental sync was requested.
+	SinceParam string
+
+	// SupportsPagination is true when the chosen list endpoint declares a
+	// cursor or page-size parameter. The sync template uses this to avoid
+	// sending synthetic limit/offset params to strict non-paginated list
+	// endpoints.
+	SupportsPagination bool
+
+	// UsesHTMLResponse and HTMLExtract mirror the chosen list endpoint's
+	// response_format/html_extract contract so sync can normalize HTML into
+	// JSON before passing the body into the JSON page extractor.
+	UsesHTMLResponse bool
+	HTMLExtract      *spec.HTMLExtract
+
+	// BodyFields names request-body fields on POST list endpoints. Sync uses
+	// this to send pagination and user-supplied params in the body for
+	// RPC-style list calls.
+	BodyFields []SyncBodyField
+
+	// IDWalkFilterParam names the array body field that accepts filter
+	// predicates for id-walk POST query pagination.
+	IDWalkFilterParam string
+	IDWalkLimitParam  string
+	IDWalkPageSize    int
+
+	FieldSelector FieldSelector
 
 	// Discriminator routes heterogeneous response items to concrete typed
 	// resources before storage. Empty when the endpoint returns a homogeneous
@@ -97,7 +162,9 @@ type DependentResource struct {
 	ParentResource string // parent resource name, e.g. "channels"
 	ParentIDParam  string // path param name, e.g. "channel_id"
 	Path           string // full path template, e.g. "/channels/{channel_id}/messages"
+	Method         string
 	Tier           string
+	PathParams     []DependentPathParam
 
 	// IDField is the primary-key field name resolved from the spec
 	// (x-resource-id extension or the four-tier fallback chain). Empty when
@@ -113,9 +180,47 @@ type DependentResource struct {
 	// load-bearing.
 	Critical bool
 
+	// SinceParam mirrors SyncableResource.SinceParam for child paths so
+	// the same per-resource temporal-filter gating applies to dependent
+	// syncs.
+	SinceParam string
+
+	// SupportsPagination mirrors SyncableResource.SupportsPagination for child
+	// paths so dependent syncs skip synthetic limit/offset params on endpoints
+	// that do not declare page-size pagination.
+	SupportsPagination bool
+
+	// UsesHTMLResponse and HTMLExtract mirror SyncableResource for child sync
+	// paths.
+	UsesHTMLResponse bool
+	HTMLExtract      *spec.HTMLExtract
+
+	// BodyFields mirrors SyncableResource.BodyFields for child sync paths.
+	BodyFields []SyncBodyField
+
+	// IDWalkFilterParam mirrors SyncableResource.IDWalkFilterParam.
+	IDWalkFilterParam string
+	IDWalkLimitParam  string
+	IDWalkPageSize    int
+
+	FieldSelector FieldSelector
+
 	// Discriminator routes heterogeneous dependent-resource response items to
 	// concrete typed resources before storage.
 	Discriminator DiscriminatorDispatch
+
+	// KeyField, when non-empty, names the field to extract from each parent
+	// record for substitution into the child path — overriding the default of
+	// using the parent's primary key (IDField on the parent's SyncableResource
+	// entry). Populated from a spec-declared walker (Endpoint.Walker.KeyField
+	// in internal YAML, or the `key_field` key under `x-pp-sync-walker` in
+	// OpenAPI). When empty, the existing parent-primary-key flow runs.
+	KeyField string
+}
+
+type DependentPathParam struct {
+	Param string
+	Field string
 }
 
 // APIProfile describes the shape of an API and what power-user features it warrants.
@@ -169,6 +274,7 @@ func Profile(s *spec.APISpec) *APIProfile {
 	resourceNames, resourceNameIndex := collectResourceNameMetadata(s.Resources)
 	syncable := make(map[string]syncableMeta) // resource name -> chosen list endpoint metadata
 	syncCandidates := make(map[string][]syncableCandidate)
+	pathDerivedIDFields := make(map[string]string)
 	addSyncCandidate := func(resourceName string, meta syncableMeta) {
 		for _, candidate := range syncCandidates[resourceName] {
 			if candidate.meta.Path == meta.Path {
@@ -189,10 +295,11 @@ func Profile(s *spec.APISpec) *APIProfile {
 	listResources := make(map[string]struct{})
 
 	var getEndpoints int
-	var listCapableGETs int
+	var listCapableEndpoints int
 	var hasSearchEndpoint bool
 
 	cursorParams := make(map[string]int)
+	cursorTypes := make(map[string]int)
 	pageSizeParams := make(map[string]int)
 	sinceParams := make(map[string]int)
 	dateRangeParams := make(map[string]int)
@@ -231,6 +338,14 @@ func Profile(s *spec.APISpec) *APIProfile {
 
 			endpointNameLower := strings.ToLower(endpointName)
 			pathLower := strings.ToLower(endpoint.Path)
+			if endpoint.IDFieldFromPathParam && endpoint.IDField != "" {
+				key := normalizeName(resourceName)
+				// Prefer the lexicographically first path-derived field so the
+				// result stays stable regardless of map iteration order.
+				if existing := pathDerivedIDFields[key]; existing == "" || endpoint.IDField < existing {
+					pathDerivedIDFields[key] = endpoint.IDField
+				}
+			}
 
 			if containsAny(endpointNameLower, []string{"search"}) || containsAny(pathLower, []string{"search"}) {
 				hasSearchEndpoint = true
@@ -312,10 +427,19 @@ func Profile(s *spec.APISpec) *APIProfile {
 			}
 
 			if isListEndpoint(endpointName, endpoint, s.Types) {
-				listCapableGETs++
+				listCapableEndpoints++
 				listResources[resourceName] = struct{}{}
 
-				standaloneList := !strings.Contains(endpoint.Path, "{") && !hasRequiredScopeParams(endpoint)
+				// pathParamsAllTemplateVars treats paths whose only
+				// {placeholder}s are spec-declared EndpointTemplateVars
+				// (e.g. /tenant/{tenant}/<resource> when "tenant" is the
+				// tenant-scoping path-positional template) as standalone.
+				// buildURL substitutes those from env-backed
+				// Config.TemplateVars at request time, so they don't need
+				// parent-context iteration like /channels/{channelId}/messages
+				// does.
+				resolvable := pathParamsAllTemplateVars(endpoint.Path, s)
+				standaloneList := (!strings.Contains(endpoint.Path, "{") || resolvable) && !hasRequiredScopeParams(endpoint)
 
 				if endpoint.Pagination != nil {
 					p.ListEndpoints++
@@ -337,14 +461,14 @@ func Profile(s *spec.APISpec) *APIProfile {
 							meta.Path = expandedPath
 							syncable[expandedName] = meta
 						}
-					} else if strings.Contains(endpoint.Path, "{") {
+					} else if strings.Contains(endpoint.Path, "{") && !resolvable {
 						// Parameterized paginated paths can't sync standalone — track
 						// them for dependent-resource detection below. Carry the
 						// endpoint's metadata so x-resource-id and x-critical
 						// annotations on a child path-item flow into the override
 						// and critical-resource maps. Store raw names so
 						// detectDependentResources can snake-case downstream.
-						key := parentName + "/" + name
+						key := strings.ToUpper(endpoint.Method) + " " + endpoint.Path
 						if _, ok := parameterized[key]; !ok {
 							parameterized[key] = parameterizedEntry{
 								name:       name,
@@ -358,21 +482,42 @@ func Profile(s *spec.APISpec) *APIProfile {
 				} else if standaloneList {
 					addSyncCandidate(resourceName, metaFromEndpoint(s, r, endpoint, s.Types, resourceNameIndex))
 				}
-			} else if method == "GET" && !strings.Contains(endpoint.Path, "{") && !hasRequiredScopeParams(endpoint) && looksLikeCollectionEndpoint(endpointNameLower) {
+			} else if method == "GET" && (!strings.Contains(endpoint.Path, "{") || pathParamsAllTemplateVars(endpoint.Path, s)) && !hasRequiredScopeParams(endpoint) && looksLikeCollectionEndpoint(endpointNameLower) && !isSamplerEndpoint(endpoint) && !isScalarItemArray(endpoint.Response) {
 				// Catch-all for simple GET collection endpoints that isListEndpoint
 				// didn't recognise (e.g., response is an untyped object with no
 				// wrapper field defined in the spec's types map).
 				// Only include endpoints whose name suggests a collection (list, all,
 				// index, etc.) — exclude singular getters like "get" or "show".
+				// Re-apply the sampler and scalar-array guards here: this branch runs
+				// when isListEndpoint returned false, so without them a collection-named
+				// sampler/scalar-array endpoint would be re-admitted past those gates.
 				addSyncCandidate(resourceName, metaFromEndpoint(s, r, endpoint, s.Types, resourceNameIndex))
 			}
 
 			if endpoint.Pagination != nil {
-				if endpoint.Pagination.CursorParam != "" {
+				if endpoint.Pagination.Type != spec.PaginationTypeIDWalk && endpoint.Pagination.CursorParam != "" {
 					cursorParams[endpoint.Pagination.CursorParam]++
 				}
-				if endpoint.Pagination.LimitParam != "" {
+				if endpoint.Pagination.Type != "" && endpoint.Pagination.Type != spec.PaginationTypeIDWalk {
+					cursorTypes[endpoint.Pagination.Type]++
+				}
+				if endpoint.Pagination.Type != spec.PaginationTypeIDWalk && endpoint.Pagination.LimitParam != "" {
 					pageSizeParams[endpoint.Pagination.LimitParam]++
+				}
+			} else {
+				// Fallback for specs that expose pagination via plain params
+				// instead of a structured pagination: block.
+				for _, param := range endpoint.Params {
+					if param.PathParam || param.Positional {
+						continue
+					}
+					lower := strings.ToLower(param.Name)
+					if cursorParamCandidates[lower] {
+						cursorParams[param.Name]++
+					}
+					if pageSizeParamCandidates[lower] {
+						pageSizeParams[param.Name]++
+					}
 				}
 			}
 			if endpoint.ResponsePath != "" {
@@ -432,13 +577,15 @@ func Profile(s *spec.APISpec) *APIProfile {
 		walk(name, resource, "", "")
 	}
 	applySyncCandidates(syncable, syncCandidates)
+	applyPathDerivedIDFields(syncable, pathDerivedIDFields, s.Types)
+	applyPathDerivedIDFieldsToParameterized(parameterized, pathDerivedIDFields, s.Types)
 
 	if p.TotalEndpoints > 0 {
 		p.ReadRatio = float64(getEndpoints) / float64(p.TotalEndpoints)
 		p.OfflineValuable = p.ReadRatio > 0.6
 	}
-	if listCapableGETs > 0 {
-		paginationRatio := float64(p.ListEndpoints) / float64(listCapableGETs)
+	if listCapableEndpoints > 0 {
+		paginationRatio := float64(p.ListEndpoints) / float64(listCapableEndpoints)
 		// HighVolume: either >50% of list endpoints are paginated, or 5+ paginated endpoints exist
 		p.HighVolume = paginationRatio > 0.5 || p.ListEndpoints >= 5
 	}
@@ -451,6 +598,7 @@ func Profile(s *spec.APISpec) *APIProfile {
 
 	p.SyncableResources = sortedSyncableResources(syncable)
 	p.DependentSyncResources = detectDependentResources(parameterized, syncable, shardedSubResources)
+	p.DependentSyncResources = applySpecWalkers(s, p.DependentSyncResources, syncable, s.Types, resourceNameIndex)
 	for resource, fields := range searchable {
 		p.SearchableFields[resource] = sortedKeys(fields)
 	}
@@ -459,6 +607,7 @@ func Profile(s *spec.APISpec) *APIProfile {
 
 	p.Pagination = PaginationProfile{
 		CursorParam:     mostCommon(cursorParams, "after"),
+		CursorType:      mostCommon(cursorTypes, ""),
 		PageSizeParam:   mostCommon(pageSizeParams, "limit"),
 		SinceParam:      mostCommon(sinceParams, ""),
 		DateRangeParam:  mostCommon(dateRangeParams, ""),
@@ -648,89 +797,260 @@ func dataFit(v bool) int {
 	return 1
 }
 
-// hasRequiredScopeParams returns true if the endpoint has required query parameters
-// that aren't pagination-related. These are "scoped list" endpoints (e.g., GetFriendList
+// Lowercase-keyed candidate sets shared by the profiler's pagination
+// inference path and hasRequiredScopeParams.
+var (
+	pageSizeParamCandidates = map[string]bool{
+		"limit": true, "per_page": true, "page_size": true, "pagesize": true,
+		"first": true, "count": true, "max_results": true, "maxrecords": true,
+		"max_records": true, "page[size]": true,
+	}
+	cursorParamCandidates = map[string]bool{
+		"after": true, "cursor": true, "page_token": true, "offset": true,
+		"page": true, "before": true, "starting_after": true, "page[cursor]": true,
+	}
+)
+
+// pathTemplatePlaceholderRE matches {placeholder} tokens in a path. Identifier
+// shape mirrors templateVarPattern in the emitted url.go.tmpl so client-side
+// resolution sees the same set of names this helper accepts.
+var pathTemplatePlaceholderRE = regexp.MustCompile(`\{([a-zA-Z_][a-zA-Z0-9_]*)\}`)
+
+// pathParamsAllTemplateVars reports whether every {placeholder} in path is
+// declared in s.EndpointTemplateVars — i.e. fully resolvable via the printed
+// CLI's runtime buildURL substitution without parent-context iteration. Paths
+// with no {placeholder}s return false; the standaloneList gate handles those
+// separately.
+func pathParamsAllTemplateVars(path string, s *spec.APISpec) bool {
+	if s == nil || len(s.EndpointTemplateVars) == 0 || !strings.Contains(path, "{") {
+		return false
+	}
+	matches := pathTemplatePlaceholderRE.FindAllStringSubmatch(path, -1)
+	if len(matches) == 0 {
+		return false
+	}
+	for _, m := range matches {
+		if !s.IsEndpointTemplateVar(m[1]) {
+			return false
+		}
+	}
+	return true
+}
+
+// hasRequiredScopeParams flags "scoped list" endpoints (e.g., GetFriendList
 // requires steamid) that can't be synced without runtime context.
 func hasRequiredScopeParams(endpoint spec.Endpoint) bool {
-	paginationParams := map[string]bool{
-		"limit": true, "per_page": true, "page_size": true, "pageSize": true, "first": true, "count": true, "max_results": true,
-		"after": true, "cursor": true, "page_token": true, "offset": true, "page": true, "before": true, "starting_after": true,
-		"page[cursor]": true, "page[size]": true,
+	temporalOrFormatParams := map[string]bool{
 		"since": true, "updated_after": true, "modified_since": true, "since_id": true,
-		"key": true, "format": true, // auth and format params, not scope
+		"key": true, "format": true,
 	}
 	for _, param := range endpoint.Params {
 		if param.Required && !param.Positional && !param.PathParam {
-			if !paginationParams[param.Name] && !paginationParams[strings.ToLower(param.Name)] {
-				// Enum params with 2+ values are handled by enum expansion, not scope
-				if len(param.Enum) >= 2 {
-					continue
-				}
-				return true
+			lower := strings.ToLower(param.Name)
+			if pageSizeParamCandidates[lower] || cursorParamCandidates[lower] || temporalOrFormatParams[lower] {
+				continue
 			}
+			// Enum params with 2+ values are handled by enum expansion, not scope
+			if len(param.Enum) >= 2 {
+				continue
+			}
+			return true
+		}
+	}
+	return false
+}
+
+// samplerPathSegments mark endpoints that return a non-deterministic sample
+// rather than a stable, ordered collection. Each call yields a fresh full set,
+// so page-based pagination never reaches a natural end and a sync loop runs
+// forever. They are excluded from syncable list selection.
+var samplerPathSegments = []string{"random", "shuffle", "sample"}
+
+// isSamplerEndpoint reports whether the endpoint path marks a non-deterministic
+// sampler (e.g. /assets/random) that must not be treated as a paginated list.
+func isSamplerEndpoint(endpoint spec.Endpoint) bool {
+	for _, segment := range staticPathSegments(endpoint.Path) {
+		if slices.Contains(samplerPathSegments, strings.ToLower(segment)) {
+			return true
 		}
 	}
 	return false
 }
 
 func isListEndpoint(name string, endpoint spec.Endpoint, types map[string]spec.TypeDef) bool {
-	if strings.ToUpper(endpoint.Method) != "GET" {
+	method := strings.ToUpper(endpoint.Method)
+
+	// A sampler endpoint returns a fresh random page every call; paginating it
+	// never terminates. Exclude it regardless of response shape or pagination.
+	if isSamplerEndpoint(endpoint) {
+		return false
+	}
+
+	// An array of scalars has no extractable primary key, so it can never
+	// populate the store. Exclude it even when paginated, since the
+	// Pagination short-circuit below would otherwise admit it.
+	if isScalarItemArray(endpoint.Response) {
+		return false
+	}
+
+	if method == "POST" {
+		return endpoint.Pagination != nil &&
+			looksLikeCollectionEndpoint(strings.ToLower(name)) &&
+			hasListShapedResponse(name, endpoint, types)
+	}
+
+	if method != "GET" {
 		return false
 	}
 	if endpoint.Pagination != nil {
 		return true
 	}
+	if hasListShapedResponse(name, endpoint, types) {
+		return true
+	}
+
+	return looksLikeBasicGetListEndpoint(strings.ToLower(name))
+}
+
+// scalarItemTypes are the response-array element type names the parser emits
+// for primitive (non-object) items via schemaTypeName. An array of these has no
+// extractable primary key, so syncing it stores zero rows
+// (all_items_failed_id_extraction). The empty string is excluded: an unset Item
+// means an object array whose type was not registered, which still syncs.
+var scalarItemTypes = map[string]bool{
+	"string": true,
+	"int":    true,
+	"bool":   true,
+	"float":  true,
+}
+
+// isScalarItemArray reports whether the response is an array whose declared
+// element type is a primitive. Such arrays carry no object IDs and must not be
+// selected as syncable list resources.
+func isScalarItemArray(response spec.ResponseDef) bool {
+	return response.Type == "array" && scalarItemTypes[response.Item]
+}
+
+func hasListShapedResponse(name string, endpoint spec.Endpoint, types map[string]spec.TypeDef) bool {
 	if endpoint.Response.Type == "array" {
+		// Scalar-element arrays are rejected upstream in isListEndpoint; a
+		// bare object array is list-shaped.
 		return true
 	}
 
 	// Check for wrapper-object responses: the endpoint returns type "object"
-	// and the referenced type has a field matching a known wrapper key. These
-	// are list endpoints that wrap their arrays (e.g., {events: [...]}).
-	// The key list matches extractPageItems in sync.go.tmpl plus "events".
-	if endpoint.Response.Type == "object" && endpoint.Response.Item != "" {
-		if hasWrapperArrayField(endpoint.Response.Item, types) {
-			return true
-		}
-	}
-
-	name = strings.ToLower(name)
-	return containsAny(name, []string{"list", "all"})
+	// and the referenced type has a field that clearly carries the list items.
+	return endpoint.Response.Type == "object" &&
+		endpoint.Response.Item != "" &&
+		hasWrapperArrayField(endpoint.Response.Item, types, name, endpoint.Path)
 }
 
-// wrapperArrayKeys are response object field names that indicate the object
-// wraps a list of items. Kept in sync with extractPageItems in sync.go.tmpl.
+// Multi-array envelopes need a curated tie-breaker; single-array envelopes are
+// already unambiguous and can use any resource-shaped key.
 var wrapperArrayKeys = map[string]bool{
-	"data":    true,
-	"results": true,
-	"items":   true,
-	"events":  true,
-	"entries": true,
-	"records": true,
-	"nodes":   true,
+	"data":     true,
+	"results":  true,
+	"items":    true,
+	"events":   true,
+	"entries":  true,
+	"features": true,
+	"records":  true,
+	"nodes":    true,
 }
 
-// hasWrapperArrayField checks whether a named type in the spec's types map
-// has any field whose name matches a known wrapper key, or whether the type
-// name itself suggests a list wrapper (contains "Response", "List", "Result",
-// or "Collection"). The type-name heuristic is a fallback for specs where the
-// types map is empty or incomplete.
-func hasWrapperArrayField(typeName string, types map[string]spec.TypeDef) bool {
+var ancillaryArrayKeys = map[string]bool{
+	"errors":            true,
+	"warnings":          true,
+	"validations":       true,
+	"validation_errors": true,
+}
+
+// Field metadata is stronger than type-name guesses: once a type is present,
+// its fields decide whether the response is extractable.
+func hasWrapperArrayField(typeName string, types map[string]spec.TypeDef, endpointName string, path string) bool {
 	if typeDef, ok := types[typeName]; ok {
+		arrayFields := 0
+		var arrayField string
 		for _, field := range typeDef.Fields {
-			if wrapperArrayKeys[strings.ToLower(field.Name)] {
+			if !strings.EqualFold(field.Type, "array") {
+				continue
+			}
+			fieldKey := normalizedFieldKey(field.Name)
+			if wrapperArrayKeys[fieldKey] {
 				return true
 			}
+			if ancillaryArrayKeys[fieldKey] {
+				continue
+			}
+			arrayFields++
+			arrayField = field.Name
 		}
+		if arrayFields == 1 && singleArrayFieldMatchesCollection(arrayField, endpointName, path) {
+			return true
+		}
+		return false
 	}
 
 	// Fallback: if the type name itself suggests a list wrapper, treat it
-	// as a wrapper even when the types map lacks field definitions.
+	// as a wrapper only when the types map lacks that type definition.
 	nameUpper := strings.ToUpper(typeName)
 	return strings.Contains(nameUpper, "RESPONSE") ||
 		strings.Contains(nameUpper, "LIST") ||
 		strings.Contains(nameUpper, "RESULT") ||
 		strings.Contains(nameUpper, "COLLECTION")
+}
+
+func singleArrayFieldMatchesCollection(fieldName string, endpointName string, path string) bool {
+	if namesOverlap(fieldName, endpointName) {
+		return true
+	}
+	for _, segment := range staticPathSegments(path) {
+		if namesOverlap(fieldName, segment) {
+			return true
+		}
+	}
+	return false
+}
+
+func namesOverlap(a, b string) bool {
+	aVariants := nameVariants(a)
+	bVariants := nameVariants(b)
+	for _, av := range aVariants {
+		if slices.Contains(bVariants, av) {
+			return true
+		}
+	}
+	bTokens := nameTokens(b)
+	for _, av := range aVariants {
+		if slices.Contains(bTokens, av) {
+			return true
+		}
+	}
+	aTokens := nameTokens(a)
+	for _, bv := range bVariants {
+		if slices.Contains(aTokens, bv) {
+			return true
+		}
+	}
+	return false
+}
+
+func normalizedFieldKey(name string) string {
+	return normalizeName(spec.ToSnakeCase(name))
+}
+
+func nameTokens(name string) []string {
+	normalized := normalizeName(spec.ToSnakeCase(name))
+	if normalized == "" {
+		return nil
+	}
+	var tokens []string
+	for token := range strings.SplitSeq(normalized, "_") {
+		if token != "" {
+			tokens = append(tokens, nameVariants(token)...)
+		}
+	}
+	return tokens
 }
 
 // findEntityTypeEnum returns the first required enum query param on a list endpoint
@@ -762,6 +1082,12 @@ func looksLikeCollectionEndpoint(nameLower string) bool {
 }
 
 var collectionEndpointTerms = []string{"list", "all", "index", "search", "query", "browse", "find"}
+
+func looksLikeBasicGetListEndpoint(nameLower string) bool {
+	return containsAny(nameLower, basicGetListEndpointTerms)
+}
+
+var basicGetListEndpointTerms = []string{"list", "all"}
 
 func hasLifecycleField(params []spec.Param) bool {
 	for _, param := range params {
@@ -940,50 +1266,516 @@ func sortedKeys[V any](m map[string]V) []string {
 
 // detectDependentResources examines parameterized paths and identifies
 // parent-child relationships. For example, /channels/{channel_id}/messages
-// becomes a dependent resource of "channels" (only one level of nesting).
-// When the same leaf appears under multiple parents (or collides with a
-// top-level resource), each parent emits a sharded Name so its shard syncs
-// to its own table.
+// becomes a dependent resource of "channels", and deeper children can depend
+// on already-detected dependent resources. When the same leaf appears under
+// multiple parents (or collides with a top-level resource), each parent emits
+// a sharded Name so its shard syncs to its own table.
 func detectDependentResources(parameterized map[string]parameterizedEntry, syncable map[string]syncableMeta, shardedSubResources spec.SubResourceShards) []DependentResource {
 	var deps []DependentResource
-	for _, entry := range parameterized {
-		paramName, ok := firstPathParam(entry.meta.Path)
-		if !ok {
-			continue
-		}
-		parentResource := resolveParentResource(entry.parentName, paramName, syncable)
-		if parentResource == "" {
-			continue
-		}
-
-		emittedName := spec.ToSnakeCase(entry.name)
-		if shardedSubResources.IsSharded(entry.name) {
-			// Prefer the spec-walk parent so multi-param paths
-			// (e.g. /repos/{owner}/{repo}/commits) pick the right shard
-			// prefix; the path-param fallback would derive "owner".
-			shardParent := parentResource
-			if entry.parentName != "" {
-				shardParent = entry.parentName
-			}
-			emittedName = spec.ShardedSubResourceTableName(shardParent, entry.name)
-		}
-
-		deps = append(deps, DependentResource{
-			Name:           emittedName,
-			ParentResource: parentResource,
-			ParentIDParam:  paramName,
-			Path:           entry.meta.Path,
-			Tier:           entry.meta.Tier,
-			IDField:        entry.meta.IDField,
-			Critical:       entry.meta.Critical,
-			Discriminator:  entry.meta.Discriminator,
-		})
+	knownParents := make(map[string]bool, len(syncable)+len(parameterized))
+	for resource := range syncable {
+		knownParents[resource] = true
 	}
-	// Sort for deterministic output
+	depthByResource := map[string]int{}
+
+	keys := sortedKeys(parameterized)
+	for len(keys) > 0 {
+		var next []string
+		progressed := false
+		for _, key := range keys {
+			entry := parameterized[key]
+			dep, ok := dependentResourceFromEntry(entry, knownParents, shardedSubResources)
+			if !ok {
+				next = append(next, key)
+				continue
+			}
+			deps = append(deps, dep)
+			knownParents[dep.Name] = true
+			depthByResource[dep.Name] = depthByResource[dep.ParentResource] + 1
+			if dep.Name == spec.ToSnakeCase(entry.name) {
+				knownParents[spec.ToSnakeCase(entry.name)] = true
+			}
+			progressed = true
+		}
+		if !progressed {
+			break
+		}
+		keys = next
+	}
+	sortDependentResources(deps, depthByResource)
+	return deps
+}
+
+func sortDependentResources(deps []DependentResource, knownDepths map[string]int) {
+	depthByResource := make(map[string]int, len(knownDepths)+len(deps))
+	maps.Copy(depthByResource, knownDepths)
+	byName := make(map[string]DependentResource, len(deps))
+	for _, dep := range deps {
+		byName[dep.Name] = dep
+	}
+	var depthOf func(string, map[string]bool) int
+	depthOf = func(name string, visiting map[string]bool) int {
+		if depth, ok := depthByResource[name]; ok {
+			return depth
+		}
+		if visiting[name] {
+			return 1
+		}
+		dep, ok := byName[name]
+		if !ok {
+			return 0
+		}
+		visiting[name] = true
+		depth := depthOf(dep.ParentResource, visiting) + 1
+		delete(visiting, name)
+		depthByResource[name] = depth
+		return depth
+	}
+	for _, dep := range deps {
+		depthOf(dep.Name, map[string]bool{})
+	}
 	sort.Slice(deps, func(i, j int) bool {
+		if depthByResource[deps[i].Name] != depthByResource[deps[j].Name] {
+			return depthByResource[deps[i].Name] < depthByResource[deps[j].Name]
+		}
 		return deps[i].Name < deps[j].Name
 	})
+}
+
+func dependentResourceFromEntry(entry parameterizedEntry, knownParents map[string]bool, shardedSubResources spec.SubResourceShards) (DependentResource, bool) {
+	ctx, ok := dependentPathContext(entry, knownParents, shardedSubResources)
+	if !ok {
+		return DependentResource{}, false
+	}
+
+	return DependentResource{
+		Name:               ctx.name,
+		ParentResource:     ctx.parentResource,
+		ParentIDParam:      dependentParentIDParam(entry.meta.Path, ctx.parentPathSegment, ctx.firstParam),
+		Path:               entry.meta.Path,
+		Method:             entry.meta.Method,
+		Tier:               entry.meta.Tier,
+		PathParams:         dependentPathParams(entry.meta.Path, ctx.parentPathSegment, ctx.firstParam, ""),
+		IDField:            entry.meta.IDField,
+		Critical:           entry.meta.Critical,
+		SinceParam:         entry.meta.SinceParam,
+		SupportsPagination: entry.meta.SupportsPagination,
+		UsesHTMLResponse:   entry.meta.UsesHTMLResponse,
+		HTMLExtract:        entry.meta.HTMLExtract,
+		BodyFields:         entry.meta.BodyFields,
+		IDWalkFilterParam:  entry.meta.IDWalkFilterParam,
+		IDWalkLimitParam:   entry.meta.IDWalkLimitParam,
+		IDWalkPageSize:     entry.meta.IDWalkPageSize,
+		FieldSelector:      entry.meta.FieldSelector,
+		Discriminator:      entry.meta.Discriminator,
+	}, true
+}
+
+type dependentContext struct {
+	name              string
+	parentResource    string
+	parentPathSegment string
+	firstParam        string
+}
+
+func dependentPathContext(entry parameterizedEntry, knownParents map[string]bool, shardedSubResources spec.SubResourceShards) (dependentContext, bool) {
+	firstParam, ok := firstPathParam(entry.meta.Path)
+	if !ok {
+		return dependentContext{}, false
+	}
+
+	segments := pathSegments(entry.meta.Path)
+	placeholderCount := len(orderedPathPlaceholders(entry.meta.Path))
+	parentSegment := spec.ToSnakeCase(entry.parentName)
+	childName := spec.ToSnakeCase(entry.name)
+	forceShard := false
+	if placeholderCount >= 2 {
+		if childSegment, parent, ok := pathCollectionContext(segments); ok {
+			childName = childSegment
+			parentSegment = parent
+			forceShard = true
+		}
+	}
+	if parentSegment == "" {
+		parentSegment = spec.ToSnakeCase(entry.parentName)
+	}
+
+	parentResource := resolvePathParentResource(parentSegment, segments, knownParents, shardedSubResources)
+	if parentResource == "" {
+		parentResource = resolveParentResourceName(entry.parentName, firstParam, knownParents)
+	}
+	if parentResource == "" {
+		return dependentContext{}, false
+	}
+
+	name := childName
+	if forceShard {
+		name = spec.ShardedSubResourceTableName(parentResource, childName)
+	} else if shardedSubResources.IsSharded(childName) {
+		shardParent := parentResource
+		if entry.parentName != "" {
+			shardParent = entry.parentName
+		}
+		name = spec.ShardedSubResourceTableName(shardParent, childName)
+	}
+	if parentSegment == "" {
+		parentSegment = parentResource
+	}
+
+	return dependentContext{
+		name:              name,
+		parentResource:    parentResource,
+		parentPathSegment: parentSegment,
+		firstParam:        firstParam,
+	}, true
+}
+
+func pathCollectionContext(segments []string) (child, parent string, ok bool) {
+	lastPlaceholder := -1
+	for i, segment := range segments {
+		if isPathPlaceholder(segment) {
+			lastPlaceholder = i
+		}
+	}
+	if lastPlaceholder < 0 {
+		return "", "", false
+	}
+	childIndex := nextStaticSegmentIndex(segments, lastPlaceholder+1)
+	parentIndex := previousStaticSegmentIndex(segments, lastPlaceholder-1)
+	if childIndex < 0 || parentIndex < 0 {
+		return "", "", false
+	}
+	return spec.ToSnakeCase(segments[childIndex]), spec.ToSnakeCase(segments[parentIndex]), true
+}
+
+func resolvePathParentResource(parentSegment string, segments []string, knownParents map[string]bool, shardedSubResources spec.SubResourceShards) string {
+	if parentSegment == "" {
+		return ""
+	}
+	if knownParents[parentSegment] {
+		return parentSegment
+	}
+	parentIndex := lastStaticSegmentIndex(segments, parentSegment)
+	if parentIndex < 0 {
+		return ""
+	}
+	ancestorIndex := previousStaticSegmentIndex(segments, parentIndex-1)
+	if ancestorIndex >= 0 {
+		candidate := spec.ShardedSubResourceTableName(segments[ancestorIndex], parentSegment)
+		if knownParents[candidate] {
+			return candidate
+		}
+	}
+	if shardedSubResources.IsSharded(parentSegment) && ancestorIndex >= 0 {
+		candidate := spec.ShardedSubResourceTableName(segments[ancestorIndex], parentSegment)
+		if knownParents[candidate] {
+			return candidate
+		}
+	}
+	return ""
+}
+
+// applySpecWalkers merges spec-declared walker configs (Endpoint.Walker,
+// populated from the `walker:` internal-YAML field or the `x-pp-sync-walker`
+// OpenAPI operation extension) into the dependent-sync set. For each endpoint
+// with a non-nil walker, the function either augments the matching
+// auto-detected DependentResource (carrying ParentResource, ParentIDParam,
+// and KeyField overrides through) or synthesizes a new entry when
+// auto-detection missed the link — covering paths where the placeholder name
+// does not match a parent resource, or paths with the placeholder in a
+// matrix or query parameter that resolveParentResource cannot map.
+//
+// Walker configs that fail validation are dropped with a stderr warning
+// rather than silently. Three checks fail:
+//
+//   - parent is not a syncable resource: typo or stale spec; without a flat-
+//     list parent endpoint there is nothing to iterate.
+//   - the child path has 2+ {placeholders} and key_param is not declared
+//     explicitly: firstPathParam returns the first placeholder, which on a
+//     2-deep path is the parent slot, almost always wrong.
+//   - the child path has 0 placeholders and key_param is not declared (the
+//     walker would bind via matrix/query but has no slot named).
+//
+// Existing dependent entries are matched by ("GET "+path) tuple — walker is
+// sync-only and GET-only, and a path-only key would collide if two endpoints
+// share a path across resources or methods.
+//
+// Synthesized entries derive Name from spec.ToSnakeCase(resourceName), not
+// from the endpoint-map key, so a walker that re-declares an already-auto-
+// detected path doesn't create a parallel entry under a different Name.
+// All other per-endpoint fields (Tier, IDField, Critical, SinceParam,
+// Discriminator) flow through metaFromEndpoint so the synthesized entry
+// matches what detectDependentResources would have produced — incremental
+// sync, tier routing, and discriminator dispatch all work the same.
+//
+// Entries without a walker pass through unchanged.
+func applySpecWalkers(s *spec.APISpec, deps []DependentResource, syncable map[string]syncableMeta, types map[string]spec.TypeDef, resourceNameIndex map[string]string) []DependentResource {
+	if s == nil {
+		return deps
+	}
+	byPath := make(map[string]int, len(deps))
+	for i, d := range deps {
+		byPath["GET "+d.Path] = i
+	}
+	var walk func(name string, r spec.Resource)
+	walk = func(resourceName string, r spec.Resource) {
+		for endpointName, e := range r.Endpoints {
+			if e.Walker == nil {
+				continue
+			}
+			parent := strings.ToLower(strings.TrimSpace(e.Walker.Parent))
+			if _, ok := syncable[parent]; !ok {
+				fmt.Fprintf(os.Stderr,
+					"warning: walker on %s.%s: parent %q is not a syncable resource; ignoring\n",
+					resourceName, endpointName, e.Walker.Parent)
+				continue
+			}
+			keyParam := strings.TrimSpace(e.Walker.KeyParam)
+			if keyParam == "" {
+				placeholders := countPathPlaceholders(e.Path)
+				switch placeholders {
+				case 1:
+					if p, ok := firstPathParam(e.Path); ok {
+						keyParam = p
+					}
+				case 0:
+					fmt.Fprintf(os.Stderr,
+						"warning: walker on %s.%s: path %q has no {placeholder}; declare key_param explicitly\n",
+						resourceName, endpointName, e.Path)
+					continue
+				default:
+					fmt.Fprintf(os.Stderr,
+						"warning: walker on %s.%s: path %q has %d placeholders; declare key_param explicitly\n",
+						resourceName, endpointName, e.Path, placeholders)
+					continue
+				}
+			}
+			keyField := strings.TrimSpace(e.Walker.KeyField)
+			lookupKey := "GET " + e.Path
+			if idx, ok := byPath[lookupKey]; ok {
+				deps[idx].ParentResource = parent
+				if keyParam != "" {
+					deps[idx].ParentIDParam = keyParam
+				}
+				deps[idx].KeyField = keyField
+				deps[idx].PathParams = dependentPathParams(e.Path, parent, deps[idx].ParentIDParam, keyField)
+				continue
+			}
+			meta := metaFromEndpoint(s, r, e, types, resourceNameIndex)
+			deps = append(deps, DependentResource{
+				Name:               spec.ToSnakeCase(resourceName),
+				ParentResource:     parent,
+				ParentIDParam:      keyParam,
+				Path:               e.Path,
+				Method:             meta.Method,
+				Tier:               meta.Tier,
+				PathParams:         dependentPathParams(e.Path, parent, keyParam, keyField),
+				IDField:            meta.IDField,
+				Critical:           meta.Critical,
+				SinceParam:         meta.SinceParam,
+				SupportsPagination: meta.SupportsPagination,
+				UsesHTMLResponse:   meta.UsesHTMLResponse,
+				HTMLExtract:        meta.HTMLExtract,
+				BodyFields:         meta.BodyFields,
+				IDWalkFilterParam:  meta.IDWalkFilterParam,
+				IDWalkLimitParam:   meta.IDWalkLimitParam,
+				IDWalkPageSize:     meta.IDWalkPageSize,
+				FieldSelector:      meta.FieldSelector,
+				Discriminator:      meta.Discriminator,
+				KeyField:           keyField,
+			})
+			byPath[lookupKey] = len(deps) - 1
+		}
+		for subName, sub := range r.SubResources {
+			walk(subName, sub)
+		}
+	}
+	for name, r := range s.Resources {
+		walk(name, r)
+	}
+	sortDependentResources(deps, nil)
 	return deps
+}
+
+func dependentPathParams(path, parentResource, keyParam, keyField string) []DependentPathParam {
+	placeholders := orderedPathPlaceholders(path)
+	if len(placeholders) == 0 {
+		return nil
+	}
+
+	fields := dependentPathParamFields(path, parentResource)
+	params := make([]DependentPathParam, 0, len(placeholders))
+	for _, placeholder := range placeholders {
+		field := fields[placeholder]
+		if placeholder == keyParam && keyField != "" {
+			field = spec.ToSnakeCase(keyField)
+		}
+		if field == "" {
+			field = spec.ToSnakeCase(placeholder)
+		}
+		params = append(params, DependentPathParam{
+			Param: placeholder,
+			Field: field,
+		})
+	}
+	return params
+}
+
+func dependentParentIDParam(path, parentResource, fallback string) string {
+	for _, pathParam := range dependentPathParams(path, parentResource, fallback, "") {
+		if pathParam.Field == "id" {
+			return pathParam.Param
+		}
+	}
+	return fallback
+}
+
+func dependentPathParamFields(path, parentResource string) map[string]string {
+	fields := map[string]string{}
+	segments := pathSegments(path)
+	parentSegmentIndex := -1
+	childSegmentIndex := -1
+	normalizedParent := spec.ToSnakeCase(parentResource)
+	for i, segment := range segments {
+		if isPathPlaceholder(segment) {
+			continue
+		}
+		if spec.ToSnakeCase(segment) == normalizedParent {
+			parentSegmentIndex = i
+			childSegmentIndex = nextStaticSegmentIndex(segments, i+1)
+		}
+	}
+
+	parentIdentityParams := map[string]bool{}
+	if parentSegmentIndex >= 0 {
+		for i := parentSegmentIndex + 1; i < len(segments); i++ {
+			if i == childSegmentIndex {
+				break
+			}
+			if isPathPlaceholder(segments[i]) {
+				parentIdentityParams[strings.TrimSuffix(strings.TrimPrefix(segments[i], "{"), "}")] = true
+			}
+		}
+	}
+	parentUsesCompositeIdentity := len(parentIdentityParams) > 1
+
+	lastStatic := ""
+	for _, segment := range segments {
+		if isPathPlaceholder(segment) {
+			param := strings.TrimSuffix(strings.TrimPrefix(segment, "{"), "}")
+			switch {
+			case parentIdentityParams[param] && !parentUsesCompositeIdentity:
+				fields[param] = dependentIdentityField(param)
+			case parentIdentityParams[param] && parentUsesCompositeIdentity:
+				fields[param] = spec.ToSnakeCase(param)
+			case lastStatic != "":
+				fields[param] = spec.ToSnakeCase(lastStatic) + "_id"
+			default:
+				fields[param] = spec.ToSnakeCase(param)
+			}
+			continue
+		}
+		lastStatic = segment
+	}
+	return fields
+}
+
+func dependentIdentityField(param string) string {
+	field := spec.ToSnakeCase(param)
+	switch {
+	case field == "id" || strings.HasSuffix(field, "_id") || strings.HasSuffix(param, "Id") || strings.HasSuffix(param, "ID"):
+		return "id"
+	case strings.HasSuffix(field, "_slug"):
+		return "slug"
+	case strings.HasSuffix(field, "_name"):
+		return "name"
+	case strings.HasSuffix(field, "_key"):
+		return "key"
+	default:
+		return field
+	}
+}
+
+func orderedPathPlaceholders(path string) []string {
+	var params []string
+	seen := map[string]bool{}
+	for i := 0; i < len(path); i++ {
+		if path[i] != '{' {
+			continue
+		}
+		j := strings.IndexByte(path[i:], '}')
+		if j < 0 {
+			break
+		}
+		param := path[i+1 : i+j]
+		if param != "" && !seen[param] {
+			params = append(params, param)
+			seen[param] = true
+		}
+		i += j
+	}
+	return params
+}
+
+func isPathPlaceholder(segment string) bool {
+	return strings.HasPrefix(segment, "{") && strings.HasSuffix(segment, "}") && len(segment) > 2
+}
+
+func pathSegments(path string) []string {
+	if strings.Trim(path, "/") == "" {
+		return nil
+	}
+	return strings.Split(strings.Trim(path, "/"), "/")
+}
+
+func nextStaticSegmentIndex(segments []string, start int) int {
+	for i := start; i < len(segments); i++ {
+		if !isPathPlaceholder(segments[i]) {
+			return i
+		}
+	}
+	return -1
+}
+
+func previousStaticSegmentIndex(segments []string, start int) int {
+	for i := min(start, len(segments)-1); i >= 0; i-- {
+		if !isPathPlaceholder(segments[i]) {
+			return i
+		}
+	}
+	return -1
+}
+
+func lastStaticSegmentIndex(segments []string, normalized string) int {
+	for i, segment := range slices.Backward(segments) {
+		if isPathPlaceholder(segment) {
+			continue
+		}
+		if spec.ToSnakeCase(segment) == normalized {
+			return i
+		}
+	}
+	return -1
+}
+
+// countPathPlaceholders counts the number of `{name}` substitution slots in
+// a path template. Used by applySpecWalkers to decide whether
+// firstPathParam's default is safe (single-placeholder path) or ambiguous
+// (zero or 2+).
+func countPathPlaceholders(path string) int {
+	n := 0
+	for i := 0; i < len(path); i++ {
+		if path[i] != '{' {
+			continue
+		}
+		j := strings.IndexByte(path[i:], '}')
+		if j < 0 {
+			break
+		}
+		n++
+		i += j
+	}
+	return n
 }
 
 // firstPathParam returns the name of the first {param} in a path template.
@@ -996,14 +1788,15 @@ func firstPathParam(path string) (string, bool) {
 	return path[start+1 : end], true
 }
 
-// resolveParentResource picks a parent name that matches a syncable resource.
+// resolveParentResourceName picks a parent name that matches a known flat or
+// already-detected dependent resource.
 // Prefers the spec-walk parent (correct for multi-param paths like
 // /repos/{owner}/{repo}/commits) and falls back to stripping Id/_id from the
 // path param. Returns "" when no candidate matches.
-func resolveParentResource(walkParent, paramName string, syncable map[string]syncableMeta) string {
+func resolveParentResourceName(walkParent, paramName string, knownParents map[string]bool) string {
 	if walkParent != "" {
 		candidate := strings.ToLower(walkParent)
-		if _, ok := syncable[candidate]; ok {
+		if knownParents[candidate] {
 			return candidate
 		}
 	}
@@ -1013,7 +1806,7 @@ func resolveParentResource(walkParent, paramName string, syncable map[string]syn
 	stem = strings.TrimSuffix(stem, "ID")
 	stem = strings.ToLower(stem)
 	for _, candidate := range []string{stem, stem + "s", stem + "es"} {
-		if _, ok := syncable[candidate]; ok {
+		if knownParents[candidate] {
 			return candidate
 		}
 	}
@@ -1024,11 +1817,23 @@ func resolveParentResource(walkParent, paramName string, syncable map[string]syn
 // is still selecting between candidates (e.g., flat vs. paginated). It is
 // converted into a SyncableResource at the end of Profile().
 type syncableMeta struct {
-	Path          string
-	Tier          string
-	IDField       string
-	Critical      bool
-	Discriminator DiscriminatorDispatch
+	Path               string
+	Method             string
+	Tier               string
+	SkipDefaultSync    bool
+	IDField            string
+	Critical           bool
+	SinceParam         string
+	SupportsPagination bool
+	UsesHTMLResponse   bool
+	HTMLExtract        *spec.HTMLExtract
+	BodyFields         []SyncBodyField
+	IDWalkFilterParam  string
+	IDWalkLimitParam   string
+	IDWalkPageSize     int
+	FieldSelector      FieldSelector
+	Discriminator      DiscriminatorDispatch
+	ResponseItem       string
 }
 
 type syncableCandidate struct {
@@ -1050,13 +1855,173 @@ type parameterizedEntry struct {
 // inference). Keeps the per-endpoint plumbing in one place so future profiler
 // fields propagate uniformly.
 func metaFromEndpoint(s *spec.APISpec, resource spec.Resource, e spec.Endpoint, types map[string]spec.TypeDef, resourceNameIndex map[string]string) syncableMeta {
+	idWalkFilterParam, idWalkLimitParam, idWalkPageSize := detectIDWalkParams(e)
 	return syncableMeta{
-		Path:          e.Path,
-		Tier:          s.EffectiveTier(resource, e),
-		IDField:       e.IDField,
-		Critical:      e.Critical,
-		Discriminator: discriminatorDispatchForEndpoint(e, types, resourceNameIndex),
+		Path:               e.Path,
+		Method:             strings.ToUpper(e.Method),
+		Tier:               s.EffectiveTier(resource, e),
+		SkipDefaultSync:    isAuthTaggedEndpoint(e),
+		IDField:            e.IDField,
+		Critical:           e.Critical,
+		SinceParam:         detectEndpointSinceParam(e.Params),
+		SupportsPagination: endpointSupportsPagination(e),
+		UsesHTMLResponse:   e.UsesHTMLResponse(),
+		HTMLExtract:        e.HTMLExtract,
+		BodyFields:         syncBodyFieldsFromEndpoint(e),
+		IDWalkFilterParam:  idWalkFilterParam,
+		IDWalkLimitParam:   idWalkLimitParam,
+		IDWalkPageSize:     idWalkPageSize,
+		FieldSelector:      detectEndpointFieldSelector(e),
+		Discriminator:      discriminatorDispatchForEndpoint(e, types, resourceNameIndex),
+		ResponseItem:       e.Response.Item,
 	}
+}
+
+func isAuthTaggedEndpoint(endpoint spec.Endpoint) bool {
+	for _, tag := range endpoint.Tags {
+		switch strings.ToLower(strings.TrimSpace(tag)) {
+		case "auth", "authentication", "authorization", "oauth", "oauth2":
+			return true
+		}
+	}
+	return false
+}
+
+func syncBodyFieldsFromEndpoint(endpoint spec.Endpoint) []SyncBodyField {
+	if !strings.EqualFold(endpoint.Method, "POST") || len(endpoint.Body) == 0 {
+		return nil
+	}
+	fields := make([]SyncBodyField, 0, len(endpoint.Body))
+	for _, param := range endpoint.Body {
+		field := SyncBodyField{Name: param.Name, WireName: param.BodyWireName(), Type: param.Type}
+		if defaultValue, ok := syncBodyDefault(param); ok {
+			field.Default = defaultValue
+			field.HasDefault = true
+		}
+		fields = append(fields, field)
+	}
+	return fields
+}
+
+func syncBodyDefault(param spec.Param) (any, bool) {
+	if param.Default != nil {
+		return param.Default, true
+	}
+	if len(param.Enum) == 1 {
+		return param.Enum[0], true
+	}
+	return nil, false
+}
+
+func detectIDWalkParams(endpoint spec.Endpoint) (string, string, int) {
+	if endpoint.Pagination == nil || endpoint.Pagination.Type != spec.PaginationTypeIDWalk || strings.TrimSpace(endpoint.IDField) == "" {
+		return "", "", 0
+	}
+	limitParam := strings.ToLower(strings.TrimSpace(endpoint.Pagination.LimitParam))
+	if limitParam == "" {
+		return "", "", 0
+	}
+	var hasLimit bool
+	var filterParam string
+	var resolvedLimitParam string
+	for _, param := range endpoint.Body {
+		switch strings.ToLower(strings.TrimSpace(param.Name)) {
+		case limitParam:
+			hasLimit = true
+			resolvedLimitParam = param.Name
+		case "filter", "filters":
+			if param.Type == "array" {
+				filterParam = param.Name
+			}
+		}
+	}
+	if !hasLimit || filterParam == "" {
+		return "", "", 0
+	}
+	pageSize := 100
+	if defaultSize, ok := paginationLimitDefault(endpoint); ok {
+		pageSize = defaultSize
+	}
+	return filterParam, resolvedLimitParam, pageSize
+}
+
+func paginationLimitDefault(endpoint spec.Endpoint) (int, bool) {
+	if endpoint.Pagination == nil || strings.TrimSpace(endpoint.Pagination.LimitParam) == "" {
+		return 0, false
+	}
+	limitName := strings.ToLower(endpoint.Pagination.LimitParam)
+	params := append(append([]spec.Param{}, endpoint.Params...), endpoint.Body...)
+	for _, param := range params {
+		if strings.ToLower(param.Name) != limitName {
+			continue
+		}
+		value, ok := syncBodyDefault(param)
+		if !ok {
+			return 0, false
+		}
+		switch v := value.(type) {
+		case int:
+			if v > 0 {
+				return v, true
+			}
+		case int64:
+			if v > 0 {
+				return int(v), true
+			}
+		case float64:
+			if v > 0 {
+				return int(v), true
+			}
+		}
+	}
+	return 0, false
+}
+
+// detectEndpointSinceParam returns the actual query parameter name this
+// endpoint declares for incremental temporal filtering, or "" when none is
+// declared. The match list mirrors the profile-level aggregation in
+// Profile() so per-endpoint detection stays consistent with the
+// PaginationProfile.SinceParam summary.
+func detectEndpointSinceParam(params []spec.Param) string {
+	for _, p := range params {
+		name := strings.ToLower(p.Name)
+		if strings.Contains(name, "since") || strings.Contains(name, "updated_after") || strings.Contains(name, "modified_since") || strings.Contains(name, "updated_at") {
+			return p.Name
+		}
+	}
+	return ""
+}
+
+func detectEndpointFieldSelector(endpoint spec.Endpoint) FieldSelector {
+	for _, param := range endpoint.Params {
+		if param.Purpose != spec.ParamPurposeFieldSelector || strings.TrimSpace(param.FieldSelectorDefault) == "" {
+			continue
+		}
+		// Sync applies one field-selector param per endpoint; the spec order
+		// chooses which one wins when an API exposes several.
+		return FieldSelector{
+			Name:    param.WireName(),
+			Default: strings.TrimSpace(param.FieldSelectorDefault),
+		}
+	}
+	return FieldSelector{}
+}
+
+func endpointSupportsPagination(endpoint spec.Endpoint) bool {
+	if endpoint.Pagination != nil &&
+		(strings.TrimSpace(endpoint.Pagination.LimitParam) != "" ||
+			strings.TrimSpace(endpoint.Pagination.CursorParam) != "") {
+		return true
+	}
+	for _, param := range endpoint.Params {
+		if param.PathParam || param.Positional {
+			continue
+		}
+		if pageSizeParamCandidates[strings.ToLower(param.Name)] {
+			return true
+		}
+	}
+	return false
 }
 
 func applySyncCandidates(syncable map[string]syncableMeta, candidates map[string][]syncableCandidate) {
@@ -1088,6 +2053,61 @@ func applySyncCandidates(syncable map[string]syncableMeta, candidates map[string
 			addSyncableIfUnique(syncable, name, entry.meta)
 		}
 	}
+}
+
+func applyPathDerivedIDFields(syncable map[string]syncableMeta, pathDerivedIDFields map[string]string, types map[string]spec.TypeDef) {
+	for _, resourceName := range sortedKeys(syncable) {
+		idField := pathDerivedIDFieldForResource(resourceName, pathDerivedIDFields)
+		if idField == "" {
+			continue
+		}
+		meta := syncable[resourceName]
+		if !shouldUsePathDerivedIDField(meta.IDField) || !responseTypeHasField(meta.ResponseItem, types, idField) {
+			continue
+		}
+		meta.IDField = idField
+		syncable[resourceName] = meta
+	}
+}
+
+func applyPathDerivedIDFieldsToParameterized(parameterized map[string]parameterizedEntry, pathDerivedIDFields map[string]string, types map[string]spec.TypeDef) {
+	for _, key := range sortedKeys(parameterized) {
+		entry := parameterized[key]
+		idField := pathDerivedIDFieldForResource(entry.name, pathDerivedIDFields)
+		if idField == "" || !shouldUsePathDerivedIDField(entry.meta.IDField) || !responseTypeHasField(entry.meta.ResponseItem, types, idField) {
+			continue
+		}
+		entry.meta.IDField = idField
+		parameterized[key] = entry
+	}
+}
+
+func shouldUsePathDerivedIDField(existing string) bool {
+	existing = strings.TrimSpace(existing)
+	return existing == "" || strings.EqualFold(existing, "name")
+}
+
+func pathDerivedIDFieldForResource(resourceName string, pathDerivedIDFields map[string]string) string {
+	for _, variant := range nameVariants(resourceName) {
+		if idField := pathDerivedIDFields[variant]; idField != "" {
+			return idField
+		}
+	}
+	return ""
+}
+
+func responseTypeHasField(typeName string, types map[string]spec.TypeDef, fieldName string) bool {
+	typeDef, ok := lookupTypeDef(typeName, types)
+	if !ok {
+		return false
+	}
+	fieldSnake := spec.ToSnakeCase(fieldName)
+	for _, field := range typeDef.Fields {
+		if field.Name == fieldName || spec.ToSnakeCase(field.Name) == fieldSnake {
+			return true
+		}
+	}
+	return false
 }
 
 func siblingSyncResourceName(resourceName string, candidate syncableCandidate) string {
@@ -1248,12 +2268,23 @@ func sortedSyncableResources(m map[string]syncableMeta) []SyncableResource {
 	for i, name := range names {
 		meta := m[name]
 		resources[i] = SyncableResource{
-			Name:          name,
-			Path:          meta.Path,
-			Tier:          meta.Tier,
-			IDField:       meta.IDField,
-			Critical:      meta.Critical,
-			Discriminator: meta.Discriminator,
+			Name:               name,
+			Path:               meta.Path,
+			Method:             meta.Method,
+			Tier:               meta.Tier,
+			SkipDefaultSync:    meta.SkipDefaultSync,
+			IDField:            meta.IDField,
+			Critical:           meta.Critical,
+			SinceParam:         meta.SinceParam,
+			SupportsPagination: meta.SupportsPagination,
+			UsesHTMLResponse:   meta.UsesHTMLResponse,
+			HTMLExtract:        meta.HTMLExtract,
+			BodyFields:         meta.BodyFields,
+			IDWalkFilterParam:  meta.IDWalkFilterParam,
+			IDWalkLimitParam:   meta.IDWalkLimitParam,
+			IDWalkPageSize:     meta.IDWalkPageSize,
+			FieldSelector:      meta.FieldSelector,
+			Discriminator:      meta.Discriminator,
 		}
 	}
 	return resources

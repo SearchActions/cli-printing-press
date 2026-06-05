@@ -13,6 +13,7 @@ import (
 	"github.com/mvanhorn/cli-printing-press/v4/internal/artifacts"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/govulncheck"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/naming"
+	"github.com/mvanhorn/cli-printing-press/v4/internal/platform"
 )
 
 type validationGate struct {
@@ -23,7 +24,7 @@ type validationGate struct {
 const qualityGateTimeout = 5 * time.Minute
 
 func (g *Generator) Validate() error {
-	binPath := filepath.Join(g.OutputDir, naming.ValidationBinary(g.Spec.Name))
+	binPath := platform.ExecutablePath(filepath.Join(g.OutputDir, naming.ValidationBinary(g.Spec.Name)))
 	if err := artifacts.CleanupGeneratedCLI(g.OutputDir, artifacts.CleanupOptions{
 		RemoveValidationBinaries: true,
 		RemoveRecursiveCopies:    true,
@@ -45,6 +46,12 @@ func (g *Generator) Validate() error {
 			run: func() error {
 				_, err := runCommand(g.OutputDir, qualityGateTimeout, "go", "mod", "tidy")
 				return err
+			},
+		},
+		{
+			name: "ensure safe golang.org/x/net",
+			run: func() error {
+				return ensureSafeXNet(g.OutputDir)
 			},
 		},
 		{

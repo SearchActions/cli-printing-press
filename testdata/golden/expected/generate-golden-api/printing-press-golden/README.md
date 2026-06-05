@@ -2,22 +2,34 @@
 
 Purpose-built fixture for golden generation coverage.
 
-Printed by [@printing-press-golden](https://github.com/printing-press-golden) (printing-press-golden).
+Created by [@printing-press-golden](https://github.com/printing-press-golden) (printing-press-golden).
 
 ## Install
 
-The recommended path installs both the `printing-press-golden-pp-cli` binary and the `pp-printing-press-golden` agent skill in one shot:
+The recommended path installs both the `printing-press-golden-pp-cli` binary and the `pp-printing-press-golden` agent skill (Claude Code, Codex, Cursor, Gemini CLI, GitHub Copilot, and other agents supported by the upstream [`skills`](https://github.com/vercel-labs/skills) CLI) in one shot:
 
 ```bash
-npx -y @mvanhorn/printing-press install printing-press-golden
+npx -y @mvanhorn/printing-press-library install printing-press-golden
 ```
 
 For CLI only (no skill):
 
 ```bash
-npx -y @mvanhorn/printing-press install printing-press-golden --cli-only
+npx -y @mvanhorn/printing-press-library install printing-press-golden --cli-only
 ```
 
+For skill only — installs the skill into the same agents as the default command above, but skips the CLI binary (use this to update or reinstall just the skill):
+
+```bash
+npx -y @mvanhorn/printing-press-library install printing-press-golden --skill-only
+```
+
+To constrain the skill install to one or more specific agents (repeatable — agent names match the [`skills`](https://github.com/vercel-labs/skills) CLI):
+
+```bash
+npx -y @mvanhorn/printing-press-library install printing-press-golden --agent claude-code
+npx -y @mvanhorn/printing-press-library install printing-press-golden --agent claude-code --agent codex
+```
 
 ### Without Node
 
@@ -43,12 +55,50 @@ Inside a Hermes chat session:
 ```
 
 ## Install for OpenClaw
+Install both the CLI binary and the focused OpenClaw skill into runtime-visible locations:
 
-Tell your OpenClaw agent (copy this):
+```bash
+npx -y @mvanhorn/printing-press-library install printing-press-golden --agent openclaw --bin-dir ~/.local/bin
+```
 
+Restart the OpenClaw session or gateway if the newly installed skill is not visible immediately.
+
+## Use with Claude Desktop
+
+This CLI ships an [MCPB](https://github.com/modelcontextprotocol/mcpb) bundle — Claude Desktop's standard format for one-click MCP extension installs (no JSON config required).
+
+To install:
+
+1. Download the `.mcpb` for your platform from the [latest release](https://github.com/mvanhorn/printing-press-library/releases/tag/printing-press-golden-current).
+2. Double-click the `.mcpb` file. Claude Desktop opens and walks you through the install.
+3. Fill in `PRINTING_PRESS_GOLDEN_API_KEY` when Claude Desktop prompts you.
+
+Requires Claude Desktop 1.0.0 or later. Pre-built bundles ship for macOS Apple Silicon (`darwin-arm64`) and Windows (`amd64`, `arm64`); for other platforms, use the manual config below.
+
+<details>
+<summary>Manual JSON config (advanced)</summary>
+
+If you can't use the MCPB bundle (older Claude Desktop, unsupported platform), install the MCP binary and configure it manually.
+
+
+Install the MCP binary from this CLI's published public-library entry or pre-built release.
+
+Add to your Claude Desktop config (`~/Library/Application Support/Claude/claude_desktop_config.json`):
+
+```json
+{
+  "mcpServers": {
+    "printing-press-golden": {
+      "command": "printing-press-golden-pp-mcp",
+      "env": {
+        "PRINTING_PRESS_GOLDEN_API_KEY": "<your-key>"
+      }
+    }
+  }
+}
 ```
-Install the pp-printing-press-golden skill from https://github.com/mvanhorn/printing-press-library/tree/main/cli-skills/pp-printing-press-golden. The skill defines how its required CLI can be installed.
-```
+
+</details>
 
 ## Quick Start
 
@@ -90,7 +140,7 @@ Run `printing-press-golden-pp-cli --help` for the full command reference and fla
 
 Manage currencies
 
-- **`printing-press-golden-pp-cli currencies list`** - List supported currencies
+- **`printing-press-golden-pp-cli currencies`** - List supported currencies
 
 ### projects
 
@@ -104,7 +154,7 @@ Manage projects
 
 Manage public
 
-- **`printing-press-golden-pp-cli public get-status`** - Get public service status
+- **`printing-press-golden-pp-cli public`** - Get public service status
 
 ### reports
 
@@ -147,68 +197,23 @@ This CLI is designed for AI agent consumption:
 
 Exit codes: `0` success, `2` usage error, `3` not found, `4` auth error, `5` API error, `7` rate limited, `10` config error.
 
-## Use with Claude Code
+## Freshness
 
-Install the focused skill — it auto-installs the CLI on first invocation:
+This CLI owns bounded freshness for registered store-backed read command paths. In `--data-source auto` mode, covered commands check the local SQLite store before serving results; stale or missing resources trigger a bounded refresh, and refresh failures fall back to the existing local data with a warning. `--data-source local` never refreshes, and `--data-source live` reads the API without mutating the local store.
 
-```bash
-npx skills add mvanhorn/printing-press-library/cli-skills/pp-printing-press-golden -g
-```
+Set `PRINTING_PRESS_GOLDEN_NO_AUTO_REFRESH=1` to disable the pre-read freshness hook while preserving the selected data source.
 
-Then invoke `/pp-printing-press-golden <query>` in Claude Code. The skill is the most efficient path — Claude Code drives the CLI directly without an MCP server in the middle.
+Covered command paths:
+- `printing-press-golden-pp-cli currencies`
+- `printing-press-golden-pp-cli currencies get`
+- `printing-press-golden-pp-cli currencies list`
+- `printing-press-golden-pp-cli currencies search`
+- `printing-press-golden-pp-cli projects`
+- `printing-press-golden-pp-cli projects get`
+- `printing-press-golden-pp-cli projects list`
+- `printing-press-golden-pp-cli projects search`
 
-<details>
-<summary>Use as an MCP server in Claude Code (advanced)</summary>
-
-If you'd rather register this CLI as an MCP server in Claude Code, install the MCP binary first:
-
-
-Install the MCP binary from this CLI's published public-library entry or pre-built release.
-
-Then register it:
-
-```bash
-claude mcp add printing-press-golden printing-press-golden-pp-mcp -e PRINTING_PRESS_GOLDEN_API_KEY=<your-key>
-```
-
-</details>
-
-## Use with Claude Desktop
-
-This CLI ships an [MCPB](https://github.com/modelcontextprotocol/mcpb) bundle — Claude Desktop's standard format for one-click MCP extension installs (no JSON config required).
-
-To install:
-
-1. Download the `.mcpb` for your platform from the [latest release](https://github.com/mvanhorn/printing-press-library/releases/tag/printing-press-golden-current).
-2. Double-click the `.mcpb` file. Claude Desktop opens and walks you through the install.
-3. Fill in `PRINTING_PRESS_GOLDEN_API_KEY` when Claude Desktop prompts you.
-
-Requires Claude Desktop 1.0.0 or later. Pre-built bundles ship for macOS Apple Silicon (`darwin-arm64`) and Windows (`amd64`, `arm64`); for other platforms, use the manual config below.
-
-<details>
-<summary>Manual JSON config (advanced)</summary>
-
-If you can't use the MCPB bundle (older Claude Desktop, unsupported platform), install the MCP binary and configure it manually.
-
-
-Install the MCP binary from this CLI's published public-library entry or pre-built release.
-
-Add to your Claude Desktop config (`~/Library/Application Support/Claude/claude_desktop_config.json`):
-
-```json
-{
-  "mcpServers": {
-    "printing-press-golden": {
-      "command": "printing-press-golden-pp-mcp",
-      "env": {
-        "PRINTING_PRESS_GOLDEN_API_KEY": "<your-key>"
-      }
-    }
-  }
-}
-```
-
-</details>
+JSON outputs that use the generated provenance envelope include freshness metadata at `meta.freshness`. This metadata describes the freshness decision for the covered command path; it does not claim full historical backfill or API-specific enrichment.
 
 ## Health Check
 
@@ -229,6 +234,10 @@ Environment variables:
 | Name | Kind | Required | Description |
 | --- | --- | --- | --- |
 | `PRINTING_PRESS_GOLDEN_API_KEY` | per_call | Yes | Set to your API credential. |
+
+### agentcookie (optional)
+
+If you use agentcookie to sync secrets across machines, this CLI auto-adopts agentcookie-managed credentials with no extra setup. When the daemon writes to this CLI's config, `printing-press-golden-pp-cli doctor` reports `agentcookie: detected` and `auth-status` labels the source as `agentcookie`. Skip this section if you don't use agentcookie - the CLI works the same as any other.
 
 ## Troubleshooting
 **Authentication errors (exit code 4)**

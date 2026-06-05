@@ -2,7 +2,7 @@
 name: printing-press
 description: Generate a ship-ready CLI for an API with a lean research -> generate -> build -> shipcheck loop.
 version: 2.0.0
-min-binary-version: "0.3.0"
+min-binary-version: "4.0.0"
 allowed-tools:
   - Bash
   - Read
@@ -84,6 +84,7 @@ See the `printing-press-polish` skill for details. It runs diagnostics, fixes ve
 - **Bugs found during dogfood are fix-before-ship, not "file for v0.2".** If a 1-3 file edit resolves it, do it now. `ship-with-gaps` is deprecated as a default verdict (see Phase 4). Context is freshest in-session; a v0.2 backlog that may never be revisited ships known-broken CLIs.
 - **Features approved in Phase 1.5 are shipping scope.** Do not downgrade a shipping-scope feature to a stub mid-build. If implementation becomes infeasible, return to Phase 1.5 with a revised manifest and get explicit re-approval.
 - **Do not quote human-time estimates for sub-tasks** ("~15-30 min", "~1 hour", "quick fix") in `AskUserQuestion` options, phase descriptions, or reference docs. The agent does the work, not the user; agent-fabricated estimates are notoriously bad and train users to distrust the prompt. Describe scope instead (lines of code, files touched, relative size). The carve-outs are wall-clock estimates for genuinely time-bound things: the whole-CLI run (set the user's expectation up front — most CLIs take 30+ minutes), tool installs (`go install` takes ~10 seconds), and printing-press subcommands that do network-bound work (crowd-sniff scans npm + GitHub, ~5-10 minutes). Anything bounded by agent reasoning time is not time-bound — describe scope.
+- **Use raw captures for contract research.** When reading official docs, auth/error/rate-limit pages, endpoint references, OpenAPI/Postman links, or source pages whose exact identifiers affect the generated CLI, read [references/fetch-docs.md](references/fetch-docs.md) and use its `fetch-docs.sh` helper. Reserve `WebFetch` for quick TL;DR reads where losing field-level details is acceptable.
 - Optimize for time-to-ship, not time-to-document.
 - Reuse prior research whenever it is already good enough.
 - Do not split one idea across multiple mandatory artifacts.
@@ -117,41 +118,187 @@ During Phase 5.6 (archiving) and before publishing, read and apply
 
 <!-- PRESS_SETUP_CONTRACT_START -->
 ```bash
-# min-binary-version: 0.3.0
+# min-binary-version: 4.0.0
 
 # Derive scope first — needed for local build detection
 _scope_dir="$(git rev-parse --show-toplevel 2>/dev/null || echo "$PWD")"
 _scope_dir="$(cd "$_scope_dir" && pwd -P)"
 
+_press_repo=false
+if [ -d "$_scope_dir/cmd/cli-printing-press" ] && [ -f "$_scope_dir/go.mod" ]; then
+  _press_repo=true
+fi
+
+_resolve_press_bin() {
+  if command -v cli-printing-press >/dev/null 2>&1; then
+    command -v cli-printing-press
+    return 0
+  fi
+  if command -v printing-press >/dev/null 2>&1 && printing-press version --json >/dev/null 2>&1; then
+    command -v printing-press
+    return 0
+  fi
+  return 1
+}
+
 # Prefer local build when running from inside the printing-press repo.
-# The lefthook build hook keeps ./printing-press current after every commit/pull,
+# The lefthook build hook keeps ./cli-printing-press current after every commit/pull,
 # so it's always newer than the go-install version.
-if [ -x "$_scope_dir/printing-press" ] && [ -d "$_scope_dir/cmd/printing-press" ]; then
+if [ "$_press_repo" = "true" ] && [ -x "$_scope_dir/cli-printing-press" ]; then
   export PATH="$_scope_dir:$PATH"
-  echo "Using local build: $_scope_dir/printing-press"
-elif ! command -v printing-press >/dev/null 2>&1; then
+  echo "Using local build: $_scope_dir/cli-printing-press"
+elif ! _resolve_press_bin >/dev/null; then
   # Augment PATH if the binary is in ~/go/bin but not on the user's interactive PATH.
-  if [ -x "$HOME/go/bin/printing-press" ]; then
+  if [ -x "$HOME/go/bin/cli-printing-press" ]; then
+    export PATH="$HOME/go/bin:$PATH"
+  elif [ -x "$HOME/go/bin/printing-press" ] && "$HOME/go/bin/printing-press" version --json >/dev/null 2>&1; then
     export PATH="$HOME/go/bin:$PATH"
   else
-    # Refuse: the printing-press binary is required and we will not auto-install
-    # it. The README's two-step install (binary + plugin) is the source of truth;
+    # Refuse: the cli-printing-press binary is required and we will not auto-install
+    # it. The README's install flow is the source of truth;
     # silent auto-install hides failure modes (network, wrong GOPATH) inside an
     # opaque skill invocation.
     echo ""
-    echo "[setup-error] printing-press binary not found."
+    echo "[setup-error] cli-printing-press binary not found."
     echo ""
     if command -v go >/dev/null 2>&1; then
       echo "Install it in your terminal:"
-      echo "  go install github.com/mvanhorn/cli-printing-press/v4/cmd/printing-press@latest"
+      echo "  go install github.com/mvanhorn/cli-printing-press/v4/cmd/cli-printing-press@latest"
     else
-      echo "Go 1.26.3 or newer is also not installed. Install Go from https://go.dev/dl/, then:"
-      echo "  go install github.com/mvanhorn/cli-printing-press/v4/cmd/printing-press@latest"
+      echo "Go 1.26.4 or newer is also not installed. Install Go from https://go.dev/dl/, then:"
+      echo "  go install github.com/mvanhorn/cli-printing-press/v4/cmd/cli-printing-press@latest"
     fi
     echo ""
-    echo "Verify with: printing-press --version"
+    echo "Verify with: cli-printing-press --version"
     echo "Then re-run /printing-press."
     return 1 2>/dev/null || exit 1
+  fi
+fi
+
+# Verify the Go toolchain is on PATH. Generation runs Go-based quality gates
+# (go mod tidy, go vet, etc.) after writing thousands of lines of scaffolding,
+# so a missing `go` only surfaces 5+ minutes in. Fail-fast costs one command -v
+# call when Go is present and converts a late, opaque failure into a 30-second
+# actionable abort.
+if ! command -v go >/dev/null 2>&1; then
+  echo ""
+  echo "[setup-error] Go toolchain not found."
+  echo ""
+  echo "The Printing Press generator runs Go-based quality gates after generation."
+  echo "Install Go 1.26.4 or newer from https://go.dev/dl/, then verify with:"
+  echo "  go version"
+  echo "Then re-run /printing-press."
+  echo ""
+  return 1 2>/dev/null || exit 1
+fi
+
+# Verify the installed Go tree can compile and run common standard library
+# imports. A truncated Go extraction can leave the binary working enough for
+# `go version` while missing packages under $GOROOT/src, which otherwise fails
+# deep into generation during later Go quality gates.
+_go_smoke_root="${PRINTING_PRESS_GO_SMOKE_DIR:-$HOME/.printing-press-smoke}"
+if ! mkdir -p "$_go_smoke_root"; then
+  echo ""
+  echo "[setup-error] Unable to create Go smoke-test workspace at $_go_smoke_root."
+  echo "Set PRINTING_PRESS_GO_SMOKE_DIR to a writable non-temp directory and retry."
+  echo ""
+  return 1 2>/dev/null || exit 1
+fi
+_go_smoke_dir="$(mktemp -d "$_go_smoke_root/stdlib.XXXXXX" 2>/dev/null || true)"
+if [ -z "$_go_smoke_dir" ]; then
+  echo ""
+  echo "[setup-error] Unable to create Go smoke-test workspace under $_go_smoke_root."
+  echo "Set PRINTING_PRESS_GO_SMOKE_DIR to a writable non-temp directory and retry."
+  echo ""
+  return 1 2>/dev/null || exit 1
+fi
+cat > "$_go_smoke_dir/go.mod" <<'__PP_GO_SMOKE_MOD__'
+module pp-go-stdlib-smoke
+
+go 1.20
+__PP_GO_SMOKE_MOD__
+cat > "$_go_smoke_dir/main.go" <<'__PP_GO_SMOKE_MAIN__'
+package main
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"regexp"
+)
+
+func main() {
+	ctx := context.Background()
+	payload, err := json.Marshal(map[string]string{"status": "ok"})
+	if err != nil {
+		panic(err)
+	}
+	if !regexp.MustCompile(`ok`).Match(payload) {
+		panic("regexp mismatch")
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://example.com", nil)
+	if err != nil {
+		panic(err)
+	}
+	_, _ = fmt.Fprint(io.Discard, req.Method)
+}
+__PP_GO_SMOKE_MAIN__
+if ! (cd "$_go_smoke_dir" && GOFLAGS= GOWORK=off go run . >/dev/null 2>"$_go_smoke_dir/error.log"); then
+  _go_smoke_output="$(sed -n '1,12p' "$_go_smoke_dir/error.log" 2>/dev/null || true)"
+  rm -rf "$_go_smoke_dir"
+  echo ""
+  echo "[setup-error] Go std library is incomplete (truncated or corrupted install)."
+  echo "Reinstall Go from https://go.dev/dl/ and verify with the smoke test before retrying."
+  if [ -n "$_go_smoke_output" ]; then
+    echo ""
+    echo "Go smoke test output:"
+    printf '%s\n' "$_go_smoke_output"
+  fi
+  echo ""
+  return 1 2>/dev/null || exit 1
+fi
+rm -rf "$_go_smoke_dir"
+
+# Resolve and emit the absolute path the agent must use for every later
+# `cli-printing-press` invocation. `export PATH` above only affects this one
+# Bash tool call; subsequent calls open a fresh shell and resolve bare
+# `cli-printing-press` against the user's default PATH. When a global is
+# installed at a stale version, that silently shadows the local build the
+# preflight just chose. Handing the agent an absolute path eliminates the
+# shadow.
+if [ "$_press_repo" = "true" ] && [ -x "$_scope_dir/cli-printing-press" ]; then
+  PRINTING_PRESS_BIN="$_scope_dir/cli-printing-press"
+else
+  PRINTING_PRESS_BIN="$(_resolve_press_bin 2>/dev/null || true)"
+fi
+echo "PRINTING_PRESS_BIN=$PRINTING_PRESS_BIN"
+echo "PRESS_REPO_MODE=$_press_repo"
+
+# Shadow detector (advisory). When a local build is in use, surface any
+# differing global so the user can see at a glance that the two binaries
+# disagree. Detect-only: the absolute path emitted above is the one the
+# agent will actually invoke; this warning does not change selection.
+if [ "$_press_repo" = "true" ] && [ -x "$_scope_dir/cli-printing-press" ]; then
+  _global_bin=""
+  for _candidate in "$HOME/go/bin/cli-printing-press" "/usr/local/bin/cli-printing-press" "/opt/homebrew/bin/cli-printing-press" "$HOME/go/bin/printing-press" "/usr/local/bin/printing-press" "/opt/homebrew/bin/printing-press"; do
+    if [ -x "$_candidate" ] && [ "$_candidate" != "$_scope_dir/cli-printing-press" ] && "$_candidate" version --json >/dev/null 2>&1; then
+      _global_bin="$_candidate"
+      break
+    fi
+  done
+  if [ -n "$_global_bin" ]; then
+    _local_v="$("$_scope_dir/cli-printing-press" version --json 2>/dev/null | sed -nE 's/.*"version"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/p')"
+    _global_v="$("$_global_bin" version --json 2>/dev/null | sed -nE 's/.*"version"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/p')"
+    if [ -n "$_local_v" ] && [ -n "$_global_v" ] && [ "$_local_v" != "$_global_v" ]; then
+      echo ""
+      echo "[binary-shadow] local build v$_local_v differs from global v$_global_v at $_global_bin"
+      echo "PRESS_BIN_LOCAL_VERSION=$_local_v"
+      echo "PRESS_BIN_GLOBAL_VERSION=$_global_v"
+      echo "PRESS_BIN_GLOBAL_PATH=$_global_bin"
+      echo ""
+    fi
   fi
 fi
 
@@ -161,7 +308,7 @@ if [ -z "$PRESS_BASE" ]; then
 fi
 
 PRESS_SCOPE="$PRESS_BASE-$(printf '%s' "$_scope_dir" | shasum -a 256 | cut -c1-8)"
-PRESS_HOME="$HOME/printing-press"
+PRESS_HOME="${PRINTING_PRESS_HOME:-$HOME/printing-press}"
 PRESS_RUNSTATE="$PRESS_HOME/.runstate/$PRESS_SCOPE"
 PRESS_LIBRARY="$PRESS_HOME/library"
 PRESS_MANUSCRIPTS="$PRESS_HOME/manuscripts"
@@ -169,14 +316,27 @@ PRESS_CURRENT="$PRESS_RUNSTATE/current"
 
 mkdir -p "$PRESS_RUNSTATE" "$PRESS_LIBRARY" "$PRESS_MANUSCRIPTS" "$PRESS_CURRENT"
 
-# --- Latest-version advisory (throttled, fail-open) ---
-# Once per 24h, check whether a newer printing-press release exists and print a
-# one-line notice if so. Uses `go list` through the public module proxy. Runs in
-# every context — devs ahead of latest stay silent (comparison handles it), devs
-# behind latest get the same nudge anyone else does.
+# --- Latest-version advisory (fail-open) ---
+# Repo checkouts track origin/main because their skills and local binary come
+# from the checkout. Standalone installs track the latest released Go module.
 PRESS_VERCHECK_FILE="$PRESS_HOME/.version-check"
 PRESS_VERCHECK_TTL=86400
 _now_ts=$(date +%s)
+
+# Strict-older semver compare on the first three components. Pre-release
+# suffixes collapse to their GA counterpart (acceptable: we ship no pre-release
+# tags).
+_semver_lt() {
+  awk -v a="$1" -v b="$2" 'BEGIN {
+    split(a, x, ".")
+    split(b, y, ".")
+    for (i = 1; i <= 3; i++) {
+      if ((x[i] + 0) < (y[i] + 0)) exit 0
+      if ((x[i] + 0) > (y[i] + 0)) exit 1
+    }
+    exit 1
+  }'
+}
 _should_check=true
 if [ -f "$PRESS_VERCHECK_FILE" ] && [ -z "$PRESS_VERCHECK_FORCE" ]; then
   _last_ts=$(awk -F= '/^last_check=/{print $2}' "$PRESS_VERCHECK_FILE" 2>/dev/null)
@@ -185,26 +345,127 @@ if [ -f "$PRESS_VERCHECK_FILE" ] && [ -z "$PRESS_VERCHECK_FORCE" ]; then
   fi
 fi
 
-if [ "$_should_check" = "true" ] && command -v go >/dev/null 2>&1; then
-  _installed=$(printing-press version --json 2>/dev/null | sed -nE 's/.*"version"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/p')
-  _latest=$(go list -m -versions github.com/mvanhorn/cli-printing-press/v4 2>/dev/null | awk '{print $NF}' | sed 's/^v//')
+if [ "$_press_repo" = "true" ]; then
+  # Repo mode checks origin/main every run because the checkout and local build
+  # move quickly; skipped_repo_main suppresses repeated prompts for one SHA.
+  if git -C "$_scope_dir" remote get-url origin >/dev/null 2>&1 &&
+     git -C "$_scope_dir" fetch --quiet origin main >/dev/null 2>&1; then
+    _head_rev=$(git -C "$_scope_dir" rev-parse HEAD 2>/dev/null || true)
+    _main_rev=$(git -C "$_scope_dir" rev-parse origin/main 2>/dev/null || true)
+    _skipped_repo_main=""
+    if [ -f "$PRESS_VERCHECK_FILE" ] && [ -z "$PRESS_VERCHECK_FORCE" ]; then
+      _skipped_repo_main=$(awk -F= '/^skipped_repo_main=/{value=$2} END{print value}' "$PRESS_VERCHECK_FILE" 2>/dev/null)
+    fi
+    if [ -n "$_head_rev" ] && [ -n "$_main_rev" ] &&
+       [ "$_head_rev" != "$_main_rev" ] &&
+       [ "$_skipped_repo_main" != "$_main_rev" ] &&
+       git -C "$_scope_dir" merge-base --is-ancestor "$_head_rev" "$_main_rev" 2>/dev/null; then
+      echo ""
+      echo "[repo-upgrade-available] origin/main has newer Printing Press changes"
+      echo "PRESS_REPO_DIR=$_scope_dir"
+      echo "PRESS_REPO_HEAD=$_head_rev"
+      echo "PRESS_REPO_MAIN=$_main_rev"
+      echo ""
+    fi
 
-  if [ -n "$_installed" ] && [ -n "$_latest" ] && [ "$_installed" != "$_latest" ]; then
-    # sort -V is not fully semver-aware: it ranks "3.0.0-rc1" above "3.0.0" instead of below.
-    # Acceptable today (we don't ship pre-release tags); revisit if we ever do.
-    _newer=$(printf "v%s\nv%s\n" "$_installed" "$_latest" | sort -V | tail -1 | sed 's/^v//')
-    if [ "$_newer" = "$_latest" ]; then
-      # Marker for the skill prose below to detect and offer an interactive upgrade.
-      # The skill reads PRESS_UPGRADE_AVAILABLE / PRESS_UPGRADE_INSTALLED from this output.
-      echo ""
-      echo "[upgrade-available] printing-press v$_latest is available (you have v$_installed)"
-      echo "PRESS_UPGRADE_AVAILABLE=$_latest"
-      echo "PRESS_UPGRADE_INSTALLED=$_installed"
-      echo ""
+    printf "last_check=%s\nlatest=%s\nmode=repo\nskipped_repo_main=%s\n" "$_now_ts" "${_main_rev:-unknown}" "$_skipped_repo_main" > "$PRESS_VERCHECK_FILE" 2>/dev/null || true
+  fi
+elif [ "$_should_check" = "true" ] && command -v go >/dev/null 2>&1; then
+  _installed=$("$PRINTING_PRESS_BIN" version --json 2>/dev/null | sed -nE 's/.*"version"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/p')
+  _latest=""
+
+  if [ -n "$_installed" ]; then
+    _latest=$(go list -m -json github.com/mvanhorn/cli-printing-press/v4@latest 2>/dev/null | awk '
+      /"Version":/ {
+        version=$2
+        gsub(/[",]/, "", version)
+        sub(/^v/, "", version)
+        print version
+        exit
+      }
+    ')
+  fi
+
+  # Currency floor: the lowest release still considered safe to generate with,
+  # published out-of-band so maintainers can raise it without a binary or skill
+  # release. Fetched here (throttled by the TTL above) and cached for the
+  # always-run enforcement gate below.
+  _min_supported=""
+  _min_reason=""
+  if command -v curl >/dev/null 2>&1; then
+    _floor_doc=$(curl -fsSL --max-time 5 \
+      https://raw.githubusercontent.com/mvanhorn/cli-printing-press/main/supported-versions.txt 2>/dev/null || true)
+    if [ -n "$_floor_doc" ]; then
+      _min_supported=$(printf '%s\n' "$_floor_doc" | awk -F= '/^min_supported=/{print $2; exit}')
+      _min_reason=$(printf '%s\n' "$_floor_doc" | sed -nE 's/^reason=//p' | head -n 1)
     fi
   fi
 
-  printf "last_check=%s\nlatest=%s\n" "$_now_ts" "${_latest:-unknown}" > "$PRESS_VERCHECK_FILE" 2>/dev/null || true
+  if [ -n "$_installed" ] && [ -n "$_latest" ] && _semver_lt "$_installed" "$_latest"; then
+    # Marker for the skill prose below to detect and offer an interactive upgrade.
+    # The skill reads PRESS_UPGRADE_AVAILABLE / PRESS_UPGRADE_INSTALLED from this output.
+    echo ""
+    echo "[upgrade-available] printing-press v$_latest is available (you have v$_installed)"
+    echo "PRESS_UPGRADE_AVAILABLE=$_latest"
+    echo "PRESS_UPGRADE_INSTALLED=$_installed"
+    echo ""
+  fi
+
+  printf "last_check=%s\nlatest=%s\nmode=standalone\nmin_supported=%s\nreason=%s\n" \
+    "$_now_ts" "${_latest:-$_installed}" "$_min_supported" "$_min_reason" > "$PRESS_VERCHECK_FILE" 2>/dev/null || true
+fi
+
+# --- Currency-floor enforcement (standalone, every run, fail-open) ---
+# The floor *fetch* above is throttled to once per TTL, but enforcement must run
+# every invocation: a fresh cache must never let a stale binary keep generating
+# CLIs with since-fixed bugs. Compare the always-fresh installed version against
+# the cached floor; the network is never touched here. Only enforce a floor that
+# is itself <= latest, so a typo'd or tampered floor above the newest release
+# cannot brick every install.
+if [ "$_press_repo" != "true" ] && [ -f "$PRESS_VERCHECK_FILE" ]; then
+  _floor_min=$(awk -F= '/^min_supported=/{print $2; exit}' "$PRESS_VERCHECK_FILE" 2>/dev/null)
+  _floor_latest=$(awk -F= '/^latest=/{print $2; exit}' "$PRESS_VERCHECK_FILE" 2>/dev/null)
+  _floor_reason=$(sed -nE 's/^reason=//p' "$PRESS_VERCHECK_FILE" 2>/dev/null | head -n 1)
+  _floor_installed=$("$PRINTING_PRESS_BIN" version --json 2>/dev/null | sed -nE 's/.*"version"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/p')
+  if [ -n "$_floor_min" ] && [ -n "$_floor_installed" ] && [ -n "$_floor_latest" ] &&
+     _semver_lt "$_floor_installed" "$_floor_min" &&
+     ! _semver_lt "$_floor_latest" "$_floor_min"; then
+    echo ""
+    echo "[upgrade-required] printing-press v$_floor_min is the minimum supported version (you have v$_floor_installed)"
+    echo "PRESS_REQUIRED_MIN=$_floor_min"
+    echo "PRESS_REQUIRED_INSTALLED=$_floor_installed"
+    echo "PRESS_REQUIRED_REASON=$_floor_reason"
+    echo ""
+  fi
+fi
+
+# --- Browser-sniff backend advisory (fail-open, every-run) ---
+# browser-use and agent-browser are the preferred Phase 1.7 browser-sniff
+# backends. They are not hard requirements — vendor-spec, --spec, and --har
+# runs never invoke them — but when discovery does need them, mid-flight
+# install prompts are disruptive. Emit a marker every run so setup-checks.md
+# can strongly offer install. No decline caching: a run that didn't need them
+# yesterday may need them today, and the prompt cost is small.
+_browser_use_missing=true
+_agent_browser_missing=true
+# Use `command -v` only. Do NOT use `uvx browser-use --help` as a fallback
+# probe: when uvx exists but browser-use doesn't, that command silently
+# downloads and caches the package, which would be an unconsented install.
+# Downstream capture commands also invoke `browser-use` directly (not via
+# uvx), so a uvx-cache-only state would lie to the detection.
+if command -v browser-use >/dev/null 2>&1; then
+  _browser_use_missing=false
+fi
+if command -v agent-browser >/dev/null 2>&1; then
+  _agent_browser_missing=false
+fi
+
+if [ "$_browser_use_missing" = "true" ] || [ "$_agent_browser_missing" = "true" ]; then
+  echo ""
+  echo "[browser-tools-missing] one or more browser-sniff backends not installed"
+  echo "PRESS_BROWSER_USE_MISSING=$_browser_use_missing"
+  echo "PRESS_AGENT_BROWSER_MISSING=$_agent_browser_missing"
+  echo ""
 fi
 
 # --- Codex mode detection (must run as part of setup, not a separate step) ---
@@ -240,9 +501,11 @@ CODEX_CONSECUTIVE_FAILURES=0
 ```
 <!-- PRESS_SETUP_CONTRACT_END -->
 
-**MANDATORY: Read and apply [references/setup-checks.md](references/setup-checks.md) immediately after the setup contract bash block runs, before any other action.** It handles three signals the contract emits to stdout: `[setup-error]` (refuse to run, surface the install instructions), `[upgrade-available]` (interactive `AskUserQuestion` prompt + optional upgrade), and the min-binary-version compatibility check. Skipping the reference will cause the skill to proceed with a missing or out-of-date binary. Do not skip.
+**MANDATORY: Read and apply [references/setup-checks.md](references/setup-checks.md) immediately after the setup contract bash block runs, before any other action.** It handles the contract output signals: `[setup-error]` (refuse to run, surface the install instructions), `[repo-upgrade-available]` (interactive `AskUserQuestion` prompt + optional repo pull), `PRESS_REPO_MODE=<true|false>` plus the targeted global open-agent-skills freshness check, the min-binary-version compatibility check (hard stop if binary is too old), `[upgrade-required]` (hard gate below the published currency floor — interactive upgrade-or-abort, no skip), `[upgrade-available]` (interactive `AskUserQuestion` prompt + optional standalone binary upgrade), `[browser-tools-missing]` (interactive `AskUserQuestion` prompt + optional install of browser-use and/or agent-browser), and the `PRINTING_PRESS_BIN=<abs-path>` marker plus optional `[binary-shadow]` warning (capture the path; use it for every subsequent generator invocation). Skipping the reference will cause the skill to proceed with a missing or out-of-date binary, run with stale global skill text when the session is managed by open-agent-skills, hit a mid-flight install prompt if browser-sniff is later needed, or invoke the wrong binary because a stale global or the public catalog installer on `PATH` shadowed the local build. Do not skip.
 
-Only after preflight completes successfully (no `[setup-error]`; any `[upgrade-available]` was offered to the user) should you proceed to the Orientation & Briefing section below.
+**Absolute-path rule.** The preflight contract always emits `PRINTING_PRESS_BIN=<absolute path>` to stdout. Capture this value and substitute it (the resolved absolute path, not the literal `$PRINTING_PRESS_BIN` token) for every subsequent `cli-printing-press ...` invocation in this skill, references, and any sub-skill you delegate to. The `export PATH=...` line inside the contract only affects the single Bash tool call it runs in; later Bash tool calls open fresh shells and resolve bare `cli-printing-press` against the user's default `PATH`, where a stale globally-installed binary (`$HOME/go/bin/cli-printing-press`, Homebrew copy, etc.) will silently shadow the local build the preflight just chose. Bash code examples below are written `cli-printing-press generate ...` for readability — replace `cli-printing-press` with the captured absolute path each time you actually run one.
+
+Only after preflight completes successfully (no `[setup-error]`; no `[upgrade-required]` left unresolved — the user either upgraded or the run was aborted; no global skill update that requires restart; any `[repo-upgrade-available]`, `[upgrade-available]`, or `[browser-tools-missing]` was offered to the user; `PRINTING_PRESS_BIN` is captured) should you proceed to the Orientation & Briefing section below.
 
 ## Orientation & Briefing
 
@@ -254,7 +517,7 @@ If the user typed `/printing-press` with no arguments (no API name, no `--spec`,
 
 > The Printing Press generates a fully functional CLI for any API. You give it an API name, a spec file, or a URL. It researches the landscape, catalogs every feature that exists in any competing tool, invents novel features of its own, then generates a Go CLI that matches and beats everything out there — with offline search, agent-native output, and a local SQLite data layer.
 >
-> By the end, you'll have a working CLI in `~/printing-press/library/` that you can use for yourself, ship on your own, or apply to add to the printing-press library.
+> By the end, you'll have a working CLI in `$PRESS_LIBRARY/` that you can use for yourself, ship on your own, or apply to add to the printing-press library.
 >
 > The process takes 30-60 minutes depending on API complexity. Simple APIs with official specs (Stripe, GitHub) are faster. Undocumented APIs that need discovery (ESPN, Domino's) take longer.
 
@@ -307,7 +570,7 @@ Print as prose, matching the style of the example below:
 > 3. I shall present what I found and what I invented — you will have a chance to add your own ideas or adjust the plan before I build
 > 4. I shall generate a Go CLI, build every feature from the plan, then verify quality through dogfood, runtime verification, and scoring
 >
-> **What you will have at the end:** A fully functional CLI at `~/printing-press/library/<api>` that you can use yourself, ship on your own, or apply to add to the printing-press library.
+> **What you will have at the end:** A fully functional CLI at `$PRESS_LIBRARY/<api>` that you can use yourself, ship on your own, or apply to add to the printing-press library.
 >
 > **Time:** 30-60 minutes depending on API complexity.
 >
@@ -394,7 +657,28 @@ DISCOVERY_DIR="$API_RUN_DIR/discovery"
 CLI_WORK_DIR="$API_RUN_DIR/working/<api>-pp-cli"
 STAMP="$(date +%Y-%m-%d-%H%M%S)"
 
+# Session state (live cookies, CSRF tokens captured during authenticated
+# browser-sniff) lives OUTSIDE $API_RUN_DIR so the Phase 5.5 archive
+# `cp -r "$DISCOVERY_DIR"` cannot pick it up. Containment by location, not by
+# manual rm-before-archive.
+#
+# Base prefix is user-scoped (`printing-press-$(id -u)`) so that on a Linux
+# host with a shared /tmp, the umask-077 subshell below does not lock the
+# top-level `printing-press` directory to a single user. macOS already gives
+# us a per-user $TMPDIR; the $(id -u) suffix keeps semantics identical there.
+SESSION_BASE="${TMPDIR:-/tmp}/printing-press-$(id -u)"
+SESSION_DIR="$SESSION_BASE/session/$RUN_ID"
+SESSION_STATE_FILE="$SESSION_DIR/session-state.json"
+
 mkdir -p "$RESEARCH_DIR" "$PROOFS_DIR" "$PIPELINE_DIR" "$CLI_WORK_DIR"
+# Create $SESSION_DIR inside a subshell with a tight umask so it lands at 0700
+# at creation, not after a follow-up chmod. The two-step `mkdir; chmod` form
+# leaves a TOCTOU window where a concurrent process could open the directory
+# (and any session-state.json written into it) while perms are still
+# umask-derived (typically 0755 on Linux). The umask propagates to every
+# directory `mkdir -p` creates; the user-scoped $SESSION_BASE above is what
+# keeps that from blocking other users on the same host.
+(umask 077 && mkdir -p "$SESSION_DIR")
 STATE_FILE="$API_RUN_DIR/state.json"
 ```
 
@@ -410,7 +694,7 @@ Maintain a lightweight state file at `$STATE_FILE` so `/printing-press-score` ca
 }
 ```
 
-`run_id` is the same `YYYYMMDD-HHMMSS` value computed earlier as `RUN_ID="$(date +%Y%m%d-%H%M%S)"`. The generator's manifest writer derives the same value from the `--research-dir` basename when generate is invoked through the canonical `$API_RUN_DIR` (whose basename equals `$RUN_ID`); persisting it in `state.json` here keeps `/printing-press-score` and any future state-loading consumer in sync. Without `run_id` in either path, `printing-press dogfood --live --write-acceptance` refuses to write the gate marker.
+`run_id` is the same `YYYYMMDD-HHMMSS` value computed earlier as `RUN_ID="$(date +%Y%m%d-%H%M%S)"`. The generator's manifest writer derives the same value from the `--research-dir` basename when generate is invoked through the canonical `$API_RUN_DIR` (whose basename equals `$RUN_ID`); persisting it in `state.json` here keeps `/printing-press-score` and any future state-loading consumer in sync. Without `run_id` in either path, `cli-printing-press dogfood --live --write-acceptance` refuses to write the gate marker.
 
 Do not create a `go.work` file in `$CLI_WORK_DIR`. Generated modules must build and test as standalone modules; a mismatched workspace `go` directive can break Go 1.25+ toolchains and lefthook checks. Editor/gopls workspace noise is cosmetic and must not be traded for broken `go build` or `go test`.
 
@@ -425,7 +709,7 @@ Short-lived command captures may use `/tmp/printing-press/` with unique `mktemp`
 paths and must be deleted after use.
 
 Examples of the current naming/layout:
-- `~/printing-press/library/notion/` — published CLI directory (keyed by API slug)
+- `$PRESS_LIBRARY/notion/` — published CLI directory (keyed by API slug)
 - `notion-pp-cli` — the binary name inside the directory
 - `/printing-press emboss notion` — emboss accepts both slug and CLI name
 - `discord-pp-cli/internal/store/store.go` — internal source paths still use CLI name
@@ -450,11 +734,15 @@ Before new research:
 
 1. Resolve the spec source.
 
+   **Local physical device detection.** If the user's target is a local Bluetooth/BLE-controlled physical device (for example an appliance, toy, light, sensor, exercise machine, lock, or other device controlled from a phone app over Bluetooth), do not route it through browser-sniff as the primary discovery path. Read and apply [references/device-sniff-ble.md](references/device-sniff-ble.md). Use `device-sniff ble` for normalized BLE evidence and `bluetooth-sniff` as the discoverable alias. Community libraries, docs, Android logs, Wireshark/nRF captures, and manual action journals are evidence inputs; they are not a reason to hardcode a vendor-specific generator path.
+
+   **BLE mapping research gate.** A BLE scan/inspect/read/subscribe pass only discovers identity, services, characteristics, and telemetry candidates; it does not by itself discover what write payloads mean. Before generating callable control commands or running any live `write`, establish a command mapping from at least one concrete source: user-provided mapping, official docs, community protocol/library code, Android/iOS/Bluetooth logs, Wireshark/nRF captures, or an operator action journal that correlates a real user action with observed writes. If no mapping source is found, generate only read/status/capability metadata or stop and ask the user for mapping evidence. Do not invent mutating payloads or brute-force probe a physical device.
+
    **URL Detection** — If the argument contains `://`, it's a URL. Determine whether it's a spec or a website before proceeding.
 
-   **Step 1: Content probe.** Fetch the URL (light GET via `WebFetch`) and inspect the response:
+   **Step 1: Content probe.** Fetch the URL with the raw docs helper from [references/fetch-docs.md](references/fetch-docs.md) and inspect the response status, `Content-Type`, and first few lines of the returned file:
    - Check the `Content-Type` header and the first few lines of the body.
-   - If the fetch fails (timeout, 404, DNS error), skip to Step 2 — treat it as a website.
+   - If the fetch fails (timeout, 404, DNS error), record the exact status/error, then skip to Step 2 — treat it as a website.
 
    If the content starts with `openapi:`, `swagger:`, or is valid JSON containing an `"openapi"` or `"swagger"` key → it's a spec. Treat as `--spec` and proceed directly. No disambiguation needed.
 
@@ -479,9 +767,51 @@ Before new research:
 
    **End of URL detection.** The remaining spec resolution rules apply when the argument is NOT a URL:
 
-   - If the user passed `--har <path>`, this is a HAR-first run. Run `printing-press browser-sniff --har <path> --name <api> --output "$RESEARCH_DIR/<api>-browser-sniff-spec.yaml" --analysis-output "$DISCOVERY_DIR/traffic-analysis.json"` to generate a spec and traffic analysis from captured traffic. Use the generated spec as the primary spec source for the rest of the pipeline. Skip the browser-sniff gate in Phase 1.7 (browser-sniff already ran).
+   - If the user passed `--har <path>`, this is a HAR-first run. Run `cli-printing-press browser-sniff --har <path> --name <api> --output "$RESEARCH_DIR/<api>-browser-sniff-spec.yaml" --analysis-output "$DISCOVERY_DIR/traffic-analysis.json"` to generate a spec and traffic analysis from captured traffic. If `$API_RUN_DIR/source-priority.json` exists with two or more sources, add `--preserve-hosts` so combo-CLI captures retain peer API hosts with per-endpoint `base_url` overrides instead of collapsing them into secondary evidence. Use the generated spec as the primary spec source for the rest of the pipeline. Skip the browser-sniff gate in Phase 1.7 (browser-sniff already ran).
    - If the user passed `--spec`, use it directly (existing behavior).
    - Otherwise, proceed with normal discovery (catalog, KnownSpecs, apis-guru, web search).
+
+   #### Directory spec-source guard
+
+   If any resolved spec source is a local directory, do not pass the directory
+   itself to `cli-printing-press generate` and do not silently pick the first
+   file. Enumerate candidate specs first:
+
+   ```bash
+   find "$SPEC_SOURCE_DIR" -type f \( -iname '*.json' -o -iname '*.yaml' -o -iname '*.yml' \) | sort
+   ```
+
+   Keep only files whose head looks like an OpenAPI or Swagger root document
+   (`openapi:`, `swagger:`, or JSON with a top-level `"openapi"` or `"swagger"`
+   key). Ignore unrelated JSON/YAML config files.
+
+   When the filtered candidate list is empty, abort with:
+   `No OpenAPI/Swagger spec found under <directory>. Pass --spec <file> directly.`
+   Do not continue with the raw directory as the spec source.
+
+   When the directory contains exactly one candidate, use that file as the
+   spec source and write it to `state.json` as `spec_path`.
+
+   When the directory contains more than one candidate:
+   - Print a prominent warning before generation:
+     `N OpenAPI/Swagger specs found under <directory>; no single file represents the whole API surface.`
+   - List every candidate when `N <= 20`; otherwise list the first 20 sorted
+     paths and print `...and N-20 more`.
+   - Record the directory and candidates in `$STATE_FILE` before continuing:
+     `spec_path` is the directory and `spec_candidates` is the sorted list.
+   - Ask the user to choose one spec, several specs, or all specs. If this
+     runtime cannot ask a blocking question, stop after printing the warning
+     and tell the user to re-run with explicit `--spec <file>` arguments. This
+     is the minimum safe floor: never let a directory run finish while hiding
+     that additional specs were ignored.
+   - After the user confirms the selection, update `$STATE_FILE` with
+     `selected_spec_paths` set to the list that will be generated.
+   - For multiple selected specs, default to one independent printed CLI per
+     spec using a derived `<api>-<spec-slug>` name and a distinct working
+     directory under `$API_RUN_DIR/working/`. Do not merge all selected specs
+     into one CLI unless the user explicitly asks for a combined surface and
+     provides the umbrella name for `--name`.
+
 2. Check for prior research in:
    - `$PRESS_MANUSCRIPTS/<api-slug>/*/research/*`
 3. Reuse good prior work instead of redoing it.
@@ -490,7 +820,7 @@ Before new research:
    First, check lock status to detect active builds:
 
    ```bash
-   LOCK_STATUS=$(printing-press lock status --cli <api>-pp-cli --json 2>/dev/null)
+   LOCK_STATUS=$(cli-printing-press lock status --cli <api>-pp-cli --json 2>/dev/null)
    LOCK_HELD=$(echo "$LOCK_STATUS" | grep -o '"held"[[:space:]]*:[[:space:]]*[a-z]*' | head -1 | sed 's/.*: *//')
    LOCK_STALE=$(echo "$LOCK_STATUS" | grep -o '"stale"[[:space:]]*:[[:space:]]*[a-z]*' | head -1 | sed 's/.*: *//')
    LOCK_PHASE=$(echo "$LOCK_STATUS" | grep -o '"phase"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | sed 's/.*"phase"[[:space:]]*:[[:space:]]*"//;s/"//')
@@ -503,6 +833,8 @@ Before new research:
    CLI_DIR="$PRESS_LIBRARY/<api>"
    HAS_LIBRARY=false
    HAS_GOMOD=false
+   PRIOR_STEINBERGER_SCORE=""
+   PRIOR_SUB60_REPRINT=false
    if [ -d "$CLI_DIR" ]; then
      HAS_LIBRARY=true
      if [ -f "$CLI_DIR/go.mod" ]; then
@@ -513,6 +845,10 @@ Before new research:
      if [ -f "$MANIFEST" ]; then
        PRESS_VERSION=$(cat "$MANIFEST" | grep -o '"printing_press_version"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | sed 's/.*"printing_press_version"[[:space:]]*:[[:space:]]*"//;s/"//')
        GENERATED_AT=$(cat "$MANIFEST" | grep -o '"generated_at"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | sed 's/.*"generated_at"[[:space:]]*:[[:space:]]*"//;s/"//')
+       PRIOR_STEINBERGER_SCORE=$(jq -r '.scorecard.steinberger.percentage // empty' "$MANIFEST" 2>/dev/null || true)
+       if [ -n "$PRIOR_STEINBERGER_SCORE" ] && awk "BEGIN { exit !($PRIOR_STEINBERGER_SCORE < 60) }"; then
+         PRIOR_SUB60_REPRINT=true
+       fi
      fi
      # Get directory modification time as fallback
      CLI_MTIME=$(stat -f "%Sm" -t "%Y-%m-%d" "$CLI_DIR" 2>/dev/null || stat -c "%y" "$CLI_DIR" 2>/dev/null | cut -d' ' -f1)
@@ -531,7 +867,7 @@ Before new research:
    | Yes | Yes | No | Any | Warn: "Actively being rebuilt (phase: `<phase>`, `<age>` seconds ago). Wait, use a different name, or pick a different API." |
    | Yes | Yes | Yes | Any | Offer reclaim: "Interrupted rebuild detected (stale since `<age>`s ago). Reclaim and start fresh?" |
 
-   **If actively locked (not stale):** Present via `AskUserQuestion` with options to wait, pick a different API, or force-reclaim (`printing-press lock acquire --cli <api>-pp-cli --scope "$PRESS_SCOPE" --force`).
+   **If actively locked (not stale):** Present via `AskUserQuestion` with options to wait, pick a different API, or force-reclaim (`cli-printing-press lock acquire --cli <api>-pp-cli --scope "$PRESS_SCOPE" --force`).
 
    **If stale lock:** Reclaiming is automatic on `lock acquire` in Phase 2. If user approves, proceed normally — the lock acquire in Phase 2 will auto-reclaim the stale lock.
 
@@ -540,6 +876,7 @@ Before new research:
    > Found existing `<api>` in library (last modified `<date>`).
 
    If `PRESS_VERSION` is available, append: `Built with printing-press v<version>.`
+   If `PRIOR_SUB60_REPRINT=true`, append: `Prior Steinberger score: <score>%. Reprint will require all approved transcendence rows to ship unless you explicitly accept partial coverage.`
 
    If prior research was also found (step 2), include the research summary alongside the library info.
 
@@ -574,7 +911,117 @@ Before new research:
 
    The prompt forces the user to acknowledge the version delta and explicitly accept (or refuse) re-validation. Skip it entirely on first generation, on same-version regenerations, or when no prior manifest exists.
 
-   If no CLI exists in the library and no lock is active, skip this step and proceed normally.
+   If no CLI exists in the local library and no lock is active, run the **Public-library check** below before proceeding to Phase 1.
+
+   #### Public-library check (registry.json)
+
+   The local library check above only sees CLIs this machine has already printed. A user on a fresh checkout — or one who typed a slightly different name than the published slug (`Slack` vs `slack-bot`, `Cal` vs `cal-com`), or who described what they wanted in their own words (`Hacker News reader`, `Notion clone`, `prediction market`) — will miss CLIs that already exist in the public library. Scan `mvanhorn/printing-press-library/registry.json` to catch those cases before Phase 1 research begins (the expensive 30-60-minute portion of the pipeline).
+
+   **Skip this check entirely when:**
+   - The local-library check above already prompted (mutual exclusion — do not double-ask).
+   - `BROWSER_SNIFF_TARGET_URL` is set (the user is building a from-website CLI; the registry indexes API CLIs and naming collisions are unlikely and intentional).
+   - The user passed `--har <path>` with an explicit `--name <api>` for a private capture.
+
+   **Fetch the registry.** Match the pattern `/printing-press-import` and `/printing-press-reprint` already use:
+
+   ```bash
+   REGISTRY=$(mktemp)
+   if ! gh api -H "Accept: application/vnd.github.v3.raw" \
+        repos/mvanhorn/printing-press-library/contents/registry.json \
+        > "$REGISTRY" 2>/dev/null; then
+     echo "Public-library check skipped: registry.json unreachable. Proceeding to Phase 1."
+     rm -f "$REGISTRY"
+     REGISTRY=""
+   fi
+   ```
+
+   Do not block on a network failure. After step 4 finishes, clean up the tempfile only if the fetch succeeded: `[ -n "$REGISTRY" ] && rm -f "$REGISTRY"`. The failure branch above already removed it and set `REGISTRY=""`, so an unconditional `rm -f "$REGISTRY"` would run `rm -f ""`.
+
+   **Read the registry and reason about matches** — do not gate on string equality alone. The file is small (~88 KB, ~135 entries today); read it directly and use judgment. Each entry has fields `name` (slug), `category`, `api` (brand display), `description`, `path`, `printer`.
+
+   The user's argument may arrive in many shapes, and only some are catchable by deterministic match:
+
+   - **Slug or near-slug** — `Notion`, `notion-cli`, `notion-pp-cli`
+   - **Brand with punctuation** — `Cal.com`, `Customer.io`, `Archive.today`, `Trigger.dev`
+   - **Concept or category** — `Hacker News reader`, `Notion clone`, `prediction market`, `prediction-market CLI`
+   - **Adjacent product** — `Polymarket` when the registry has `kalshi` (peer prediction market)
+   - **Genuinely novel** — no useful overlap
+
+   Classify the best match at three confidence levels and act only on the top two:
+
+   - **High** — same product under a different name (slug variant, brand vs slug form, `-cli`/`-pp-cli` suffix variant, well-known alias). Examples: `Cal.com` ↔ `cal-com`, `Notion` ↔ `notion-cli`, `slack` ↔ `slack-bot`.
+   - **Medium** — same category and overlapping function; a reasonable user would want to know before building. Examples: `prediction market` finds `kalshi`, `Hacker News reader` finds `hackernews`, `Polymarket` surfaces `kalshi` as a peer.
+   - **Low** — vaguely adjacent (e.g. "payment gateway" finding every payment-related CLI). Skip silently — false-positive prompts get dismissed reflexively at this gate.
+
+   Resist over-matching on `description` keywords. Most descriptions mention several adjacent concepts; matching liberally on description text produces noise. Use the description to *confirm* a name-or-category candidate, not to *discover* candidates from scratch.
+
+   **Combo CLIs.** When `SOURCE_PRIORITY` is set (from the Multi-Source Priority Gate above), skip the single-source High/Medium/No-match branches below. Classify matches per source, then present a single combined prompt rather than asking N times. For combo runs the existing single-source CLIs are usually *informational* — the user came here to build a combo, so the recommended default is to continue with the combo rather than reprint a component standalone.
+
+   **Cap displayed reprint options at 2 across all sources combined** so the prompt fits the 4-option `AskUserQuestion` limit (2 reprints + continue + abort). Pick the 2 best candidates by judgment in this order: (1) High over Medium, (2) primary-source over secondary-source (the first entry in `SOURCE_PRIORITY` wins ties), (3) canonical slug over variant. If additional matches exist beyond the displayed 2, append "(plus N other source matches)" to the prompt body so the user knows the list is truncated. Omit sources with no match rather than listing them as empty rows. If no source has any match at High or Medium, print nothing and proceed to Phase 1.
+
+   > Found matches across the sources you listed:
+   >
+   > - **`<source1>`**: `<entry1.name>` (`<entry1.api>`) [High] — same product as `<source1>`
+   > - **`<source2>`**: `<entry2.name>` (`<entry2.api>`) [Medium] — similar/adjacent
+   >
+   > This is informational — these components already exist as single-source CLIs. Continue building the combo, switch to reprinting one standalone, or abort?
+
+   Options:
+   1. **Continue with the combo as planned (recommended)** — the combo itself is the value-add; proceed to Phase 1 with all sources.
+   2. **Reprint `<entry1.name>` standalone instead** — invoke `/printing-press-reprint <entry1.name>` (abandons the combo for now).
+   3. **Reprint `<entry2.name>` standalone instead** — same, for the second candidate.
+   4. **Abort** — stop here.
+
+   The `[High]` / `[Medium]` tags surface the confidence so the user can distinguish "this is literally the thing you named" from "this is adjacent." Tag in the bullet, not the option label, to keep options scannable.
+
+   **Single-source CLIs.** When `SOURCE_PRIORITY` is not set, use the branches below.
+
+   **High match — prompt strongly.** Under Claude Code, use `AskUserQuestion`; under another harness, use the equivalent native prompt primitive. The option set is the same either way.
+
+   > Found **`<entry.api>`** in the public library (printed by **@`<entry.printer>`**, path `<entry.path>`).
+   >
+   > `<entry.description>`
+   >
+   > URL: `https://github.com/mvanhorn/printing-press-library/tree/main/<entry.path>`
+   >
+   > This CLI already exists. What would you like to do?
+
+   Options:
+   1. **Reprint with the current Printing Press (recommended)** — end this run and invoke `/printing-press-reprint <entry.name>`. That skill pulls the existing CLI, carries prior research and post-publish patches into reconciliation, and regenerates under the current binary. Almost always the right choice when a user discovers the CLI exists.
+   2. **Continue and build a fresh one anyway** — proceed with the current run from scratch. Rare; appropriate only for a deliberate fork or variant.
+   3. **Abort** — stop here.
+
+   **Multiple High matches — present each candidate, do not use the Medium-match phrasing.** Rare — typically only happens when the user's argument is ambiguous between siblings like `slack` and `slack-bot`. Cap displayed candidates at 2 to stay within the 4-option prompt limit alongside continue/abort. If 3+ High candidates somehow qualify, pick the 2 best by judgment (typically the canonical slug match plus the next-most-likely alternative) and note "(plus N other close matches)" in the prompt body so the user knows the list is truncated.
+
+   > Found multiple matches for **`<api>`** in the public library — each appears to be the same product under a different name:
+   >
+   > - **`<entry1.name>`** (`<entry1.api>`) — `<entry1.description>`
+   > - **`<entry2.name>`** (`<entry2.api>`) — `<entry2.description>`
+   >
+   > Pick one to reprint, or continue/abort.
+
+   Options:
+   1. **Reprint `<entry1.name>`** — invoke `/printing-press-reprint <entry1.name>`.
+   2. **Reprint `<entry2.name>`** — same, for the second candidate.
+   3. **Continue and build a fresh one anyway** — rare; appropriate only for a deliberate fork or variant.
+   4. **Abort** — stop here.
+
+   **Medium match — present alternatives.** Cap candidates at 2 to stay within the 4-option prompt limit alongside continue/abort.
+
+   > Found similar entries in the public library that don't exactly match `<api>` but may overlap:
+   >
+   > - **`<entry1.name>`** (`<entry1.api>`) — `<entry1.description>`
+   > - **`<entry2.name>`** (`<entry2.api>`) — `<entry2.description>`
+   >
+   > Continue with `<api>` as planned, or reprint one of these instead?
+
+   Options:
+   1. **Continue with `<api>` as planned** — proceed to Phase 1.
+   2. **Reprint `<entry1.name>` instead** — invoke `/printing-press-reprint <entry1.name>`.
+   3. **Reprint `<entry2.name>` instead** — same, for the second candidate.
+   4. **Abort** — stop here.
+
+   **No High or Medium match:** print nothing, proceed to Phase 1.
 
 5. **API Key Gate** — Check whether this API requires authentication, then handle accordingly.
 
@@ -616,10 +1063,12 @@ Resolve the API key gate (or skip it for public APIs) before moving to Phase 1.
 
 **When `BROWSER_SNIFF_TARGET_URL` is set:** Skip the catalog check, spec/docs search, and SDK wrapper search — none of these exist for an undocumented website feature. Focus research on understanding what the site/feature does, who uses it, what workflows it supports, and what competitors offer similar functionality. The spec will come from browser-sniffing in Phase 1.7.
 
+Before reading documentation, read [references/fetch-docs.md](references/fetch-docs.md). Use `fetch-docs.sh` for the API's primary docs, OpenAPI/Postman links, auth guides, error handling, rate limits, pagination, webhooks, and any per-endpoint reference page. Preserve exact status codes and inspect the returned local file directly so enum values, field constraints, casing, examples, and nav/link variants are not lost through summarization.
+
 Before starting research, check if the API has a built-in catalog entry:
 
 ```bash
-printing-press catalog show <api> --json 2>/dev/null
+cli-printing-press catalog show <api> --json 2>/dev/null
 ```
 
 If the catalog has an entry for this API, branch on the entry type:
@@ -631,15 +1080,14 @@ If the catalog has an entry for this API, branch on the entry type:
 - If catalog config: use the spec_url from the catalog entry, skip the research/discovery phase
 - If full discovery: proceed with the normal research workflow
 
-**Wrapper-only entry** (no `spec_url`, `wrapper_libraries` populated) — this is a reverse-engineered API that has no official spec but has known community libraries the generator can use as implementation backing. Do not try to resolve or browser-sniff a spec. Instead, surface the wrapper options to the user via `AskUserQuestion`:
+**Wrapper-only entry** (no `spec_url`, `wrapper_libraries` populated) — this is a reverse-engineered API that has no official spec but has known community libraries. The catalog entry is a **discovery aid only**: `cli-printing-press generate` requires `--spec` and does not consume wrapper-library metadata, so there is no direct generation path from a wrapper-only entry today. Tell the user this up front via `AskUserQuestion`:
 
-> "<API> has no official spec. The catalog knows about these community-maintained implementations:"
+> "<API> has no official spec. The catalog knows about these community-maintained wrappers, but the Printing Press cannot generate a CLI directly from a wrapper. The next step has to be browser-sniffing the upstream to author an internal YAML spec, browser-sniffing or HAR-capturing the dominant source first and then using the multi-source aggregator pattern for secondary hand-authored sources, or hand-writing a Go module that imports the wrapper. Which path do you want?"
 
-Present each `wrapper_libraries` entry as a selectable option with language, integration mode, and notes. Example for `google-flights`:
+Present each `wrapper_libraries` entry alongside the question with language, integration mode, and notes so the user can see what implementation backing exists. Example for `google-flights`:
 - **krisukox/google-flights-api** (Go, native, MIT) — Pure Go, importable; single-binary CLI with no runtime deps.
-- **punitarani/fli** (Python, subprocess, MIT) — broader feature coverage (multi-leg, cabin class); requires Python 3.10+ at runtime.
 
-Capture the user's choice and record it in `$API_RUN_DIR/state.json` under an `implementation` field: `{ "library": "<name>", "url": "<url>", "integration_mode": "native|subprocess|html-scrape" }`. Phase 3 generation reads this to decide whether to `go get` a wrapper, emit a subprocess shell-out, or emit HTML-scrape code. Skip the spec-analysis step entirely — there is no spec.
+Record the user's choice (and the selected wrapper, when relevant) in `$API_RUN_DIR/state.json` under an `implementation` field so later phases can read it. For wrapper or hand-written-module paths, use `{ "kind": "wrapper", "library": "<name>", "url": "<url>", "integration_mode": "native|subprocess|html-scrape", "next_step": "browser-sniff|hand-written-module" }`. For the aggregator path, use `{ "kind": "aggregator-pattern", "dominant_source": "<source>", "spec_source": "browser-sniff|har|provided-spec", "spec_path": "<path-to-generated-spec>", "secondary_sources": ["<source>"], "next_step": "aggregator-pattern" }`; do not populate `library` or `integration_mode` unless a specific secondary source is backed by a wrapper. This field is for skill bookkeeping; the generator does not currently read it. If the user picks browser-sniff, route into the Phase 1.7 browser-sniff path to produce a spec, then run `generate --spec` against it. If the user picks the aggregator path, first route the dominant source through Phase 1.7 browser-sniff or HAR capture to produce the primary spec, then read and apply [references/aggregator-pattern.md](references/aggregator-pattern.md): generate from that spec, then hand-author the secondary source clients and `sources` command tree. If the user picks a hand-written module, stop the press here and hand off — there is no generator path to drop them into.
 
 **No catalog hit** — proceed normally without mentioning the catalog.
 
@@ -657,7 +1105,7 @@ The brief must answer:
 6. What is the product name and thesis?
 
 Research checklist:
-- Find the spec or docs source
+- Find the spec or docs source. For docs pages whose details affect generation, fetch the raw page with `fetch-docs.sh`, then read/grep the returned path directly.
 - Find the top 1-2 competitors
 - **Check GitHub issues on the top wrapper/SDK repo for "403", "blocked", "broken", "deprecated", "rate limit".** If multiple issues report the API is inaccessible or broken, flag this in the research brief as a reachability risk. This is critical for unofficial/reverse-engineered APIs.
 - Find official and popular SDK wrappers on npm (`site:npmjs.com`) and PyPI (`site:pypi.org`)
@@ -689,6 +1137,8 @@ Suggested shape:
 
 ## Reachability Risk
 - [None / Low / High] [evidence: e.g., "6 open issues on reteps/redfin about 403 errors since 2025"]
+- Tier/permission hints from 4xx body: [omit when absent; otherwise quote the matched bounded line(s) from Phase 1.9]
+- Probe-safe endpoint used: [omit when absent; otherwise "<METHOD> <path>" from `x-pp-safe-probe`]
 
 ## Top Workflows
 1. ...
@@ -829,6 +1279,7 @@ The following rationales are NOT valid reasons to skip the browser-sniff gate. I
 
 - **"The target is client-rendered and needs Playwright"** — browser capture tools (browser-use, agent-browser) exist specifically to handle client-rendered sites. A hard-to-browser-sniff target is not the same as an impossible one. Ask.
 - **"Direct HTTP/curl got 403, 429, Cloudflare, Vercel, WAF, DataDome, or bot-detection HTML"** — direct HTTP reachability failure is exactly when browser capture is valuable. Do not pivot to RSS, docs-only, official API, or a smaller product shape before attempting the approved browser-sniff. Route to cleared-browser capture instead.
+- **"Direct HTTP/curl got HTTP `200` but only a content-less shell, interstitial, or deterministic-size truncation"** — a 200-served shell is a clearance or JavaScript challenge, not a clean response. Do not conclude `IP-blocked`, `rate-limited`, or `wait it out` from this shape. Before declaring the target unreachable, climb the ladder: probe-reachability body-check, curl-impersonate/TLS check, real-browser cookie-warm via the cleared-browser path or chrome-MCP when available, then ask the user. Use chrome-MCP to understand the wall even when it cannot export cookie values.
 - **"The 3-minute time budget looks tight"** — the time budget applies AFTER the user approves browser-sniff, not before. You do not pre-judge whether a browser-sniff will fit the budget. Ask. If the budget blows after the user approves, fall back per the Time Budget rules below.
 - **"We have a substitute data source from another API"** — substituting one source for another is the user's call, not yours. If the user named a specific site or feature (e.g., Kayak /direct), they chose it deliberately. Ask about that exact source. Offering a different data source is a separate conversation AFTER the gate, not a reason to skip it.
 - **"Installing browser-use or agent-browser is friction"** — the browser-sniff capture reference already documents the install path. Tooling friction is not a valid skip reason. Ask.
@@ -853,7 +1304,7 @@ For each named source, run the "When to offer browser-sniff" decision matrix ind
 | Source | Spec state | Expected decision |
 |--------|------------|-------------------|
 | `flightaware` | Documented OpenAPI spec found (53 endpoints, appears complete) | `skip-silent` with reason `spec-complete` |
-| `google-flights` | No official spec, but community wrapper exists (`fli`) | Ask via `AskUserQuestion` → record user's answer |
+| `google-flights` | No official spec, but community wrapper exists (`krisukox/google-flights-api`) | Ask via `AskUserQuestion` → record user's answer |
 | `kayak-direct` | No spec, no wrapper, user named this as a key feature | Ask via `AskUserQuestion` → record user's answer |
 
 The marker file for this run would contain three entries. Phase 1.5 would HALT if any were missing.
@@ -873,7 +1324,7 @@ These are the only cases where Phase 1.7 is bypassed as a whole (not just skippe
 If a reachability probe during Phase 1 research returns bot-protection evidence (`403`, `429`, `cf-mitigated: challenge`, `x-vercel-mitigated: challenge`, `x-vercel-challenge-token`, AWS WAF, DataDome, PerimeterX, CAPTCHA, "Just a moment", "access denied"), **run the no-browser reachability probe before announcing any browser escalation**:
 
 ```bash
-printing-press probe-reachability "<url>" --json
+cli-printing-press probe-reachability "<url>" --json
 ```
 
 This is non-negotiable. **Do not present transport tiers as a peer menu for the user to choose between.** Phrases like "Browser-sniff + clearance cookie", "Browser-sniff with Surf-only", "Try without browser at all", or "Browser-sniff, prefer Surf" route the user through implementation choices (Surf vs cookie vs full browser) they don't have context to make. The classifier is `probe-reachability`; the agent runs it and decides. Intent-level menus are fine — "Browser-sniff or HOLD?", "Browser-sniff or pick a different API?", or the standard yes/no browser-sniff offers below all ask about goals, not transport, and remain available.
@@ -1022,7 +1473,7 @@ Every source named in the briefing must have exactly one entry in `browser-brows
 
 After Phase 1.7 (Browser-Sniff Gate), evaluate whether mining community signals (npm SDKs and GitHub code search) would improve the spec. Skip this gate entirely if the user already passed `--spec` (spec source is already resolved and appears complete).
 
-**Time budget:** The crowd-sniff gate should complete within 10 minutes. If `printing-press crowd-sniff` fails or times out, fall back immediately:
+**Time budget:** The crowd-sniff gate should complete within 10 minutes. If `cli-printing-press crowd-sniff` fails or times out, fall back immediately:
 - If a spec already exists: "Crowd-sniff failed — proceeding with existing spec."
 - If no spec exists: "Crowd-sniff failed — falling back to --docs generation."
 
@@ -1102,7 +1553,7 @@ Run these searches in parallel:
 3. **WebSearch**: `"<API name>" Claude skill SKILL.md site:github.com`
 4. **WebSearch**: `"<API name>" CLI tool site:github.com` (competing CLIs)
 5. **WebSearch**: `"<API name>" CLI site:npmjs.com` (npm packages)
-6. **WebFetch**: Check `github.com/anthropics/claude-plugins-official/tree/main/external_plugins` for official plugin
+6. **Raw fetch**: Check `github.com/anthropics/claude-plugins-official/tree/main/external_plugins` for official plugins with the helper from [references/fetch-docs.md](references/fetch-docs.md), or with `gh api` when it can return the file/listing directly.
 7. **WebSearch**: `"<API name>" MCP site:lobehub.com OR site:mcpmarket.com OR site:fastmcp.me`
 8. **WebSearch**: `"<API name>" automation script workflow site:github.com`
 9. **WebSearch**: `"<API name>" SDK wrapper site:npmjs.com`
@@ -1116,7 +1567,7 @@ If step 1.5a discovered MCP server repos with public source code on GitHub, read
 
 **For the top 1-2 MCP repos found:**
 
-1. **Identify the main source file.** WebFetch the repo root to find the entry point — typically `src/index.ts`, `server.ts`, `server.py`, `main.go`, or a `tools/` directory. MCP servers are usually small (one main file + tool definitions).
+1. **Identify the main source file.** Use `gh api`, raw GitHub URLs, or the helper from [references/fetch-docs.md](references/fetch-docs.md) to inspect the repo tree and source files without a summarization layer. Find the entry point — typically `src/index.ts`, `server.ts`, `server.py`, `main.go`, or a `tools/` directory. MCP servers are usually small (one main file + tool definitions).
 
 2. **Extract three things:**
    - **API endpoint paths**: Look for HTTP client calls (`fetch(`, `axios.`, `requests.`, `http.Get`, `client.`) and extract the URL paths (e.g., `GET /v1/issues`, `POST /graphql`). These are the endpoints the MCP maintainer proved work.
@@ -1156,16 +1607,24 @@ For EACH tool found, list EVERY feature/tool/command it provides. Then define ho
 ### Absorbed (match or beat everything that exists)
 | # | Feature | Best Source | Our Implementation | Added Value |
 |---|---------|-----------|-------------------|-------------|
-| 1 | Search issues by text | Linear MCP search_issues | FTS5 offline search | Works offline, regex, SQL composable |
-| 2 | Create issue | Linear MCP create_issue | --stdin batch, --dry-run | Agent-native, scriptable, idempotent |
-| 3 | Sprint board view | jira-cli sprint view | SQLite-backed sprint query | Historical velocity, offline |
+| 1 | Search issues by text | Linear MCP search_issues | <api>-pp-cli search | Works offline, regex, SQL composable |
+| 2 | Create issue | Linear MCP create_issue | <api>-pp-cli issue create --stdin --dry-run | Agent-native, scriptable, idempotent |
+| 3 | Sprint board view | jira-cli sprint view | <api>-pp-cli sprint view | Historical velocity, offline |
 ```
 
 Every row = a feature we MUST build. No exceptions. If someone else has it, we have it AND it works offline, with --json, --dry-run, typed exit codes, and SQLite persistence.
 
 SDK wrapper methods should be treated as features to absorb — each public method/function is a feature the CLI should match.
 
-**Stubs must be explicit.** If any row in the manifest will ship as a stub (placeholder implementation that emits "not yet wired" / "wip" messaging), add a `Status` column with value `(stub)` and a one-line reason why the full implementation is deferred (e.g., "(stub — requires paid API)", "(stub — requires headless Chrome)"). Do NOT quietly ship stubs for features the user approved as shipping scope.
+**Our Implementation must start with a parseable disposition.** Use one of these prefixes so Phase 3 can verify the row mechanically:
+- `<api>-pp-cli <clean command path>` for a promoted or hand-built Cobra command path that must resolve via `<binary> <path> --help`.
+- `(generated endpoint) <resource> <endpoint>` for generator-emitted typed endpoint commands that retain the upstream resource shape and are covered by the generated endpoint surface.
+- `(behavior in <api>-pp-cli <command path>) ...` for features implemented as flags, modes, output shapes, or store behavior inside another command. The named command path still must resolve; the prose after the closing parenthesis explains the behavior to verify later.
+- `(stub) ...` only for explicitly approved stubs per the rule below.
+
+Do not leave `Our Implementation` as freeform prose like `FTS5 offline search` or `SQLite-backed sprint query`. If the row maps to a clean user-facing command, put that command path first. If it does not, choose the explicit disposition that explains why Phase 3 should not treat the whole cell as a new command path.
+
+**Stubs must be explicit.** If any row in the manifest will ship as a stub (placeholder implementation that emits "not yet wired" / "wip" messaging), start `Our Implementation` with `(stub)` plus a one-line reason why the full implementation is deferred (e.g., "(stub - requires paid API)", "(stub - requires headless Chrome)"). If the manifest also has a `Status` column, set that value to `(stub)` too, but the `Our Implementation` prefix is the Phase 3 gate's source of truth. Do NOT quietly ship stubs for features the user approved as shipping scope.
 
 The Phase Gate 1.5 prose showcase (below) MUST read out stub items separately so the user explicitly approves the stub list. After approval, Phase 3 builds shipping-scope features fully and stubs with honest messaging; no mid-build downgrade from shipping-scope to stub is permitted. If an agent discovers during Phase 3 that a shipping-scope feature cannot be implemented in-session, they must return to Phase 1.5 with a revised manifest — not unilaterally downgrade to a stub.
 
@@ -1181,15 +1640,21 @@ model → 2× candidates → adversarial cut. Step 1.5c is the motivation; do no
 generate transcendence features inline here.
 
 The transcendence table in the manifest (Step 1.5d) renders rows in this shape,
-which the subagent's `### Survivors` output already matches:
+which mirrors the subagent's `### Survivors` output. The `Buildability` column
+tags each row `spec-emits` or `hand-code` per
+[references/novel-features-subagent.md](references/novel-features-subagent.md)
+so the Phase Gate 1.5 hand-code count has a source of truth in the manifest.
+The optional `Long Description` column carries agent-facing disambiguation
+text for Phase 3 Cobra `Long` fields; use `none` when no sibling redirect is
+needed:
 
 ```markdown
 ### Transcendence (only possible with our approach)
-| # | Feature | Command | Why Only We Can Do This |
-|---|---------|---------|------------------------|
-| 1 | Bottleneck detection | bottleneck | Requires local join across issues + assignees + cycle data |
-| 2 | Velocity trends | velocity --weeks 4 | Requires historical cycle snapshots in SQLite |
-| 3 | What did I miss | since 2h | Requires time-windowed aggregation no single API call provides |
+| # | Feature | Command | Buildability | Why Only We Can Do This | Long Description |
+|---|---------|---------|--------------|------------------------|------------------|
+| 1 | Bottleneck detection | bottleneck | hand-code | Requires local join across issues + assignees + cycle data | Use this command to find cross-team work blockage. Do NOT use it for personal recency checks; use 'since' instead. |
+| 2 | Velocity trends | velocity --weeks 4 | hand-code | Requires historical cycle snapshots in SQLite | none |
+| 3 | What did I miss | since 2h | hand-code | Requires time-windowed aggregation no single API call provides | Use this command for recent personal changes. Do NOT use it for backlog bottlenecks; use 'bottleneck' instead. |
 ```
 
 Minimum 5 transcendence features. These are the commands that differentiate the CLI.
@@ -1243,6 +1708,9 @@ cat > "$API_RUN_DIR/research.json" <<REOF
     {"name": "<tool1>", "url": "<github-url>", "language": "<Go|JavaScript|Python|etc>", "stars": <N>, "command_count": <N>},
     ...
   ],
+  "auth": {
+    "canonical_env_var": "<CANONICAL_ENV_VAR, omit when unknown>"
+  },
   "novel_features": [
     {
       "name": "<Feature Name>",
@@ -1269,6 +1737,7 @@ cat > "$API_RUN_DIR/research.json" <<REOF
       ...
     ],
     "when_to_use": "<2-4 sentences describing ideal use cases; rendered in SKILL.md only>",
+    "anti_triggers": ["<task boundary this CLI should not handle>", ...],
     "recipes": [
       {"title": "<Recipe name>", "command": "<cli> <invocation>", "explanation": "<one-line paragraph>"},
       ...
@@ -1293,8 +1762,12 @@ For each tool, fill in what you know from the research. Stars and command_count 
 5. `example` is a ready-to-run invocation an agent can copy-paste. Use realistic arguments from the API's domain (e.g. `AAPL`, `customer_42`), not `<placeholder>`. Include the `--agent` flag when the feature benefits from structured output.
 6. `why_it_matters` is a single agent-facing sentence answering "when should I pick this over a generic API call?"
 7. `group` clusters related features under a theme name. Pick 2–5 themes total (e.g. "Local state that compounds", "Agent-native plumbing", "Reachability mitigation"). Use the same `group` string verbatim across features that belong together — exact matches drive README grouping. Leave `group` empty if the CLI has too few novel features to warrant clustering.
-8. If no transcendence features scored >= 5/10, omit the `novel_features` field entirely.
-9. Do not add a feature to `novel_features` merely to expose it through MCP. Any user-facing Cobra command becomes an MCP tool automatically unless it sets `cmd.Annotations["mcp:hidden"] = "true"`.
+8. If the manifest row has a non-`none` `Long Description`, keep that text with the feature implementation notes and use it as the Cobra `Long` field during Phase 3 hand-code. Do not squeeze redirect prose into `description`; `description` stays one-line user-benefit text.
+9. If no transcendence features scored >= 5/10, omit the `novel_features` field entirely.
+10. Do not add a feature to `novel_features` merely to expose it through MCP. Any user-facing Cobra command becomes an MCP tool automatically unless it sets `cmd.Annotations["mcp:hidden"] = "true"`.
+
+**Auth research rule**:
+1. `auth.canonical_env_var` is the single-token credential env var discovered from vendor docs, MCP/source analysis, or dominant SDK/CLI convention (for example `APIFY_TOKEN`, `GITHUB_TOKEN`, `STRIPE_SECRET_KEY`). Omit it when no canonical name is known, when auth is HTTP Basic or another credential pair, or when the auth flow needs richer metadata. Fresh generation reads this env var first and keeps the parser-derived name as a fallback automatically.
 
 **Narrative rules** (the `narrative` object drives README headline, Quick Start, Auth, Troubleshooting, and the entire SKILL.md):
 1. `display_name` is the canonical prose name, discovered during research, with exact brand casing and spacing. This is agentic/research-owned, not slug-inferred by Go code. Good: "Product Hunt", "GitHub", "YouTube", "Cal.com". Bad: "Producthunt", "Github", "Youtube", "Cal Com". Use the slug only for binary names, directories, module paths, config paths, and env-var prefixes.
@@ -1302,12 +1775,35 @@ For each tool, fill in what you know from the research. Stars and command_count 
 3. `value_prop` expands the headline to 2–3 sentences. Name specific novel features by command where helpful.
 4. `auth_narrative` tells the real auth story for this API (crumb handshake, cookie session, OAuth device flow). Omit for standard API-key auth where the generic branch is fine.
 5. `quickstart` is a 3–6 step flow using REAL arguments (symbols, IDs, resource names an agent can actually pass). Each step's `comment` explains *why* it runs. This replaces the generic "resource list" first-command fallback.
+   - Step 1 of `quickstart` should usually be verify-safe: it should exit 0 when `validate-narrative --full-examples` appends `--dry-run` in a no-credentials environment.
+   - Use `<cli> doctor --dry-run` as step 1 (health check, works without auth). Do not use `<cli> auth set-token <token>` as step 1 because it requires a positional token and is not a verify-safe runnable first step. Auth setup instructions belong in `auth_narrative` prose only, not as an executable quickstart command.
 6. `troubleshoots` captures API-specific failure modes (rate-limit mitigation, cookie expiry, paginated quirks). Each `fix` must be actionable — a command or a concrete setting change.
 7. `when_to_use` is SKILL-only narrative. 2–4 sentences describing the kinds of agent tasks this CLI is the right choice for. Not rendered in README.
-8. `recipes` are 3–5 worked examples rendered in SKILL.md. Each has a title, a real command, and a one-line explanation. Prefer recipes that exercise novel features. **At least one recipe must pair `--agent` with `--select`** — using dotted paths (e.g. `--select events.shortName,events.competitions.competitors.team.displayName`) when the response is deeply nested. APIs like ESPN, HubSpot, and Linear return tens of KB per call; without a `--select` recipe, agents burn context parsing verbose payloads. Pick a command known to return a large or deeply nested response and show the narrowing pattern. **Regex literals must double-escape backslashes** — write `\\b` not `\b` (and `\\t`, `\\f`, etc.) inside any `command`, `fix`, or other JSON string field. JSON parses `\b` as backspace (0x08), `\f` as form feed (0x0C), and so on, which then leak into the rendered SKILL.md as control bytes that render as nothing in most viewers. The generator's render-time scanner rejects these with a clear offset; double-escape from the start to avoid the error.
-9. `trigger_phrases` are natural-language phrases a user might say that should invoke this CLI's skill. Include 3–5 domain-specific phrases (e.g. for a finance CLI: "quote AAPL", "check my portfolio", "options for TSLA") and 2 generic phrases ("use <api-name>", "run <api-name>"). Domain verbs vary — don't just template "use X" variants.
-10. All `narrative` fields are optional. Omit fields you can't populate honestly rather than emit filler. The generator falls back to generic content gracefully.
-11. **Avoid hardcoded counts in narrative copy when the count tracks a runtime list.** A number embedded in `headline` or `value_prop` ("across N trusted sources", "from N retailers", "queries N vendors") propagates into root.go's Short/Long, the README, the SKILL, the MCP tools description, and `which.go` — every output surface that reads the narrative. When the underlying registry grows or shrinks, the count goes stale across all of those surfaces simultaneously, and a single-line edit to add a source requires hunting down ~10 hardcoded copies. Prefer plural-without-count phrasing ("across the major sources", "from a curated set of retailers") or describe the breadth qualitatively ("dozens of vendors") rather than committing to a specific integer. If a count is load-bearing for the value prop, keep the brief's narrative count-free and have the printed-CLI's README/SKILL author write the count once into a single hand-edited paragraph after generation — accepting that it will need a manual update whenever the registry changes.
+8. `anti_triggers` is SKILL-only narrative. List common task boundaries that should make an agent choose another tool, official SDK, web UI, or human workflow instead of this CLI. Write concrete "do not use this CLI for X" cases, not vague limitations. Omit the field only when no honest boundary is known.
+9. `recipes` are 3–5 worked examples rendered in SKILL.md. Each has a title, a real command, and a one-line explanation. Prefer recipes that exercise novel features. **At least one recipe must pair `--agent` with `--select`** — using dotted paths (e.g. `--select events.shortName,events.competitions.competitors.team.displayName`) when the response is deeply nested. APIs like ESPN, HubSpot, and Linear return tens of KB per call; without a `--select` recipe, agents burn context parsing verbose payloads. Pick a command known to return a large or deeply nested response and show the narrowing pattern. **Regex literals must double-escape backslashes** — write `\\b` not `\b` (and `\\t`, `\\f`, etc.) inside any `command`, `fix`, or other JSON string field. JSON parses `\b` as backspace (0x08), `\f` as form feed (0x0C), and so on, which then leak into the rendered SKILL.md as control bytes that render as nothing in most viewers. The generator's render-time scanner rejects these with a clear offset; double-escape from the start to avoid the error.
+10. `trigger_phrases` are natural-language phrases a user might say that should invoke this CLI's skill. Include 3–5 domain-specific phrases (e.g. for a finance CLI: "quote AAPL", "check my portfolio", "options for TSLA") and 2 generic phrases ("use <api-name>", "run <api-name>"). Domain verbs vary — don't just template "use X" variants.
+11. All `narrative` fields are optional. Omit fields you can't populate honestly rather than emit filler. The generator falls back to generic content gracefully.
+12. **Avoid hardcoded counts in narrative copy when the count tracks a runtime list.** A number embedded in `headline` or `value_prop` ("across N trusted sources", "from N retailers", "queries N vendors") propagates into root.go's Short/Long, the README, the SKILL, the MCP tools description, and `which.go` — every output surface that reads the narrative. When the underlying registry grows or shrinks, the count goes stale across all of those surfaces simultaneously, and a single-line edit to add a source requires hunting down ~10 hardcoded copies. Prefer plural-without-count phrasing ("across the major sources", "from a curated set of retailers") or describe the breadth qualitatively ("dozens of vendors") rather than committing to a specific integer. If a count is load-bearing for the value prop, keep the brief's narrative count-free and have the printed-CLI's README/SKILL author write the count once into a single hand-edited paragraph after generation — accepting that it will need a manual update whenever the registry changes.
+13. **Use side-effectful examples only when they are the truthful workflow.** `validate-narrative --strict --full-examples` classifies `auth login`, `auth set-token`, `auth logout`, `auth setup`, `--launch`, and mutating `--apply` examples as side-effectful (see `isSideEffectfulNarrativeExample` in `internal/narrativecheck/narrativecheck.go`) and reports each as an `UNSUPPORTED` warning instead of executing it. These warnings do not fail strict aggregation, so it is valid to show an auth or apply command when that is the honest onboarding or bulk-operation shape. Prefer `doctor` or another read-only invocation as `quickstart[0]` when it teaches the same workflow, but do not strip a real auth or apply step just to appease shipcheck. Non-side-effect unsupported examples still fail strict mode when they cannot dry-run, and missing commands, empty command paths, and failed full examples remain failures.
+
+**Pre-render framework-command check.** Before running `generate --research-dir`,
+validate the framework command examples already present in `research.json`.
+This catches stable template vocabulary mistakes while the fix is still a
+single-file `research.json` edit, before README.md, SKILL.md, `.printing-press.json`,
+root help, and other generated surfaces consume the bad narrative.
+
+```bash
+cli-printing-press validate-narrative --strict --framework-only \
+  --research "$API_RUN_DIR/research.json"
+```
+
+If this reports `sync --entities`, `search --entities`, `search --types`, an
+absolute date for `sync --since`, or another framework-command flag mismatch,
+fix `research.json` now and rerun this check before generation. This is a
+cheap floor, not a replacement for Phase 4 shipcheck: after the CLI exists,
+`shipcheck` still runs `validate-narrative --strict --full-examples` against
+the built binary to catch API-specific command paths, generated endpoint flags,
+and runtime dry-run failures.
 
 Also write discovery pages if browser-sniff was used. The generator reads these from `$API_RUN_DIR/discovery/browser-sniff-report.md` (which the browser-sniff gate already writes there). No additional action needed for discovery pages -- they are already in the right location.
 
@@ -1344,15 +1840,16 @@ The prose showcase and the `AskUserQuestion` are two separate turns. Print the s
 
 **Part 1: Prose showcase (print before the AskUserQuestion)**
 
-The showcase exists so the user can decide approve / trim / add ideas without asking a follow-up. Cover three things:
+The showcase exists so the user can decide approve / trim / add ideas without asking a follow-up. Cover four things:
 
 1. **Scope** — how many features absorbed across which tools, how many novel on top, how that stacks up against the best existing tool.
 2. **Per-novel-feature readout** — one line each: feature name, what the user gets, and the specific evidence or persona that makes it worth building.
-3. **Anything the user should worry about before approving** — stubs, risky dependencies, expensive endpoints, low-confidence ideas.
+3. **Hand-code commitment** — of the M novel features, K will require hand-written Go after generate (each ~50-150 LoC plus `root.go` wiring). State the hand-code count and the auto-emitted count, then list the names of the hand-code features. The manifest transcendence table's `Buildability` column (populated from the subagent per [references/novel-features-subagent.md](references/novel-features-subagent.md) "Output contract") is the source of truth: count rows tagged `hand-code`; `spec-emits` rows are excluded from the hand-code total. Approving commits the agent to that scope, so the user must see it explicitly before the AskUserQuestion.
+4. **Anything else the user should worry about before approving** — stubs, risky dependencies, expensive endpoints, low-confidence ideas.
 
 Show every novel feature that scored ≥5/10. Group by theme if there are more than ~12; never hide features behind "Plus N more" or "see full manifest." If zero qualified, say so plainly: "No novel features scored high enough to recommend. The absorbed features cover the landscape well."
 
-Format is otherwise yours — markdown headings, prose, a numbered list, whatever reads cleanly. The must-haves are the three things above and the ≥5/10 coverage rule.
+Format is otherwise yours — markdown headings, prose, a numbered list, whatever reads cleanly. The must-haves are the four things above and the ≥5/10 coverage rule.
 
 **Part 2: AskUserQuestion**
 
@@ -1391,22 +1888,145 @@ Do not treat a persistent browser sidecar as a shippable CLI runtime. Browsers a
 
 Useful same-site HTML document pages count as a replayable surface when they return real content, not challenge/login pages. Browser-sniff can promote these into `response_format: html` endpoints so generated commands extract page metadata and filtered links through Surf/direct HTTP instead of keeping a browser sidecar alive.
 
+When hand-authoring a `response_format: html` spec with `html_extract.mode: links`,
+document and choose `link_prefixes` as path-segment prefixes. A prefix `/items`
+matches `/items` and `/items/...`, but not `/items123.html`; use the parent
+directory prefix when the leaf segment has embedded IDs or suffixes. See
+`skills/printing-press/references/spec-format.md` for the exact contract.
+
 If the browser capture contained only challenge/login/error pages, this exception does not apply.
+
+**Exception for LAN-only / mDNS-discovered APIs:** If the resolved spec's `base_url` is a localhost or loopback placeholder (`http://localhost:<port>`, `http://127.0.0.1:<port>`, or `http://[::1]:<port>`), or Phase 1 research explicitly identifies the API as LAN-only / SSDP / mDNS-discovered with no stable global origin, do not run the generic curl/WebFetch reachability probe. A probe from the generation host would test the agent's loopback or current network, not the user's appliance, speaker, bridge, or local service.
+
+For this case, record a Phase 1.9 PASS carve-out in the research brief:
+
+```markdown
+## Reachability Gate
+- Decision: PASS (carve-out)
+- Reason: lan-only-no-global-url
+- Evidence: <base_url or research line showing localhost, loopback, SSDP, mDNS, or LAN-only discovery>
+```
+
+Then proceed to Phase 2. Do not write a freeform manual proof for this case, do not call it a missing-API-key skip, and do not use this carve-out for normal public/cloud origins such as `https://api.example.com`; those still run the reachability probe and decision matrix below.
 
 ### The Check
 
-Pick the simplest GET endpoint from the resolved spec (no required params, no auth if possible). If no such endpoint exists, use the spec's base URL. Run one HTTP request:
+Prefer the spec's `auth.verify_path` when it is set; otherwise pick the simplest GET endpoint from the resolved spec (no required params, no auth if possible). If no such endpoint exists, use the spec's base URL. Run one HTTP request and preserve the response body when the server returns a 4xx:
 
 ```bash
-curl -s -o /dev/null -w "%{http_code}" -m 10 "<base_url>/<simplest_get_path>" 2>/dev/null
+body_file="$(mktemp "${TMPDIR:-/tmp}/pp-reachability-body.XXXXXX")"
+trap 'rm -f "$body_file"' EXIT
+status="$(curl -s --max-filesize 65536 -o "$body_file" -w "%{http_code}" -m 10 "<base_url>/<simplest_get_path>" 2>/dev/null || true)"
+case "$status" in
+  [0-9][0-9][0-9]) ;;
+  *) status="000" ;;
+esac
+printf '%s\n' "$status"
 ```
 
-Or use `WebFetch` if curl is unavailable. The goal is one real response code.
+Or use `WebFetch` if curl is unavailable. Record the response status and, for any 4xx response body, run the same tier/permission keyword scan against the captured WebFetch body text before deciding. The goal is one real response code plus any 4xx body evidence the API chose to return.
+
+If `status` is any 4xx, inspect the body before deciding. Search it case-insensitively for tier or permission terms:
+
+```bash
+grep -Ei 'tier|allowed|permitted|subscription|quota|plan|scope|limit|permission|forbidden|unauthorized|upgrade|trial' "$body_file" | head -20
+```
+
+When matched lines are present, add them to the Phase 1 research brief under:
+
+```markdown
+## Reachability Risk
+- Tier/permission hints from 4xx body: "<matched line, truncated if needed>"
+```
+
+Keep the evidence bounded: include only the lines that explain the access model, trim each line to a readable length, and do not paste bearer tokens, API keys, cookies, or unrelated full response dumps. If the GET returns 2xx/3xx, omit this tier-hint subsection.
+
+Do not probe arbitrary mutation endpoints to discover tier limits. A generic "try a PUT/POST/PATCH/DELETE" rule can create accounts, send messages, capture payments, or mutate user data. Mutation probing is allowed only when the resolved spec or OpenAPI operation explicitly marks that endpoint as probe-safe with `x-pp-safe-probe: true`; the endpoint must be idempotent or otherwise harmless for the real account being used. If no endpoint has that explicit marker, stop after the GET body capture above.
+
+If one or more probe-safe endpoints are declared and the user provided credentials, run exactly one declared probe-safe endpoint as a second reachability probe and apply the same 4xx body capture and tier-keyword extraction. When more than one exists, choose the lowest-risk declared endpoint by preferring methods in this order: HEAD/OPTIONS/GET, then PUT/PATCH, then POST, then DELETE only if it is the only declared safe option. Break ties by choosing the endpoint with the fewest required parameters and avoiding paths with account, billing, payment, deletion, or notification terms when any safer declared option exists. Record which endpoint was probe-safe in the brief so later phases know the evidence came from an opt-in safe probe.
+
+### OAuth2 Grant Probe
+
+If the resolved spec declares `auth.type: oauth2` and has an interactive
+authorization URL (`authorizationCode` or `implicit` flow in OpenAPI, or an
+equivalent internal YAML auth field), the generic reachability check is not
+enough. After the base URL check would otherwise pass, verify the OAuth grant
+entry point with the user's real public OAuth input before Phase 2. This probe
+is read-only: it stops at the provider's consent, login, or error page and does
+not exchange a code, request a token, or ask the user to approve consent.
+
+Do not run this grant probe for OAuth2 `client_credentials` flows that only have
+a token URL. Those are server-to-server credentials, not browser grant flows, and
+probing the token endpoint would require secret material or a write-like auth
+attempt. The base reachability check plus later mock/live auth verification cover
+that shape.
+
+**Required inputs:** Use the `client_id` env var or public auth-flow input
+already resolved during Phase 0.5 and Pre-Generation Auth Enrichment. If the
+spec exposes `x-auth-vars`, prefer the entry with `kind: auth_flow_input`,
+`sensitive: false`, and a name or description identifying it as the OAuth
+`client_id`. If the real client id is missing, HOLD before generation and tell
+the user exactly which env var to set. Do not substitute a fake client id; fake
+ids can produce provider-specific errors that look like transport quirks.
+
+Build the authorize URL from the resolved spec, not from a guessed provider
+default:
+
+- `client_id`: the real public client id from the env var above.
+- `redirect_uri`: the redirect URI declared in the spec or auth metadata.
+- `response_type=code` for authorization-code grants, or the spec's documented
+  response type for implicit grants.
+- For authorization-code grants, include a safe probe PKCE pair using `S256`.
+  Use `probe_reachability_check_pkce_probe_literal` as the code verifier and
+  compute the URL-safe SHA-256 challenge from it. The verifier is 43 unreserved
+  characters, satisfying the RFC 7636 minimum; providers that do not require
+  PKCE ignore these params, and providers that enforce PKCE should advance to
+  the login or consent page instead of returning a false `invalid_request`.
+- `scope`, `audience`, `tenant`, `state`, `prompt`, or other provider-required
+  params when the spec or vendor docs require them. Use a benign probe value for
+  `state` if required.
+
+Use a redirect-limited GET and inspect the final URL, response body, and
+response class:
+
+```bash
+PKCE_VERIFIER="probe_reachability_check_pkce_probe_literal"
+PKCE_CHALLENGE=$(printf "%s" "$PKCE_VERIFIER" | openssl dgst -sha256 -binary | openssl base64 -A | tr '+/' '-_' | tr -d '=')
+AUTH_URL="<authorization_url_with_required_query_params>"
+# Add code_challenge_method=S256 and code_challenge=$PKCE_CHALLENGE to AUTH_URL.
+PROBE_BODY_AND_META=$(curl -sS -L --max-redirs 10 -m 15 -w "\n%{http_code} %{url_effective}" -o - "$AUTH_URL" 2>/dev/null)
+PROBE_META=$(printf "%s\n" "$PROBE_BODY_AND_META" | tail -n 1)
+PROBE_BODY=$(printf "%s\n" "$PROBE_BODY_AND_META" | sed '$d')
+printf "%s\n" "$PROBE_META"
+printf "%s\n" "$PROBE_BODY" | head -c 8000
+printf "\n"
+```
+
+Interpret the result before Phase 2:
+
+| OAuth probe result | Action |
+|--------------------|--------|
+| HTTP status is `2xx` or `3xx`, final URL stays on the provider's authorization/login/consent host, does not include `error=`, and the response body does not contain an OAuth error code (`invalid_request`, `invalid_client`, `unauthorized_client`, etc.) | **PASS** - the grant entry point is reachable; proceed to Phase 2 |
+| Final URL or response body reports `invalid_request`, `invalid_client`, `redirect_uri_mismatch`, `unauthorized_client`, `unsupported_response_type`, or equivalent | **HARD STOP** - OAuth config is misconfigured; surface the provider error and point the user to the mismatched client id, redirect URI, app type, tenant, or required scope |
+| HTTP status is `4xx` or `5xx` without a recognizable OAuth error code | **WARN** - flag provider-specific routing or login-shell behavior for manual review before generation |
+| Final URL lands on a generic non-OAuth error page, marketing page, or unrelated login landing page | **WARN** - flag endpoint ambiguity or provider-specific routing for manual review before generation |
+| Timeout/DNS/connection refused or HTTP status `000` | **WARN** - same handling as the generic reachability WARN |
+
+On HARD STOP, do not generate. Present a specific, provider-neutral message:
+
+> "WARNING: `<API>`'s OAuth authorize probe failed before generation. The
+> provider returned `<error_or_final_url>`. Check that the spec's
+> `authorization_url`, `redirect_uri`, `response_type`, client id env var, app
+> type, tenant, and required scopes match the registered OAuth application."
+
+This OAuth probe is additive to the base reachability gate. Non-OAuth APIs
+(`api_key`, `bearer_token`, `cookie`, `composed`, `session_handshake`, `none`)
+skip it entirely.
 
 **If the check returns 403/429 with bot-protection evidence and `probe-reachability` has not already run for this URL during Phase 1.7's Direct HTTP challenge rule, run it now before consulting the decision matrix:**
 
 ```bash
-printing-press probe-reachability "<base_url>" --json
+cli-printing-press probe-reachability "<base_url>" --json
 ```
 
 The matrix below references `probe-reachability` `mode` for the bot-detection rows. If the probe already ran in Phase 1.7, reuse that result; do not re-probe.
@@ -1453,6 +2073,92 @@ Proceed silently to Phase 2.
 
 ## Phase 2: Generate
 
+### Pre-Generation Category Enrichment
+
+Before generating a non-catalog CLI, set the spec's top-level `category` before
+running `generate`. The category must come from the Phase 1 research brief's
+domain judgment, mapped to the public catalog enum documented in
+`docs/CATALOG.md`.
+
+Non-catalog means the run is based on browser-sniffed traffic, HAR capture,
+docs-derived specs, or a hand-authored internal spec rather than
+`cli-printing-press generate <name>` using a built-in catalog entry. For
+internal YAML specs, add:
+
+```yaml
+category: <catalog-category>
+```
+
+If the source is an OpenAPI file and the workflow has an editable overlay or
+derived internal spec, carry the same top-level category into that generated
+spec artifact before the final `generate` invocation. If there is no editable
+spec artifact, such as direct `--docs` generation, pass
+`--category <catalog-category>` on the final `generate` invocation. Do not add
+the category after generation just to satisfy publish; the generated manifest,
+README, and SKILL install section must all come from the same category-aware
+spec, or `verify-skill canonical-sections` can drift.
+
+Catalog-mode runs skip this step: keep the built-in catalog entry's category
+unchanged, even if Phase 1 research would classify the API differently.
+
+### Pre-Generation Cache Enrichment
+
+Before generating, decide whether the spec should opt into generator-owned cache
+freshness. The generator already has the freshness helpers and auto-refresh hook,
+but it emits them only when the spec declares `cache.enabled: true` and the CLI
+has a real sync path. Stateful catalog-shaped CLIs otherwise serve local data
+exactly as it was last synced, which caps the cache freshness score and can leave
+agents reading stale SQLite rows without a warning.
+
+Enable cache freshness only when the resolved spec, profiler output, or absorb
+manifest shows at least one covered read path backed by a syncable resource that
+`sync` can refresh from the upstream API before serving. Do not enable it from
+Phase 1 research notes or scorecard goals alone. Leave it disabled for stateless
+read-through wrappers and for local stores that are primarily per-user working
+state, such as carts, drafts, or other session-owned data where a pre-read
+refresh could replace the user's local state with a different snapshot. Also
+leave it disabled for quota-metered, paid, rate-limited, or expensive bulk
+refresh APIs unless the refresh path is cheap, bounded, and clearly valuable;
+those CLIs should rely on manual `sync` plus the generated `doctor` cache report
+instead of surprising users with pre-read upstream calls.
+
+Catalog-mode runs skip this step: keep the built-in catalog entry's cache
+settings unchanged. Do not pass a flag or patch generated files after the fact;
+cache freshness must come from the spec that drives generation.
+
+For internal YAML specs, add the cache block before the final `generate`
+invocation only when at least one generated syncable resource read command will
+be covered automatically, or `cache.commands` will register a real hand-authored
+store-reading command:
+
+```yaml
+cache:
+  enabled: true
+  stale_after: 168h        # choose a domain-appropriate default
+  refresh_timeout: 30s     # optional; blank uses the generated runtime default
+```
+
+Generated resource list/get/search commands are covered automatically from the
+syncable resources profile. Use `cache.commands` only for hand-authored novel
+commands that read the local store and are not generated resource commands. The
+command `name` is the Cobra path without the binary name, and every listed
+resource must be declared in `resources:` and classified as syncable.
+
+```yaml
+cache:
+  enabled: true
+  stale_after: 168h        # choose a domain-appropriate default
+  commands:
+    - name: <novel-read-command>
+      resources: [<resource-name>]
+```
+
+Pick `stale_after` from the domain's update cadence: shorter for live feeds or
+rapidly changing inventory, longer for reference catalogs and archival data. Do
+not enable cache just to satisfy the scorecard if there is no upstream refresh
+path or no user value in pre-read freshness; the generator intentionally skips
+the helpers when they would be dead code.
+
 ### Pre-Generation Auth Enrichment
 
 Before generating, check whether the resolved spec has auth. This matters most for
@@ -1471,7 +2177,11 @@ auth signals, enrich the spec before generation:
 3. Check Phase 1.6 Pre-Browser-Sniff Auth Intelligence results (if the user confirmed auth)
 
 If any source identified auth, **edit the spec YAML** to add the auth section before
-running generate. For internal YAML specs:
+running generate. Catalog-mode runs (`cli-printing-press generate <name>` where `<name>`
+is in `catalog/`) can skip the spec edit when the catalog entry declares
+`auth_env_vars` — those canonical names are applied automatically and the
+parser's name-derived default name is retained as a trailing fallback so
+operators on existing setups don't need a rename. For internal YAML specs:
 
 ```yaml
 auth:
@@ -1482,22 +2192,112 @@ auth:
     - <API_NAME>_TOKEN  # bearer_token → _TOKEN, api_key → _API_KEY
 ```
 
-When research or source metadata names a real env var, use only that canonical
-name in `env_vars`; do not add guessed slug-based aliases. For OpenAPI specs,
-prefer `x-auth-env-vars` on the selected security scheme when the wrapper slug
-differs from the underlying API brand.
+When research or source metadata names a real single-token env var, record it
+in `research.json` as `auth.canonical_env_var`; fresh generation reads that
+name first and keeps the parser-derived env var as a trailing fallback. When
+you are editing an internal YAML spec directly, use only the canonical name in
+`env_vars`; do not add guessed slug-based aliases.
 
-For OpenAPI specs that need richer env-var metadata (kind classification,
-optional credentials, OR-group relationships), use `x-auth-vars` on the
-security scheme. See `docs/SPEC-EXTENSIONS.md` for the canonical schema.
+For OpenAPI specs, choose the security scheme by wire format, not by whether
+the token feels like an API key. Use `type: http` with `scheme: bearer` when
+the upstream API sends `Authorization: Bearer <token>`, including PAT-shaped
+tokens such as Slack `xoxp`, Notion integration tokens, Linear API keys, and
+GitHub PATs. Use `type: apiKey` only when the API sends the configured value
+as the raw header or query value, such as `X-API-Key: <token>` or
+`Authorization: <token>` with no scheme prefix. The generator adds the
+`Bearer ` prefix for `http` bearer schemes; `apiKey` sends exactly the
+configured value and will not add a prefix.
+
+Quick test: if upstream docs or live traffic show `Authorization: Bearer
+<token>`, model it as `http` bearer. If they show `X-API-Key: <token>`,
+`?api_key=<token>`, or `Authorization: <token>` with no scheme prefix, model it
+as `apiKey`.
+
+For OpenAPI specs, prefer `x-auth-env-vars` on the selected security scheme
+when the wrapper slug differs from the underlying API brand.
+
+**If auth IS present** in the spec but Phase 1 evidence shows the slug-derived
+env var will differ from the canonical name users have already set for this
+API, enrich the spec with the canonical name before generation. The
+slug-derivation rule (security-scheme slug uppercased plus `_TOKEN` /
+`_API_KEY` / `_OAUTH2` per type) rarely matches the canonical name for
+established APIs. Common shapes:
+
+- Stripe (bearer): canonical `STRIPE_SECRET_KEY`, not slug-derived `STRIPE_OAUTH2`
+- HubSpot (bearer): canonical `HUBSPOT_PRIVATE_APP_TOKEN`, not slug-derived `HUBSPOT_API_KEY`
+- Twilio (HTTP Basic, two-var pair): canonical `TWILIO_ACCOUNT_SID` + `TWILIO_AUTH_TOKEN`, not slug-derived `TWILIO_USERNAME` + `TWILIO_PASSWORD`
+- Keap (OAuth2 authorization-code): canonical `KEAP_SERVICE_ACCOUNT_KEY`, not slug-derived `KEAP_OAUTH2`
+
+Walk through:
+
+1. Compute the slug-derived env var the generator will pick (security-scheme
+   slug, uppercased, plus the type-suffix above; HTTP Basic produces a
+   `_USERNAME` + `_PASSWORD` pair; OAuth2 `client_credentials` produces a
+   `_CLIENT_ID` + `_CLIENT_SECRET` pair).
+2. Check Phase 1 research, Phase 1.5a MCP source code analysis, and community
+   wrapper READMEs for a canonical env var name documented by the vendor or
+   in widespread use.
+3. If they differ and the canonical name is a single-token credential, record
+   it in `research.json` as `auth.canonical_env_var`. The generator will read
+   the canonical name first and retain the slug-derived form as a fallback.
+   If you are editing the source spec directly instead, add `x-auth-env-vars`
+   on the selected security scheme (OpenAPI) or set `auth.env_vars` to the
+   canonical name (internal YAML). Use only the canonical name in the spec
+   edit; do not retain guessed aliases there. For HTTP Basic, supply the full
+   two-entry canonical pair (username position first, password position
+   second) via `x-auth-env-vars`. For OAuth2
+   `client_credentials`, the parser silently re-applies the
+   `CLIENT_ID`/`CLIENT_SECRET` default when `x-auth-env-vars` has fewer
+   than two entries (see `applyAuthEnvVarDefaults` in
+   `internal/openapi/parser.go`); if the canonical secret is a single
+   service-account token for a `client_credentials` flow, use
+   `x-auth-vars` instead (next section) so the override is preserved.
+4. If research surfaces no canonical name distinct from the slug-derived
+   form, do nothing. The slug-derived name is fine, and a spurious
+   `x-auth-env-vars` would just shadow it with the same value.
+
+```yaml
+# Bearer / API-key single-token case (Stripe, HubSpot, Keap on
+# authorization-code grant, most apiKey schemes).
+components:
+  securitySchemes:
+    keapOAuth2:
+      type: oauth2
+      flows:
+        authorizationCode: { ... }
+      x-auth-env-vars:
+        - KEAP_SERVICE_ACCOUNT_KEY
+```
+
+```yaml
+# HTTP Basic two-var canonical pair (Twilio).
+components:
+  securitySchemes:
+    basicAuth:
+      type: http
+      scheme: basic
+      x-auth-env-vars:
+        - TWILIO_ACCOUNT_SID
+        - TWILIO_AUTH_TOKEN
+```
+
+Skipping this step pushes the agent into hand-patching
+`internal/config/config.go` Load and `internal/cli/doctor.go` env-var
+checks after a `doctor` FAIL against the operator's real environment.
+Enriching the spec avoids that round-trip.
+
+For OpenAPI bearer-token specs that need richer env-var metadata (kind
+classification, optional credentials, OR-group relationships), keep the
+security scheme as `http` bearer and put `x-auth-vars` on that scheme. Do not
+switch to `apiKey` just to attach the richer metadata.
 
 ```yaml
 components:
   securitySchemes:
-    slackBot:
-      type: apiKey
-      in: header
-      name: Authorization
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: xoxp
       x-auth-vars:
         - name: SLACK_BOT_TOKEN
           kind: per_call
@@ -1510,6 +2310,26 @@ components:
           sensitive: true
           description: Set this OR `SLACK_BOT_TOKEN` for user-scoped API calls.
 ```
+
+For OpenAPI raw-key schemes that need richer env-var metadata, keep `apiKey`
+and place `x-auth-vars` on the raw-key scheme.
+
+```yaml
+components:
+  securitySchemes:
+    rawHeaderKey:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      x-auth-vars:
+        - name: <API_NAME>_API_KEY
+          kind: per_call
+          required: true
+          sensitive: true
+          description: Raw API key header value.
+```
+
+See `docs/SPEC-EXTENSIONS.md` for the canonical `x-auth-vars` schema.
 
 `kind` controls who supplies the value:
 - `per_call` is the default user-supplied credential used by normal commands.
@@ -1561,7 +2381,7 @@ Run the deterministic inventory before generation when a spec may contain
 cryptic wire names:
 
 ```bash
-printing-press public-param-audit --spec <spec-or-overlay-output> --ledger <runstate>/public-param-audit.json --strict
+cli-printing-press public-param-audit --spec <spec-or-overlay-output> --ledger <runstate>/public-param-audit.json --strict
 ```
 
 The command does not decide that every finding needs a public flag. It identifies
@@ -1626,6 +2446,13 @@ Detection signals:
   documented as paid, partner, premium, or quota-gated.
 - Browser/crowd sniffing found public endpoints and SDK/MCP research found a
   separate credential for expanded coverage.
+- Sniffed specs carry per-endpoint `observed_auth` (a list of lowercased request
+  header names observed during capture, e.g. `[authorization]` or `[x-api-key]`).
+  An empty or missing `observed_auth` on an endpoint is evidence that the request
+  went anonymously; a populated list is evidence the endpoint required auth. The
+  same per-endpoint signal is mirrored on `TrafficAnalysis.endpoint_clusters[].observed_auth`
+  in the traffic-analysis sidecar. Treat both as observation-only — not a security
+  scheme declaration — and corroborate with documentation before declaring a tier.
 
 Action:
 - Internal YAML: add `tier_routing` plus `tier` on the affected resource or
@@ -1731,6 +2558,28 @@ resources:
         # no_auth defaults to false — placing an order needs auth
 ```
 
+#### Cookie/composed HTML transport
+
+For specs with `auth.type: cookie` or `auth.type: composed` and any
+`response_format: html` endpoint, treat browser fingerprint compatibility as
+the safe default. The generator emits Surf-backed Chrome transport for that
+shape unless the spec explicitly says `http_transport: standard`.
+
+Before setting an explicit standard opt-out, run
+`cli-printing-press probe-reachability` against a representative HTML GET endpoint.
+If the probe returns `standard_http`, record `http_transport: standard` in the
+spec. If it returns `browser_http`, leave the default or set `http_transport:
+browser-chrome`. If it returns `browser_clearance_http`, return to the
+browser-clearance flow above so the generated CLI has both browser-compatible
+HTTP and reusable browser auth proof.
+
+For cookie/composed-auth CLIs, recommend the `press-auth` companion binary —
+it captures cookies once via a controlled Chrome window and serves them to
+generated CLIs on demand, avoiding the on-disk session-cookie blind spot
+that breaks `auth login --chrome` against a daily Chrome profile. See
+[references/auth-companion.md](references/auth-companion.md) for the
+recommendation flow, install command, and debug playbook.
+
 ### Pre-Generation MCP Enrichment
 
 Before generating, count the spec's MCP tool surface and decide whether to opt
@@ -1764,10 +2613,22 @@ The total is what an agent loads at MCP server start.
 |-------------|--------|
 | <30 | Skip — default endpoint-mirror surface is fine. |
 | 30–50 | Ask the user. Suggest `mcp.transport: [stdio, http]` for remote reach; suggest `mcp.intents` if there are clear multi-step workflows. |
-| >50 | Default to recommending the Cloudflare pattern (transport + code orchestration + hidden endpoint tools). The generator will also print a warning at this size. |
+| >50 | The generator auto-applies the Cloudflare pattern (transport + code orchestration + hidden endpoint tools) unless `mcp.orchestration` / `x-mcp.orchestration` is explicitly set. |
 
-**The Cloudflare pattern** (recommended for large surfaces) — edit the spec's
-`mcp:` block before running `generate`:
+**Mandatory >50 endpoint-tools confirmation.** If the pre-generation count
+predicts more than 50 endpoint tools, expect `generate` to print an informational
+line beginning `info: applied Cloudflare MCP pattern`. This is the intended
+default and does not require a blocking question. Before verification, polish,
+dogfood, or publish, confirm the generated MCP surface is the thin
+`<api>_search` + `<api>_execute` pair. If the user explicitly wants raw
+endpoint tools past the threshold, set `mcp.orchestration: endpoint-mirror`
+(internal YAML) or `x-mcp.orchestration: endpoint-mirror` (OpenAPI) before
+regenerating.
+
+**The Cloudflare pattern** (default for large surfaces without explicit
+orchestration) — the generator applies this shape automatically. Add the spec
+block only when you need to make the choice explicit or preserve it across
+older generator versions:
 
 ```yaml
 mcp:
@@ -1775,10 +2636,23 @@ mcp:
   orchestration: code         # thin <api>_search + <api>_execute pair
   endpoint_tools: hidden      # suppress raw per-endpoint mirrors
   intents:                    # optional; named multi-step intents
-    - name: <intent_name>
-      description: <agent-facing intent description>
-      params: [...]
-      steps: [...]
+    - name: fetch_and_summarize
+      description: Fetch an item then summarize it
+      params:
+        - name: item_id
+          type: string
+          required: true
+          description: item identifier
+      steps:
+        - endpoint: items.get
+          bind:
+            id: ${input.item_id}
+          capture: item
+        - endpoint: items.summarize
+          bind:
+            body: ${item.body}
+          capture: summary
+      returns: summary
 ```
 
 `mcp.transport: [stdio, http]` adds HTTP streamable transport so cloud-hosted
@@ -1787,9 +2661,18 @@ emits the thin search+execute pair that covers the full surface in ~1K tokens.
 `mcp.endpoint_tools: hidden` removes the raw per-endpoint tools that would
 otherwise still show up alongside the orchestration pair.
 
+For OpenAPI input specs, declare these fields under `x-mcp:` at the document
+root (OpenAPI 3.0 `x-*` vendor extensions). The shape is identical to the
+internal-YAML `mcp:` block above — same field names, just nested under a
+vendor-extension key. See [`docs/SPEC-EXTENSIONS.md`](../../docs/SPEC-EXTENSIONS.md) for the canonical
+schema and `info`-level placement option.
+
 **Smaller-surface variants:**
 
-- Just want remote reach? `mcp.transport: [stdio, http]` alone is fine.
+- Just want remote reach? Small APIs (at or under
+  `spec.DefaultRemoteTransportEndpointThreshold` typed endpoints) get `[stdio, http]`
+  by default — no spec edit needed. Set `mcp.transport: [stdio, http]` explicitly only
+  when the API is above the threshold and still wants remote reach.
 - Have 3–5 obvious multi-step workflows but <50 endpoints? Add `mcp.intents`
   without code orchestration; leave `endpoint_tools` at default (visible).
 
@@ -1809,30 +2692,41 @@ trying to fix it in polish.
 Before running any generate command, acquire the build lock:
 
 ```bash
-printing-press lock acquire --cli <api>-pp-cli --scope "$PRESS_SCOPE"
+cli-printing-press lock acquire --cli <api>-pp-cli --scope "$PRESS_SCOPE"
 ```
 
 If acquire fails (another session holds a fresh lock), present the lock status to the user and let them decide: wait, use a different CLI name, force-reclaim, or pick a different API.
 
+The `--category <catalog-category>` flag shown below is for non-catalog runs
+whose category was not already authored into an editable spec. Omit it for
+catalog-config runs; the built-in catalog category is authoritative there.
+
+`--lenient` stubs missing local `#/components/schemas/<Name>` refs as
+permissive object schemas with warnings so converted OpenAPI specs can still
+generate. Add `--strict-refs` only when a run must fail instead of accepting
+those local schema stubs; it does not change the rest of lenient cleanup.
+
 OpenAPI / internal YAML:
 
 ```bash
-printing-press generate \
+cli-printing-press generate \
   --spec <spec-path-or-url> \
   --output "$CLI_WORK_DIR" \
   --research-dir "$API_RUN_DIR" \
+  --category <catalog-category> \
   --force --lenient --validate
 ```
 
 Browser-browser-sniff-enriched (original spec + browser-sniff-discovered spec):
 
 ```bash
-printing-press generate \
+cli-printing-press generate \
   --spec <original-spec-path-or-url> \
   --spec "$RESEARCH_DIR/<api>-browser-sniff-spec.yaml" \
   --name <api> \
   --output "$CLI_WORK_DIR" \
   --research-dir "$API_RUN_DIR" \
+  --category <catalog-category> \
   --spec-source browser-sniffed \
   --traffic-analysis "$DISCOVERY_DIR/traffic-analysis.json" \
   --force --lenient --validate
@@ -1843,10 +2737,11 @@ printing-press generate \
 Sniff-only (no original spec, browser-sniff was the primary source):
 
 ```bash
-printing-press generate \
+cli-printing-press generate \
   --spec "$RESEARCH_DIR/<api>-browser-sniff-spec.yaml" \
   --output "$CLI_WORK_DIR" \
   --research-dir "$API_RUN_DIR" \
+  --category <catalog-category> \
   --spec-source browser-sniffed \
   --traffic-analysis "$DISCOVERY_DIR/traffic-analysis.json" \
   --force --lenient --validate
@@ -1857,35 +2752,38 @@ printing-press generate \
 Crowd-browser-sniff-enriched (original spec + crowd-discovered spec):
 
 ```bash
-printing-press generate \
+cli-printing-press generate \
   --spec <original-spec-path-or-url> \
   --spec "$RESEARCH_DIR/<api>-crowd-spec.yaml" \
   --name <api> \
   --output "$CLI_WORK_DIR" \
   --research-dir "$API_RUN_DIR" \
+  --category <catalog-category> \
   --force --lenient --validate
 ```
 
 Crowd-sniff-only (no original spec, crowd-sniff was the primary source):
 
 ```bash
-printing-press generate \
+cli-printing-press generate \
   --spec "$RESEARCH_DIR/<api>-crowd-spec.yaml" \
   --output "$CLI_WORK_DIR" \
   --research-dir "$API_RUN_DIR" \
+  --category <catalog-category> \
   --force --lenient --validate
 ```
 
 Both browser-sniff + crowd-sniff (merged with original):
 
 ```bash
-printing-press generate \
+cli-printing-press generate \
   --spec <original-spec-path-or-url> \
   --spec "$RESEARCH_DIR/<api>-browser-sniff-spec.yaml" \
   --spec "$RESEARCH_DIR/<api>-crowd-spec.yaml" \
   --name <api> \
   --output "$CLI_WORK_DIR" \
   --research-dir "$API_RUN_DIR" \
+  --category <catalog-category> \
   --traffic-analysis "$DISCOVERY_DIR/traffic-analysis.json" \
   --force --lenient --validate
 ```
@@ -1893,11 +2791,12 @@ printing-press generate \
 Docs-only:
 
 ```bash
-printing-press generate \
+cli-printing-press generate \
   --docs <docs-url> \
   --name <api> \
   --output "$CLI_WORK_DIR" \
   --research-dir "$API_RUN_DIR" \
+  --category <catalog-category> \
   --force --validate
 ```
 
@@ -1951,7 +2850,7 @@ broken commands ship to the README's Quick Start (`narrative.quickstart`) and th
 SKILL's recipes (`narrative.recipes`); users copy-paste them and hit failures on the
 very first invocation.
 
-`printing-press shipcheck` now runs `validate-narrative --strict --full-examples`
+`cli-printing-press shipcheck` now runs `validate-narrative --strict --full-examples`
 automatically after `verify` builds the CLI binary. The standalone command is still
 useful immediately after editing `research.json`: it walks every
 `narrative.quickstart[].command` and `narrative.recipes[].command`, strips the binary
@@ -1964,16 +2863,18 @@ argument shapes without making live API calls.
 QUICKSTART_BINARY="$CLI_WORK_DIR/<api>-pp-cli"
 go build -o "$QUICKSTART_BINARY" "$CLI_WORK_DIR/cmd/<api>-pp-cli"
 
-printing-press validate-narrative --strict --full-examples \
+cli-printing-press validate-narrative --strict --full-examples \
   --research "$API_RUN_DIR/research.json" \
   --binary "$QUICKSTART_BINARY"
 ```
 
 `--strict` exits non-zero on any missing command, empty subcommand-words entry, or
 empty narrative (both sections omitted). With `--full-examples`, it also fails on full
-examples that cannot dry-run or whose full invocation fails. Drop `--strict` to get a
-warn-only report, omit `--full-examples` only when you intentionally want the old
-offline path check, or add `--json` for machine-readable output.
+examples that cannot dry-run or whose full invocation fails. Side-effectful auth,
+launch, and mutating apply examples are reported as `UNSUPPORTED` warnings and do not
+fail strict aggregation. Drop `--strict` to get a warn-only report, omit
+`--full-examples` only when you intentionally want the old offline path check, or add
+`--json` for machine-readable output.
 
 If any commands are reported missing, fix them in `research.json` before continuing.
 Common causes:
@@ -1996,7 +2897,7 @@ just-built binary — no live API access needed.
 After the description rewrite, update the lock heartbeat:
 
 ```bash
-printing-press lock update --cli <api>-pp-cli --phase generate
+cli-printing-press lock update --cli <api>-pp-cli --phase generate
 ```
 
 Then:
@@ -2010,7 +2911,7 @@ If generation fails:
 - prefer generator fixes over manual generated-code surgery when the failure is systemic
 - if retries are exhausted, release the lock and stop:
   ```bash
-  printing-press lock release --cli <api>-pp-cli
+  cli-printing-press lock release --cli <api>-pp-cli
   ```
 
 ## Phase 3: Build The GOAT
@@ -2024,6 +2925,14 @@ When `CODEX_MODE` is false, skip this section.
 
 Build comprehensively. The absorb manifest from Phase 1.5 IS the feature list.
 
+**First Phase 3 build-log line:** Before writing code, count the shipping-scope transcendence rows in the Phase 1.5 absorb manifest and write this as the first line of `$PROOFS_DIR/<stamp>-fix-<api>-pp-cli-build-log.md`:
+
+```text
+Manifest transcendence rows: <planned> planned, 0 built. Phase 3 will not pass until all <planned> ship.
+```
+
+Use only rows that Phase 3 is expected to build: include approved transcendence rows with concrete `Command` values, exclude rows whose implementation starts with `(stub)`, and keep `spec-emits` rows out of the hand-code count while still tracking whether their approved command path exists. Update the build log's built count as rows are completed. If `PRIOR_SUB60_REPRINT=true`, this line is also the strict-gate budget: partial transcendence coverage is a hold by default.
+
 **macOS framework access:** When the plan or manifest specifies macOS framework APIs (ScreenCaptureKit, CoreGraphics, CoreAudio, Vision, Shortcuts, etc.), use the Swift subprocess bridge pattern - Go shells out to `swift -e '<inline script>'`. Swift is always available with Xcode CLT. Do NOT attempt Python+PyObjC - it requires separate installation and is unreliable across Python distributions. Reference `agent-capture-pp-cli/internal/capture/cgwindow.go` as the canonical example of this pattern.
 
 Priority 0 (foundation):
@@ -2032,7 +2941,7 @@ Priority 0 (foundation):
 
 After completing Priority 0, update the lock heartbeat:
 ```bash
-printing-press lock update --cli <api>-pp-cli --phase build-p0
+cli-printing-press lock update --cli <api>-pp-cli --phase build-p0
 ```
 
 Priority 1 (absorb - match everything):
@@ -2042,7 +2951,7 @@ Priority 1 (absorb - match everything):
 
 **Lock heartbeat rule for long priority levels:** If Priority 1 has more than 5 features, update the lock heartbeat after every 3-5 features to prevent the 30-minute staleness threshold from triggering mid-build:
 ```bash
-printing-press lock update --cli <api>-pp-cli --phase build-p1-progress
+cli-printing-press lock update --cli <api>-pp-cli --phase build-p1-progress
 ```
 
 Priority 2 (transcend - build what nobody else has):
@@ -2052,12 +2961,12 @@ Priority 2 (transcend - build what nobody else has):
 
 **Lock heartbeat rule for Priority 2:** Same rule as Priority 1 — if Priority 2 has more than 3 transcendence features, update the heartbeat after every 2-3 features:
 ```bash
-printing-press lock update --cli <api>-pp-cli --phase build-p2-progress
+cli-printing-press lock update --cli <api>-pp-cli --phase build-p2-progress
 ```
 
 After completing Priority 2, update the lock heartbeat:
 ```bash
-printing-press lock update --cli <api>-pp-cli --phase build-p2
+cli-printing-press lock update --cli <api>-pp-cli --phase build-p2
 ```
 
 Priority 3 (polish):
@@ -2068,17 +2977,18 @@ Priority 3 (polish):
 
 ### Agent Build Checklist (per command)
 
-After building each command in Priority 1 and Priority 2, verify these 10 principles are met. These map 1:1 to what Phase 4.9's agent readiness reviewer will check - apply them now so the review becomes a confirmation, not a catch-all.
+After building each command in Priority 1 and Priority 2, verify these 12 principles are met. These map 1:1 to what Phase 4.9's agent readiness reviewer will check - apply them now so the review becomes a confirmation, not a catch-all.
 
 1. **Non-interactive**: No TTY prompts, no `bufio.Scanner(os.Stdin)`, works in CI without a terminal
-2. **Structured output**: `--json` produces valid JSON, `--select` filters fields correctly. Hand-written novel commands that build a Go-typed slice/struct and emit JSON MUST call `printJSONFiltered(cmd.OutOrStdout(), v, flags)` instead of `flags.printJSON(cmd, v)`. The helper marshals the value and routes the bytes through `printOutputWithFlags`, picking up `--select`, `--compact`, `--csv`, and `--quiet` for free; direct `flags.printJSON` drops every one of those flags silently. Endpoint-mirror commands already use `printOutputWithFlags`; this rule covers hand-written novel commands. Verify with `<cli> <novel> --json --select <field> | jq 'keys'` returning only the requested fields.
+2. **Structured output**: `--json` produces valid JSON, `--select` filters fields correctly. Hand-written novel commands that build a Go-typed slice/struct and emit JSON should use the generated receiver-style helper, `flags.printJSON(cmd, v)`, or call `printJSONFiltered(cmd.OutOrStdout(), v, flags)` directly. Both route through `printOutputWithFlags`, picking up `--select`, `--compact`, `--csv`, and `--quiet` for free. Verify with `<cli> <novel> --json --select <field> | jq 'keys'` returning only the requested fields.
 3. **Progressive help**: `--help` shows realistic examples with domain-specific values (not "abc123"). **Use `Example: strings.Trim(\`...\`, "\n")` (preserves leading 2-space indent) NOT `strings.TrimSpace(\`...\`)` (strips it).** TrimSpace makes the first example line unindented; dogfood's example-detection parser is tolerant of this in current versions, but the indented form renders correctly across every Cobra version and is the convention used by every generated command.
 4. **Actionable errors**: Error messages name the specific flag/arg that's wrong and the correct usage
 5. **Safe retries**: Mutation commands support `--dry-run`, idempotent where possible
 6. **Composability**: Exit codes are typed (0/2/3/4/5/7/10 as applicable), output pipes to `jq` cleanly
 7. **Bounded responses**: `--compact` returns only high-gravity fields, list commands have `--limit`
-8. **Verify-friendly RunE**: Hand-written commands MUST NOT use `Args: cobra.MinimumNArgs(N)` or `MarkFlagRequired(...)`. Cobra evaluates both before RunE runs, so a `--dry-run` guard inside RunE cannot reach if those gates fail. Verify probes commands with `--dry-run` and expects exit 0; commands with hard arg/flag gates fail those probes. Instead: validate inside RunE, fall through to `cmd.Help()` for help-only invocations, and short-circuit on `dryRunOK(flags)` before any IO.
+8. **Verify-friendly RunE**: Hand-written commands MUST NOT use `Args: cobra.MinimumNArgs(N)` or `MarkFlagRequired(...)`. Cobra evaluates both before RunE runs, so a `--dry-run` guard inside RunE cannot reach if those gates fail. Verify probes commands with `--dry-run` and expects exit 0; commands with hard arg/flag gates fail those probes. Instead: validate inside RunE, fall through to `cmd.Help()` only for unambiguous help-only invocations (no args and no flags), short-circuit on `dryRunOK(flags)` before any IO, and return `usageErr(...)` with exit 2 when required input is missing in real mode.
    - **Use string for "positional OR flag" commands**: when a command accepts a positional `<x>` OR a flag `--y` as alternatives (e.g., `snapshot <co>` or `snapshot --domain example.com`), declare `Use: "<cmd> [x]"` with **square brackets** (optional), not `<x>` (required). Validate "exactly one of x or --y" inside RunE. Required positionals declared with angle brackets break verify-skill recipes that use the flag-only form.
+   - **Declare verifier fixture inputs when generic values are not enough**: if the command needs realistic positional values or required flags to pass the verifier's happy path, add `Annotations: map[string]string{"pp:happy-args": "<item>=example-id;--query=example"}` or assign a whole initialized `cmd.Annotations` map after construction. The verifier consumes semicolon-separated tokens in order: `<label>=value` tokens overlay synthesized positional args, and `--flag=value` tokens overlay or add flag/value pairs. Commands without the annotation keep the generic synthesized inputs.
 9. **Side-effect commands stay quiet under verify**: Any hand-written command that performs a visible side effect (opens a browser tab, sends a notification, plays audio, dials out to an OS handler) MUST follow both halves of the convention:
    - **Print by default; opt in to the action.** The default behavior prints what would happen (`would launch: <url>`); a flag like `--launch` / `--send` / `--play` is required to actually do it. food52's `open` command is the reference shape — see `internal/cli/open.go` after retro #337.
    - **Short-circuit when `cliutil.IsVerifyEnv()` returns true.** The Printing Press verifier sets `PRINTING_PRESS_VERIFY=1` in every mock-mode subprocess; commands that ignore it can spam the user's environment during a verify pass even with the print-by-default flag pattern. The helper is generated into every CLI's `internal/cliutil/verifyenv.go`. Pattern:
@@ -2089,7 +2999,135 @@ After building each command in Priority 1 and Priority 2, verify these 10 princi
      }
      ```
    This is defense-in-depth: the verifier also runs a heuristic side-effect classifier, but it can miss commands whose `--help` text and source don't match the heuristics. The env-var check is the floor.
+   - **Long-running commands curtail work under live-dogfood.** Any hand-written command whose happy path is an expensive network operation (full sync loops, content crawlers, bulk archive walks) MUST check `cliutil.IsDogfoodEnv()` and curtail work to fit inside the matrix's flat 30s per-command timeout. `cli-printing-press dogfood --live` sets `PRINTING_PRESS_DOGFOOD=1` in every subprocess. Pattern:
+     ```go
+     if cliutil.IsDogfoodEnv() {
+         return crawl(ctx, opts.WithMaxPages(1))
+     }
+     ```
+     Distinct from `IsVerifyEnv`: dogfood is a real-API matrix, so curtail work (paginate once, smaller `--limit`), never substitute mock data for real calls.
 10. **Per-source rate limiting**: any hand-written client in a sibling internal package (`internal/source/<name>/`, `internal/recipes/`, `internal/phgraphql/`, etc. — anything not generator-emitted) that makes outbound HTTP calls MUST use `cliutil.AdaptiveLimiter` and surface `*cliutil.RateLimitError` when 429 retries are exhausted. Empty-on-throttle is indistinguishable from "no data exists" and silently corrupts downstream queries. Read [references/per-source-rate-limiting.md](references/per-source-rate-limiting.md) when authoring a sibling client. Enforced at generation time by dogfood's `source_client_check`.
+11. **Parallel-fetch partial failures**: any command that fans out N API calls and computes an aggregate (averages, rollups, comparisons, cross-source merges, digest summaries) MUST preserve each fetch error through the result channel and exclude error-tagged entries from totals and denominators. Failed fetches may still appear in the response so the caller can see the gap, but they must not become zero-valued phantom rows that dilute averages or counts. Surface the partial failure explicitly with:
+   - a stderr warning that names the failed count and the actual aggregation denominator, for example `warning: 2 of 10 fetches failed; averages computed over the remaining 8 items`
+   - a `fetch_failures` field in the JSON response envelope listing the failed entries and error messages
+
+Silently averaging phantom zeros is worse than reporting a partial result.
+12. **Scan-and-filter caps**: any hand-written transcendence command that scans
+    a paginated or otherwise unsorted endpoint, filters locally, and then keeps
+    matching rows MUST bound scan effort separately from output size. This is the
+    "list, filter locally, fan out to detail" shape: the API cannot filter on the
+    dimension the command needs, so the command pages through broad results and
+    applies the real predicate in Go. `--limit` is not enough because it bounds
+    matches kept, not records scanned.
+
+Required elements for every scan-and-filter command:
+
+1. **`--max-scan-pages int`**, or a unit-specific equivalent such as
+   `--max-scan-batches` / `--max-scan-records`, with a conservative default.
+   Five pages is a reasonable starting point for typical paginated APIs
+   (~250 records at 50/page). Lower it under `cliutil.IsDogfoodEnv()` when the
+   happy path would otherwise risk the live-dogfood 30s timeout.
+2. **`scanned_<unit>` in the JSON envelope**, for example `scanned_orders` or
+   `scanned_issues`, so downstream agents can tell whether an empty result
+   examined 20 records or 2,000.
+3. **`note` in zero-match JSON output**, explaining that the scan cap was hit
+   without finding a match and naming the flag that widens the search.
+4. **Clear separation between output and scan caps**: `--limit` controls how
+   many matches are returned; `--max-scan-pages` controls how many list pages
+   or records the command is allowed to examine.
+
+Use this pattern when the endpoint ordering is unrelated to the local predicate:
+search-by-property over relevance-ranked search results, issues by a weakly
+server-filtered custom field, pull requests by reviewer from an endpoint with
+no reviewer filter, rental orders by date from a broad order list, and similar
+cases.
+
+```go
+type scanFilterView struct {
+	Items         []yourEntryType `json:"items"`
+	ScannedItems  int             `json:"scanned_items"`
+	MaxScanPages  int             `json:"max_scan_pages"`
+	Note          string          `json:"note,omitempty"`
+}
+
+func newScanFilterCmd(flags *rootFlags) *cobra.Command {
+	var limit int
+	var maxScanPages int
+	var status string
+	cmd := &cobra.Command{
+		Use:   "find-by-status",
+		Short: "Find matching items by scanning the list endpoint",
+		Annotations: map[string]string{
+			"mcp:read-only": "true",
+		},
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if len(args) == 0 && cmd.Flags().NFlag() == 0 {
+				return cmd.Help()
+			}
+			if dryRunOK(flags) {
+				fmt.Fprintf(cmd.OutOrStdout(), "would scan up to %d pages for matching items\n", maxScanPages)
+				return nil
+			}
+			if status == "" {
+				_ = cmd.Usage()
+				return usageErr(fmt.Errorf("--status is required"))
+			}
+			if cliutil.IsDogfoodEnv() && maxScanPages > 1 {
+				maxScanPages = 1
+			}
+			c, err := flags.newClient()
+			if err != nil {
+				return err
+			}
+			var matches []yourEntryType
+			scanned := 0
+			scanCapHit := true
+			for page := 1; page <= maxScanPages && len(matches) < limit; page++ {
+				data, err := c.Get("/api/v1/items", map[string]string{
+					"page":     strconv.Itoa(page),
+					"pageSize": "50",
+				})
+				if err != nil {
+					return fmt.Errorf("fetching items page %d: %w", page, err)
+				}
+				items, err := parseItems(data)
+				if err != nil {
+					return fmt.Errorf("parsing items page %d: %w", page, err)
+				}
+				for _, item := range items {
+					scanned++
+					if item.Status != status {
+						continue
+					}
+					matches = append(matches, item)
+					if len(matches) >= limit {
+						break
+					}
+				}
+				if len(items) == 0 {
+					scanCapHit = false
+					break
+				}
+			}
+			view := scanFilterView{
+				Items:         matches,
+				ScannedItems:  scanned,
+				MaxScanPages:  maxScanPages,
+			}
+			if len(matches) == 0 && scanCapHit {
+				view.Note = fmt.Sprintf("scanned %d items across up to %d pages without finding status %q; raise --max-scan-pages to widen the search", scanned, maxScanPages, status)
+			}
+			enc := json.NewEncoder(cmd.OutOrStdout())
+			enc.SetIndent("", "  ")
+			return enc.Encode(view)
+		},
+	}
+	cmd.Flags().IntVar(&limit, "limit", 10, "maximum matching items to return")
+	cmd.Flags().IntVar(&maxScanPages, "max-scan-pages", 5, "maximum list pages to scan before returning partial or empty results")
+	cmd.Flags().StringVar(&status, "status", "", "status to match")
+	return cmd
+}
+```
 
 #### Verify-friendly RunE template
 
@@ -2097,17 +3135,41 @@ Use this shape for every hand-written transcendence command. The generator emits
 
 ```go
 RunE: func(cmd *cobra.Command, args []string) error {
-    if len(args) == 0 {
+    if len(args) == 0 && cmd.Flags().NFlag() == 0 {
         return cmd.Help()
     }
     if dryRunOK(flags) {
         return nil
     }
+    if <required input missing> {
+        _ = cmd.Usage()
+        return usageErr(fmt.Errorf("<flag-or-arg> is required"))
+    }
     // ... real work ...
 }
 ```
 
-Why both checks: the `len(args) == 0` branch handles `<cli> mycommand --help` invocations gracefully; the `dryRunOK` branch handles verify's `<cli> mycommand <fixture> --dry-run` probes. Spec-derived commands generated by the Printing Press already follow this pattern -- this rule keeps hand-written novel-feature commands consistent with them.
+Why each branch exists: the `len(args) == 0 && cmd.Flags().NFlag() == 0` branch handles an interactive `<cli> mycommand` help-only invocation without treating help as an error. The `dryRunOK` branch handles verify's `<cli> mycommand <fixture> --dry-run` probes before network or filesystem IO. The required-input branch handles non-help invocations where a mode or output flag is present (`--no-input`, `--agent`, `--json`) but the required ID, query, path, or other command input is still missing. Missing required input must print usage and return `usageErr(...)` so callers get exit code 2 instead of a silent rc=0 skip.
+
+Multi-positional commands (N >= 2 required args) must use a two-check shape so only the bare help probe returns exit 0:
+
+```go
+if len(args) == 0 && cmd.Flags().NFlag() == 0 {
+	return cmd.Help() // bare invocation help probe
+}
+if len(args) < N {
+	_ = cmd.Usage()
+	return usageErr(fmt.Errorf("missing required positional argument"))
+}
+```
+
+This preserves verify-friendly help behavior for 0 args while making partial positional input (`1..N-1`) fail with exit 2 in dogfood `error_path`. Single-positional commands can keep the single required-input check. If a multi-positional command supports `--dry-run`, place its `dryRunOK(flags)` branch after the `len(args) < N` gate (once all N positionals are present), so the dry-run probe still short-circuits.
+
+Do not collapse the first and third branches into `if len(args) == 0 || <flag empty> { return cmd.Help() }`. `cmd.Help()` returns `nil`, so agents and scripts cannot distinguish "help was requested" from "the command skipped required work."
+
+For commands with no required inputs, omit the `usageErr(...)` branch entirely and keep the help-only plus dry-run branches.
+
+If the command reads a file or directory (`os.ReadFile`, `os.ReadDir`, `os.Stat`, `os.Open`, `os.OpenFile`, `os.Lstat`, `filepath.Walk`, `filepath.WalkDir`, or any other filesystem access), the read MUST come after `dryRunOK()`, not before. Filesystem reads before `dryRunOK()` cause `validate-narrative --full-examples` to fail with a missing-file error rather than a clean dry-run exit 0.
 
 ### Phase 3 delegation: require feature-level acceptance
 
@@ -2148,7 +3210,7 @@ If any of the 3 fail, there's a systemic issue. Fix it across all commands befor
 
 After passing the Priority 1 Review Gate, update the lock heartbeat:
 ```bash
-printing-press lock update --cli <api>-pp-cli --phase build-p1
+cli-printing-press lock update --cli <api>-pp-cli --phase build-p1
 ```
 
 Get Priority 0 and 1 working first (the foundation and absorbed features), pass the review gate, then build Priority 2 (transcendence), then verify.
@@ -2167,16 +3229,48 @@ Include:
 
 **MANDATORY. Do NOT proceed to Phase 4 until this gate passes.**
 
-Before moving to shipcheck, verify the build log against the absorb manifest:
+Before moving to shipcheck, verify the build log against the absorb manifest. Counting alone is not enough: a build that replaces an approved `keywords-data google-ads search-volume --auto-mode` with a self-contained wrapper `keywords volume` keeps the count right while shipping a different command than what Phase 1.5 approved. The gate must verify the **specific approved command path** for each row that declares one.
 
-1. Count the transcendence features in the Phase 1.5 manifest's transcendence table
-2. Count the transcendence commands actually built (present in `internal/cli/` and registered in `root.go`)
-3. If built < manifest count, **STOP**. List the missing features and build them before proceeding
-4. **Test presence for pure-logic novel packages.** Every Go package you created under `internal/` for novel-feature logic (parsers, matchers, scalers, scrapers — anything that isn't command wiring) must have a `_test.go` with at least one table-driven happy-path test per exported function. `printing-press dogfood` surfaces violations as structural issues: pure-logic packages with zero tests fail shipcheck; packages with fewer than 3 test functions are flagged as warnings for Phase 4.85's agentic review. Trivial placeholder tests pass the file-presence check but are the wrong shape — write real assertions or the review catches you.
+**Sub-60 reprint strictness:** If this run is reprinting an existing library CLI whose prior `.printing-press.json` had `scorecard.steinberger.percentage < 60` (`PRIOR_SUB60_REPRINT=true` from Phase 0), partial transcendence implementation is a HOLD by default. The Phase 3 Completion Gate may not use `partial-implementation OK` semantics while any shipping-scope transcendence row is missing. To override, write an explicit `partial_transcendence_override` note in the build log that names each missing row, explains why it is intentionally deferred, and states that the user accepted the sub-60 reprint shipping with partial novel coverage. Without that note, any missing approved transcendence row blocks Phase 4.
+
+1. **Per-row Cobra resolution check.** Read approved command paths from `$RESEARCH_DIR/<stamp>-feat-<api>-pp-cli-absorb-manifest.md`:
+   - Every transcendence row's `Command` value.
+   - Every absorbed row whose `Our Implementation` value starts with `<api>-pp-cli <clean command path>`.
+   - Every absorbed row whose `Our Implementation` value starts with `(behavior in <api>-pp-cli <command path>)`. For these rows, first extract the text between the literal prefix `(behavior in ` and the first closing `)`, producing `<api>-pp-cli <command path>`, then apply the same binary-strip and flag-strip rules to that extracted command text.
+   - Skip rows that start with `(generated endpoint)` because the generator-emitted typed endpoint surface already covers those commands.
+   - Skip rows that start with `(stub)` because the Phase Gate 1.5 stub approval list is their source of truth; stubs are intentionally unresolved implementation placeholders and must not be counted as built commands.
+   - Do not infer command paths from freeform prose. Any absorbed row whose `Our Implementation` value does not start with `<api>-pp-cli <clean command path>`, `(behavior in <api>-pp-cli <command path>)`, `(generated endpoint)`, or `(stub)` is an invalid manifest row; return to Phase 1.5 and normalize it before proceeding.
+
+   For each approved path, including command text extracted from `(behavior in <api>-pp-cli <command path>)` rows, strip any leading binary name, then strip flag tokens and quoted args to get the leaf command path (drop everything from the first `-` token onward; `bottleneck` stays `bottleneck`, `velocity --weeks 4` becomes `velocity`, `compare "LeBron" "Curry"` becomes `compare`, `keywords-data google-ads search-volume --auto-mode` becomes `keywords-data google-ads search-volume`). Then run:
+   ```bash
+   ./<api>-pp-cli <leaf path> --help
+   ```
+   Assert (a) exit code 0 AND (b) the help output's `Usage:` spec line is `<binary> <leaf path> [flags]` — i.e., the line **immediately before** ` [flags]` is the full leaf path you requested. Cobra falls through to the parent's help when a subcommand is unknown — same exit 0, but the Usage spec line is `<binary> <parent> [command]` instead of `<binary> <parent> <leaf> [flags]`. The grep-able signal is `<leaf> [flags]` for a real command vs `[command]` for a parent fall-through; the leaf appearing only under `Available Commands:` is also a fall-through.
+2. **HALT on any miss.** If any approved row fails (a) or (b), STOP and name the manifest section plus row number or source line in the miss message, e.g. `Absorbed row 3: timeline did not resolve as a Cobra command`. Either build the approved command path now, or return to Phase 1.5 with a revised manifest for explicit re-approval per the existing "no mid-build downgrade" rule. Do not invent a wrapper command and silently update the manifest. Do not classify the feature as "documentation-only" because integration touches many files.
+3. **Deterministic backstop.** After the per-row walk, run the same machine-checked equivalent so a manifest-vs-`research.json` drift cannot mask a miss:
+   ```bash
+   cli-printing-press dogfood --dir "$CLI_WORK_DIR" --research-dir "$API_RUN_DIR" --json \
+     | jq -e '.novel_features_check | .found == .planned and (.missing // []) == [] and (.skipped // false) == false'
+   ```
+   The `novel_features_check` block reports planned/found/missing against `research.json`'s `novel_features`; an exit-0 here plus a clean per-row walk means both sources agree the build matches Phase 1.5 approval. **`skipped: true` is a HALT, not a pass at this gate.** Dogfood marks the check skipped only when `--research-dir` is missing or `research.json` has no `novel_features` key — both conditions mean the gate has no source of truth to verify against, which is exactly the silent-bypass path the gate was designed to prevent. If you reach this gate with no `novel_features` in `research.json` but the absorb manifest lists transcendence rows, re-derive `research.json` from the manifest (per Step 1.5e) before re-running. If `dogfood` reports missing features that the manifest still lists, either `research.json` was edited mid-build (re-derive it from the manifest) or the build is genuinely incomplete (return to step 1).
+4. **Test presence for pure-logic novel packages.** Every Go package you created under `internal/` for novel-feature logic (parsers, matchers, scalers, scrapers — anything that isn't command wiring) must have a `_test.go` with at least one table-driven happy-path test per exported function. `cli-printing-press dogfood` surfaces violations as structural issues: pure-logic packages with zero tests fail shipcheck; packages with fewer than 3 test functions are flagged as warnings for Phase 4.85's agentic review. Trivial placeholder tests pass the file-presence check but are the wrong shape — write real assertions or the review catches you.
+
+The check is structural — no judgment about whether each command does "enough." Behavioral correctness remains dogfood's and scorecard's job in Phase 4.
 
 The generator handles Priority 0 (data layer) and most of Priority 1 (absorbed API endpoints). Priority 2 (transcendence) is always hand-built — the generator does not produce these. If you skip Priority 2, the CLI ships without the features that differentiate it from every other tool.
 
 **Starter templates for novel commands.** Cobra wiring is mechanical and consistent across novel features; the actual feature work lives in the RunE body. Copy the wrapper below and one of the RunE skeletons that follows, fill in the placeholders from the absorb manifest's transcendence row (`Name`, `Command`, `Description`, `Example`, `WhyItMatters`), and replace the body comments with your implementation. Dogfood, verify, and scorecard still apply to the result — the templates raise the floor without changing what shipcheck checks.
+
+**Helpers already emitted by the generator.** Do not reinvent these helpers in novel command files. They live in `internal/cli/helpers.go` after generation and are available to every hand-written command in package `cli`:
+
+- `printJSONFiltered(w io.Writer, v any, flags *rootFlags) error` - apply `--select`, `--compact`, `--csv`, and `--quiet` while writing JSON from a Go value.
+- `printAutoTable(w io.Writer, items []map[string]any) error` - render JSON-like rows as the generated human table format.
+- `defaultDBPath(name string) string` - resolve the local SQLite database path for `<name>`.
+- `dryRunOK(flags *rootFlags) bool` - detect verify-friendly `--dry-run` short-circuits before network, store, or filesystem work.
+- `filterFields(data json.RawMessage, fields string) json.RawMessage` - apply `--select` to a JSON blob.
+- `compactFields(data json.RawMessage) json.RawMessage` - apply `--compact` to a JSON blob.
+- `isTerminal(w io.Writer) bool` - detect terminal output versus pipes.
+- `wantsHumanTable(w io.Writer, flags *rootFlags) bool` - detect when output should use the generated human table instead of machine JSON.
 
 ```go
 // internal/cli/<command>.go — replace <command> with the kebab leaf
@@ -2192,7 +3286,7 @@ func newXxxCmd(flags *rootFlags) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:     "<leaf-of-Command>",                    // e.g. "stale" for "issues stale"
 		Short:   "<NovelFeature.Description, one line>", // truncate to ~70 chars
-		Long:    "<optional: Description + WhyItMatters>", // omit if Short is enough
+		Long:    "<optional: manifest Long Description, or Description + WhyItMatters>", // omit if Short is enough
 		Example: "  <cli>-pp-cli <Command> --json",       // from NovelFeature.Example
 		Annotations: map[string]string{
 			// Set "mcp:read-only": "true" only when the command does NOT mutate
@@ -2216,6 +3310,11 @@ func newXxxCmd(flags *rootFlags) *cobra.Command {
 //   issuesCmd := newIssuesCmd(flags)
 //   issuesCmd.AddCommand(newIssuesStaleCmd(flags))
 //   rootCmd.AddCommand(issuesCmd)
+// Leaf commands must declare every non-root flag used in their examples.
+// Use kebab-case flag names, such as --max-age instead of --maxAge, so the
+// generated CLI convention and verify-skill flag scanner stay aligned.
+// Do not rely on parent-local flags like --org or --project being accepted by
+// child commands unless the parent registered them with PersistentFlags().
 // Single-word Commands register directly: rootCmd.AddCommand(newXxxCmd(flags)).
 ```
 
@@ -2223,6 +3322,17 @@ func newXxxCmd(flags *rootFlags) *cobra.Command {
 
 ```go
 RunE: func(cmd *cobra.Command, args []string) error {
+	if len(args) == 0 && cmd.Flags().NFlag() == 0 {
+		return cmd.Help()
+	}
+	if dryRunOK(flags) {
+		fmt.Fprintln(cmd.OutOrStdout(), "would fetch <resource>")
+		return nil
+	}
+	if <required input missing> {
+		_ = cmd.Usage()
+		return usageErr(fmt.Errorf("<flag-or-arg> is required"))
+	}
 	c, err := flags.newClient()
 	if err != nil {
 		return err
@@ -2234,6 +3344,8 @@ RunE: func(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("fetching <resource>: %w", err)
 	}
+	// If the API returns CSV (`response_format: csv` in any spec endpoint),
+	// wrap raw client data with cliutil.ParseCSV(data) before embedding it in a JSON envelope.
 	// Parse data into your feature's view. Use cliutil.CleanText for any
 	// text extracted from HTML or schema.org JSON-LD; re-implementing
 	// HTML-entity unescape inline is the &#39; bug class.
@@ -2248,7 +3360,104 @@ RunE: func(cmd *cobra.Command, args []string) error {
 },
 ```
 
+**RunE skeleton — parallel-fetch aggregation shape** (live fan-out with partial-failure accounting):
+
+Use this shape when a novel command fetches multiple items concurrently and computes a rollup, average, comparison, digest, or cross-source merge. The key invariant is that `err` travels with each result until aggregation, and error-tagged entries are excluded from all totals and denominators.
+
+```go
+RunE: func(cmd *cobra.Command, args []string) error {
+	if len(args) == 0 && cmd.Flags().NFlag() == 0 {
+		return cmd.Help()
+	}
+	if dryRunOK(flags) {
+		fmt.Fprintln(cmd.OutOrStdout(), "would fetch <resource> details")
+		return nil
+	}
+	if <required input missing> {
+		_ = cmd.Usage()
+		return usageErr(fmt.Errorf("<flag-or-arg> is required"))
+	}
+	c, err := flags.newClient()
+	if err != nil {
+		return err
+	}
+	type fetchResult struct {
+		idx   int
+		id    string
+		entry yourEntryType
+		err   error
+	}
+	ids := []string{} // derive from args, flags, or an initial list endpoint
+	results := make(chan fetchResult, len(ids))
+	var wg sync.WaitGroup
+	for idx, id := range ids {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			data, err := c.Get("/api/v1/resource/"+url.PathEscape(id), nil)
+			if err != nil {
+				results <- fetchResult{idx: idx, id: id, err: err}
+				return
+			}
+			entry, err := parseEntry(data)
+			results <- fetchResult{idx: idx, id: id, entry: entry, err: err}
+		}()
+	}
+	go func() {
+		wg.Wait()
+		close(results)
+	}()
+	ordered := make([]yourEntryType, len(ids))
+	fetchErrors := make([]error, len(ids))
+	for r := range results {
+		ordered[r.idx] = r.entry
+		if r.err != nil {
+			fetchErrors[r.idx] = r.err
+		}
+	}
+	failures := make([]fetchFailure, 0)        // empty marshals as [] not null
+	successfulItems := make([]yourEntryType, 0) // empty marshals as [] not null
+	var total float64
+	var denominator int
+	for idx, entry := range ordered {
+		if fetchErrors[idx] != nil {
+			failures = append(failures, fetchFailure{
+				ID:    ids[idx],
+				Error: fetchErrors[idx].Error(),
+			})
+			continue
+		}
+		successfulItems = append(successfulItems, entry)
+		total += entry.Metric
+		denominator++
+	}
+	if len(failures) > 0 {
+		fmt.Fprintf(cmd.ErrOrStderr(), "warning: %d of %d fetches failed; averages computed over the remaining %d items\n", len(failures), len(ids), denominator)
+	}
+	view := yourAggregateView{
+		Items:         successfulItems,
+		AverageMetric: safeAverage(total, denominator),
+		FetchFailures: failures, // json tag: `json:"fetch_failures,omitempty"`
+	}
+	if flags.asJSON || (!isTerminal(cmd.OutOrStdout()) && !humanFriendly) {
+		enc := json.NewEncoder(cmd.OutOrStdout())
+		enc.SetIndent("", "  ")
+		return enc.Encode(view)
+	}
+	// Human/terminal output, including a visible partial-failure note.
+	for _, entry := range view.Items {
+		fmt.Fprintf(cmd.OutOrStdout(), "%s\t%.2f\n", entry.Name, entry.Metric)
+	}
+	if len(failures) > 0 {
+		fmt.Fprintf(cmd.OutOrStdout(), "\npartial results: %d of %d fetches failed; average computed over %d items\n", len(failures), len(ids), denominator)
+	}
+	return nil
+},
+```
+
 **RunE skeleton — store-query shape** (offline data via the local SQLite):
+
+The generic `resources` table is keyed by `resource_type`. Flat resources synced from `/<resource>` land as `resource_type='<resource>'`. **Hierarchical resources** synced from `/<parents>/{id}/<resource>` land as `resource_type='<parent>_<resource>'` — e.g., `projects_tasks` (Asana), `repos_issues` / `repos_pulls` (GitHub) — *not* the bare `<resource>` name. A novel feature that filters by the bare name returns zero rows against a real DB. Use `IN (...)` to catch both shapes so the same code works whether the API exposes the resource flat or only parent-scoped.
 
 ```go
 // Declare these alongside the cmd literal, before return cmd:
@@ -2256,6 +3465,17 @@ RunE: func(cmd *cobra.Command, args []string) error {
 //   cmd.Flags().StringVar(&dbPath, "db", "", "Database path")
 
 RunE: func(cmd *cobra.Command, args []string) error {
+	if len(args) == 0 && cmd.Flags().NFlag() == 0 {
+		return cmd.Help()
+	}
+	if dryRunOK(flags) {
+		fmt.Fprintln(cmd.OutOrStdout(), "would query local store")
+		return nil
+	}
+	if <required input missing> {
+		_ = cmd.Usage()
+		return usageErr(fmt.Errorf("<flag-or-arg> is required"))
+	}
 	if dbPath == "" {
 		dbPath = defaultDBPath("<cli>-pp-cli") // replace <cli> with the API slug
 	}
@@ -2264,16 +3484,27 @@ RunE: func(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("opening database: %w", err)
 	}
 	defer db.Close()
-	// Replace the query with your aggregation. The store schema mirrors
-	// the synced resources; `printing-press dogfood --json` shows the
-	// table list. SQL must be SELECT-only; the search/sql gates reject
-	// mutating statements.
-	rows, err := db.DB().QueryContext(cmd.Context(), `SELECT id, data FROM <table> WHERE ...`)
+	// Filter resources by both the flat and hierarchical naming so the
+	// query catches rows synced via /<resource> AND rows synced via
+	// /<parents>/{id}/<children>. Drop the parent-scoped entry if the
+	// API only exposes the resource flat; add a <resource_singular>
+	// entry for APIs that toggle plural/singular casing. SQL must be
+	// SELECT-only; the search/sql gates reject mutating statements.
+	rows, err := db.DB().QueryContext(cmd.Context(), `
+		SELECT id, data FROM resources
+		WHERE resource_type IN ('<resource>', '<parent>_<resource>')
+		  AND ...`)
 	if err != nil {
 		return fmt.Errorf("query: %w", err)
 	}
 	defer rows.Close()
-	var results []yourRowType // scan rows into the slice
+	// Scan each row. id/data on the resources table are NOT NULL so bare
+	// strings are safe; ANY optional field selected via json_extract or
+	// pulled from a typed FTS/upsert table can be NULL — use sql.Null*
+	// scan targets (or COALESCE in the SQL) for those, see the NULL-safe
+	// scans paragraph below.
+	results := make([]yourRowType, 0) // scan rows into this slice; make([]T, 0) keeps empty JSON as [] not null
+	// (loop over rows here: results = append(results, scannedRow))
 	if flags.asJSON || (!isTerminal(cmd.OutOrStdout()) && !humanFriendly) {
 		enc := json.NewEncoder(cmd.OutOrStdout())
 		enc.SetIndent("", "  ")
@@ -2284,11 +3515,55 @@ RunE: func(cmd *cobra.Command, args []string) error {
 },
 ```
 
+For flat-only resources, the typed FTS/upsert tables the generator emits (e.g., `tasks_fts`, `projects`) work too — `SELECT id, data FROM <typed-table>` is the fast path. The `IN (...)` pattern above is the safe default whenever the resource may be hierarchical; `cli-printing-press dogfood --json` shows the actual `resource_type` distribution so you can confirm without running raw SQL.
+
 For features that combine both (cache an API response in the store, or fall through to live when the local store is stale), nest one skeleton inside the other and use the `--data-source auto/local/live` flag pattern from the generated `sync` command.
 
 **Shared helpers available to novel code:** The generator emits `internal/cliutil/` in every CLI. When authoring novel commands, prefer `cliutil.FanoutRun` for any aggregation command (any `--site`/`--source`/`--region` CSV fan-out) and `cliutil.CleanText` for any text extracted from HTML or schema.org JSON-LD. Re-implementing these inline is how recipe-goat's trending silent-drop and `&#39;` entity bugs shipped.
 
+**Hand-coded duration flags MUST use `cliutil.ParseDurationLoose` with a `StringVar` flag (not `DurationVar`).** Go's `time.ParseDuration` rejects the `7d`/`30d`/`1w`/`4w` day/week shorthand that the framework's `sync --since` already accepts, so a `DurationVar` flag fails at runtime on input agents and users reasonably expect. Declare the flag as a `StringVar`, then post-parse with `cliutil.ParseDurationLoose`, which adds `d`/`w` suffix support and otherwise defers to `time.ParseDuration`.
+
+**OData v3 datetime fields MUST be decoded with `cliutil.ParseODataDate`.** OData v3 APIs (Exact Online, Microsoft Dynamics 365 Business Central, Dynamics NAV) return dates as `/Date(1715731200000)/` string literals that no standard parser accepts, so the raw value passes straight through to JSON output and agents cannot parse `created_at`/`due_date`. `cliutil.ParseODataDate(s) (time.Time, bool)` decodes the literal to a UTC `time.Time` and falls back to RFC3339, so callers need not dispatch on format. Re-implementing this inline per command is how the same regex ships inconsistently across OData CLIs.
+
+**Streaming frame normalizers MUST use `cliutil.ExtractNumber` / `cliutil.ExtractInt` rather than raw `float64`/`int64` struct fields.** Real-world WebSocket and streaming JSON feeds (Binance, Coinbase, Kraken, Stripe `*_decimal`, vendor-specific market-data feeds) commonly encode numeric values as JSON-encoded strings (`"price":"1.91"`). `json.Unmarshal` of a JSON string into a `float64` field returns no error and silently leaves the field at 0; combined with NULL-on-zero patterns this discards the entire numeric feed with no error signal anywhere in the pipeline. The helpers accept both shapes (JSON number or JSON-encoded string), report `ok=false` on missing/null/unparseable, and are the canonical extraction path for `map[string]json.RawMessage` decoders. Re-implementing this inline as a `float64` struct field is the silent-aggregation-failure bug class.
+
+**WebSocket-primary APIs SHOULD declare `streaming:` and use the generated live scaffold.** When the API's facts arrive over WebSocket and REST supplies metadata, follow `references/ws-primary-pattern.md`. Do not reimplement dial/subscribe/reconnect, newline-delimited JSON splitting, metadata status polling, or rebase-log writes in novel code unless the API genuinely breaks the generated lifecycle contract.
+
+**NULL-safe SQL scans MUST use `sql.Null*` scan targets (or `COALESCE(<col>, <zero>)` in the query) for any column that can be NULL.** SQLite returns NULL for any absent JSON field selected via `json_extract(data, '$.optional_field')`, for any nullable column in a typed FTS/upsert table the generator emits, and for any field the API omits from a particular response. `database/sql`'s `rows.Scan` into a bare `string`/`int64`/`float64` returns a non-nil error on NULL (`Scan error on column index N: converting NULL to string is unsupported`) — and the surrounding `for rows.Next()` loop typically `continue`s on scan error, silently dropping every row. The result: queries return zero records, no error reaches the caller, the feature looks healthy because the API call succeeded. Use `var v sql.NullString` (or `NullInt64` / `NullFloat64` / `NullTime`) as the scan target and copy `.String` / `.Int64` / `.Float64` / `.Time` into your row struct, accepting the zero value as the missing-field representation. Re-implementing this inline as bare-string scans is the silent-row-drop bug class.
+
+```go
+// Wrong — every NULL column kills the row.
+var name string
+if err := rows.Scan(&id, &name); err != nil { continue }
+
+// Right — NULL becomes the zero value, no row is lost.
+var name sql.NullString
+if err := rows.Scan(&id, &name); err != nil { continue }
+result.Name = name.String
+```
+
+Also right: push the default into the query so the scan target stays bare.
+
+```sql
+SELECT id, COALESCE(json_extract(data, '$.name'), '') FROM resources WHERE ...
+```
+
 **Typed exit-code verification:** If a novel command intentionally returns a non-zero code for a non-error control-flow result, add `cmd.Annotations["pp:typed-exit-codes"] = "0,<code>"` (or the equivalent `Annotations: map[string]string{...}` literal) and document the same command-specific codes in its help. Do not list the global failure palette in command help unless those exits should count as a verify pass for that command; keep general exit-code troubleshooting in README/SKILL prose.
+
+**Dogfood error-path opt-out:** If a real API returns HTTP 200 plus an empty success envelope for unknown IDs, and the command cannot distinguish bad input from a valid empty result without inventing API-specific semantics, annotate the Cobra command with `cmd.Annotations["pp:no-error-path-probe"] = "true"`. Dogfood will still run help, happy-path, and JSON-fidelity checks, but it will skip `error_path` with reason `no-error-path-probe annotation`. Do not add local "empty means not found" heuristics only to satisfy dogfood unless the upstream API contract actually defines that as an error.
+
+<a id="hand-edit-durability"></a>
+**Hand-edits must be regen-mergeable.** `cli-printing-press generate --force` snapshots the existing tree, emits a fresh tree, then runs the same AST-aware reconciliation used by `cli-printing-press regen-merge`. Whole hand-authored files and lost `AddCommand` wiring are preserved automatically; straightforward hand-edits to generated Go files (added declarations, literal drift, body drift) are classified and carried forward when the merge can do so safely. For risky edits, use the standalone `regen-merge` command first when you want a previewable report before applying.
+
+For an extension to be durable, put it in its own file beside the emitted one:
+
+- **Custom config fields:** create `internal/config/<api>_config.go` exporting accessors your novel code reads directly. Do not add fields to the emitted `Config` struct.
+- **Custom request headers** (vendor fingerprint, `X-CSRF`, app-version, signed timestamps): create `internal/client/<api>_headers.go` exporting a func that builds the header map; novel code passes that map to `client.GetWithHeaders` / `PostWithHeaders` when it calls the API. The generated `client.go` has no global request mutator, so this pattern only covers requests made directly from novel code — it does not intercept calls from generated endpoint commands. Do not edit the templated header block in `client.go`.
+- **Custom auth flow** (browser-sniffed sessions, vendor SSO, refresh hooks beyond OAuth2): create `internal/cli/<api>_auth.go` (package `cli`, same as the generated `auth.go`) with the API-specific token capture or refresh, and wire it from a novel command rather than editing the templated `auth.go` constructor functions (`newAuthLoginCmd`, `newAuthSetupCmd`, etc.).
+- **Extended store schema** (typed tables beyond `resources`, vendor JSON columns, full-text indexes): create `internal/store/<api>_migrations.go` running its own `CREATE TABLE ... IF NOT EXISTS` from a lazy init invoked by the novel commands that need it. Do not edit the migration slice in `store.go`.
+- **New novel command:** put the command body in its own `internal/cli/<feature>.go` file — it survives regen as a whole hand-authored unit. The `AddCommand` call wiring it into the Cobra tree still goes in `root.go` per the Phase 3 novel-command skeleton above; `cli-printing-press generate --force` re-injects it via the lost-registration merge path. Use standalone `regen-merge` when you want to inspect the merge report before applying. Spec-declared commands are picked up by the generator's typed-tool path and need no hand-wired `AddCommand` at all.
+
+If an extension genuinely cannot live in a separate file (a `case` branch in a templated method switch, an inline modification to a generated handler with no registry hook), file a generator issue requesting the hook rather than depending on repeated conflict-prone merges. The `AddCommand` case above is covered by the merge path.
 
 **MCP exposure:** The generator emits `internal/mcp/cobratree/`, and the MCP binary mirrors the Cobra tree at startup. When you add, rename, or remove a user-facing Cobra command, the MCP surface follows automatically. Two annotations control how each command appears as an MCP tool:
 
@@ -2305,19 +3580,19 @@ Run one combined verification block via the `shipcheck` umbrella, which runs all
 
 Before running shipcheck, update the lock heartbeat:
 ```bash
-printing-press lock update --cli <api>-pp-cli --phase shipcheck
+cli-printing-press lock update --cli <api>-pp-cli --phase shipcheck
 ```
 
 ```bash
-printing-press shipcheck \
+cli-printing-press shipcheck \
   --dir "$CLI_WORK_DIR" \
   --spec <same-spec> \
   --research-dir "$API_RUN_DIR"
 ```
 
-The umbrella defaults to `verify --fix` (auto-repair common failures), `validate-narrative --strict --full-examples` (README/SKILL narrative command validation), and `scorecard --live-check` (sample novel-feature output against real targets). Use `--no-fix` for a read-only pass, `--no-live-check` to skip live sampling, or `--json` for a structured envelope (suppresses per-leg output for clean piping). Pass `--api-key` / `--env-var` through to verify when live testing needs a credential, or `--strict` to make verify-skill treat likely-false-positive findings as failures.
+The umbrella defaults to `verify --fix` (auto-repair common failures), `validate-narrative --strict --full-examples` (README/SKILL narrative command validation), and `scorecard --live-check` (sample novel-feature output against real targets). When Go sources under `cmd/<cli>/` or `internal/` are newer than `build/stage/bin/<cli>`, `scorecard --live-check` rebuilds the staged binary before sampling and reports the refresh action in human and JSON output. Use `--no-fix` for a read-only pass, `--no-live-check` to skip live sampling, or `--json` for a structured envelope (suppresses per-leg output for clean piping). Pass `--api-key` / `--env-var` through to verify when live testing needs a credential, or `--strict` to make verify-skill treat likely-false-positive findings as failures.
 
-If a leg fails, re-run that one leg standalone (e.g., `printing-press verify-skill --dir <CLI_WORK_DIR>`) for focused iteration; once it passes, re-run the full `shipcheck` umbrella to confirm no regression in the others.
+If a leg fails, re-run that one leg standalone (e.g., `cli-printing-press verify-skill --dir <CLI_WORK_DIR>`) for focused iteration; once it passes, re-run the full `shipcheck` umbrella to confirm no regression in the others.
 
 Interpretation:
 - `dogfood` catches dead flags, dead helpers, invalid paths, example drift, broken data wiring, command tree/config field wiring bugs, stale static MCP surfaces, and novel features that were planned but not built
@@ -2336,7 +3611,7 @@ Fix order (update heartbeat between each fix category to prevent stale lock duri
 6. scorecard-only polish gaps
 
 When category 4 includes narrative examples, rerun
-`printing-press validate-narrative --strict --full-examples` after the fix. The path-only
+`cli-printing-press validate-narrative --strict --full-examples` after the fix. The path-only
 mode is not enough before publishing because it cannot catch bad flags on an otherwise
 valid command.
 
@@ -2350,7 +3625,7 @@ valid command.
 
 After fixing each category, update the heartbeat:
 ```bash
-printing-press lock update --cli <api>-pp-cli --phase shipcheck-fixing
+cli-printing-press lock update --cli <api>-pp-cli --phase shipcheck-fixing
 ```
 
 <!-- CODEX_PHASE4_START -->
@@ -2395,9 +3670,39 @@ Include:
 
 If the final verdict is `hold`, release the lock without promoting to library:
 ```bash
-printing-press lock release --cli <api>-pp-cli
+cli-printing-press lock release --cli <api>-pp-cli
 ```
 The working copy remains in `$CLI_WORK_DIR` for potential future retry. Proceed to Phase 5.6 to archive manuscripts (archiving still happens on hold).
+
+## Phase 4.7: Sync Param-Drop Gate
+
+**Runs after shipcheck, before Phase 4.8.** Generated endpoint commands are param-cardinality-checked mechanically by `cobratree` against the spec — hand-authored sync / transcendence code is not. When the printed CLI's `internal/syncer/` calls `client.Get(<path>, params)` (or `Post`/`Put`/`Patch`/`Delete` with body params) against an endpoint the browser-sniff capture also observed, the gate compares the passed-key set against the captured-key set and flags any call where the capture is a strict superset of the code. Same JSON structure on both sides; only cardinality drift catches the "5 params here, 11 on the live site" failure mode.
+
+Skip the gate when there's no `traffic-analysis.json` for this CLI (catalog wrapper-only entries, vendor-spec CLIs without a browser-sniff phase). Otherwise:
+
+```bash
+printing-press sync-param-drop \
+  --dir "$CLI_WORK_DIR" \
+  --traffic-analysis "$API_RUN_DIR/<api>-traffic-analysis.json" \
+  --strict
+```
+
+The same diff also runs as part of `printing-press dogfood` when you pass `--traffic-analysis`; shipcheck's dogfood leg will surface findings as a WARN-level dogfood issue automatically. Running the standalone subcommand with `--strict` during fix iteration gives a focused exit code without re-running the full dogfood matrix.
+
+### Failure handling
+
+A finding tells the reviewer exactly three things: `<file>:<line>: <METHOD> <path> — dropped params: <key1>, <key2>, ...`. The fix is one of:
+
+1. **Add the missing params to the sync call.** This is the default — the live site captured them, so the printed CLI should too. The dropped keys are almost always required for the response shape the CLI's domain commands expect (Factor75: passing `week, country, locale, subscription, product-sku` returns a generic plan preselect; the live site additionally passes `servings, delivery-option, postcode, preference, customerPlanId, include-future-feedback` to get the user's actual cart). Widening the call is the only fix that resolves the underlying bug.
+2. **Annotate the call with an evidence-backed opt-out.** Add `// pp:sync-params-intentional-subset reason=<why>` on the line immediately above the call when the subset is genuinely intentional — for example, a logged-out endpoint that doesn't accept the session-bound keys, or a deliberately broader query the CLI surfaces as a separate command. The `reason=` text is preserved in the audit trail; the gate counts suppressed sites separately so unbounded growth surfaces as its own smell.
+
+The gate does not introspect response content. A passing gate proves request-key parity with the captured site, not response correctness — Phase 4.85's agentic output review remains the layer that catches "wrong response shape, right request shape."
+
+### Scope boundary
+
+- The gate inspects `internal/syncer/`, `internal/sync/`, `internal/transcend/`, and `internal/transcendence/`. Generated endpoint command files under `internal/cli/` are already covered by `cobratree`'s mechanical endpoint-surface check and are intentionally skipped to avoid double-flagging.
+- Paths the capture never observed (synthetic / transcendence-only endpoints) are not flagged — the gate's question is "does the live site call this path with more keys," and absence of capture is a no-flag state.
+- A call that passes a key the capture never observed (extra-keys-from-code) is not flagged — exotic-mode params the public UI never exercised are out of scope.
 
 ## Phase 4.8: Agentic SKILL Review
 
@@ -2474,7 +3779,7 @@ Use the Agent tool or review directly with this prompt contract:
 
 ## Phase 4.85: Agentic Output Review
 
-**Runs after Phase 4.8, before Phase 5.** Phase 4.8 reviews SKILL.md prose against the shipped CLI. Phase 4.85 reviews the CLI's **actual command output** for plausibility bugs that rule-based checks can't encode (substring-match relevance failures, format bugs, silent source drops, ranking failures). The dispatch prompt, gate logic, and known blind spots live in the `printing-press-output-review` sub-skill — single source of truth shared with the polish skill (which runs the same review during its diagnostic loop).
+**Runs after Phase 4.8, before Phase 4.95.** Phase 4.8 reviews SKILL.md prose against the shipped CLI. Phase 4.85 reviews the CLI's **actual command output** for plausibility bugs that rule-based checks can't encode (substring-match relevance failures, format bugs, silent source drops, ranking failures). The dispatch prompt, gate logic, and known blind spots live in the `printing-press-output-review` sub-skill — single source of truth shared with the polish skill (which runs the same review during its diagnostic loop).
 
 Invoke the sub-skill via the Skill tool:
 
@@ -2488,6 +3793,61 @@ Skill(
 The sub-skill carries `context: fork` so the reviewer agent's diagnostic chatter stays isolated from this generation flow. It returns a `---OUTPUT-REVIEW-RESULT---` block with `status: PASS|WARN|SKIP` and a list of findings.
 
 **Wave B rollout policy:** all findings surface as **warnings**, not blockers. Shipcheck does not fail on Phase 4.85 findings. Log the findings to `manuscripts/<api>/<run>/proofs/phase-4.85-findings.md` and surface them to the user. The user decides case by case whether to fix before shipping. Wave B calibrates false-positive rates before Wave C flips errors to blocking.
+
+## Phase 4.95: Local Code Review
+
+**Runs after Phase 4.85, before Phase 5.** Reviews the printed CLI source for security and correctness issues *before* any PR exists. This is the cheapest fix window in the pipeline — session context is hot, no PR feedback round-trip, no CI comments to chase. Catching issues here means they never become PR-time review comments, which is the wrong fix window for the same problems.
+
+**Target.** The generated CLI and MCP source under `$CLI_WORK_DIR`. In scope: `internal/cli/`, `internal/mcp/` (excluding `cobratree/`), `internal/store/`, `internal/client/`, and `cmd/`. **Out of scope:** `internal/cliutil/` and `internal/mcp/cobratree/` — these are generator-reserved packages. Any finding there is a machine bug; route to retro, do not patch in place.
+
+**Tool selection — pick what's installed, do not name-match.** This phase needs *a* code review, not a specific named command. Survey the review-shaped capabilities the current harness has and pick the best fit. Plausible candidates (names drift across harnesses and plugin sets; treat this as an example list, not a closed set):
+
+- A standalone, working-dir-shaped code review skill that runs against `git diff` and a file list without needing an open PR (e.g., `compound-engineering:ce-code-review`, or similar).
+- Codex's built-in code-review mode (`/codex:review`), which reviews the current diff or target directly.
+- **Direct reviewer-subagent dispatch via the Agent tool.** Spawn `correctness`, `security`, and `maintainability` reviewers (always-on) plus any conditional reviewers warranted by the diff (`api-contract`, `data-migrations`, `reliability`, `performance`) against the in-scope paths. This is the universal fallback: any harness that runs the press skill has the Agent tool, so this path is always available. When dispatching multiple reviewers, a "round" (per the autofix loop below) means re-running *all* spawned reviewers in parallel and merging their findings into a single set before autofix; convergence is the merged set being empty, not any individual reviewer clearing. Do not re-run only the reviewer whose prior findings were touched — every round must include every reviewer so cascading or newly-introduced issues surface.
+
+**Do not invoke Claude Code's `/review` for this phase.** `/review` is PR-shaped — it fetches an open GitHub PR and comments back via `gh`. There is no PR yet at Phase 4.95; the CLI is in a working dir that has not been promoted or published. Reaching for `/review`, bouncing off its shape, and claiming "harness has no code review" is the failure mode this section is written to prevent.
+
+**Autofix policy.** Session context is hot, no PR feedback round-trip, no publish decision in flight. The default is fix. Surfacing to the user is the exception, not the rule. Severity is informational, not gating: a low-severity nil-deref is a 30-second fix; close it the same as a high-severity one.
+
+Fix without asking when:
+- The fix is mechanical (parameterized query, input validation, error wrapping, missing nil check, dead code removal, obvious refactor).
+- The fix is small-scope and behavior-preserving from the README's point of view.
+- There is no plausible competing implementation a reasonable user would prefer over the chosen one.
+
+Surface to the user only when the fix requires a real tradeoff they have to make. Real tradeoffs look like:
+- **Shipping scope shrinks.** Closing the finding cleanly means dropping or significantly degrading a Phase 1.5-approved feature. (Per the Rules section, scope changes route back to Phase 1.5 for re-approval, not a silent shrink here.)
+- **Two materially different valid fixes** with different cost, surface, or dependency profiles, and either is defensible.
+- **The finding implies a Phase 1 research miss** — wrong primary source, wrong auth model, wrong transport — that the agent cannot resolve from in-session context.
+- **The fix re-triggers a long phase** (re-running browser-sniff, regen from spec, etc.).
+
+Treat agent judgment as sufficient here — these categories are distinguishable on inspection. Conservatism is the failure mode, not over-fixing. Drafting an AskUserQuestion because "the user might want to know" is premature; fix the issue and note it in the shipcheck report.
+
+Re-run the review after each autofix round until findings clear. Cap at 3 rounds; if findings persist after round 3, stop and surface — autofix is not converging. Findings in out-of-scope paths (`internal/cliutil/`, `internal/mcp/cobratree/`) file as retro-candidates and do not count toward the convergence check or the 3-round cap; the convergence check applies only to in-scope findings.
+
+**Findings artifact.** Log to `manuscripts/<api>/<run>/proofs/phase-4.95-findings.md`. Skip the per-finding enumeration for fixed-in-place items — the commits and diffs are already the authoritative record. Specifically:
+- **Autofix summary (one line).** "N findings autofixed in-place across M rounds; see commits `<hash>`, `<hash>`, …" Do not enumerate the fixed findings.
+- **Template-shape retro candidates (full detail).** Each finding's file:line, severity, the template path it appears to come from, and why it was filed instead of fixed. Not fixed in-place, so the log is the only record.
+- **Out-of-scope retro candidates (full detail).** Findings in `internal/cliutil/` or `internal/mcp/cobratree/`. Same shape as template-shape entries.
+- **Surface-to-user findings (full detail).** Each finding's file:line, severity, the real-tradeoff category it falls into, and the user's decision once they make one. Pending between turns; the log is what carries them.
+- **Convergence outcome (one line).** "Findings cleared at round N" or "stopped at round 3 with N findings outstanding — see surface-to-user list."
+- **Review path chosen (one line).** Skill name + invocation form, or "direct subagent dispatch" with the persona list. Lets a retro audit tool-selection drift across runs.
+
+The retro skill scans the template-shape and out-of-scope sections for candidates worth filing against the machine.
+
+**Rollout posture.** Unlike Phase 4.85, this phase starts without a warnings-only calibration period. Local code review is a well-understood surface — calibration risk is low. The 3-round autofix cap is the safety net for runaway findings, and the template-shape escape hatch routes systemic issues to retro instead of patching in place.
+
+**Template-shape escape hatch.** Even if a finding lives in an in-scope path, if it appears to come from a generator template (recurs across files in identical shape, sits in a path matched by `internal/generator/templates/`'s emit set, or duplicates a known prior template bug), file as retro-candidate and surface to the user rather than autofixing. Patching the printed CLI hides the machine bug from the next CLI.
+
+**Post-fix simplification (Claude Code only).** After the review + autofix loop converges, the printed CLI has fresh edits from the autofix passes — typically defensive guards, sanitization helpers, and near-duplicate fixes across sibling files. Run `/simplify` scoped to the same in-scope paths to consolidate duplication, remove dead code, and tighten the autofix output before dogfood. `/simplify` is Claude Code-only; skip on Codex and other harnesses (they have no built-in equivalent, and the press skill explicitly avoids custom simplification logic — same rule as the review path above).
+
+**Harness exemption — narrow.** Skipping this phase is legitimate only when the current harness has *neither* a working-dir-shaped review skill *nor* the Agent/subagent capability needed for the direct-dispatch fallback. In practice this is almost never true — any harness that runs the press skill has access to subagents. The following rationales are **not** acceptable for skipping:
+
+- "The first tool name I tried (e.g., `/review`, `code-review:code-review`) didn't fit, so the harness must have no review path." Survey the catalog before claiming exemption; if no skill fits, dispatch reviewer subagents directly via the Agent tool.
+- "There's no PR yet, so code review can't run here." Pre-PR is the *point* of this phase. CI-time PR review is too late.
+- "PR-time CI review will catch it." That defeats the purpose of running review in the cheapest fix window.
+
+If a skip is genuinely warranted, the shipcheck report must state which review-shaped capabilities were searched and why none fit — not just "harness exemption."
 
 ## Phase 5: Dogfood Testing
 
@@ -2507,15 +3867,26 @@ Present via `AskUserQuestion`:
 
 **Recommendation rule:** Full dogfood is the default recommendation. Do not downgrade because of ordinary time cost; a few extra minutes is cheap compared with the generation run and the cost of shipping a broken CLI. Recommend Quick only when the user asks for speed or when full live testing would create unapproved real-world cost/side effects (paid credits, outbound messages, public posts, real orders, irreversible deletes, invites, bookings, charges). Potential mutation is not itself a reason to downgrade: if the user approves a test account/workspace/calendar/project or the CLI can create and clean up disposable fixtures, Full dogfood remains recommended.
 
-There is no skip option when an API key is available or the API requires no
-auth. Phase 5 auto-skips ONLY when the API requires auth AND no key is
-available: display "No API key available — skipping live dogfood testing.
-The CLI was verified against exit codes and dry-run only."
+There is no skip option when an API key is available. Phase 5 auto-skips ONLY
+when the API requires auth AND no key is available: display "No API key
+available — skipping live dogfood testing. The CLI was verified against exit
+codes and dry-run only."
 
 For APIs with `auth.type: none` (or no auth section in the spec), Phase 5
 is MANDATORY — the API is freely testable without any credentials. Do not
 skip testing just because no API key was detected. No-auth APIs are the
 easiest to test and the most embarrassing to ship untested.
+
+**LAN-only no-auth carve-out.** Some no-auth APIs are real hardware or
+private-network APIs that are testable only from the user's LAN (SSDP, mDNS,
+RFC1918/private hostnames, localhost-shaped appliance endpoints). If Phase 5
+cannot reach the hardware because the generation host is not on that LAN, do
+not fabricate an API-key skip and do not hand-author `phase5-acceptance.json`.
+Ask the user whether to hold the CLI or skip live dogfood and promote anyway.
+Only when the user explicitly chooses the skip/promote path, write
+`phase5-skip.json` with `skip_reason:
+"lan-unreachable-from-generation-host"`, `auth_context.type: "none"`, and
+`auth_context.local_network_only: true`.
 
 Do NOT proceed without asking. Do NOT substitute an ad-hoc smoke test. If some commands cannot be exercised because fixture values are missing, classify them as `BLOCKED_FIXTURE` and file/fix the machine gap; do not use that as a reason to recommend Quick.
 
@@ -2526,7 +3897,7 @@ Press-owned live matrix so command enumeration, exit-code capture, JSON parsing,
 and acceptance-marker writing are deterministic:
 
 ```bash
-printing-press dogfood --live \
+cli-printing-press dogfood --live \
   --dir "$CLI_WORK_DIR" \
   --level full \
   --json \
@@ -2543,8 +3914,10 @@ structured report with pass/fail/skipped counts. Save the JSON report to:
 `$PROOFS_DIR/<stamp>-dogfood-results.json`
 
 If the command exits non-zero, inspect the structured failures, fix the CLI, and
-rerun live dogfood. Do not hand-edit `phase5-acceptance.json`; it must come from
-the runner.
+rerun live dogfood. The runner writes `phase5-acceptance.json` on every outcome
+(`status: "pass"` on success, `status: "fail"` with a `failure_summary` block on
+failure), so the Phase 5.6 gate always has a marker to read. Do not hand-edit
+`phase5-acceptance.json`; it must come from the runner.
 
 **Quick check (auto-selected test subset):**
 1. `doctor` — auth valid, API reachable.
@@ -2608,7 +3981,7 @@ keep PII out of the acceptance report from the moment you write it.
 **Gate = FAIL:** fix issues inline (Step 3) and re-run failing tests, up to
 2 fix loops. If the gate still fails after 2 loops, put the CLI on hold:
 ```bash
-printing-press lock release --cli <api>-pp-cli
+cli-printing-press lock release --cli <api>-pp-cli
 ```
 The working copy remains in `$CLI_WORK_DIR`. Proceed to Phase 5.6 to archive
 manuscripts (archiving still happens on hold). Tag the failure reason in the
@@ -2621,7 +3994,7 @@ Write:
 
 `$PROOFS_DIR/<stamp>-fix-<api>-pp-cli-acceptance.md`
 
-For `Gate: PASS`, also write:
+For every outcome (PASS or FAIL), the runner writes:
 
 `$PROOFS_DIR/phase5-acceptance.json`
 
@@ -2642,6 +4015,12 @@ For `Gate: PASS`, also write:
   }
 }
 ```
+
+On `Gate: FAIL` the same path is written with `status: "fail"` and a
+`failure_summary` block grouping failures by category
+(`transport_error` / `http_4xx` / `http_5xx` / `exit_nonzero` /
+`output_mismatch` / `other`) plus the list of contributing commands. The
+Phase 5.6 gate routes this marker to the hold path; do not promote.
 
 For `level: "quick"`, `tests_failed` may be `1` only when the Quick Check
 threshold still passed (`matrix_size: 6`, `tests_passed >= 5`) and the miss was
@@ -2668,27 +4047,73 @@ auth and no credential was available, write:
 }
 ```
 
-Do **not** write a skip marker for `auth.type: none`. No-auth APIs are testable
-and require `phase5-acceptance.json`. Do **not** use missing API key as the skip
-reason for cookie, composed, or session-handshake auth; those require browser
-session proof or a hold decision.
+If Phase 5 is legitimately skipped because a no-auth API is LAN-only and the
+generation host cannot reach the user's LAN hardware, write:
+
+`$PROOFS_DIR/phase5-skip.json`
+
+```json
+{
+  "schema_version": 1,
+  "api_name": "<api>",
+  "run_id": "<run-id>",
+  "status": "skip",
+  "level": "none",
+  "skip_reason": "lan-unreachable-from-generation-host",
+  "auth_context": {
+    "type": "none",
+    "api_key_available": false,
+    "browser_session_available": false,
+    "local_network_only": true
+  }
+}
+```
+
+Do **not** write a skip marker for ordinary `auth.type: none` cloud/public APIs.
+No-auth APIs are testable and require `phase5-acceptance.json` unless they match
+the LAN-only carve-out above. Do **not** use missing API key as the skip reason
+for cookie, composed, or session-handshake auth; those require browser session
+proof or a hold decision.
 
 ## Phase 5.5: Polish
 
 **Always runs.** Invoke the `printing-press-polish` skill to run diagnostics, fix quality issues, and return a delta. The polish skill carries `context: fork` in its frontmatter, so its diagnostic-fix-rediagnose loop runs in a forked context — diagnostic spam, fix iterations, and re-audits stay scoped to the polish session and don't pollute this generation flow. The skill is autonomous — no user input needed. The goal is to ship the best CLI possible, not the fastest.
 
-Invoke via the Skill tool (**foreground** — must complete before promoting):
+Before invoking polish, collect the Phase 3 transcendence gate state and include
+it in the polish input bundle:
+
+```yaml
+phase3_transcendence_rows_planned: <planned>
+phase3_transcendence_rows_built: <built>
+phase3_transcendence_rows_missing:
+  - <manifest row name or command>
+prior_sub60_reprint: <true|false>
+partial_transcendence_override: <none or build-log note path>
+```
+
+Invoke via the Skill tool (**foreground** — must complete before promoting).
+Pass `$CLI_WORK_DIR` as the first line of `args`, followed by the Phase 3 bundle:
 
 ```
 Skill(
   skill: "cli-printing-press:printing-press-polish",
-  args: "$CLI_WORK_DIR"
+  args: "$CLI_WORK_DIR
+phase3_transcendence_rows_planned: <planned>
+phase3_transcendence_rows_built: <built>
+phase3_transcendence_rows_missing:
+  - <manifest row name or command>
+prior_sub60_reprint: <true|false>
+partial_transcendence_override: <none or build-log note path>"
 )
 ```
 
+Polish must treat `prior_sub60_reprint: true` plus any missing row as `ship_recommendation: hold` unless `partial_transcendence_override` names the accepted exception. This keeps mid-pipeline polish from recommending `ship` for a reprint that regressed from the approved manifest before Phase 6 sees the artifact.
+
 **Pass `$CLI_WORK_DIR` (the absolute working-dir path), not the API slug.** Phase 5.5 fires before Phase 5.6 promotes the working CLI to the library, so `$PRESS_LIBRARY/<slug>/` either doesn't exist yet or contains the *prior* run's CLI. If you paraphrase the args to the slug (e.g., `args: "producthunt"`), polish silently operates on the stale library copy.
 
-The polish skill runs the full diagnostic-fix-rediagnose loop including MCP tool quality polish (via `printing-press tools-audit` plus the playbook at `references/tools-polish.md`) and ends its response with a `---POLISH-RESULT---` block containing scorecard/verify/tools-audit before/after, fixes applied, and a ship recommendation.
+**Do not pass `--standalone` in `args`.** Polish's Publish Offer is gated on caller mode (see polish SKILL.md "Publish Offer"): slash-command invocations or Skill-tool invocations carrying `--standalone` run the offer; everything else defers. Phase 5.5 is mid-pipeline — main SKILL owns the publish flow at Phase 6 — so this invocation must remain flag-free. Passing `--standalone` here would re-introduce the failure mode the flag was added to prevent: polish forks the public library, sets global git config, and opens a real PR before the working CLI has been promoted.
+
+The polish skill runs the full diagnostic-fix-rediagnose loop including MCP tool quality polish (via `cli-printing-press tools-audit` plus the playbook at `references/tools-polish.md`) and ends its response with a `---POLISH-RESULT---` block containing scorecard/verify/tools-audit before/after, fixes applied, and a ship recommendation.
 
 Parse the result block. Display the delta to the user:
 
@@ -2701,6 +4126,8 @@ Polish pass:
 ```
 
 **Verdict override:** If the polish skill's `ship_recommendation` is `hold` and the Phase 4 verdict was `ship`, downgrade to `hold`. Release the lock without promoting.
+
+Mid-pipeline polish does **not** run `publish-validate` — that gate is the publish skill's responsibility at Phase 6, where the prerequisites it checks (manifest.printer from `git config github.user`, packaged `tools-manifest.json`, phase5 acceptance proof under `$CLI_DIR/.manuscripts/<run>/proofs/`) are actually satisfied. Polish emits `publish_validate_before: skipped (mid-pipeline)` and `publish_validate_after: skipped (mid-pipeline)` in this invocation; treat those values as informational, never as a hold signal. A first-time user without `git config github.user` set will no longer see their CLI-level run downgraded to `hold` because of a publish prerequisite that the press itself owns satisfying.
 
 Write the polish skill's full response to:
 
@@ -2721,16 +4148,175 @@ Before promoting, verify the Phase 5 JSON gate marker:
 
 If the shipcheck verdict is `ship` **or** `ship-with-gaps`, promote the verified CLI from the working directory to the library. This must happen BEFORE archiving — the CLI in the library is the primary deliverable, and Phase 6's publish path expects `$PRESS_LIBRARY/<api>/` to hold the current run.
 
+For reprints, creator attribution is guarded in two places. The generate command seeds `$CLI_WORK_DIR` from `$PRESS_LIBRARY/<api>/.printing-press.json` when that same-API manifest has a non-empty permanent `creator`, and records the reprinter as the first `contributors[]` entry when they differ from the creator. `lock promote` repeats the same check before swapping: if the staged working tree still carries the operator as creator, it restores the library creator, prepends the staged creator as contributor, and rewrites generated attribution surfaces (Go headers, README byline, SKILL `author:`, NOTICE/LICENSE copyright lines). A promoted reprint must never silently replace the library creator with the operator's git identity.
+
+**Pick the promote path by whether the library already holds hand-authored content.** `lock promote --dir` performs an **atomic swap** of `$CLI_WORK_DIR` over `$PRESS_LIBRARY/<api>` — every file in the library that is not in the fresh tree is gone after the swap. Whole hand-authored files (a separate `internal/syncer/` package, novel-feature command files under `internal/cli/` without the `// Generated by ...` header, hand-built migration files under `internal/store/`) survive a `cli-printing-press regen-merge` pass but are wiped by a bare swap. This is the same preservation dynamic called out under [**Hand-edits must be regen-mergeable.**](#hand-edit-durability); the orchestration here must honor it.
+
+Detect hand-authored content in the existing library:
+
 ```bash
-# Promote verified CLI to library (copies working dir, writes manifest, releases lock)
-printing-press lock promote --cli <api>-pp-cli --dir "$CLI_WORK_DIR"
+LIB_TARGET="$PRESS_LIBRARY/<api>"
+NOVEL_COUNT=0
+if [ -d "$LIB_TARGET" ]; then
+  MANIFEST="$LIB_TARGET/.printing-press.json"
+  HAS_NOVEL_FIELD=false
+  if [ -f "$MANIFEST" ]; then
+    # `novel_features` is the canonical count when the field is present.
+    # Distinguish absent (older manifest predating the field) from explicit zero —
+    # `jq '.novel_features // [] | length'` collapses both to 0, which would
+    # silently route older CLIs through the destructive Path A swap.
+    HAS_NOVEL_FIELD=$(jq 'has("novel_features")' "$MANIFEST" 2>/dev/null || echo false)
+  fi
+  if [ "$HAS_NOVEL_FIELD" = "true" ]; then
+    NOVEL_COUNT=$(jq -r '.novel_features | length' "$MANIFEST" 2>/dev/null || echo 0)
+  else
+    # File probe fallback fires in three cases: manifest missing entirely
+    # (interrupted run, restored-from-backup state, much older CLI), manifest
+    # present but predates the `novel_features` field, and manifest present
+    # but corrupt-enough that `jq has()` errored. Any *.go file under
+    # internal/cli/, internal/syncer/, or internal/store/ whose first 20
+    # lines lack the "Generated by CLI Printing Press" header is hand-authored;
+    # one such file is enough to route through Path B.
+    for dir in "$LIB_TARGET/internal/cli" "$LIB_TARGET/internal/syncer" "$LIB_TARGET/internal/store"; do
+      [ -d "$dir" ] || continue
+      while IFS= read -r f; do
+        if ! head -n 20 "$f" 2>/dev/null | grep -q "Generated by CLI Printing Press"; then
+          NOVEL_COUNT=1
+          break 2
+        fi
+      done < <(find "$dir" -type f -name '*.go')
+    done
+  fi
+fi
+```
+
+The presence check (`jq 'has("novel_features")'`) and the manifest existence check are independent. A library can exist with a hand-authored layer but no manifest at all (interrupted run, restored-from-backup state, much older CLI), so gating the file-probe fallback behind `[ -f manifest ]` would leave that case routing through the destructive Path A swap.
+
+Before choosing Path B for `NOVEL_COUNT > 0`, distinguish preservation
+from from-scratch replacement. A reprint that rebuilt every prior novel into
+`$CLI_WORK_DIR` has no unique library content left to preserve; routing that
+run through `regen-merge --apply` turns ordinary older-generator drift into a
+manual halt and can preserve stale generated framework code.
+
+Run a dry-run report and inspect it against the prior manifest / research
+novel list:
+
+```bash
+REGEN_DRY_RUN_REPORT="$PROOFS_DIR/regen-merge-dry-run-report.json"
+PATH_A_REBUILT_NOVELS=0
+if [ -d "$LIB_TARGET" ] && [ "$NOVEL_COUNT" -gt 0 ]; then
+  if ! cli-printing-press regen-merge "$LIB_TARGET" \
+      --fresh "$CLI_WORK_DIR" --json > "$REGEN_DRY_RUN_REPORT"; then
+    # Real error (input error, missing fresh tree, unreadable library). Release
+    # the upstream pipeline lock and surface the dry-run failure.
+    cli-printing-press lock release --cli <api>-pp-cli
+    echo "regen-merge dry-run failed; see $REGEN_DRY_RUN_REPORT" >&2
+    exit 1
+  fi
+
+  DRY_RUN_BLOCKERS=$(jq '[.files[]? | select(.verdict == "NOVEL"
+    or .verdict == "NOVEL-COLLISION")] | length' "$REGEN_DRY_RUN_REPORT")
+  MISSING_REFERENTS=$(jq '[.lost_registrations[]?
+    | select((.skipped_for_missing_referent // []) | length > 0)] | length' \
+    "$REGEN_DRY_RUN_REPORT")
+  if [ "$DRY_RUN_BLOCKERS" -eq 0 ] && [ "$MISSING_REFERENTS" -eq 0 ]; then
+    PATH_A_REBUILT_NOVELS=1
+  fi
+fi
+```
+
+For a **from-scratch reprint whose fresh tree reimplements all prior novels**,
+prefer Path A. The dry-run should show the prior novel surfaces represented in
+fresh output, usually as `TEMPLATED-CLEAN` or `NEW-TEMPLATE-EMISSION`, and must
+not show any preservation-only novel surface that the fresh tree lacks. Treat
+generated-file `TEMPLATED-BODY-DRIFT`, `TEMPLATED-VALUE-DRIFT`, and stale
+templated-helper `TEMPLATED-WITH-ADDITIONS` as expected overwrite noise in this
+specific branch; Path A intentionally swaps in the fresh tree.
+
+The override is forbidden unless the fresh tree contains the novels:
+
+- If `DRY_RUN_BLOCKERS > 0` because any prior novel file still reports `NOVEL`,
+  the fresh tree did not rebuild
+  that hand-authored file. Use Path B so the file is preserved.
+- If `DRY_RUN_BLOCKERS > 0` because any file reports `NOVEL-COLLISION`, halt
+  through Path B's normal review gate. A collision is not version drift.
+- If `MISSING_REFERENTS > 0` because
+  `lost_registrations[].skipped_for_missing_referent` is non-empty, use
+  Path B and investigate; the fresh tree is missing a command constructor that
+  published wiring still references.
+- If you cannot prove the fresh tree rebuilt every prior novel feature from the
+  manifest / research record, use Path B. A false Path A clobbers hand work; a
+  false Path B only asks for review.
+
+**Path A — first print, no hand-authored content, or from-scratch reprint with all novels rebuilt (`! -d "$LIB_TARGET"` or `NOVEL_COUNT == 0` or the guarded dry-run override above passed).** Use the destructive swap. Fast path; no library content to preserve:
+
+```bash
+# Atomic swap: copies working dir, writes manifest, updates run pointer, releases lock.
+cli-printing-press lock promote --cli <api>-pp-cli --dir "$CLI_WORK_DIR"
 ```
 
 The `promote` command handles the full sequence: stages the working directory, atomically swaps it into `$PRESS_LIBRARY/<api>` (slug-keyed), writes the `.printing-press.json` manifest, updates the `CurrentRunPointer`, and releases the lock — all in one step. The `--cli` flag accepts the CLI binary name; the Go code translates to the slug-keyed library path internally.
 
-`ship-with-gaps` is promoted because the verdict means "the CLI is shippable with documented, non-blocking gaps" — the gaps are recorded in the README's `## Known Gaps` block and the user opts in via Phase 6's publish prompt. Treating ship-with-gaps as un-promotable would strand the verified working copy and leave the library on a stale prior run.
+**Path B — reprint over a library with hand-authored content that the fresh tree did not fully rebuild (`-d "$LIB_TARGET"` AND `NOVEL_COUNT > 0` AND the guarded Path A override did not pass).** Use `regen-merge` to fold the fresh tree into the live library before promotion. `regen-merge` classifies every Go file under `internal/` and `cmd/` against the fresh tree, overwrites safely-templated files, re-injects `AddCommand` calls in `root.go` and resource-parents that the fresh tree lacks, and leaves files with hand-edited additions (`TEMPLATED-WITH-ADDITIONS`) untouched for human review. `--apply` writes via stage-and-swap-with-recovery, so partial failure can never lose data.
 
-If the shipcheck verdict is `hold`, the lock was already released in Phase 4. Do NOT promote. The working copy stays in `$CLI_WORK_DIR` and is not copied to the library.
+`regen-merge --apply` exits 0 even when it leaves `TEMPLATED-WITH-ADDITIONS` files (the human-review verdicts are reported, not raised as errors). The halt condition must be checked explicitly against the report — capture `--json` and inspect the verdict counts:
+
+```bash
+REGEN_REPORT="$PROOFS_DIR/regen-merge-report.json"
+if ! cli-printing-press regen-merge "$LIB_TARGET" \
+    --fresh "$CLI_WORK_DIR" --apply --json > "$REGEN_REPORT"; then
+  # Real error (input error, apply failure). Release the lock — it was
+  # acquired upstream by the press pipeline; regen-merge does not own it —
+  # and surface the failure to the user.
+  cli-printing-press lock release --cli <api>-pp-cli
+  echo "regen-merge --apply failed; see $REGEN_REPORT" >&2
+  exit 1
+fi
+
+# Halt on review-required verdicts before promoting. regen-merge exits 0
+# in these cases; the JSON report is the source of truth.
+NEEDS_REVIEW=$(jq '[.files[] | select(.verdict == "TEMPLATED-WITH-ADDITIONS"
+  or .verdict == "TEMPLATED-BODY-DRIFT"
+  or .verdict == "TEMPLATED-VALUE-DRIFT"
+  or .verdict == "NOVEL-COLLISION")] | length' "$REGEN_REPORT")
+if [ "$NEEDS_REVIEW" -gt 0 ]; then
+  # Release the lock so the next reprint of this CLI is not blocked until
+  # timeout. lock promote would have released it; the halt path must too.
+  cli-printing-press lock release --cli <api>-pp-cli
+  echo "regen-merge flagged $NEEDS_REVIEW file(s) for human review. " \
+       "Inspect $REGEN_REPORT, resolve inline hand-edits, then re-run." >&2
+  exit 1
+fi
+```
+
+After `regen-merge` succeeds with no review-required verdicts, the live library directory is the new run. Do **not** then call `lock promote --dir "$CLI_WORK_DIR"` — that would atomically swap the working dir over the just-merged library and undo the preservation. Promote in place: point `lock promote --dir` at the library itself so the manifest write, run-pointer update, and lock release still run. Two extra steps are required compared to Path A:
+
+1. Copy the current run's PII-polish ledger into `$LIB_TARGET` before promote. `lock promote --dir` internally runs `validatePIIGateForPromote` against the target directory, which reads `$LIB_TARGET/.printing-press-pii-polish.json`. After `regen-merge --apply` the generator-emitted Go files have fresh line numbers, so the prior reprint's ledger (still sitting in `$LIB_TARGET` from the last atomic swap) has stale `{file, line, kind, span}` identity keys for those files and previously-accepted findings re-surface as pending — the gate fails before the swap and the lock stays held. Bringing the current run's ledger over fixes the identity match for generator-emitted files; hand-authored files with new findings still surface correctly as pending.
+2. Guard the promote with an explicit lock-release on failure. Unlike Path A, where a promote-gate failure simply leaves the working dir alone, a Path B failure leaves the lock held on the live library because the gate fires before the swap and before `ReleaseLock`. Mirror the lock-release guards from the regen-merge error branches above.
+
+```bash
+if [ -f "$CLI_WORK_DIR/.printing-press-pii-polish.json" ]; then
+  cp "$CLI_WORK_DIR/.printing-press-pii-polish.json" "$LIB_TARGET/.printing-press-pii-polish.json"
+else
+  # Current run produced no PII findings (clean API or polish skipped).
+  # Remove the stale prior-reprint ledger so the gate sees a clean state
+  # — otherwise the old identity keys would replay against freshly
+  # line-shifted generator files and surface false-positive pendings.
+  rm -f "$LIB_TARGET/.printing-press-pii-polish.json"
+fi
+cli-printing-press lock promote --cli <api>-pp-cli --dir "$LIB_TARGET" || {
+  cli-printing-press lock release --cli <api>-pp-cli
+  echo "lock promote failed for $LIB_TARGET; lock released. " \
+       "Inspect the PII gate output above and resolve before re-running." >&2
+  exit 1
+}
+```
+
+`TEMPLATED-WITH-ADDITIONS` and the other review verdicts represent inline hand-edits to generator-emitted files that need human review (see [**Hand-edits must be regen-mergeable.**](#hand-edit-durability) for the separate-file pattern that avoids this in future). The dry-run report (omit `--apply`) is the right tool for inspection once the halt path fires.
+
+`ship-with-gaps` is promoted (on either path) because the verdict means "the CLI is shippable with documented, non-blocking gaps" — the gaps are recorded in the README's `## Known Gaps` block and the user opts in via Phase 6's publish prompt. Treating ship-with-gaps as un-promotable would strand the verified working copy and leave the library on a stale prior run.
+
+If the shipcheck verdict is `hold`, the lock was already released in Phase 4. Do NOT promote on either path. The working copy stays in `$CLI_WORK_DIR` and is not copied to the library.
 
 ### Archive Manuscripts
 
@@ -2752,8 +4338,10 @@ cp -f "$API_RUN_DIR/research.json" "$PRESS_MANUSCRIPTS/$API_SLUG/$RUN_ID/researc
 cp -r "$PROOFS_DIR" "$PRESS_MANUSCRIPTS/$API_SLUG/$RUN_ID/proofs" 2>/dev/null || true
 
 # Archive discovery artifacts (browser-sniff captures, URL lists, traffic analysis, browser-sniff report).
-# Remove session state before archiving — contains authentication cookies/tokens.
-rm -f "$DISCOVERY_DIR/session-state.json"
+# Session state lives outside $DISCOVERY_DIR (see Run Initialization), so the
+# archive cannot pick it up. The legacy rm is a no-op safety net for an
+# in-flight $DISCOVERY_DIR carried over from a pre-isolation run.
+rm -f "$DISCOVERY_DIR/session-state.json" 2>/dev/null || true
 
 # Strip response bodies from HAR before archiving to control size.
 if [ -d "$DISCOVERY_DIR" ]; then
@@ -2764,6 +4352,11 @@ if [ -d "$DISCOVERY_DIR" ]; then
   done
   cp -r "$DISCOVERY_DIR" "$PRESS_MANUSCRIPTS/$API_SLUG/$RUN_ID/discovery" 2>/dev/null || true
 fi
+
+# Wipe live-auth scratch dir now that the run is archived. The directory lives
+# under ${TMPDIR:-/tmp}, so OS-level tmp reaping is the long-tail fallback, but
+# we clean explicitly so back-to-back runs do not accumulate session state.
+rm -rf "$SESSION_DIR" 2>/dev/null || true
 ```
 
 **MANDATORY: After archiving, you MUST proceed to Phase 6 below. Do not print a summary and stop. Do not treat archiving as the end of the run. The run ends when the user has been asked about next steps via the ship-path or hold-path menu.**
@@ -2878,9 +4471,11 @@ If the shipcheck report contains a `## Known Gaps` block, prepend: "Note: shipch
 
 ### If "Publish now"
 
-Invoke `/printing-press publish <api>`. The publish skill handles everything from there.
+Invoke `/printing-press-publish <api>`. The publish skill handles everything from there — fork, branch, manifest checks, `cli-skills/pp-<api-slug>/SKILL.md` regen, push, and PR creation.
 
-**After publish returns success**, offer retro as a soft tail. This is where retro lives on the ship-path — it has no business being a peer of publish on the headline menu, but a post-publish optional offer lets users compound learnings without forcing the choice up front. Retro at this point sees the publish step as part of the session it analyzes.
+**Do not improvise the publish flow.** Even though the publish skill itself runs `gh repo fork`, `git push`, and `gh pr create --repo mvanhorn/printing-press-library …` internally, running those commands by hand from this phase skips the preflight checks (printer sentinel validation, manifest shape, vendor-spec PII scope, govulncheck on the changed module) and the public library's own `AGENTS.md` requirements that the skill mirrors. The CWD here is `cli-printing-press`, so the public library's `AGENTS.md` is not loaded — the skill is the only entry point that brings those rules into context. If the publish skill fails, fix the underlying issue (or report it as a machine bug); do not bypass it. See [`AGENTS.md`](AGENTS.md) "Publishing to the Public Library" for the full rule.
+
+**After publish returns success**, offer retro as a soft tail — **unless a retro proof already exists for this run** (`ls "$PRESS_MANUSCRIPTS/$API_SLUG/$RUN_ID/proofs/"*-retro-*.md` matches, the on-disk artifact `/printing-press-retro` writes when it runs), in which case skip the offer and end normally. Anchor the skip on that file rather than memory — it survives a context-window roll or a mid-session resume, so the decision is the same whether or not the earlier retro is still in context. The publish skill drives its PR to stable green and hands back without offering anything itself; this tail is the only place the ship-path offers retro. It has no business being a peer of publish on the headline menu, but a post-publish optional offer lets users compound learnings without forcing the choice up front. Retro at this point sees the publish step as part of the session it analyzes.
 
 Present via `AskUserQuestion`:
 
@@ -2897,7 +4492,7 @@ Invoke `/printing-press-polish <api>`. The polish skill runs another diagnostic-
 
 ### If "Done for now"
 
-End normally. The CLI is in `$PRESS_LIBRARY/<api>` and the user can run `/printing-press publish`, `/printing-press-polish`, or `/printing-press-retro` later.
+End normally. The CLI is in `$PRESS_LIBRARY/<api>` and the user can run `/printing-press-publish`, `/printing-press-polish`, or `/printing-press-retro` later.
 
 ### Hold-path menu
 
@@ -2928,17 +4523,18 @@ Skill(
 )
 ```
 
-Two reasons for this exact form, both mirroring Phase 5.5:
+Three reasons for this exact form, all mirroring Phase 5.5:
 
 1. **Pass `$CLI_WORK_DIR` (absolute path), not the slug.** Hold runs leave the CLI in the working directory because Phase 5.6 did not promote — `$PRESS_LIBRARY/<slug>/` either does not exist or holds a stale prior run, and a slug-form invocation would polish that stale copy.
-2. **Use the Skill tool (forked context), not the `/printing-press-polish` slash command.** This matches Phase 5.5's invocation pattern — same shape, same expectations. The polish skill's Publish Offer is gated on caller mode (see polish SKILL.md "If Publish now"); when invoked via the Skill tool in forked context, polish defers the post-publish retro tail to the parent. Main SKILL owns the menu on this path.
+2. **Use the Skill tool (forked context), not the `/printing-press-polish` slash command.** This matches Phase 5.5's invocation pattern — same shape, same expectations. Slash-command invocations auto-enable polish's standalone mode (Publish Offer fires); the Skill tool form defers to the parent unless `--standalone` is passed explicitly. Main SKILL owns the menu on this path.
+3. **Do not include `--standalone` in `args`.** The flag is what polish gates its Publish Offer on (see polish SKILL.md "Publish Offer"). On the hold path the CLI has not been promoted; firing the offer would open a public PR for an un-promoted, un-shipped working copy.
 
 After polish returns, parse the result block and act on the new `ship_recommendation`:
 
 - **Polish landed on `ship` or `ship-with-gaps`** — the verdict transitioned out of hold. The working copy is still un-promoted; the library is stale. Run promote, then route to the ship-path menu (above):
 
   ```bash
-  printing-press lock promote --cli <api>-pp-cli --dir "$CLI_WORK_DIR"
+  cli-printing-press lock promote --cli <api>-pp-cli --dir "$CLI_WORK_DIR"
   ```
 
   Then re-enter the ship-path menu using polish's new result block. Skip the Phase 5.6 acceptance-gate JSON check — that gate was already satisfied when this run originally reached Phase 5.6, and polish does not regenerate it.
@@ -2951,9 +4547,9 @@ End normally. The working copy stays in `$CLI_WORK_DIR` for potential future ret
 
 ## Fast Guidance
 
-### When to use `printing-press print`
+### When to use `cli-printing-press print`
 
-Use `printing-press print <api>` only when the user explicitly wants a resumable on-disk pipeline with phase seeds. It is optional.
+Use `cli-printing-press print <api>` only when the user explicitly wants a resumable on-disk pipeline with phase seeds. It is optional.
 
 The fast path for `/printing-press <API>` is:
 - brief

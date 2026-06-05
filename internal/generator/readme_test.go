@@ -165,6 +165,8 @@ func TestReadmeHandlesEmptyButPresentNarrative(t *testing.T) {
 		"empty AuthNarrative should not emit a dangling Authentication header")
 	assert.False(t, strings.Contains(content, "### API-specific"),
 		"empty Troubleshoots should not emit the API-specific subheading")
+	assert.False(t, strings.Contains(content, "## Recipes"),
+		"empty Recipes should not emit the Recipes section")
 	// Falls back to .Description since Headline is empty.
 	assert.True(t, strings.Contains(content, apiSpec.Description) ||
 		strings.Contains(content, "# Emptynarr CLI"),
@@ -306,8 +308,8 @@ func TestReadmeEmitsHermesAndOpenClawInstallSections(t *testing.T) {
 
 	// OpenClaw section: copyable code-fenced agent instruction.
 	assert.Contains(t, content, "## Install for OpenClaw")
-	assert.Contains(t, content, "https://github.com/mvanhorn/printing-press-library/tree/main/cli-skills/pp-hermes-install",
-		"OpenClaw URL must point at the cli-skills directory")
+	assert.Contains(t, content, "npx -y @mvanhorn/printing-press-library install hermes-install --agent openclaw --bin-dir ~/.local/bin",
+		"OpenClaw form must install both the focused skill and binary into runtime-visible locations")
 }
 
 // TestReadmeFallsBackWhenNarrativeAbsent asserts the generic description
@@ -477,6 +479,53 @@ func TestReadmeRendersNarrativeQuickStart(t *testing.T) {
 		"generic numbered steps should be suppressed when narrative quickstart is present")
 }
 
+// TestReadmeRendersNarrativeRecipes asserts the README uses the same
+// narrative.recipes data that already feeds SKILL.md.
+func TestReadmeRendersNarrativeRecipes(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("recipes")
+	outputDir := filepath.Join(t.TempDir(), "recipes-pp-cli")
+	gen := New(apiSpec, outputDir)
+	gen.Narrative = &ReadmeNarrative{
+		Recipes: []Recipe{
+			{
+				Title:       "Inspect stale items",
+				Command:     "recipes-pp-cli items list --stale --json",
+				Explanation: "Find items that need review before exporting a report.",
+			},
+			{
+				Title:       "Export a focused item list",
+				Command:     "recipes-pp-cli items list --json --select id,name,status",
+				Explanation: "Return only the fields an agent needs for follow-up work.",
+			},
+			{
+				Title:   "List item names",
+				Command: "recipes-pp-cli items list --json --select name",
+			},
+		},
+	}
+	require.NoError(t, gen.Generate())
+
+	readme, err := os.ReadFile(filepath.Join(outputDir, "README.md"))
+	require.NoError(t, err)
+	content := string(readme)
+
+	recipesIdx := strings.Index(content, "\n## Recipes\n")
+	require.NotEqual(t, -1, recipesIdx, "Recipes section should render when narrative recipes are present")
+	usageIdx := strings.Index(content[recipesIdx:], "\n## Usage\n")
+	require.NotEqual(t, -1, usageIdx, "Recipes section should appear before Usage")
+	recipesSection := content[recipesIdx : recipesIdx+usageIdx]
+	assert.Contains(t, recipesSection, "### Inspect stale items\n\n```bash\nrecipes-pp-cli items list --stale --json\n```\n\nFind items that need review before exporting a report.",
+		"first recipe should render title, fenced command, and explanation")
+	assert.Contains(t, recipesSection, "### Export a focused item list\n\n```bash\nrecipes-pp-cli items list --json --select id,name,status\n```\n\nReturn only the fields an agent needs for follow-up work.",
+		"second recipe should render title, fenced command, and explanation")
+	assert.Contains(t, recipesSection, "### List item names\n\n```bash\nrecipes-pp-cli items list --json --select name\n```",
+		"recipe without explanation should still render title and fenced command")
+	assert.NotContains(t, recipesSection, "### List item names\n\n```bash\nrecipes-pp-cli items list --json --select name\n```\n\n<",
+		"recipe without explanation should not render placeholder prose")
+}
+
 // TestReadmeAppendsNarrativeTroubleshoots asserts the Troubleshooting
 // section appends API-specific symptom/fix pairs when provided.
 func TestReadmeAppendsNarrativeTroubleshoots(t *testing.T) {
@@ -588,8 +637,15 @@ func TestOutputFormatsUsesRealCommandExample(t *testing.T) {
 	require.NoError(t, err)
 	content := string(readme)
 
-	assert.True(t, strings.Contains(content, "realexample-pp-cli autocomplete get"),
-		"Output Formats should reference a real resource+endpoint pair from the spec")
+	// A single-endpoint non-builtin resource is promoted to a top-level
+	// cobra command, so the actual command path is just the resource name
+	// (no endpoint token). The README must advertise that promoted path
+	// instead of the pre-promotion `autocomplete get` form, which would
+	// otherwise be a phantom command.
+	assert.True(t, strings.Contains(content, "realexample-pp-cli autocomplete"),
+		"Output Formats should reference the real promoted command path from the spec")
+	assert.False(t, strings.Contains(content, "realexample-pp-cli autocomplete get"),
+		"Output Formats should not advertise the pre-promotion path; cobra promotes single-op resources to a leaf")
 	assert.False(t, strings.Contains(content, "realexample-pp-cli autocomplete list"),
 		"Output Formats should not hallucinate a 'list' endpoint that doesn't exist in the spec")
 }

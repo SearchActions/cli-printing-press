@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -38,8 +39,22 @@ const (
 // across the matrix builder, the flag help text, and the test fixtures.
 const reasonDestructiveAtAuth = "destructive-at-auth"
 const reasonMutatingDryRunOnly = "mutating command dry-run only"
+const reasonMutatingErrorPath = "mutating command; error_path would call live API without --dry-run"
+const reasonMutatingRunnableFixture = "blocked-fixture: mutating command requires runnable example"
 const reasonNoLiveSignal = "no live happy/json pass; credential-unavailable skips cannot certify acceptance"
 const reasonUnavailableRunnerCredentials = "unavailable for runner credentials"
+const reasonFileFixtureRequired = "file fixture required"
+const reasonRequiredParamFixture = "blocked-fixture: required API parameter"
+const reasonNoErrorPathProbeAnnotation = "no-error-path-probe annotation"
+
+// dogfoodEnvVar is the env signal every live-dogfood subprocess
+// inherits. Generated commands with a long-running happy path detect
+// this via cliutil.IsDogfoodEnv() and curtail work (paginate once,
+// honor a smaller --limit) so the matrix's per-command timeout
+// doesn't kill an otherwise healthy run.
+const dogfoodEnvVar = "PRINTING_PRESS_DOGFOOD"
+const liveDogfoodAuthTierEnvVar = "PP_AUTH_TIER"
+const liveDogfoodAuthRetryDelay = time.Second
 
 type LiveDogfoodOptions struct {
 	CLIDir              string
@@ -48,6 +63,7 @@ type LiveDogfoodOptions struct {
 	Timeout             time.Duration
 	WriteAcceptancePath string
 	AuthEnv             string
+	AuthTier            string
 	// AllowDestructive re-enables testing of endpoints classified as
 	// destructive-at-auth. Default skips them to prevent runner-credential
 	// rotation.
@@ -85,16 +101,43 @@ type liveDogfoodCommand struct {
 }
 
 type liveDogfoodRun struct {
-	stdout   string
-	stderr   string
-	exitCode int
-	err      error
+	stdout          string
+	stderr          string
+	stdoutTruncated bool
+	exitCode        int
+	err             error
 }
 
 func RunLiveDogfood(opts LiveDogfoodOptions) (*LiveDogfoodReport, error) {
 	if strings.TrimSpace(opts.CLIDir) == "" {
 		return nil, fmt.Errorf("CLIDir is required")
 	}
+	if isDeviceCLIDir(opts.CLIDir) {
+		// Device (BLE) CLIs cannot be auto-driven by the generic live runner:
+		// their actuating commands require an explicit --live flag, a physically
+		// present/awake device, and domain-specific arguments the runner cannot
+		// synthesize. Report a clean "unverified" outcome (manual --live testing
+		// is the real Phase 5 gate for device CLIs) instead of crashing on the
+		// missing agent-context command or failing a meaningless matrix.
+		return &LiveDogfoodReport{
+			Dir:     opts.CLIDir,
+			Level:   opts.Level,
+			Verdict: "unverified-device",
+			Skipped: 1,
+			RanAt:   time.Now().UTC(),
+			Tests: []LiveDogfoodTestResult{{
+				Command: "(device CLI)",
+				Status:  LiveDogfoodStatusSkip,
+				Reason:  "device CLI: live dogfood requires manual --live testing against the physical device",
+			}},
+		}, nil
+	}
+	homeScope, err := scopeLiveDogfoodSubprocessHome(opts.CLIDir, opts.BinaryName)
+	if err != nil {
+		return nil, err
+	}
+	defer homeScope.release()
+
 	level, err := normalizeLiveDogfoodLevel(opts.Level)
 	if err != nil {
 		return nil, err
@@ -135,6 +178,7 @@ func RunLiveDogfood(opts LiveDogfoodOptions) (*LiveDogfoodReport, error) {
 		siblings:         buildSiblingMap(commands),
 		cache:            newCompanionCache(),
 		timeout:          timeout,
+		authTier:         resolveLiveDogfoodAuthTier(opts.AuthTier),
 		allowDestructive: opts.AllowDestructive,
 	}
 
@@ -145,12 +189,220 @@ func RunLiveDogfood(opts LiveDogfoodOptions) (*LiveDogfoodReport, error) {
 	}
 
 	finalizeLiveDogfoodReport(report)
-	if report.Verdict == "PASS" && opts.WriteAcceptancePath != "" {
+	// The Phase 5.6 acceptance gate's contract is "marker from the runner on
+	// every outcome": pass → promote, fail → hold-path, missing → "Phase 5
+	// was skipped or not recorded." Writing only on PASS forced operators to
+	// hand-author the FAIL marker, which the SKILL also forbids. Write on
+	// every terminal verdict; phase5_gate.go already routes status:"fail"
+	// to the hold path.
+	if opts.WriteAcceptancePath != "" {
 		if err := writeLiveDogfoodAcceptance(opts, report); err != nil {
 			return nil, err
 		}
 	}
+	if err := homeScope.syncBack(); err != nil {
+		return report, err
+	}
 	return report, nil
+}
+
+type liveDogfoodHomeScope struct {
+	release  func()
+	syncBack func() error
+}
+
+func noopLiveDogfoodHomeScope() *liveDogfoodHomeScope {
+	return &liveDogfoodHomeScope{
+		release:  func() {},
+		syncBack: func() error { return nil },
+	}
+}
+
+func scopeLiveDogfoodSubprocessHome(cliDir, binaryName string) (*liveDogfoodHomeScope, error) {
+	manifest, err := ReadCLIManifest(cliDir)
+	if err == nil && manifest.IsLocalDatastore() && strings.EqualFold(strings.TrimSpace(manifest.AuthType), "none") {
+		return noopLiveDogfoodHomeScope(), nil
+	}
+	cliName := strings.TrimSpace(manifest.CLIName)
+	if cliName == "" {
+		cliName = strings.TrimSpace(binaryName)
+	}
+	if cliName == "" {
+		cliName = findCLIName(cliDir)
+	}
+	syncConfigBack := strings.EqualFold(strings.TrimSpace(manifest.AuthType), "oauth2_refresh")
+	return scopeSubprocessHomeWithCredentialMirror(cliName, syncConfigBack)
+}
+
+func scopeSubprocessHomeWithCredentialMirror(cliName string, syncConfigBack bool) (*liveDogfoodHomeScope, error) {
+	homeDir, removeHome, err := newScopedConfigHome()
+	if err != nil {
+		return nil, err
+	}
+	mirrors, err := mirrorLiveDogfoodCredentialFiles(homeDir, cliName, syncConfigBack)
+	if err != nil {
+		removeHome()
+		return nil, err
+	}
+	restore := installScopedSubprocessHome(homeDir)
+	return &liveDogfoodHomeScope{
+		release: func() {
+			restore()
+			removeHome()
+		},
+		syncBack: func() error {
+			return syncLiveDogfoodCredentialMirrors(mirrors)
+		},
+	}, nil
+}
+
+type liveDogfoodCredentialMirror struct {
+	src      string
+	dst      string
+	original []byte
+	mode     os.FileMode
+}
+
+func mirrorLiveDogfoodCredentialFiles(scopedHome, cliName string, syncConfigBack bool) ([]liveDogfoodCredentialMirror, error) {
+	cliName = strings.TrimSpace(cliName)
+	if scopedHome == "" || cliName == "" {
+		return nil, nil
+	}
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return nil, nil
+	}
+	paths := []struct {
+		rel      string
+		syncBack bool
+	}{
+		{rel: filepath.Join(".config", cliName, "config.toml"), syncBack: syncConfigBack},
+		{rel: filepath.Join(".config", cliName, "config.json"), syncBack: syncConfigBack},
+		{rel: filepath.Join(".local", "share", cliName, "cookies.json")},
+	}
+	var mirrors []liveDogfoodCredentialMirror
+	for _, path := range paths {
+		src := filepath.Join(home, path.rel)
+		dst := filepath.Join(scopedHome, path.rel)
+		mirror, err := copyLiveDogfoodCredentialFile(src, dst)
+		if err != nil {
+			return nil, err
+		}
+		if path.syncBack && mirror != nil {
+			mirrors = append(mirrors, *mirror)
+		}
+	}
+	return mirrors, nil
+}
+
+func syncLiveDogfoodCredentialMirrors(mirrors []liveDogfoodCredentialMirror) error {
+	for _, mirror := range mirrors {
+		updated, err := os.ReadFile(mirror.dst)
+		if os.IsNotExist(err) {
+			continue
+		}
+		if err != nil {
+			return fmt.Errorf("reading live dogfood credential mirror %s: %w", mirror.dst, err)
+		}
+		if bytes.Equal(updated, mirror.original) {
+			continue
+		}
+		if err := writeLiveDogfoodCredentialFileIfUnchanged(mirror, updated); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func writeLiveDogfoodCredentialFileIfUnchanged(mirror liveDogfoodCredentialMirror, updated []byte) error {
+	dir := filepath.Dir(mirror.src)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return fmt.Errorf("creating live dogfood credential mirror directory for %s: %w", mirror.src, err)
+	}
+	tmp, err := os.CreateTemp(dir, "."+filepath.Base(mirror.src)+".dogfood-sync-*")
+	if err != nil {
+		return fmt.Errorf("creating live dogfood credential sync temp file for %s: %w", mirror.src, err)
+	}
+	tmpName := tmp.Name()
+	cleanup := true
+	defer func() {
+		if cleanup {
+			_ = os.Remove(tmpName)
+		}
+	}()
+	if _, err := tmp.Write(updated); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("writing live dogfood credential sync temp file %s: %w", tmpName, err)
+	}
+	if err := tmp.Chmod(mirror.mode); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("setting live dogfood credential sync temp file mode %s: %w", tmpName, err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("closing live dogfood credential sync temp file %s: %w", tmpName, err)
+	}
+
+	// Best-effort compare-and-swap: generated printed CLIs do not share a file
+	// lock with live dogfood, so a non-cooperating writer can still race after
+	// this final read. The temp-file rename keeps the sync-back atomic and this
+	// last comparison catches operator edits made before live dogfood commits
+	// the rotated credential.
+	current, err := os.ReadFile(mirror.src)
+	if err != nil {
+		return fmt.Errorf("reading operator credential file before sync-back %s: %w", mirror.src, err)
+	}
+	if !bytes.Equal(current, mirror.original) {
+		return fmt.Errorf("refusing to sync refreshed live dogfood credentials to %s: operator config changed during dogfood", mirror.src)
+	}
+	if err := os.Rename(tmpName, mirror.src); err != nil {
+		return fmt.Errorf("writing live dogfood credential file %s: %w", mirror.src, err)
+	}
+	cleanup = false
+	return nil
+}
+
+func writeLiveDogfoodCredentialMirrorFile(dst string, data []byte, mode os.FileMode) error {
+	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+		return fmt.Errorf("creating live dogfood credential mirror directory for %s: %w", dst, err)
+	}
+	if err := os.WriteFile(dst, data, mode); err != nil {
+		return fmt.Errorf("writing live dogfood credential file %s: %w", dst, err)
+	}
+	return nil
+}
+
+func copyLiveDogfoodCredentialFile(src, dst string) (*liveDogfoodCredentialMirror, error) {
+	in, err := os.Open(src)
+	if os.IsNotExist(err) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("opening live dogfood credential file %s: %w", src, err)
+	}
+	defer func() { _ = in.Close() }()
+
+	info, err := in.Stat()
+	if err != nil {
+		return nil, fmt.Errorf("checking live dogfood credential file %s: %w", src, err)
+	}
+	if !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("live dogfood credential file %s is not a regular file", src)
+	}
+
+	data, err := io.ReadAll(in)
+	if err != nil {
+		return nil, fmt.Errorf("reading live dogfood credential file %s: %w", src, err)
+	}
+	mode := info.Mode().Perm()
+	if err := writeLiveDogfoodCredentialMirrorFile(dst, data, mode); err != nil {
+		return nil, err
+	}
+	return &liveDogfoodCredentialMirror{
+		src:      src,
+		dst:      dst,
+		original: data,
+		mode:     mode,
+	}, nil
 }
 
 func liveDogfoodBinaryPath(dir, name string) (string, error) {
@@ -277,6 +529,7 @@ type resolveCtx struct {
 	siblings         map[string][]liveDogfoodCommand
 	cache            *companionCache
 	timeout          time.Duration
+	authTier         string
 	allowDestructive bool
 }
 
@@ -327,6 +580,13 @@ func findListCompanion(candidates []liveDogfoodCommand) *liveDogfoodCommand {
 //   - (nil, true, reason)    — chain broke; caller must skip happy_path + json_fidelity
 //   - (happyArgs, false, "") — no positionals at all; pass-through unchanged
 func resolveCommandPositionals(command liveDogfoodCommand, happyArgs []string, ctx resolveCtx) ([]string, bool, string) {
+	// pp:happy-args already supplies real positional values, so the args are
+	// authoritative — skip placeholder re-resolution, which would otherwise
+	// overwrite them via the list companion or skip the command when no
+	// companion is reachable.
+	if strings.TrimSpace(command.Annotations[happyArgsAnnotation]) != "" {
+		return happyArgs, false, ""
+	}
 	placeholders := extractPositionalPlaceholders(liveDogfoodUsageSuffix(command.Help))
 	if len(placeholders) == 0 {
 		return happyArgs, false, ""
@@ -660,8 +920,32 @@ func runLiveDogfoodCommand(command liveDogfoodCommand, ctx resolveCtx) []LiveDog
 	}
 
 	command.Help = help
+	mutating := liveDogfoodCommandMutates(command)
+	useDryRun := mutating && commandSupportsDryRun(command.Help)
+
+	tierSkip := liveDogfoodRequiresTierSkipReason(command.Annotations, ctx.authTier)
+	if tierSkip != "" {
+		results = append(results,
+			skippedLiveDogfoodResult(commandName, LiveDogfoodTestHappy, tierSkip),
+			skippedLiveDogfoodResult(commandName, LiveDogfoodTestJSON, tierSkip),
+			skippedLiveDogfoodResult(commandName, LiveDogfoodTestError, tierSkip),
+		)
+		if useDryRun {
+			results = append(results, skippedLiveDogfoodResult(commandName, LiveDogfoodTestErrorReal, tierSkip))
+		}
+		return results
+	}
+
 	happyArgs, ok := liveDogfoodHappyArgs(command)
 	if !ok {
+		if mutating {
+			results = append(results,
+				skippedLiveDogfoodResult(commandName, LiveDogfoodTestHappy, reasonMutatingRunnableFixture),
+				skippedLiveDogfoodResult(commandName, LiveDogfoodTestJSON, reasonMutatingRunnableFixture),
+				skippedLiveDogfoodResult(commandName, LiveDogfoodTestError, reasonMutatingRunnableFixture),
+			)
+			return results
+		}
 		results = append(results,
 			failedLiveDogfoodResult(commandName, LiveDogfoodTestHappy, command.Path, "missing runnable example"),
 			skippedLiveDogfoodResult(commandName, LiveDogfoodTestJSON, "missing runnable example"),
@@ -670,16 +954,20 @@ func runLiveDogfoodCommand(command liveDogfoodCommand, ctx resolveCtx) []LiveDog
 		return results
 	}
 
-	mutating := liveDogfoodCommandMutates(command)
-	useDryRun := mutating && commandSupportsDryRun(command.Help)
-
+	fixtureSkip := happyPathFileFixtureSkip(happyArgs, ctx.cliDir)
 	resolvedArgs, resolveSkipped, resolveReason := resolveCommandPositionals(command, happyArgs, ctx)
-	if resolveSkipped {
+	switch {
+	case fixtureSkip != "":
+		results = append(results,
+			skippedLiveDogfoodResult(commandName, LiveDogfoodTestHappy, fixtureSkip),
+			skippedLiveDogfoodResult(commandName, LiveDogfoodTestJSON, fixtureSkip),
+		)
+	case resolveSkipped:
 		results = append(results,
 			skippedLiveDogfoodResult(commandName, LiveDogfoodTestHappy, resolveReason),
 			skippedLiveDogfoodResult(commandName, LiveDogfoodTestJSON, resolveReason),
 		)
-	} else {
+	default:
 		happyArgs = resolvedArgs
 
 		runArgs := happyArgs
@@ -695,17 +983,23 @@ func runLiveDogfoodCommand(command liveDogfoodCommand, ctx resolveCtx) []LiveDog
 		} else if liveDogfoodUnavailableForRunner(happyRun) {
 			happyResult.Status = LiveDogfoodStatusSkip
 			happyResult.Reason = reasonUnavailableRunnerCredentials
+		} else if requiredParamReason := liveDogfoodRequiredParamFixtureReason(happyRun); requiredParamReason != "" {
+			happyResult.Status = LiveDogfoodStatusSkip
+			happyResult.Reason = requiredParamReason
 		}
 		results = append(results, happyResult)
 
-		if commandSupportsJSON(command.Help) {
+		if happyResult.Status == LiveDogfoodStatusSkip &&
+			(happyResult.Reason == reasonUnavailableRunnerCredentials || happyResult.Reason == reasonRequiredParamFixture) {
+			results = append(results, skippedLiveDogfoodResult(commandName, LiveDogfoodTestJSON, happyResult.Reason))
+		} else if commandSupportsJSON(command.Help) {
 			jsonArgs := appendJSONArg(runArgs)
 			jsonRun := runLiveDogfoodProcess(ctx.binaryPath, ctx.cliDir, jsonArgs, ctx.timeout)
 			jsonResult := liveDogfoodResult(commandName, LiveDogfoodTestJSON, jsonArgs, jsonRun)
 			if jsonRun.exitCode == 0 {
-				if !validLiveDogfoodJSONOutput(jsonRun.stdout) {
+				if jsonRun.stdoutTruncated || !validLiveDogfoodJSONOutput(jsonRun.stdout) {
 					jsonResult.Status = LiveDogfoodStatusFail
-					jsonResult.Reason = "invalid JSON"
+					jsonResult.Reason = liveDogfoodInvalidJSONReason(jsonRun, "invalid JSON")
 				} else {
 					jsonResult.Status = LiveDogfoodStatusPass
 					jsonResult.Reason = ""
@@ -713,6 +1007,9 @@ func runLiveDogfoodCommand(command liveDogfoodCommand, ctx resolveCtx) []LiveDog
 			} else if liveDogfoodUnavailableForRunner(jsonRun) {
 				jsonResult.Status = LiveDogfoodStatusSkip
 				jsonResult.Reason = reasonUnavailableRunnerCredentials
+			} else if requiredParamReason := liveDogfoodRequiredParamFixtureReason(jsonRun); requiredParamReason != "" {
+				jsonResult.Status = LiveDogfoodStatusSkip
+				jsonResult.Reason = requiredParamReason
 			}
 			results = append(results, jsonResult)
 		} else {
@@ -720,59 +1017,73 @@ func runLiveDogfoodCommand(command liveDogfoodCommand, ctx resolveCtx) []LiveDog
 		}
 	}
 
-	if liveDogfoodCommandTakesArg(command.Help) {
-		flagNames := extractFlagNames(command.Help)
-		hasQueryFlag := slices.Contains(flagNames, "query")
-		// Search-shape strategy is suppressed for mutating leaves so a
-		// `delete --query=...` mass-delete is never probed with the
-		// invalid-token sentinel against the live API.
-		isSearch := commandSupportsSearch(command.Help) && !mutating
-		suppliedJSON := slices.Contains(flagNames, "json")
-
-		var errorArgs []string
-		if isSearch {
-			errorArgs = append([]string{}, command.Path...)
-			if hasQueryFlag {
-				errorArgs = append(errorArgs, "--query", "__printing_press_invalid__")
-			} else {
-				errorArgs = append(errorArgs, "__printing_press_invalid__")
-			}
-			if suppliedJSON {
-				errorArgs = appendJSONArg(errorArgs)
-			}
+	takesArg := liveDogfoodCommandTakesArg(command.Help)
+	if takesArg && annotationIsTrueValue(command.Annotations[noErrorPathProbeAnnotation]) {
+		results = append(results, skippedLiveDogfoodResult(commandName, LiveDogfoodTestError, reasonNoErrorPathProbeAnnotation))
+	} else if takesArg {
+		if mutating {
+			// Mutating commands cannot run the error_path probe safely: the
+			// __printing_press_invalid__ sentinel is sent as a real argument
+			// and many APIs accept arbitrary string fields (tag names, labels,
+			// notes), turning the probe into a real create/update/delete with
+			// no rollback. --dry-run injection is the happy_path-only safety
+			// net; for the error_path we skip outright, mirroring how
+			// error_path_real already skips below.
+			results = append(results, skippedLiveDogfoodResult(commandName, LiveDogfoodTestError, reasonMutatingErrorPath))
 		} else {
-			errorArgs = append(append([]string{}, command.Path...), "__printing_press_invalid__")
-		}
+			flagNames := extractFlagNames(command.Help)
+			hasQueryFlag := slices.Contains(flagNames, "query")
+			isSearch := commandSupportsSearch(command.Help)
+			suppliedJSON := slices.Contains(flagNames, "json")
 
-		errorRun := runLiveDogfoodProcess(ctx.binaryPath, ctx.cliDir, errorArgs, ctx.timeout)
-		errorResult := liveDogfoodResult(commandName, LiveDogfoodTestError, errorArgs, errorRun)
-
-		if isSearch {
-			// Real-world feed/content APIs return recent items as a fallback
-			// for unmatched queries, so non-empty results under exit 0 are
-			// not a failure signal. The only fail mode is invalid JSON when
-			// the caller asked for --json.
-			switch {
-			case errorRun.exitCode != 0:
-				errorResult.Status = LiveDogfoodStatusPass
-				errorResult.Reason = ""
-			case suppliedJSON && !json.Valid([]byte(errorRun.stdout)):
-				errorResult.Status = LiveDogfoodStatusFail
-				errorResult.Reason = "invalid JSON under --json"
-			default:
-				errorResult.Status = LiveDogfoodStatusPass
-				errorResult.Reason = ""
-			}
-		} else {
-			if errorRun.exitCode != 0 {
-				errorResult.Status = LiveDogfoodStatusPass
-				errorResult.Reason = ""
+			var errorArgs []string
+			if isSearch {
+				errorArgs = append([]string{}, command.Path...)
+				if hasQueryFlag {
+					errorArgs = append(errorArgs, "--query", "__printing_press_invalid__")
+				} else {
+					errorArgs = append(errorArgs, "__printing_press_invalid__")
+				}
+				if suppliedJSON {
+					errorArgs = appendJSONArg(errorArgs)
+				}
 			} else {
-				errorResult.Status = LiveDogfoodStatusFail
-				errorResult.Reason = "expected non-zero exit for invalid argument"
+				errorArgs = append(append([]string{}, command.Path...), "__printing_press_invalid__")
 			}
+
+			errorRun := runLiveDogfoodProcess(ctx.binaryPath, ctx.cliDir, errorArgs, ctx.timeout)
+			errorResult := liveDogfoodResult(commandName, LiveDogfoodTestError, errorArgs, errorRun)
+
+			if isSearch {
+				// Real-world feed/content APIs return recent items as a fallback
+				// for unmatched queries, so non-empty results under exit 0 are
+				// not a failure signal. The only fail mode is invalid JSON when
+				// the caller asked for --json.
+				switch {
+				case errorRun.exitCode != 0:
+					errorResult.Status = LiveDogfoodStatusPass
+					errorResult.Reason = ""
+				case suppliedJSON && errorRun.stdoutTruncated:
+					errorResult.Status = LiveDogfoodStatusFail
+					errorResult.Reason = liveDogfoodInvalidJSONReason(errorRun, "invalid JSON under --json")
+				case suppliedJSON && !json.Valid([]byte(errorRun.stdout)):
+					errorResult.Status = LiveDogfoodStatusFail
+					errorResult.Reason = liveDogfoodInvalidJSONReason(errorRun, "invalid JSON under --json")
+				default:
+					errorResult.Status = LiveDogfoodStatusPass
+					errorResult.Reason = ""
+				}
+			} else {
+				if errorRun.exitCode != 0 {
+					errorResult.Status = LiveDogfoodStatusPass
+					errorResult.Reason = ""
+				} else {
+					errorResult.Status = LiveDogfoodStatusFail
+					errorResult.Reason = "expected non-zero exit for invalid argument"
+				}
+			}
+			results = append(results, errorResult)
 		}
-		results = append(results, errorResult)
 	} else {
 		results = append(results, skippedLiveDogfoodResult(commandName, LiveDogfoodTestError, "no positional argument"))
 	}
@@ -830,22 +1141,46 @@ func extractFlagsSection(help string) string {
 }
 
 func runLiveDogfoodProcess(binaryPath, cliDir string, args []string, timeout time.Duration) liveDogfoodRun {
+	deadline := time.Now().Add(timeout)
+	run := runLiveDogfoodProcessOnce(binaryPath, cliDir, args, timeout)
+	if !liveDogfoodRetryableAuth401(run) || time.Until(deadline) <= liveDogfoodAuthRetryDelay {
+		return run
+	}
+	time.Sleep(liveDogfoodAuthRetryDelay)
+	remaining := time.Until(deadline)
+	if remaining <= 0 {
+		return run
+	}
+	return runLiveDogfoodProcessOnce(binaryPath, cliDir, args, remaining)
+}
+
+func runLiveDogfoodProcessOnce(binaryPath, cliDir string, args []string, timeout time.Duration) liveDogfoodRun {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, binaryPath, args...)
 	cmd.Dir = cliDir
+	applyDefaultSubprocessEnv(cmd)
+	// Strip PRINTING_PRESS_VERIFY{,_LIVE_HTTP} from the subprocess env so an
+	// operator who inherited them from a parent shell, CI runner, or
+	// container image cannot silently noop the destructive live path.
+	// The transport-layer short-circuit is for verify mock-mode only.
+	cmd.Env = filterVerifyEnv(cmd.Env)
+	cmd.Env = append(cmd.Env, dogfoodEnvVar+"=1")
 	stdout := &bytes.Buffer{}
 	stderr := &bytes.Buffer{}
-	cmd.Stdout = &limitedWriter{w: stdout, remaining: MaxOutputBytes}
-	cmd.Stderr = &limitedWriter{w: stderr, remaining: MaxOutputBytes}
+	stdoutCap := &limitedWriter{w: stdout, remaining: liveDogfoodMaxOutputBytes}
+	stderrCap := &limitedWriter{w: stderr, remaining: MaxErrorOutputBytes}
+	cmd.Stdout = stdoutCap
+	cmd.Stderr = stderrCap
 
 	err := cmd.Run()
 	result := liveDogfoodRun{
-		stdout:   stdout.String(),
-		stderr:   stderr.String(),
-		exitCode: 0,
-		err:      err,
+		stdout:          stdout.String(),
+		stderr:          stderr.String(),
+		stdoutTruncated: stdoutCap.truncated,
+		exitCode:        0,
+		err:             err,
 	}
 	if ctx.Err() == context.DeadlineExceeded {
 		result.exitCode = -1
@@ -863,6 +1198,20 @@ func runLiveDogfoodProcess(binaryPath, cliDir string, args []string, timeout tim
 	return result
 }
 
+func liveDogfoodRetryableAuth401(run liveDogfoodRun) bool {
+	if run.exitCode == 0 {
+		return false
+	}
+	return liveDogfoodAuth401(run)
+}
+
+func liveDogfoodInvalidJSONReason(run liveDogfoodRun, fallback string) string {
+	if run.stdoutTruncated {
+		return "output exceeded capture cap"
+	}
+	return fallback
+}
+
 func liveDogfoodResult(command string, kind LiveDogfoodTestKind, args []string, run liveDogfoodRun) LiveDogfoodTestResult {
 	result := LiveDogfoodTestResult{
 		Command:      command,
@@ -870,7 +1219,7 @@ func liveDogfoodResult(command string, kind LiveDogfoodTestKind, args []string, 
 		Args:         append([]string{}, args...),
 		Status:       LiveDogfoodStatusFail,
 		ExitCode:     run.exitCode,
-		OutputSample: sampleOutput(run.stdout + run.stderr),
+		OutputSample: sampleOutputParts(run.stdout, run.stderr),
 	}
 	if run.exitCode != 0 {
 		result.Reason = fmt.Sprintf("exit %d", run.exitCode)
@@ -901,12 +1250,25 @@ func skippedLiveDogfoodResult(command string, kind LiveDogfoodTestKind, reason s
 }
 
 const (
-	endpointAnnotation        = "pp:endpoint"
-	endpointMethodAnnotation  = "pp:method"
-	endpointPathAnnotation    = "pp:path"
-	mcpReadOnlyAnnotation     = "mcp:read-only"
-	destructiveAuthAnnotation = "pp:destructive-auth"
+	endpointAnnotation         = "pp:endpoint"
+	endpointMethodAnnotation   = "pp:method"
+	endpointPathAnnotation     = "pp:path"
+	mcpReadOnlyAnnotation      = "mcp:read-only"
+	destructiveAuthAnnotation  = "pp:destructive-auth"
+	noErrorPathProbeAnnotation = "pp:no-error-path-probe"
+	requiresTierAnnotation     = "pp:requires-tier"
+	liveDogfoodMaxOutputBytes  = 10 << 20
 )
+
+var liveDogfoodRequiredParamFixturePhrases = []string{
+	"missing parameter",
+	"missing param",
+	"required parameter",
+	"required param",
+	"must provide parameter",
+	"must provide param",
+	"please provide email",
+}
 
 // destructiveAuthTerms are case-insensitive command or endpoint tokens
 // classifying a command as destructive-at-auth.
@@ -969,7 +1331,88 @@ func endpointTargetsAuthResource(endpoint, path string) bool {
 	})
 }
 
+// happyPathFileFixtureSkip returns a skip reason when the parsed Example
+// references a file-flag value that doesn't exist on disk relative to
+// cliDir. Flag names containing "file" or "csv" trigger the check; the
+// motivating cases are `--file accounts.csv` / `--csv prospects.csv` shapes
+// where the example would otherwise fail with `open <path>: no such file
+// or directory`, masking the signal that the command is callable.
+func happyPathFileFixtureSkip(args []string, cliDir string) string {
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		if !strings.HasPrefix(a, "--") {
+			continue
+		}
+		name := strings.TrimPrefix(a, "--")
+		var value string
+		if eq := strings.IndexByte(name, '='); eq >= 0 {
+			value = name[eq+1:]
+			name = name[:eq]
+		} else if i+1 < len(args) && !strings.HasPrefix(args[i+1], "-") {
+			value = args[i+1]
+			i++
+		}
+		if !flagNameSuggestsFile(name) {
+			continue
+		}
+		if value == "" || strings.Contains(value, "://") {
+			continue
+		}
+		if fileExistsRelativeTo(value, cliDir) {
+			continue
+		}
+		return fmt.Sprintf("%s: --%s %s", reasonFileFixtureRequired, name, value)
+	}
+	return ""
+}
+
+func flagNameSuggestsFile(name string) bool {
+	n := strings.ToLower(name)
+	if n == "file" || n == "csv" {
+		return true
+	}
+	// Anchor on a separator so `--profile` (contains "file") and similar
+	// non-file flags don't trigger spurious skips. Common shapes covered:
+	// `--input-file`, `--output_file`, `--import-csv`, `--config-csv`.
+	return strings.HasSuffix(n, "-file") || strings.HasSuffix(n, "_file") ||
+		strings.HasSuffix(n, "-csv") || strings.HasSuffix(n, "_csv")
+}
+
+func fileExistsRelativeTo(p, cliDir string) bool {
+	if p == "" {
+		return false
+	}
+	if filepath.IsAbs(p) {
+		_, err := os.Stat(p)
+		return err == nil
+	}
+	candidates := []string{p}
+	if cliDir != "" {
+		candidates = append(candidates, filepath.Join(cliDir, p))
+	}
+	for _, c := range candidates {
+		if _, err := os.Stat(c); err == nil {
+			return true
+		}
+	}
+	return false
+}
+
 func liveDogfoodHappyArgs(command liveDogfoodCommand) ([]string, bool) {
+	// pp:happy-args supplies real happy-path args, overriding the Example-derived
+	// placeholders (e.g. "--ids example-value") that strict upstream validators
+	// reject with HTTP 400. Same `;`-separated `--flag=value` / `<name>=value`
+	// grammar the runtime layer uses (parseHappyArgsAnnotation), so a single
+	// annotation drives both surfaces.
+	if raw := strings.TrimSpace(command.Annotations[happyArgsAnnotation]); raw != "" {
+		parsed := parseHappyArgsAnnotation(raw)
+		args := append([]string{}, command.Path...)
+		args = append(args, parsed.positionals...)
+		args = append(args, parsed.flags...)
+		if len(args) > len(command.Path) {
+			return args, true
+		}
+	}
 	examples := extractExamplesSection(command.Help)
 	for line := range strings.SplitSeq(examples, "\n") {
 		candidate := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(line), "$"))
@@ -1011,8 +1454,54 @@ func validLiveDogfoodJSONOutput(stdout string) bool {
 func liveDogfoodUnavailableForRunner(run liveDogfoodRun) bool {
 	output := strings.ToLower(run.stdout + run.stderr)
 	return strings.Contains(output, "http 403") ||
+		liveDogfoodAuth401Output(output) ||
 		strings.Contains(output, "permission denied") ||
 		strings.Contains(output, "your credentials are valid but lack access")
+}
+
+func liveDogfoodRequiredParamFixtureReason(run liveDogfoodRun) string {
+	if run.exitCode == 0 {
+		return ""
+	}
+	output := strings.ToLower(run.stdout + " " + run.stderr)
+	if !strings.Contains(output, "http 400") && !strings.Contains(output, "http 422") {
+		return ""
+	}
+	if containsAnyOf(output, liveDogfoodRequiredParamFixturePhrases) {
+		return reasonRequiredParamFixture
+	}
+	return ""
+}
+
+func resolveLiveDogfoodAuthTier(flagValue string) string {
+	if tier := strings.TrimSpace(flagValue); tier != "" {
+		return tier
+	}
+	return strings.TrimSpace(os.Getenv(liveDogfoodAuthTierEnvVar))
+}
+
+func liveDogfoodRequiresTierSkipReason(annotations map[string]string, activeTier string) string {
+	requiredTier := strings.TrimSpace(annotations[requiresTierAnnotation])
+	if requiredTier == "" {
+		return ""
+	}
+	if strings.EqualFold(strings.TrimSpace(activeTier), requiredTier) {
+		return ""
+	}
+	return fmt.Sprintf("blocked-fixture: requires auth tier %q", requiredTier)
+}
+
+func liveDogfoodAuth401(run liveDogfoodRun) bool {
+	return liveDogfoodAuth401Output(strings.ToLower(run.stdout + run.stderr))
+}
+
+func liveDogfoodAuth401Output(output string) bool {
+	if !strings.Contains(output, "http 401") {
+		return false
+	}
+	return strings.Contains(output, "couldn't authenticate") ||
+		strings.Contains(output, "could not authenticate") ||
+		strings.Contains(output, "not authenticated")
 }
 
 func commandSupportsDryRun(help string) bool {
@@ -1101,26 +1590,32 @@ func finalizeLiveDogfoodReport(report *LiveDogfoodReport) {
 }
 
 func writeLiveDogfoodAcceptance(opts LiveDogfoodOptions, report *LiveDogfoodReport) error {
-	manifest, err := ReadCLIManifest(opts.CLIDir)
-	if err != nil {
-		return fmt.Errorf("reading CLI manifest for phase5 acceptance: %w", err)
-	}
-	if manifest.APIName == "" {
-		return fmt.Errorf("CLI manifest missing api_name; cannot write phase5 acceptance")
-	}
-	if manifest.RunID == "" {
-		return fmt.Errorf("CLI manifest missing run_id; cannot write phase5 acceptance")
-	}
-	authType := manifest.AuthType
+	// Identity (api_name/run_id) is recorded so `lock promote`'s cross-check
+	// in validatePhase5Marker can reject stale markers. Three sources, in
+	// order: the working-dir manifest (most authoritative — already merged
+	// catalog/spec data), the runstate for this working dir (covers the
+	// pre-promote case where generate has not written the manifest yet), and
+	// finally an empty fall-back so dogfood still emits a marker for foreign
+	// working dirs. The marker carries empty identity only when neither
+	// source exists, which is the scenario where a downstream gate has no
+	// manifest identity to compare against either.
+	apiName, runID, authType := resolveLiveDogfoodAcceptanceIdentity(opts.CLIDir)
 	if authType == "" {
 		authType = "none"
 	}
 
+	status := "pass"
+	var failureSummary *Phase5FailureSummary
+	if report.Verdict != "PASS" {
+		status = "fail"
+		failureSummary = summarizeLiveDogfoodFailures(report)
+	}
+
 	marker := Phase5GateMarker{
 		SchemaVersion: 1,
-		APIName:       manifest.APIName,
-		RunID:         manifest.RunID,
-		Status:        "pass",
+		APIName:       apiName,
+		RunID:         runID,
+		Status:        status,
 		Level:         report.Level,
 		MatrixSize:    report.MatrixSize,
 		TestsPassed:   report.Passed,
@@ -1130,6 +1625,7 @@ func writeLiveDogfoodAcceptance(opts LiveDogfoodOptions, report *LiveDogfoodRepo
 			Type:            authType,
 			APIKeyAvailable: opts.AuthEnv != "" && os.Getenv(opts.AuthEnv) != "",
 		},
+		FailureSummary: failureSummary,
 	}
 	data, err := json.MarshalIndent(marker, "", "  ")
 	if err != nil {
@@ -1144,11 +1640,149 @@ func writeLiveDogfoodAcceptance(opts LiveDogfoodOptions, report *LiveDogfoodRepo
 	return nil
 }
 
+// summarizeLiveDogfoodFailures groups failed test results by category so the
+// fail-marker carries a one-glance triage hint. Categories mirror the
+// retro's suggested buckets: transport-error, http-4xx, http-5xx,
+// exit-nonzero, output-mismatch, other. Commands lists deduplicated command
+// names that contributed at least one failure.
+func summarizeLiveDogfoodFailures(report *LiveDogfoodReport) *Phase5FailureSummary {
+	if report == nil {
+		return nil
+	}
+	summary := &Phase5FailureSummary{}
+	seen := map[string]bool{}
+	for _, t := range report.Tests {
+		if t.Status != LiveDogfoodStatusFail {
+			continue
+		}
+		switch classifyLiveDogfoodFailure(t) {
+		case "transport_error":
+			summary.TransportError++
+		case "http_4xx":
+			summary.HTTP4xx++
+		case "http_5xx":
+			summary.HTTP5xx++
+		case "exit_nonzero":
+			summary.ExitNonzero++
+		case "output_mismatch":
+			summary.OutputMismatch++
+		default:
+			summary.Other++
+		}
+		if t.Command != "" && !seen[t.Command] {
+			seen[t.Command] = true
+			summary.Commands = append(summary.Commands, t.Command)
+		}
+	}
+	if summary.TransportError == 0 && summary.HTTP4xx == 0 && summary.HTTP5xx == 0 &&
+		summary.ExitNonzero == 0 && summary.OutputMismatch == 0 && summary.Other == 0 {
+		return nil
+	}
+	sort.Strings(summary.Commands)
+	return summary
+}
+
+// classifyLiveDogfoodFailure picks the failure bucket for one test result.
+// The reason string and a small slice of the captured output (already
+// truncated to OutputSample) are the only signals; classification is a
+// best-effort hint, not a contract.
+func classifyLiveDogfoodFailure(t LiveDogfoodTestResult) string {
+	hay := strings.ToLower(t.Reason + " " + t.OutputSample)
+	// 4xx is checked before 5xx: a legitimate 5xx response is unlikely to
+	// also mention "http 4", whereas error strings citing 400/401/403/404
+	// frequently start with digit 4 and would otherwise be shadowed if 5xx
+	// were checked first (e.g., a retry-count log like
+	// "retried http 5 times, status http 404").
+	switch {
+	case strings.Contains(hay, "http 4"):
+		return "http_4xx"
+	case strings.Contains(hay, "http 5"):
+		return "http_5xx"
+	case strings.Contains(hay, "connection refused") ||
+		strings.Contains(hay, "no such host") ||
+		strings.Contains(hay, "timeout") ||
+		strings.Contains(hay, "dial tcp"):
+		return "transport_error"
+	// "invalid json" / "not json" match independently so the runner's own
+	// Reason strings (literal "invalid JSON" at the two emit sites) bucket
+	// here even when neither Reason nor OutputSample contains the word
+	// "output". The "output" + "mismatch" conjunction stays as a separate
+	// match for the schema-mismatch flavor of failure.
+	case strings.Contains(hay, "invalid json") || strings.Contains(hay, "not json") ||
+		(strings.Contains(hay, "output") && strings.Contains(hay, "mismatch")):
+		return "output_mismatch"
+	case t.ExitCode != 0:
+		return "exit_nonzero"
+	}
+	return "other"
+}
+
+// resolveLiveDogfoodAcceptanceIdentity finds the marker's api_name, run_id,
+// and auth_type. Manifest on disk wins (also yields auth_type); runstate
+// fills in when the manifest hasn't been written yet (the pre-promote case
+// from issue #963). I/O errors other than "not found" propagate as empty
+// values rather than failing the write — emitting an incomplete marker
+// beats blocking dogfood, and the gate cross-check catches identity drift
+// on the way to promote.
+func resolveLiveDogfoodAcceptanceIdentity(cliDir string) (apiName, runID, authType string) {
+	if manifest, err := ReadCLIManifest(cliDir); err == nil {
+		apiName = manifest.APIName
+		runID = manifest.RunID
+		authType = manifest.AuthType
+	}
+	if apiName != "" && runID != "" {
+		return apiName, runID, authType
+	}
+	if state, err := FindStateByWorkingDir(cliDir); err == nil {
+		if apiName == "" {
+			apiName = state.APIName
+		}
+		if runID == "" {
+			runID = state.RunID
+		}
+	}
+	return apiName, runID, authType
+}
+
 func liveDogfoodQuickCommands(commands []liveDogfoodCommand) []liveDogfoodCommand {
-	if len(commands) <= 2 {
+	const quickTarget = 6
+	if len(commands) <= quickTarget {
 		return commands
 	}
-	return commands[:2]
+	selected := make([]liveDogfoodCommand, 0, quickTarget)
+	selectedIndex := make(map[int]bool, quickTarget)
+	seenFamily := map[string]bool{}
+	for i, command := range commands {
+		family := liveDogfoodCommandFamily(command)
+		if family != "" {
+			if seenFamily[family] {
+				continue
+			}
+			seenFamily[family] = true
+		}
+		selected = append(selected, command)
+		selectedIndex[i] = true
+		if len(selected) == quickTarget {
+			return selected
+		}
+	}
+	for i, command := range commands {
+		if selectedIndex[i] {
+			continue
+		}
+		selected = append(selected, command)
+		if len(selected) == quickTarget {
+			return selected
+		}
+	}
+	return selected
+}
+
+func liveDogfoodCommandFamily(command liveDogfoodCommand) string {
+	if len(command.Path) == 0 {
+		return ""
+	}
+	return command.Path[0]
 }
 
 func normalizeLiveDogfoodLevel(level string) (string, error) {

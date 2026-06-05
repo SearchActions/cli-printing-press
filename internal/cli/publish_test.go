@@ -2,9 +2,12 @@ package cli
 
 import (
 	"encoding/json"
+	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 
 	"github.com/mvanhorn/cli-printing-press/v4/internal/generator"
@@ -24,6 +27,32 @@ func skipIfRootCannotSimulateUnreadable(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("running as root; chmod 0 does not block reads — cannot simulate an unreadable-file failure")
 	}
+}
+
+func publishCheckByName(t *testing.T, result ValidateResult, name string) CheckResult {
+	t.Helper()
+	for _, check := range result.Checks {
+		if check.Name == name {
+			return check
+		}
+	}
+	t.Fatalf("missing %q check in %#v", name, result.Checks)
+	return CheckResult{}
+}
+
+func stubPublishIdentityCommands(t *testing.T, gitScript, ghScript string) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("fake shell scripts are Unix-only")
+	}
+	dir := t.TempDir()
+	if gitScript != "" {
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "git"), []byte(gitScript), 0o755))
+	}
+	if ghScript != "" {
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "gh"), []byte(ghScript), 0o755))
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
 }
 
 func TestPublishValidateMissingManifest(t *testing.T) {
@@ -82,7 +111,297 @@ func TestPublishValidateManifestMissingFields(t *testing.T) {
 	}
 	require.NotNil(t, manifestCheck)
 	assert.False(t, manifestCheck.Passed)
-	assert.Contains(t, manifestCheck.Error, "required fields")
+	assert.Contains(t, manifestCheck.Error, "missing required manifest fields")
+}
+
+func TestPublishValidateRejectsStaleAttributionManifest(t *testing.T) {
+	home := setLibraryTestEnv(t)
+	cliDir := filepath.Join(home, "library", "openrouter-pp-cli")
+	require.NoError(t, os.MkdirAll(cliDir, 0o755))
+
+	writeTestManifest(t, cliDir, pipeline.CLIManifest{
+		SchemaVersion:        0,
+		PrintingPressVersion: "4.2.0",
+		APIName:              "openrouter",
+		CLIName:              "openrouter-pp-cli",
+		RunID:                "20260509-165428",
+		Printer:              "rvdlaar",
+	})
+
+	cmd := newPublishCmd()
+	cmd.SetArgs([]string{"validate", "--dir", cliDir, "--json"})
+
+	output, err := runWithCapturedStdout(t, cmd.Execute)
+	require.Error(t, err)
+
+	var result ValidateResult
+	require.NoError(t, json.Unmarshal([]byte(output), &result))
+	assert.False(t, result.Passed)
+
+	manifestCheck := publishCheckByName(t, result, "manifest")
+	assert.False(t, manifestCheck.Passed)
+	assert.Contains(t, manifestCheck.Error, "schema_version must be 1")
+}
+
+func TestPublishManifestContractRejectsPrinterSentinel(t *testing.T) {
+	issues := validatePublishManifestContract(t.TempDir(), pipeline.CLIManifest{
+		SchemaVersion:        pipeline.CurrentCLIManifestSchemaVersion,
+		PrintingPressVersion: "4.2.1",
+		APIName:              "test",
+		CLIName:              "test-pp-cli",
+		RunID:                "20260509-000000",
+		Printer:              "USER",
+		PrinterName:          "Test User",
+	})
+
+	// A sentinel printer backfills into a sentinel creator, so both are flagged.
+	require.Len(t, issues, 2)
+	assert.Contains(t, issues[0], "creator.handle must not be the literal sentinel")
+	assert.Contains(t, issues[1], "printer must not be the literal sentinel")
+}
+
+func TestPublishManifestContractBackfillsAttributionFromGh(t *testing.T) {
+	stubPublishIdentityCommands(t,
+		"#!/bin/sh\nexit 0\n",
+		`#!/bin/sh
+if [ "$1" = "api" ] && [ "$2" = "user" ]; then
+  echo '{"login":"nlarkin1986","name":"Nick Larkin"}'
+  exit 0
+fi
+if [ "$1" = "api" ] && [ "$2" = "users/nlarkin1986" ]; then
+  echo '{"login":"nlarkin1986","name":"Nick Larkin"}'
+  exit 0
+fi
+exit 1
+`,
+	)
+
+	issues := validatePublishManifestContract(t.TempDir(), pipeline.CLIManifest{
+		SchemaVersion:        pipeline.CurrentCLIManifestSchemaVersion,
+		PrintingPressVersion: "4.2.1",
+		APIName:              "test",
+		CLIName:              "test-pp-cli",
+		RunID:                "20260509-000000",
+	})
+
+	assert.Empty(t, issues)
+}
+
+func TestPublishManifestContractDoesNotMixGitAndGhAttributionFallbacks(t *testing.T) {
+	stubPublishIdentityCommands(t,
+		`#!/bin/sh
+if [ "$1" = "config" ] && [ "$2" = "github.user" ]; then
+  echo stalebot
+  exit 0
+fi
+exit 1
+`,
+		`#!/bin/sh
+if [ "$1" = "api" ] && [ "$2" = "user" ]; then
+  echo '{"login":"nlarkin1986","name":"Nick Larkin"}'
+  exit 0
+fi
+if [ "$1" = "api" ] && [ "$2" = "users/nlarkin1986" ]; then
+  echo '{"login":"nlarkin1986","name":"Nick Larkin"}'
+  exit 0
+fi
+exit 1
+`,
+	)
+
+	issues := validatePublishManifestContract(t.TempDir(), pipeline.CLIManifest{
+		SchemaVersion:        pipeline.CurrentCLIManifestSchemaVersion,
+		PrintingPressVersion: "4.2.1",
+		APIName:              "test",
+		CLIName:              "test-pp-cli",
+		RunID:                "20260509-000000",
+	})
+
+	assert.Empty(t, issues)
+}
+
+func TestPublishManifestContractBackfillsPrinterNameFromExistingPrinter(t *testing.T) {
+	stubPublishIdentityCommands(t,
+		"",
+		`#!/bin/sh
+if [ "$1" = "api" ] && [ "$2" = "users/amitav13" ]; then
+  echo '{"login":"amitav13","name":"Amitav Khandelwal"}'
+  exit 0
+fi
+exit 1
+`,
+	)
+
+	issues := validatePublishManifestContract(t.TempDir(), pipeline.CLIManifest{
+		SchemaVersion:        pipeline.CurrentCLIManifestSchemaVersion,
+		PrintingPressVersion: "4.2.1",
+		APIName:              "test",
+		CLIName:              "test-pp-cli",
+		RunID:                "20260509-000000",
+		Printer:              "amitav13",
+	})
+
+	assert.Empty(t, issues)
+}
+
+func TestBackfillPackagedManifestAttributionPreservesUnknownFields(t *testing.T) {
+	stubPublishIdentityCommands(t,
+		"#!/bin/sh\nexit 0\n",
+		`#!/bin/sh
+if [ "$1" = "api" ] && [ "$2" = "user" ]; then
+  echo '{"login":"amitav13","name":"Amitav Khandelwal"}'
+  exit 0
+fi
+exit 1
+`,
+	)
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, pipeline.CLIManifestFilename), []byte(`{
+  "schema_version": 1,
+  "printing_press_version": "4.2.1",
+  "api_name": "test",
+  "cli_name": "test-pp-cli",
+  "run_id": "20260509-000000",
+  "custom_field": {"keep": true}
+}`+"\n"), 0o644))
+
+	require.NoError(t, backfillPackagedManifestAttribution(dir))
+
+	data, err := os.ReadFile(filepath.Join(dir, pipeline.CLIManifestFilename))
+	require.NoError(t, err)
+	var got map[string]json.RawMessage
+	require.NoError(t, json.Unmarshal(data, &got))
+	assert.JSONEq(t, `"amitav13"`, string(got["printer"]))
+	assert.JSONEq(t, `"Amitav Khandelwal"`, string(got["printer_name"]))
+	assert.JSONEq(t, `{"keep": true}`, string(got["custom_field"]))
+}
+
+func TestBackfillPackagedManifestAttributionPreservesManifestMode(t *testing.T) {
+	stubPublishIdentityCommands(t,
+		"#!/bin/sh\nexit 0\n",
+		`#!/bin/sh
+if [ "$1" = "api" ] && [ "$2" = "user" ]; then
+  echo '{"login":"amitav13","name":"Amitav Khandelwal"}'
+  exit 0
+fi
+exit 1
+`,
+	)
+	dir := t.TempDir()
+	manifestPath := filepath.Join(dir, pipeline.CLIManifestFilename)
+	require.NoError(t, os.WriteFile(manifestPath, []byte(`{
+  "schema_version": 1,
+  "printing_press_version": "4.2.1",
+  "api_name": "test",
+  "cli_name": "test-pp-cli",
+  "run_id": "20260509-000000"
+}`+"\n"), 0o600))
+
+	require.NoError(t, backfillPackagedManifestAttribution(dir))
+
+	info, err := os.Stat(manifestPath)
+	require.NoError(t, err)
+	assert.Equal(t, fs.FileMode(0o600), info.Mode().Perm())
+}
+
+func TestBackfillPackagedManifestAttributionFailsWithoutFallback(t *testing.T) {
+	stubPublishIdentityCommands(t,
+		"#!/bin/sh\nexit 1\n",
+		"#!/bin/sh\nexit 1\n",
+	)
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, pipeline.CLIManifestFilename), []byte(`{
+  "schema_version": 1,
+  "printing_press_version": "4.2.1",
+  "api_name": "test",
+  "cli_name": "test-pp-cli",
+  "run_id": "20260509-000000"
+}`+"\n"), 0o644))
+
+	err := backfillPackagedManifestAttribution(dir)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "attribution")
+	assert.Contains(t, err.Error(), "fallback")
+}
+
+func TestPublishManifestContractRejectsUnresolvablePrinterHandle(t *testing.T) {
+	stubPublishIdentityCommands(t,
+		"",
+		`#!/bin/sh
+if [ "$1" = "api" ] && [ "$2" = "users/vinnypasceri" ]; then
+  echo "gh: Not Found (HTTP 404)" >&2
+  exit 1
+fi
+exit 1
+`,
+	)
+
+	issues := validatePublishManifestContract(t.TempDir(), pipeline.CLIManifest{
+		SchemaVersion:        pipeline.CurrentCLIManifestSchemaVersion,
+		PrintingPressVersion: "4.2.1",
+		APIName:              "test",
+		CLIName:              "test-pp-cli",
+		RunID:                "20260509-000000",
+		Printer:              "vinnypasceri",
+		PrinterName:          "Vinny Pasceri",
+	})
+
+	require.Len(t, issues, 1)
+	assert.Contains(t, issues[0], `printer "vinnypasceri" does not resolve to a GitHub user`)
+}
+
+func TestPublishManifestContractRejectsUnverifiedPrinterHandle(t *testing.T) {
+	stubPublishIdentityCommands(t,
+		"",
+		`#!/bin/sh
+if [ "$1" = "api" ] && [ "$2" = "users/vinnypasceri" ]; then
+  echo "gh: authentication required" >&2
+  exit 1
+fi
+exit 1
+`,
+	)
+
+	issues := validatePublishManifestContract(t.TempDir(), pipeline.CLIManifest{
+		SchemaVersion:        pipeline.CurrentCLIManifestSchemaVersion,
+		PrintingPressVersion: "4.2.1",
+		APIName:              "test",
+		CLIName:              "test-pp-cli",
+		RunID:                "20260509-000000",
+		Printer:              "vinnypasceri",
+		PrinterName:          "Vinny Pasceri",
+	})
+
+	require.Len(t, issues, 1)
+	assert.Contains(t, issues[0], `could not verify printer "vinnypasceri" with gh`)
+	assert.Contains(t, issues[0], "authentication required")
+}
+
+func TestPublishManifestContractRequiresMCPMetadataFiles(t *testing.T) {
+	stubPublishIdentityCommands(t,
+		"",
+		`#!/bin/sh
+if [ "$1" = "api" ] && [ "$2" = "users/tmchow" ]; then
+  echo '{"login":"tmchow","name":"Trevin Chow"}'
+  exit 0
+fi
+exit 1
+`,
+	)
+
+	issues := validatePublishManifestContract(t.TempDir(), pipeline.CLIManifest{
+		SchemaVersion:        pipeline.CurrentCLIManifestSchemaVersion,
+		PrintingPressVersion: "4.2.1",
+		APIName:              "test",
+		CLIName:              "test-pp-cli",
+		RunID:                "20260509-000000",
+		Printer:              "tmchow",
+		PrinterName:          "Trevin Chow",
+		MCPBinary:            "test-pp-mcp",
+	})
+
+	assert.Contains(t, strings.Join(issues, "\n"), "manifest.json")
+	assert.Contains(t, strings.Join(issues, "\n"), "tools-manifest.json")
 }
 
 func TestPublishValidateMissingDirFlag(t *testing.T) {
@@ -165,11 +484,17 @@ func TestPublishValidateFailsWithoutPhase5Marker(t *testing.T) {
 	cliDir := filepath.Join(home, "library", "test-pp-cli")
 	writePublishableTestCLI(t, cliDir)
 	writeTestManifest(t, cliDir, pipeline.CLIManifest{
-		SchemaVersion: 1,
-		APIName:       "test",
-		CLIName:       "test-pp-cli",
-		RunID:         "run-missing-phase5",
-		AuthType:      "api_key",
+		SchemaVersion:        pipeline.CurrentCLIManifestSchemaVersion,
+		PrintingPressVersion: "test-version",
+		APIName:              "test",
+		CLIName:              "test-pp-cli",
+		RunID:                "run-missing-phase5",
+		Printer:              "tmchow",
+		PrinterName:          "Trevin Chow",
+		AuthType:             "api_key",
+		NovelFeatures: []pipeline.NovelFeatureManifest{
+			{Name: "Insight", Command: "insight", Description: "Show test insight."},
+		},
 	})
 
 	cmd := newPublishCmd()
@@ -200,9 +525,13 @@ func TestPublishValidateRequiresTranscendenceFeatures(t *testing.T) {
 	require.NoError(t, os.MkdirAll(cliDir, 0o755))
 
 	data, err := json.MarshalIndent(pipeline.CLIManifest{
-		SchemaVersion: 1,
-		APIName:       "test",
-		CLIName:       "test-pp-cli",
+		SchemaVersion:        pipeline.CurrentCLIManifestSchemaVersion,
+		PrintingPressVersion: "test-version",
+		APIName:              "test",
+		CLIName:              "test-pp-cli",
+		RunID:                "20260301-000000",
+		Printer:              "tmchow",
+		PrinterName:          "Trevin Chow",
 	}, "", "  ")
 	require.NoError(t, err)
 	require.NoError(t, os.WriteFile(filepath.Join(cliDir, pipeline.CLIManifestFilename), data, 0o644))
@@ -253,23 +582,25 @@ func TestRunGoVulnCheckRequiresGoMod(t *testing.T) {
 	assert.Equal(t, "go.mod not found", result.Error)
 }
 
-func TestRunGoVulnCheckUsesPinnedDefaultCommand(t *testing.T) {
+func TestRunGoVulnCheckUsesPinnedDefaultCommandWithModuleToolchain(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("fake shell go binary is Unix-only")
 	}
 	dir := t.TempDir()
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module example.com/test\n\ngo 1.26.3\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module example.com/test\n\ngo 1.26.4\n"), 0o644))
 
 	fakeBin := t.TempDir()
 	callsPath := filepath.Join(t.TempDir(), "go-calls.txt")
 	fakeGo := filepath.Join(fakeBin, "go")
 	require.NoError(t, os.WriteFile(fakeGo, []byte(`#!/bin/sh
-printf '%s\n' "$*" >> "$FAKE_GO_CALLS"
+printf 'args=%s\n' "$*" >> "$FAKE_GO_CALLS"
+printf 'toolchain=%s\n' "$GOTOOLCHAIN" >> "$FAKE_GO_CALLS"
 echo "fake govulncheck failure" >&2
 exit 42
 `), 0o755))
 	t.Setenv("PATH", fakeBin+string(os.PathListSeparator)+os.Getenv("PATH"))
 	t.Setenv("FAKE_GO_CALLS", callsPath)
+	t.Setenv("GOTOOLCHAIN", "auto")
 
 	result := runGoVulnCheck(dir)
 	assert.False(t, result.Passed)
@@ -278,9 +609,23 @@ exit 42
 
 	calls, err := os.ReadFile(callsPath)
 	require.NoError(t, err)
-	assert.Equal(t, "run "+govulncheck.ToolModule+" ./...\n", string(calls))
+	assert.Equal(t, "args=run "+govulncheck.ToolModule+" ./...\ntoolchain=go1.26.4\n", string(calls))
 	assert.NotContains(t, string(calls), "-show")
 	assert.NotContains(t, string(calls), "verbose")
+}
+
+func TestGovulncheckToolchainEnvPrefersToolchainDirective(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module example.com/test\n\ngo 1.25.0\ntoolchain go1.26.4\n"), 0o644))
+
+	assert.Equal(t, []string{"GOTOOLCHAIN=go1.26.4"}, govulncheckToolchainEnv(dir))
+}
+
+func TestGovulncheckToolchainEnvIgnoresLanguageOnlyGoDirective(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module example.com/test\n\ngo 1.24\n"), 0o644))
+
+	assert.Nil(t, govulncheckToolchainEnv(dir))
 }
 
 func TestPublishPackageMissingDirFlag(t *testing.T) {
@@ -387,6 +732,70 @@ func TestPublishPackageRejectsUnknownCategory(t *testing.T) {
 	assert.Contains(t, err.Error(), "--category must be one of:")
 }
 
+func TestPublishPackageBackfillsPatchesIndexForLegacyCLI(t *testing.T) {
+	home := setLibraryTestEnv(t)
+	cliDir := filepath.Join(home, "library", "test-pp-cli")
+	writePublishableTestCLI(t, cliDir)
+	require.NoFileExists(t, filepath.Join(cliDir, pipeline.PatchesIndexFilename))
+	require.NoDirExists(t, filepath.Join(cliDir, pipeline.PatchesDirName))
+
+	target := filepath.Join(t.TempDir(), "staging")
+	cmd := newPublishCmd()
+	cmd.SetArgs([]string{"package", "--dir", cliDir, "--category", "other", "--target", target, "--json"})
+
+	output, err := runWithCapturedStdout(t, cmd.Execute)
+	require.NoError(t, err)
+
+	var result PackageResult
+	require.NoError(t, json.Unmarshal([]byte(output), &result))
+
+	// A legacy CLI with no patches index gets the empty per-patch directory
+	// backfilled (kept by .gitkeep), not the legacy single-array file.
+	gitkeep := filepath.Join(result.StagedDir, pipeline.PatchesDirName, pipeline.PatchesGitKeepName)
+	require.FileExists(t, gitkeep)
+	require.NoFileExists(t, filepath.Join(result.StagedDir, pipeline.PatchesIndexFilename))
+}
+
+func TestPublishPackageNormalizesManifestCategoryToPublishCategory(t *testing.T) {
+	home := setLibraryTestEnv(t)
+	cliDir := filepath.Join(home, "library", "test-pp-cli")
+	writePublishableTestCLI(t, cliDir)
+
+	manifestPath := filepath.Join(cliDir, pipeline.CLIManifestFilename)
+	data, err := os.ReadFile(manifestPath)
+	require.NoError(t, err)
+	var manifest map[string]json.RawMessage
+	require.NoError(t, json.Unmarshal(data, &manifest))
+	manifest["category"] = json.RawMessage(`"productivity"`)
+	data, err = json.MarshalIndent(manifest, "", "  ")
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(manifestPath, append(data, '\n'), 0o644))
+	skillInstall := generator.CanonicalSkillInstallSection("test", "productivity")
+	require.NoError(t, os.WriteFile(filepath.Join(cliDir, "SKILL.md"), []byte("# Test CLI\n\n"+skillInstall+"\n## Command Reference\n\n- `test-pp-cli insight` — Show test insight\n\n## Usage\n\n```bash\ntest-pp-cli insight --agent\n```\n"), 0o644))
+
+	target := filepath.Join(t.TempDir(), "staging")
+	cmd := newPublishCmd()
+	cmd.SetArgs([]string{"package", "--dir", cliDir, "--category", "other", "--target", target, "--json"})
+
+	output, err := runWithCapturedStdout(t, cmd.Execute)
+	require.NoError(t, err)
+
+	var result PackageResult
+	require.NoError(t, json.Unmarshal([]byte(output), &result))
+
+	data, err = os.ReadFile(filepath.Join(result.StagedDir, pipeline.CLIManifestFilename))
+	require.NoError(t, err)
+	var got pipeline.CLIManifest
+	require.NoError(t, json.Unmarshal(data, &got))
+	assert.Equal(t, "other", got.Category)
+
+	data, err = os.ReadFile(manifestPath)
+	require.NoError(t, err)
+	var source pipeline.CLIManifest
+	require.NoError(t, json.Unmarshal(data, &source))
+	assert.Equal(t, "productivity", source.Category, "publish package should normalize only the staged copy")
+}
+
 func TestPublishPackageFailsWhenSkillReferencesUnknownCommand(t *testing.T) {
 	home := setLibraryTestEnv(t)
 	cliDir := filepath.Join(home, "library", "test-pp-cli")
@@ -482,6 +891,63 @@ func TestPublishPackageStripsBuildDir(t *testing.T) {
 	assert.ErrorIs(t, stagedErr, os.ErrNotExist, "staged dir must not include build/")
 }
 
+func TestPublishPackageStripsRootBinaries(t *testing.T) {
+	home := setLibraryTestEnv(t)
+	cliDir := filepath.Join(home, "library", "test-pp-cli")
+	writePublishableTestCLI(t, cliDir)
+
+	// Simulate an operator who ran `go build ./cmd/...` (or `make build` /
+	// `make build-mcp` without `-o bin/...`): binaries land at the CLI
+	// dir root, named per the generator convention. None of these should
+	// reach the staged tree, regardless of which one the publish skill's
+	// rm -f line happened to enumerate.
+	for _, name := range []string{
+		"test",        // phantom bare-slug binary
+		"test-pp-cli", // primary CLI binary
+		"test-pp-mcp", // MCP peer binary (now covered by both code-level strip and skill cleanup)
+	} {
+		require.NoError(t, os.WriteFile(filepath.Join(cliDir, name), []byte("\x7fELF"), 0o755))
+	}
+
+	target := filepath.Join(t.TempDir(), "staging")
+	cmd := newPublishCmd()
+	cmd.SetArgs([]string{"package", "--dir", cliDir, "--category", "other", "--target", target, "--json"})
+
+	output, err := runWithCapturedStdout(t, cmd.Execute)
+	require.NoError(t, err)
+
+	var result PackageResult
+	require.NoError(t, json.Unmarshal([]byte(output), &result))
+
+	// Source binaries stay — we don't mutate the operator's working tree.
+	for _, name := range []string{"test", "test-pp-cli", "test-pp-mcp"} {
+		_, srcErr := os.Stat(filepath.Join(cliDir, name))
+		assert.NoError(t, srcErr, "package must not delete source-tree binary %s", name)
+	}
+
+	// Staged tree must have none of them.
+	for _, name := range []string{"test", "test-pp-cli", "test-pp-mcp"} {
+		_, stagedErr := os.Stat(filepath.Join(result.StagedDir, name))
+		assert.ErrorIs(t, stagedErr, os.ErrNotExist, "staged dir must not include root-level binary %s", name)
+	}
+}
+
+func TestStagedBinaryNamesDeduplicates(t *testing.T) {
+	t.Parallel()
+
+	got := stagedBinaryNames("foo-pp-cli", "foo")
+	want := []string{"foo", "foo-pp-cli", "foo-pp-mcp"}
+	assert.Equal(t, want, got)
+
+	// Empty slug returns only the cliName (no -pp-cli/-pp-mcp suffix expansion).
+	got = stagedBinaryNames("custom-binary", "")
+	want = []string{"custom-binary"}
+	assert.Equal(t, want, got)
+
+	// Empty both is empty.
+	assert.Empty(t, stagedBinaryNames("", ""))
+}
+
 func TestPublishPackageFailsWhenManuscriptsCopyFails(t *testing.T) {
 	skipIfRootCannotSimulateUnreadable(t)
 	home := setLibraryTestEnv(t)
@@ -514,14 +980,21 @@ func TestPublishPackageIncludesManuscripts(t *testing.T) {
 	cliDir := filepath.Join(home, "library", "test-pp-cli")
 	writePublishableTestCLI(t, cliDir)
 
+	require.NoError(t, os.MkdirAll(filepath.Join(cliDir, ".manuscripts", "stale-run", "discovery"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(cliDir, ".manuscripts", "stale-run", "discovery", "stale-capture.har"), []byte("cookie: stale\n"), 0o644))
+
 	// Create manuscripts at the archived location where publish package looks
 	runID := "20260329-100000"
 	researchDir := filepath.Join(home, "manuscripts", "test", runID, "research")
 	proofsDir := filepath.Join(home, "manuscripts", "test", runID, "proofs")
+	discoveryDir := filepath.Join(home, "manuscripts", "test", runID, "discovery")
 	require.NoError(t, os.MkdirAll(researchDir, 0o755))
 	require.NoError(t, os.MkdirAll(proofsDir, 0o755))
+	require.NoError(t, os.MkdirAll(discoveryDir, 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(researchDir, "brief.md"), []byte("# Research Brief"), 0o644))
 	require.NoError(t, os.WriteFile(filepath.Join(proofsDir, "shipcheck.md"), []byte("# Shipcheck"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(discoveryDir, "browser-sniff-capture.har"), []byte("cookie: session=secret\nemail: user@example.com\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(discoveryDir, "traffic-analysis.json"), []byte(`{"auth_stripped":true}`+"\n"), 0o644))
 
 	target := filepath.Join(t.TempDir(), "staging")
 	cmd := newPublishCmd()
@@ -538,12 +1011,235 @@ func TestPublishPackageIncludesManuscripts(t *testing.T) {
 	// Verify manuscripts are in the staged package
 	stagedResearch := filepath.Join(result.StagedDir, ".manuscripts", runID, "research", "brief.md")
 	stagedProofs := filepath.Join(result.StagedDir, ".manuscripts", runID, "proofs", "shipcheck.md")
+	stagedHAR := filepath.Join(result.StagedDir, ".manuscripts", runID, "discovery", "browser-sniff-capture.har")
+	stagedTrafficAnalysis := filepath.Join(result.StagedDir, ".manuscripts", runID, "discovery", "traffic-analysis.json")
 
 	_, err = os.Stat(stagedResearch)
 	assert.NoError(t, err, "research brief should be in staged package")
 
 	_, err = os.Stat(stagedProofs)
 	assert.NoError(t, err, "shipcheck proofs should be in staged package")
+	assert.NoFileExists(t, stagedHAR, "raw HAR captures should not be bundled into publishable manuscripts")
+
+	_, err = os.Stat(stagedTrafficAnalysis)
+	assert.NoError(t, err, "auth-stripped traffic analysis should remain in staged package")
+	assert.NoFileExists(t, filepath.Join(result.StagedDir, ".manuscripts", "stale-run", "discovery", "stale-capture.har"))
+}
+
+func TestPublishPackageFiltersEmbeddedManuscriptsFallback(t *testing.T) {
+	home := setLibraryTestEnv(t)
+	cliDir := filepath.Join(home, "library", "test-pp-cli")
+	writePublishableTestCLI(t, cliDir)
+
+	runID := "20260301-000000"
+	require.NoError(t, os.RemoveAll(filepath.Join(home, "manuscripts", "test")))
+	embeddedDiscovery := filepath.Join(cliDir, ".manuscripts", runID, "discovery")
+	embeddedProofs := filepath.Join(cliDir, ".manuscripts", runID, "proofs")
+	embeddedResearch := filepath.Join(cliDir, ".manuscripts", runID, "research")
+	require.NoError(t, os.MkdirAll(embeddedDiscovery, 0o755))
+	require.NoError(t, os.MkdirAll(embeddedProofs, 0o755))
+	require.NoError(t, os.MkdirAll(embeddedResearch, 0o755))
+	writeTestPhase5GateMarker(t, embeddedProofs, pipeline.Phase5AcceptanceFilename, pipeline.Phase5GateMarker{
+		SchemaVersion: 1,
+		APIName:       "test",
+		RunID:         runID,
+		Status:        "pass",
+		Level:         "full",
+		MatrixSize:    1,
+		TestsPassed:   1,
+		TestsFailed:   0,
+		AuthContext:   pipeline.Phase5AuthContext{Type: "none"},
+	})
+	require.NoError(t, os.WriteFile(filepath.Join(embeddedDiscovery, "browser-sniff-capture.har"), []byte("cookie: session=secret\nemail: user@example.com\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(embeddedDiscovery, "traffic-analysis.json"), []byte(`{"auth_stripped":true}`+"\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(embeddedResearch, "brief.md"), []byte("# Research Brief"), 0o644))
+
+	target := filepath.Join(t.TempDir(), "staging")
+	cmd := newPublishCmd()
+	cmd.SetArgs([]string{"package", "--dir", cliDir, "--category", "other", "--target", target, "--json"})
+
+	output, err := runWithCapturedStdout(t, cmd.Execute)
+	require.NoError(t, err)
+
+	var result PackageResult
+	require.NoError(t, json.Unmarshal([]byte(output), &result))
+	assert.True(t, result.ManuscriptsIncluded, "embedded manuscripts should be included when archive root is absent")
+	assert.Equal(t, runID, result.RunID)
+	assert.NoFileExists(t, filepath.Join(result.StagedDir, ".manuscripts", runID, "discovery", "browser-sniff-capture.har"))
+	assert.FileExists(t, filepath.Join(result.StagedDir, ".manuscripts", runID, "discovery", "traffic-analysis.json"))
+	assert.FileExists(t, filepath.Join(result.StagedDir, ".manuscripts", runID, "research", "brief.md"))
+}
+
+func TestPublishPackageRejectsVendorPrefixSecretsInStagedCLI(t *testing.T) {
+	home := setLibraryTestEnv(t)
+	cliDir := filepath.Join(home, "library", "test-pp-cli")
+	writePublishableTestCLI(t, cliDir)
+	require.NoError(t, os.WriteFile(filepath.Join(cliDir, "spec.json"), []byte("{\n  \"token\": \""+testSecret("sk", "-or-v1-", "abcdefghijklmnopqrstuvwxyz1234567890")+"\"\n}\n"), 0o644))
+
+	target := filepath.Join(t.TempDir(), "staging")
+	cmd := newPublishCmd()
+	cmd.SetArgs([]string{"package", "--dir", cliDir, "--category", "other", "--target", target, "--json"})
+
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "vendor-prefix tokens detected")
+	assert.Contains(t, err.Error(), "spec.json:2 openrouter-api-key")
+
+	_, statErr := os.Stat(target)
+	assert.ErrorIs(t, statErr, os.ErrNotExist, "failed packaging should clean up the staging target")
+}
+
+func TestPublishPackageRejectsSpecDeclaredCookieValuesInStagedCLI(t *testing.T) {
+	for _, authType := range []string{"cookie", "composed"} {
+		t.Run(authType, func(t *testing.T) {
+			home := setLibraryTestEnv(t)
+			cliDir := filepath.Join(home, "library", "test-pp-cli")
+			writePublishableTestCLI(t, cliDir)
+			require.NoError(t, os.WriteFile(filepath.Join(cliDir, "tools-manifest.json"), []byte(`{"auth":{"type":"`+authType+`","cookies":["session-id"]}}`+"\n"), 0o644))
+			require.NoError(t, os.WriteFile(filepath.Join(cliDir, "README.md"), []byte("Cookie: session-id=actuallyrealcookievaluexyz\n"), 0o644))
+
+			target := filepath.Join(t.TempDir(), "staging")
+			cmd := newPublishCmd()
+			cmd.SetArgs([]string{"package", "--dir", cliDir, "--category", "other", "--target", target, "--json"})
+
+			err := cmd.Execute()
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "vendor-prefix tokens detected")
+			assert.Contains(t, err.Error(), "README.md:1 cookie-value:session-id")
+			assert.NotContains(t, err.Error(), "actuallyrealcookievaluexyz")
+
+			_, statErr := os.Stat(target)
+			assert.ErrorIs(t, statErr, os.ErrNotExist, "failed packaging should clean up the staging target")
+		})
+	}
+}
+
+func TestPublishPackageRejectsPIIInStagedCLI(t *testing.T) {
+	home := setLibraryTestEnv(t)
+	cliDir := filepath.Join(home, "library", "test-pp-cli")
+	writePublishableTestCLI(t, cliDir)
+	// Plant real-shaped PII in a high-risk file
+	require.NoError(t, os.WriteFile(
+		filepath.Join(cliDir, "data.json"),
+		[]byte(`{"customer_email": "alice@gmail.com"}`+"\n"),
+		0o644,
+	))
+
+	target := filepath.Join(t.TempDir(), "staging")
+	cmd := newPublishCmd()
+	cmd.SetArgs([]string{"package", "--dir", cliDir, "--category", "other", "--target", target, "--json"})
+
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "customer PII detected")
+	assert.Contains(t, err.Error(), "email")
+
+	_, statErr := os.Stat(target)
+	assert.ErrorIs(t, statErr, os.ErrNotExist, "failed packaging should clean up the staging target")
+}
+
+func TestPublishPackageAllowsReservedSyntheticPII(t *testing.T) {
+	home := setLibraryTestEnv(t)
+	cliDir := filepath.Join(home, "library", "test-pp-cli")
+	writePublishableTestCLI(t, cliDir)
+	require.NoError(t, os.WriteFile(
+		filepath.Join(cliDir, "data.json"),
+		[]byte(`{"customer_email": "alice@example.com", "docs_email": "team@app.test", "phone": "(415) 555-0123"}`+"\n"),
+		0o644,
+	))
+
+	runID := "20260329-100000"
+	researchFile := filepath.Join(home, "manuscripts", "test", runID, "research", "captured.json")
+	require.NoError(t, os.MkdirAll(filepath.Dir(researchFile), 0o755))
+	require.NoError(t, os.WriteFile(
+		researchFile,
+		[]byte(`{"recipient_email": "new@example.com", "phone": "5555550100"}`+"\n"),
+		0o644,
+	))
+
+	target := filepath.Join(t.TempDir(), "staging")
+	cmd := newPublishCmd()
+	cmd.SetArgs([]string{"package", "--dir", cliDir, "--category", "other", "--target", target, "--json"})
+
+	output, err := runWithCapturedStdout(t, cmd.Execute)
+	require.NoError(t, err)
+
+	var result PackageResult
+	require.NoError(t, json.Unmarshal([]byte(output), &result))
+	assert.DirExists(t, result.StagedDir)
+}
+
+func TestPublishPackageRejectsPIIInManuscripts(t *testing.T) {
+	home := setLibraryTestEnv(t)
+	cliDir := filepath.Join(home, "library", "test-pp-cli")
+	writePublishableTestCLI(t, cliDir)
+	runID := "20260329-100000"
+	researchFile := filepath.Join(home, "manuscripts", "test", runID, "research", "captured.json")
+	require.NoError(t, os.MkdirAll(filepath.Dir(researchFile), 0o755))
+	require.NoError(t, os.WriteFile(researchFile, []byte(`{"recipient_email": "leak@gmail.com"}`+"\n"), 0o644))
+
+	target := filepath.Join(t.TempDir(), "staging")
+	cmd := newPublishCmd()
+	cmd.SetArgs([]string{"package", "--dir", cliDir, "--category", "other", "--target", target, "--json"})
+
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "customer PII detected")
+	assert.Contains(t, err.Error(), "captured.json")
+
+	_, statErr := os.Stat(target)
+	assert.ErrorIs(t, statErr, os.ErrNotExist, "failed packaging should clean up the staging target")
+}
+
+func TestPublishPackageCombinesSecretAndPIIReports(t *testing.T) {
+	home := setLibraryTestEnv(t)
+	cliDir := filepath.Join(home, "library", "test-pp-cli")
+	writePublishableTestCLI(t, cliDir)
+	// Plant both a secret AND PII
+	require.NoError(t, os.WriteFile(
+		filepath.Join(cliDir, "spec.json"),
+		[]byte("{\n  \"token\": \""+testSecret("sk", "-or-v1-", "abcdefghijklmnopqrstuvwxyz1234567890")+"\"\n}\n"),
+		0o644,
+	))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(cliDir, "data.json"),
+		[]byte(`{"customer_email": "alice@gmail.com"}`+"\n"),
+		0o644,
+	))
+
+	target := filepath.Join(t.TempDir(), "staging")
+	cmd := newPublishCmd()
+	cmd.SetArgs([]string{"package", "--dir", cliDir, "--category", "other", "--target", target, "--json"})
+
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "vendor-prefix tokens detected")
+	assert.Contains(t, err.Error(), "customer PII detected")
+
+	_, statErr := os.Stat(target)
+	assert.ErrorIs(t, statErr, os.ErrNotExist, "failed packaging should clean up the staging target even on combined-error path")
+}
+
+func TestPublishPackageRejectsVendorPrefixSecretsInManuscripts(t *testing.T) {
+	home := setLibraryTestEnv(t)
+	cliDir := filepath.Join(home, "library", "test-pp-cli")
+	writePublishableTestCLI(t, cliDir)
+	runID := "20260329-100000"
+	researchFile := filepath.Join(home, "manuscripts", "test", runID, "research", "openapi.json")
+	require.NoError(t, os.MkdirAll(filepath.Dir(researchFile), 0o755))
+	require.NoError(t, os.WriteFile(researchFile, []byte("Authorization: Bearer "+testSecret("sk", "_live_", "1234567890abcdefghijklmnop")+"\n"), 0o644))
+
+	target := filepath.Join(t.TempDir(), "staging")
+	cmd := newPublishCmd()
+	cmd.SetArgs([]string{"package", "--dir", cliDir, "--category", "other", "--target", target, "--json"})
+
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "vendor-prefix tokens detected")
+	assert.Contains(t, err.Error(), ".manuscripts/20260329-100000/research/openapi.json:1 stripe-secret-key")
+
+	_, statErr := os.Stat(target)
+	assert.ErrorIs(t, statErr, os.ErrNotExist, "failed packaging should clean up the staging target")
 }
 
 func TestFindMostRecentRun(t *testing.T) {
@@ -836,6 +1532,21 @@ func TestPublishRenameJSONError(t *testing.T) {
 func writePublishableTestCLI(t *testing.T, dir string) {
 	t.Helper()
 
+	stubPublishIdentityCommands(t,
+		"",
+		`#!/bin/sh
+if [ "$1" = "api" ] && [ "$2" = "users/tmchow" ]; then
+  if [ "$3" = "--jq" ]; then
+    echo "tmchow"
+  else
+    echo '{"login":"tmchow","name":"Trevin Chow"}'
+  fi
+  exit 0
+fi
+exit 1
+`,
+	)
+
 	require.NoError(t, os.MkdirAll(filepath.Join(dir, "cmd", "test-pp-cli"), 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "go.mod"), []byte(`module example.com/test-pp-cli
 
@@ -887,6 +1598,8 @@ import "github.com/spf13/cobra"
 
 func newRootCmd() *cobra.Command {
 	cmd := &cobra.Command{Use: "test-pp-cli"}
+	var agent bool
+	cmd.PersistentFlags().BoolVar(&agent, "agent", false, "Agent mode")
 	cmd.AddCommand(newInsightCmd())
 	return cmd
 }
@@ -899,11 +1612,17 @@ func newInsightCmd() *cobra.Command {
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte("# Test CLI\n\n"+skillInstall+"\n## Command Reference\n\n- `test-pp-cli insight` — Show test insight\n\n## Usage\n\n```bash\ntest-pp-cli insight --agent\n```\n"), 0o644))
 
 	writeTestManifest(t, dir, pipeline.CLIManifest{
-		SchemaVersion: 1,
-		APIName:       "test",
-		CLIName:       "test-pp-cli",
-		RunID:         "20260301-000000",
-		AuthType:      "none",
+		SchemaVersion:        pipeline.CurrentCLIManifestSchemaVersion,
+		PrintingPressVersion: "test-version",
+		APIName:              "test",
+		CLIName:              "test-pp-cli",
+		RunID:                "20260301-000000",
+		Printer:              "tmchow",
+		PrinterName:          "Trevin Chow",
+		AuthType:             "none",
+		NovelFeatures: []pipeline.NovelFeatureManifest{
+			{Name: "Insight", Command: "insight", Description: "Show test insight."},
+		},
 	})
 	writePublishablePhase5Pass(t)
 }
@@ -924,4 +1643,212 @@ func writePublishablePhase5Pass(t *testing.T) {
 		TestsFailed:   0,
 		AuthContext:   pipeline.Phase5AuthContext{Type: "none"},
 	})
+}
+
+func testSecret(parts ...string) string {
+	return strings.Join(parts, "")
+}
+
+func TestPublishPackageAllowMirrorDeletionsRequiresDest(t *testing.T) {
+	home := setLibraryTestEnv(t)
+	cliDir := filepath.Join(home, "library", "test-pp-cli")
+	writePublishableTestCLI(t, cliDir)
+
+	target := filepath.Join(t.TempDir(), "staging")
+	cmd := newPublishCmd()
+	cmd.SetArgs([]string{"package", "--dir", cliDir, "--category", "other", "--target", target, "--allow-mirror-deletions", "--json"})
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "--allow-mirror-deletions requires --dest")
+}
+
+func TestListMirrorOnlyFiles(t *testing.T) {
+	srcDir := t.TempDir()
+	mirrorDir := t.TempDir()
+
+	// Files in both.
+	for _, p := range []string{"go.mod", "README.md", filepath.Join("internal", "cli", "root.go")} {
+		require.NoError(t, os.MkdirAll(filepath.Dir(filepath.Join(srcDir, p)), 0o755))
+		require.NoError(t, os.WriteFile(filepath.Join(srcDir, p), []byte("src"), 0o644))
+		require.NoError(t, os.MkdirAll(filepath.Dir(filepath.Join(mirrorDir, p)), 0o755))
+		require.NoError(t, os.WriteFile(filepath.Join(mirrorDir, p), []byte("mirror"), 0o644))
+	}
+
+	// Files only in mirror (the deletion risk).
+	for _, p := range []string{
+		filepath.Join("internal", "source", "resy", "client.go"),
+		filepath.Join("internal", "source", "resy", "types.go"),
+	} {
+		require.NoError(t, os.MkdirAll(filepath.Dir(filepath.Join(mirrorDir, p)), 0o755))
+		require.NoError(t, os.WriteFile(filepath.Join(mirrorDir, p), []byte("mirror-only"), 0o644))
+	}
+
+	// Files only in mirror but under excluded prefixes (should be ignored).
+	require.NoError(t, os.MkdirAll(filepath.Join(mirrorDir, ".manuscripts", "20260101-000000", "research"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(mirrorDir, ".manuscripts", "20260101-000000", "research", "brief.md"), []byte("old"), 0o644))
+	require.NoError(t, os.MkdirAll(filepath.Join(mirrorDir, "build"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(mirrorDir, "build", "host.tar.gz"), []byte("artifact"), 0o644))
+
+	// File only in source (not a deletion risk).
+	require.NoError(t, os.WriteFile(filepath.Join(srcDir, "NEW.md"), []byte("new in source"), 0o644))
+
+	got, err := listMirrorOnlyFiles(mirrorDir, srcDir)
+	require.NoError(t, err)
+	assert.Equal(t, []string{
+		"internal/source/resy/client.go",
+		"internal/source/resy/types.go",
+	}, got)
+}
+
+func TestListMirrorOnlyFilesNothingMissing(t *testing.T) {
+	srcDir := t.TempDir()
+	mirrorDir := t.TempDir()
+	for _, p := range []string{"go.mod", "README.md"} {
+		require.NoError(t, os.WriteFile(filepath.Join(srcDir, p), []byte("src"), 0o644))
+		require.NoError(t, os.WriteFile(filepath.Join(mirrorDir, p), []byte("mirror"), 0o644))
+	}
+
+	got, err := listMirrorOnlyFiles(mirrorDir, srcDir)
+	require.NoError(t, err)
+	assert.Empty(t, got)
+}
+
+func TestListMirrorOnlyFilesTopLevelFileNamedLikeExcludedDir(t *testing.T) {
+	srcDir := t.TempDir()
+	mirrorDir := t.TempDir()
+
+	// Mirror has a top-level FILE (not directory) literally named
+	// .manuscripts. The exclusion targets the .manuscripts/ directory,
+	// not files with that name, so this should be reported.
+	require.NoError(t, os.WriteFile(filepath.Join(mirrorDir, ".manuscripts"), []byte("not a dir"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(mirrorDir, "build"), []byte("also not a dir"), 0o644))
+
+	got, err := listMirrorOnlyFiles(mirrorDir, srcDir)
+	require.NoError(t, err)
+	assert.Equal(t, []string{".manuscripts", "build"}, got)
+}
+
+func TestPublishPackageDestDivergenceMessageTruncatesAndUsesSingular(t *testing.T) {
+	home := setLibraryTestEnv(t)
+	cliDir := filepath.Join(home, "library", "test-pp-cli")
+	writePublishableTestCLI(t, cliDir)
+
+	destDir := filepath.Join(t.TempDir(), "publish-repo")
+	mirrorCLIDir := filepath.Join(destDir, "library", "other", "test")
+	require.NoError(t, os.MkdirAll(mirrorCLIDir, 0o755))
+
+	// Singular case: exactly one mirror-only file.
+	soloDir := filepath.Join(mirrorCLIDir, "internal", "extra")
+	require.NoError(t, os.MkdirAll(soloDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(soloDir, "only.go"), []byte("package extra\n"), 0o644))
+
+	cmd := newPublishCmd()
+	cmd.SetArgs([]string{"package", "--dir", cliDir, "--category", "other", "--dest", destDir, "--json"})
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "mirror has 1 file not present")
+
+	// Truncation case: more mirror-only files than mirrorDivergenceExampleLimit.
+	overflowDir := filepath.Join(mirrorCLIDir, "internal", "overflow")
+	require.NoError(t, os.MkdirAll(overflowDir, 0o755))
+	total := mirrorDivergenceExampleLimit + 3
+	for i := range total {
+		require.NoError(t, os.WriteFile(filepath.Join(overflowDir, fmt.Sprintf("f%02d.go", i)), []byte("package overflow\n"), 0o644))
+	}
+
+	err = cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), fmt.Sprintf("mirror has %d files not present", total+1))
+	assert.Contains(t, err.Error(), fmt.Sprintf("... and %d more", total+1-mirrorDivergenceExampleLimit))
+}
+
+func TestPublishPackageDestRefusesMirrorOnlyContent(t *testing.T) {
+	home := setLibraryTestEnv(t)
+	cliDir := filepath.Join(home, "library", "test-pp-cli")
+	writePublishableTestCLI(t, cliDir)
+
+	destDir := filepath.Join(t.TempDir(), "publish-repo")
+	mirrorCLIDir := filepath.Join(destDir, "library", "other", "test")
+	require.NoError(t, os.MkdirAll(mirrorCLIDir, 0o755))
+
+	// Mirror has a package the source does not. Without the guard, the
+	// publish overlay would silently delete it.
+	resyDir := filepath.Join(mirrorCLIDir, "internal", "source", "resy")
+	require.NoError(t, os.MkdirAll(resyDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(resyDir, "client.go"), []byte("package resy\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(resyDir, "types.go"), []byte("package resy\n"), 0o644))
+
+	cmd := newPublishCmd()
+	cmd.SetArgs([]string{"package", "--dir", cliDir, "--category", "other", "--dest", destDir, "--json"})
+
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "mirror has 2 files not present in source library")
+	assert.Contains(t, err.Error(), "internal/source/resy/client.go")
+	assert.Contains(t, err.Error(), "internal/source/resy/types.go")
+	assert.Contains(t, err.Error(), "--allow-mirror-deletions")
+
+	// Mirror content must remain intact after refusal.
+	_, err = os.Stat(filepath.Join(resyDir, "client.go"))
+	assert.NoError(t, err, "mirror content should remain after refusal")
+	_, err = os.Stat(mirrorCLIDir + ".old")
+	assert.ErrorIs(t, err, os.ErrNotExist, "should not have stashed before failing")
+}
+
+func TestPublishPackageDestAllowMirrorDeletionsOverride(t *testing.T) {
+	home := setLibraryTestEnv(t)
+	cliDir := filepath.Join(home, "library", "test-pp-cli")
+	writePublishableTestCLI(t, cliDir)
+
+	destDir := filepath.Join(t.TempDir(), "publish-repo")
+	mirrorCLIDir := filepath.Join(destDir, "library", "other", "test")
+	resyDir := filepath.Join(mirrorCLIDir, "internal", "source", "resy")
+	require.NoError(t, os.MkdirAll(resyDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(resyDir, "client.go"), []byte("package resy\n"), 0o644))
+
+	cmd := newPublishCmd()
+	cmd.SetArgs([]string{"package", "--dir", cliDir, "--category", "other", "--dest", destDir, "--allow-mirror-deletions", "--json"})
+
+	output, err := runWithCapturedStdout(t, cmd.Execute)
+	require.NoError(t, err)
+	var result PackageResult
+	require.NoError(t, json.Unmarshal([]byte(output), &result))
+	assert.Equal(t, filepath.Join(destDir, "library", "other", "test"), result.StagedDir)
+
+	// Mirror-only file is gone after the override.
+	_, err = os.Stat(filepath.Join(resyDir, "client.go"))
+	assert.ErrorIs(t, err, os.ErrNotExist, "mirror-only file should be deleted with override")
+}
+
+func TestPublishPackageDestIgnoresManuscriptsDivergence(t *testing.T) {
+	home := setLibraryTestEnv(t)
+	cliDir := filepath.Join(home, "library", "test-pp-cli")
+	writePublishableTestCLI(t, cliDir)
+
+	// Create manuscripts for the new run.
+	runID := "20260329-100000"
+	researchDir := filepath.Join(home, "manuscripts", "test", runID, "research")
+	require.NoError(t, os.MkdirAll(researchDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(researchDir, "brief.md"), []byte("# Brief"), 0o644))
+
+	destDir := filepath.Join(t.TempDir(), "publish-repo")
+	mirrorCLIDir := filepath.Join(destDir, "library", "other", "test")
+
+	// Mirror has an old manuscripts run and a stale build/ dir. Neither
+	// represents real divergence; both are managed by the publish flow.
+	oldMSDir := filepath.Join(mirrorCLIDir, ".manuscripts", "20260101-000000", "research")
+	require.NoError(t, os.MkdirAll(oldMSDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(oldMSDir, "brief.md"), []byte("old"), 0o644))
+	require.NoError(t, os.MkdirAll(filepath.Join(mirrorCLIDir, "build"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(mirrorCLIDir, "build", "host.tar.gz"), []byte("artifact"), 0o644))
+
+	cmd := newPublishCmd()
+	cmd.SetArgs([]string{"package", "--dir", cliDir, "--category", "other", "--dest", destDir, "--json"})
+
+	output, err := runWithCapturedStdout(t, cmd.Execute)
+	require.NoError(t, err, "manuscripts/build divergence should not block the overlay")
+
+	var result PackageResult
+	require.NoError(t, json.Unmarshal([]byte(output), &result))
+	assert.True(t, result.ManuscriptsIncluded)
 }

@@ -40,9 +40,12 @@ func firstCommandExample(resources map[string]spec.Resource) string {
 	preferredVerbs := []string{"list", "get", "search", "query"}
 
 	pathFor := func(rName string, r spec.Resource, eName string, ep spec.Endpoint) string {
-		parts := []string{rName}
+		// Kebab the resource segment to match the actual cobra command name
+		// (mirrors toKebab(resourceName) in buildPromotedCommands). PascalCase
+		// or snake_case spec keys would otherwise advertise an unrunnable path.
+		parts := []string{toKebab(rName)}
 		if !isPromotableSingleEndpoint(rName, r) {
-			parts = append(parts, eName)
+			parts = append(parts, toKebab(eName))
 		}
 		parts = append(parts, readmeExampleArgs(ep)...)
 		return strings.Join(parts, " ")
@@ -101,7 +104,7 @@ func requiredFlagExampleParts(ep spec.Endpoint) []string {
 		if p.Positional || !p.Required {
 			continue
 		}
-		val := exampleValue(p)
+		val := requiredFlagExampleValue(ep, p)
 		if val == "" {
 			val = "value"
 		}
@@ -122,6 +125,74 @@ func requiredFlagExampleParts(ep spec.Endpoint) []string {
 		}
 	}
 	return parts
+}
+
+func requiredFlagExampleValue(ep spec.Endpoint, p spec.Param) string {
+	if val, ok := dispatchParamDefaultValue(ep, p); ok {
+		return val
+	}
+	return exampleValue(p)
+}
+
+func dispatchParamDefaultValue(ep spec.Endpoint, p spec.Param) (string, bool) {
+	defaultValue, ok := p.Default.(string)
+	if !ok {
+		return "", false
+	}
+	defaultValue = strings.TrimSpace(defaultValue)
+	if defaultValue == "" {
+		return "", false
+	}
+	if p.DispatchParam {
+		return defaultValue, true
+	}
+	if p.DispatchParamSet {
+		return "", false
+	}
+	if pathUsesDispatchDefault(ep.Path, p, defaultValue) || isDispatchStyleParam(p) {
+		return defaultValue, true
+	}
+	return "", false
+}
+
+func pathUsesDispatchDefault(path string, p spec.Param, defaultValue string) bool {
+	names := []string{p.Name, p.WireName()}
+	for _, name := range names {
+		name = strings.TrimSpace(name)
+		if name == "" {
+			continue
+		}
+		if queryParamDefaultInPath(path, name, defaultValue) {
+			return true
+		}
+	}
+	return false
+}
+
+func queryParamDefaultInPath(path, name, defaultValue string) bool {
+	idx := strings.Index(path, "?")
+	if idx < 0 || idx == len(path)-1 {
+		return false
+	}
+	for part := range strings.SplitSeq(path[idx+1:], "&") {
+		key, val, ok := strings.Cut(part, "=")
+		if !ok {
+			continue
+		}
+		if strings.TrimSpace(key) == name && strings.TrimSpace(val) == defaultValue {
+			return true
+		}
+	}
+	return false
+}
+
+func isDispatchStyleParam(p spec.Param) bool {
+	switch strings.ToLower(strings.TrimSpace(p.WireName())) {
+	case "type", "action":
+		return true
+	default:
+		return false
+	}
 }
 
 // skillExamplePositionalValue resolves one positional param to the value

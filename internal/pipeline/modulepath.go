@@ -2,6 +2,7 @@ package pipeline
 
 import (
 	"fmt"
+	"go/format"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -41,6 +42,17 @@ func RewriteModulePath(dir, oldPath, newPath string) error {
 		return fmt.Errorf("writing go.mod: %w", err)
 	}
 
+	return RewriteModulePathReferences(dir, oldPath, newPath)
+}
+
+// RewriteModulePathReferences rewrites import-style module references without
+// touching the go.mod module declaration. Use this when the caller has already
+// written the final go.mod contents.
+func RewriteModulePathReferences(dir, oldPath, newPath string) error {
+	if oldPath == newPath {
+		return nil
+	}
+
 	// Only replace subpath references: oldPath/internal/... and oldPath/cmd/...
 	// This avoids corrupting command Use strings, User-Agent headers,
 	// config paths, and other runtime literals that contain the CLI name.
@@ -73,6 +85,20 @@ func RewriteModulePath(dir, oldPath, newPath string) error {
 		result = rewriteGitHubRepoURLs(result, oldPath, newPath)
 		if result == string(content) {
 			return nil // no changes needed
+		}
+
+		// Reformat rewritten Go source. Swapping the module path changes
+		// import-path length and alphabetical order, so a string-only
+		// replace leaves the import block out of gofmt order. Without this
+		// pass every published CLI's imports drift from gofmt-clean — the
+		// generator emits clean code, but the publish-time rewrite undoes
+		// it. Reformatting here keeps published output clean by construction.
+		if strings.HasSuffix(path, ".go") {
+			formatted, ferr := format.Source([]byte(result))
+			if ferr != nil {
+				return fmt.Errorf("gofmt after module-path rewrite of %s: %w", path, ferr)
+			}
+			result = string(formatted)
 		}
 
 		return os.WriteFile(path, []byte(result), 0o644)

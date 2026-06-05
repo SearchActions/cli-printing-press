@@ -20,7 +20,7 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Check whether Go lint is needed
+      - name: Check whether lint validations are needed
         id: changes
         shell: bash
         run: |
@@ -33,28 +33,61 @@ jobs:
           printf '  %s\n' "${changed[@]}"
 
           needs_lint=false
+          needs_skill_docs=false
           for file in "${changed[@]}"; do
             case "$file" in
               *.go|go.mod|go.sum|.golangci.yml|.github/workflows/lint.yml)
                 needs_lint=true
-                break
                 ;;
             esac
+
+            case "$file" in
+              skills/*|docs/SKILLS.md|.github/scripts/validate-skill-docs.sh|.github/workflows/lint.yml)
+                needs_skill_docs=true
+                ;;
+            esac
+
+            if [[ "$needs_lint" == "true" && "$needs_skill_docs" == "true" ]]; then
+              break
+            fi
           done
 
           echo "needs_lint=$needs_lint" >> "$GITHUB_OUTPUT"
+          echo "needs_skill_docs=$needs_skill_docs" >> "$GITHUB_OUTPUT"
 
       - name: Skip Go lint
         if: steps.changes.outputs.needs_lint != 'true'
         run: |
           echo "Skipping golangci-lint: no Go, module, lint config, or lint workflow files changed."
 
+      - name: Skip skill docs validation
+        if: steps.changes.outputs.needs_skill_docs != 'true'
+        run: |
+          echo "Skipping skill docs validation: no skill docs, skill guidance, or skill-doc workflow files changed."
+
+      - name: Validate skill docs
+        if: steps.changes.outputs.needs_skill_docs == 'true'
+        run: bash .github/scripts/validate-skill-docs.sh
+
+      # setup-go's bundled cache restores both GOMODCACHE and GOCACHE as one
+      # ~1GB tarball; on this repo that adds ~75s of extract time per job.
+      # The lint job sees little payoff from a warm GOCACHE (golangci-lint
+      # has its own 1 MB analyzer cache that's already hit cleanly), so we
+      # skip the bundled cache and restore only the module cache manually.
       - uses: actions/setup-go@v6
         if: steps.changes.outputs.needs_lint == 'true'
         with:
           go-version-file: go.mod
-          cache: true
-          cache-dependency-path: go.sum
+          cache: false
+
+      - name: Cache Go modules
+        if: steps.changes.outputs.needs_lint == 'true'
+        uses: actions/cache@v4
+        with:
+          path: ~/go/pkg/mod
+          key: lint-gomodcache-${{ runner.os }}-${{ hashFiles('go.sum') }}
+          restore-keys: |
+            lint-gomodcache-${{ runner.os }}-
 
       - uses: golangci/golangci-lint-action@v9
         if: steps.changes.outputs.needs_lint == 'true'
@@ -87,7 +120,7 @@ jobs:
           needs_tests=false
           for file in "${changed[@]}"; do
             case "$file" in
-              .github/workflows/lint.yml|go.mod|go.sum|cmd/*|catalog/*|internal/*|scripts/*|skills/*|docs/SKILLS.md|testdata/*)
+              .github/workflows/lint.yml|go.mod|go.sum|cmd/*|catalog/*|internal/*|scripts/*|testdata/*)
                 needs_tests=true
                 break
                 ;;
@@ -107,7 +140,8 @@ jobs:
       matrix:
         include:
           - shard: generator
-          - shard: pipeline-cli
+          - shard: pipeline
+          - shard: cli
           - shard: rest
     steps:
       - uses: actions/checkout@v6
@@ -125,13 +159,16 @@ jobs:
 
           case "${{ matrix.shard }}" in
             generator)
-              packages=(./internal/generator)
+              packages=(./internal/generator/...)
               ;;
-            pipeline-cli)
-              packages=(./internal/pipeline ./internal/cli)
+            pipeline)
+              packages=(./internal/pipeline/...)
+              ;;
+            cli)
+              packages=(./internal/cli/...)
               ;;
             rest)
-              mapfile -t packages < <(go list ./... | grep -Ev '/internal/(generator|pipeline|cli)$')
+              mapfile -t packages < <(go list ./... | grep -Ev '/internal/(generator|pipeline|cli)(/|$)')
               ;;
             *)
               echo "unknown test shard: ${{ matrix.shard }}" >&2
@@ -181,7 +218,7 @@ jobs:
       - name: Skip Go tests
         if: needs.test-changes.outputs.needs_tests != 'true'
         run: |
-          echo "Skipping Go tests: no Go, module, CI workflow, catalog, script, skill, or testdata changes."
+          echo "Skipping Go tests: no Go, module, CI workflow, catalog, script, or testdata changes."
 
       - name: Check test shards
         if: needs.test-changes.outputs.needs_tests == 'true'
@@ -320,3 +357,12 @@ jobs:
           fi
 
           echo "All generated compile shards passed."
+
+  skill-docs:
+    name: skill-docs
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Compatibility check
+        run: |
+          echo "Skill docs validation runs inside go-lint."

@@ -12,10 +12,9 @@ import (
 )
 
 // TestPromotedHasStorePostRoutesThroughVerbBranch is #425's interim-fix
-// guard: HasStore + POST must route through c.Post (live API call) rather
-// than resolveRead, which is GET-only internally. Pre-fix the template
-// emitted resolveRead unconditionally for HasStore and produced
-// uncompilable code for non-GET endpoints.
+// guard: HasStore + POST must route through the POST verb branch (live API
+// call) rather than resolveRead, which is GET-only internally. Read-shaped POSTs
+// use the verify-safe query helper within that branch.
 func TestPromotedHasStorePostRoutesThroughVerbBranch(t *testing.T) {
 	t.Parallel()
 
@@ -51,8 +50,8 @@ func TestPromotedHasStorePostRoutesThroughVerbBranch(t *testing.T) {
 
 	assert.NotContains(t, got, "resolveRead(",
 		"HasStore + POST must NOT route through resolveRead (GET-only internally)")
-	assert.Contains(t, got, "c.Post(path, body)",
-		"HasStore + POST must route through the verb branch with a built body")
+	assert.Contains(t, got, "c.PostQueryWithParams(cmd.Context(), path, params, body)",
+		"HasStore + read-only POST must route through the verb branch with a built body")
 	assert.Contains(t, got, `attachFreshness(DataProvenance{Source: "live"}, flags)`,
 		"non-GET HasStore commands must synthesize a live-call prov so the downstream HasStore block compiles")
 }
@@ -87,9 +86,9 @@ func TestPromotedHasStoreGetStillUsesResolveRead(t *testing.T) {
 	require.NoError(t, err)
 	got := string(src)
 
-	assert.Contains(t, got, "resolveRead(",
-		"HasStore + GET must keep routing through resolveRead (the cached fast-path)")
-	assert.NotContains(t, got, "c.Get(path, params)",
+	assert.Contains(t, got, "resolveReadWithStrategy(",
+		"HasStore + GET must keep routing through the cached fast-path")
+	assert.NotContains(t, got, "c.Get(cmd.Context(), path, params)",
 		"HasStore + GET must not also emit a direct c.Get call (would mean both branches fired)")
 }
 
@@ -97,7 +96,7 @@ func TestPromotedHasStoreGetStillUsesResolveRead(t *testing.T) {
 // other tests don't reach. The provenance synthesis lives in a single
 // post-chain block, so a regression that drops it from one verb shape
 // drops it from all of them — but DELETE has its own pre-existing
-// `data, _, err := c.Delete(path)` call site, so an explicit assertion
+// `data, _, err := c.DeleteWithParams(cmd.Context(), path, params)` call site, so an explicit assertion
 // guards against template refactors that re-introduce the dup.
 func TestPromotedHasStoreDeleteSynthesizesProv(t *testing.T) {
 	t.Parallel()
@@ -128,8 +127,8 @@ func TestPromotedHasStoreDeleteSynthesizesProv(t *testing.T) {
 
 	assert.NotContains(t, got, "resolveRead(",
 		"HasStore + DELETE must NOT route through resolveRead")
-	assert.Contains(t, got, "c.Delete(path)",
-		"HasStore + DELETE must route through c.Delete")
+	assert.Contains(t, got, "c.DeleteWithParams(cmd.Context(), path, params)",
+		"HasStore + DELETE must route through c.DeleteWithParams")
 	assert.Contains(t, got, `attachFreshness(DataProvenance{Source: "live"}, flags)`,
 		"HasStore + DELETE must synthesize a live-call prov for the downstream provenance block")
 }
