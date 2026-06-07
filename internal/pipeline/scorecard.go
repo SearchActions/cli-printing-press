@@ -264,11 +264,27 @@ func scoreSpecDimensions(sc *Scorecard, outputDir, specPath string) (*openAPISpe
 }
 
 func scoreDomainDimensions(sc *Scorecard, outputDir string, spec *openAPISpecInfo, verifyReport *VerifyReport, isDevice bool) {
-	if isDevice {
+	var specPaths []string
+	if spec != nil {
+		specPaths = spec.Paths
+	}
+	switch {
+	case isDevice:
 		// BLE device CLIs have no sync->sql->search data pipeline; the HTTP-shaped
 		// pipeline and sync checks don't apply. Mark N/A rather than scoring 0.
 		sc.UnscoredDimensions = append(sc.UnscoredDimensions, DimDataPipelineIntegrity, DimSyncCorrectness)
-	} else {
+	case isStatelessHTTPCLIDir(outputDir, specPaths):
+		// Stateless REST mirror: the spec yielded no syncable resources, so the
+		// generator emitted no store and no sync. Those two dimensions are
+		// store-gated and inapplicable; mark N/A rather than scoring 0 on a
+		// pipeline the CLI shape never claimed. Vision/Insight/Workflows stay
+		// scored — they are richness dimensions a mirror can legitimately score
+		// low on (an honest signal), and Workflows in particular is NOT store-
+		// gated (it credits compound commands and multi-call flows too), so
+		// N/A-ing it would drop it from the denominator while the numerator still
+		// counted it, inflating the score.
+		sc.UnscoredDimensions = append(sc.UnscoredDimensions, DimDataPipelineIntegrity, DimSyncCorrectness)
+	default:
 		sc.Steinberger.DataPipelineIntegrity = scoreDataPipelineIntegrity(outputDir)
 		if isLocalDatastoreCLIDir(outputDir) {
 			sc.UnscoredDimensions = append(sc.UnscoredDimensions, DimSyncCorrectness)
@@ -3578,6 +3594,94 @@ func fileExists(path string) bool {
 func isLocalDatastoreCLIDir(dir string) bool {
 	manifest, err := loadCLIManifestForScorecard(dir)
 	return err == nil && manifest.IsLocalDatastore()
+}
+
+// collectionItemSegmentRE matches a trailing REST item segment such as the
+// `/{id}` in `/items/{id}`. It anchors the list+detail pairing used to detect a
+// collection-shaped resource from paths alone.
+var collectionItemSegmentRE = regexp.MustCompile(`/\{[^/}]+\}$`)
+
+// specHasCollectionShapedResource reports whether the spec's paths include a
+// REST collection resource — a path P that also has an item sibling
+// P/{param} (the classic list+detail GET /items + GET /items/{id} shape the
+// generator profiles into a syncable store). RPC-style action endpoints
+// (/v1/load, /v1/sql, /v1/meta) have no such pairing.
+//
+// This is the POSITIVE spec signal that gates the stateless-REST exemption: a
+// CLI whose spec has collection-shaped resources but emitted no store is a
+// profiler under-detection bug, not a legitimately stateless mirror, and must
+// stay subject to the pipeline checks rather than be silently exempted.
+func specHasCollectionShapedResource(paths []string) bool {
+	if len(paths) == 0 {
+		return false
+	}
+	set := make(map[string]struct{}, len(paths))
+	for _, p := range paths {
+		set[strings.TrimRight(p, "/")] = struct{}{}
+	}
+	for _, p := range paths {
+		p = strings.TrimRight(p, "/")
+		if !collectionItemSegmentRE.MatchString(p) {
+			continue
+		}
+		parent := collectionItemSegmentRE.ReplaceAllString(p, "")
+		if parent == "" {
+			continue
+		}
+		if _, ok := set[parent]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+// isStatelessHTTPCLIDir reports whether dir holds a printed HTTP-API CLI that
+// has no local datastore / sync data pipeline by design — a stateless REST
+// mirror whose commands call the API live and return the result. The generator
+// emits internal/store/store.go (and a sync command) only when the spec yields
+// syncable resources; its absence means there is nothing to sync->store->serve.
+// The sync->sql->search data-pipeline test (verify) and the data-pipeline /
+// sync-correctness / workflows scorecard dimensions do not apply to such CLIs
+// and must be marked SKIP / N/A rather than reported as a false "sync crashed"
+// failure or scored 0 on a dimension the CLI shape never claimed.
+//
+// specPaths are the resolved spec's paths (nil when no spec is available). The
+// exemption is gated on TWO independent signals so it cannot mask a generator
+// bug:
+//   - dir signals (no store.go, no local-datastore manifest) say the generator
+//     emitted no store, and
+//   - the spec has no collection-shaped resource, so the generator was *right*
+//     to emit none.
+//
+// A stateful CLI whose sync is merely broken still carries
+// internal/store/store.go, so it stays subject to the full checks. A spec with
+// a real collection the profiler under-detected (no store emitted) still has
+// the collection-shaped path, so it is NOT exempted and the missing store
+// surfaces instead of passing silently.
+func isStatelessHTTPCLIDir(dir string, specPaths []string) bool {
+	// Must be an HTTP-API CLI (has the generated HTTP client), not a device CLI.
+	if _, err := os.Stat(filepath.Join(dir, "internal", "client", "client.go")); err != nil {
+		return false
+	}
+	if isDeviceBackedCLIDir(dir) {
+		return false
+	}
+	// A local datastore (by manifest or by the canonical store file the scorer
+	// itself reads) means the CLI is expected to sync->store->serve; keep the
+	// pipeline checks live so a missing or broken sync still fails.
+	if isLocalDatastoreCLIDir(dir) {
+		return false
+	}
+	if _, err := os.Stat(filepath.Join(dir, "internal", "store", "store.go")); err == nil {
+		return false
+	}
+	// Positive spec signal: if the spec has a collection-shaped resource but no
+	// store was emitted, that is a profiler under-detection bug to surface, not
+	// a stateless mirror to exempt.
+	if specHasCollectionShapedResource(specPaths) {
+		return false
+	}
+	return true
 }
 
 func isDeviceBackedCLIDir(dir string) bool {
