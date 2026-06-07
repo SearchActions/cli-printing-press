@@ -312,12 +312,13 @@ func RunVerify(cfg VerifyConfig) (*VerifyReport, error) {
 	if report.Mode == "mock" && spec != nil && len(spec.NestedDataEnvelopes) > 0 {
 		expectedMockRows = 2
 	}
-	if isDeviceCLIDir(cfg.Dir) {
-		// Device CLIs (BLE) have no sync->sql->search data pipeline; running the
-		// HTTP-shaped pipeline test invokes a non-existent `sync` command and
-		// reports a false "sync crashed". Mark the dimension satisfied instead.
+	var statelessSpecPaths []string
+	if spec != nil {
+		statelessSpecPaths = spec.Paths
+	}
+	if detail, skip := dataPipelineSkipReason(cfg.Dir, statelessSpecPaths); skip {
 		report.DataPipeline = true
-		report.DataPipelineDetail = "SKIP (device CLI: no sync data pipeline)"
+		report.DataPipelineDetail = detail
 	} else {
 		report.DataPipeline, report.DataPipelineDetail = runDataPipelineTest(binaryPath, report.Mode, buildEnv, expectedMockRows)
 	}
@@ -606,6 +607,23 @@ func runBrowserSessionProofTest(binary string, auth apispec.AuthConfig) CommandR
 	result.Execute = true
 	result.Score = 3
 	return result
+}
+
+// dataPipelineSkipReason returns the SKIP detail for printed-CLI shapes that
+// have no sync->sql->search data pipeline by design — BLE device CLIs and
+// stateless REST mirrors. For those, running runDataPipelineTest would invoke a
+// non-existent `sync` command and report a false "sync crashed". skip is false
+// for any CLI that should still run the real pipeline test (notably a stateful
+// CLI whose sync may be broken, which must still fail).
+func dataPipelineSkipReason(dir string, specPaths []string) (detail string, skip bool) {
+	switch {
+	case isDeviceCLIDir(dir):
+		return "SKIP (device CLI: no sync data pipeline)", true
+	case isStatelessHTTPCLIDir(dir, specPaths):
+		return "SKIP (stateless REST CLI: no sync data pipeline)", true
+	default:
+		return "", false
+	}
 }
 
 // runDataPipelineTest tests the sync -> sql -> search -> health chain.
