@@ -1,4 +1,6 @@
 # CLI Printing Press - Development Conventions
+
+> Read D:/SYSTEM.md at session start. It is the law and overrides everything below.
 # After Creating New CLI's
 After creating a CLI:
 - copy the files into D:\projects\cli\<name>-cli\ - this is a folder we sync to github and share with our team.  NOTE - you are keeping your local files as you created and simply copying the files to the CLI folder in projects. 
