@@ -317,11 +317,13 @@ func TestGenerateRenamesBodyFieldCollidingWithGlobalDryRun(t *testing.T) {
 
 	assert.NotContains(t, flagBindings, "dry-run",
 		"body field dry_run must not register a local --dry-run shadowing the global preview flag")
+	assert.Contains(t, flagBindings, "dry-run-2",
+		"the body field dry_run must auto-rename to the non-shadowing --dry-run-2")
 
 	src, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "campaigns_create.go"))
 	require.NoError(t, err)
-	assert.Contains(t, string(src), `"dry_run"`,
-		"the wire-side body key must remain dry_run even though the public flag is renamed")
+	assert.Contains(t, string(src), `body["dry_run"]`,
+		"the wire-side body key must remain dry_run in the body map even though the public flag is renamed")
 }
 
 // TestGenerateRejectsAuthoredFlagCollidingWithGlobal covers the explicit
