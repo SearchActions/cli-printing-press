@@ -6,6 +6,7 @@ import (
 	"go/token"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -241,6 +242,113 @@ func TestGenerateRenamesParamCollidingWithAsyncWait(t *testing.T) {
 		"--wait from async must not collide with --wait from a user param")
 	assert.Contains(t, flagVars, "flagWait",
 		"async's flagWait keeps the canonical name")
+}
+
+// TestGlobalReservedFlagsMatchTemplate is the anti-drift guard: every cobra
+// flag name registered as a root PersistentFlag in root.go.tmpl must be in
+// globalPersistentFlagNames, so a future global flag addition cannot silently
+// reintroduce the shadow bypass (INC-2026-166). root.go.tmpl is a Go template,
+// not valid Go, so it is scanned as raw bytes rather than AST-parsed.
+func TestGlobalReservedFlagsMatchTemplate(t *testing.T) {
+	t.Parallel()
+
+	src, err := os.ReadFile(filepath.Join("templates", "root.go.tmpl"))
+	require.NoError(t, err, "read root.go.tmpl")
+
+	re := regexp.MustCompile(`PersistentFlags\(\)\.\w+Var\(&[^,]+,\s*"([^"]+)"`)
+	matches := re.FindAllStringSubmatch(string(src), -1)
+	require.NotEmpty(t, matches, "expected to find PersistentFlags registrations in template")
+
+	templateFlags := map[string]struct{}{}
+	for _, m := range matches {
+		name := m[1]
+		// Skip the dynamic per-spec path-template flag ("{{kebab .}}"); it is a
+		// separate shadow class tracked in TODO.md, not a fixed global name.
+		if strings.Contains(name, "{{") {
+			continue
+		}
+		templateFlags[name] = struct{}{}
+	}
+
+	for name := range templateFlags {
+		_, ok := globalPersistentFlagNames[name]
+		assert.True(t, ok, "global flag --%s is registered in root.go.tmpl but not reserved in globalPersistentFlagNames; add it so local flags cannot shadow it", name)
+	}
+	for name := range globalPersistentFlagNames {
+		_, ok := templateFlags[name]
+		assert.True(t, ok, "globalPersistentFlagNames reserves --%s but root.go.tmpl no longer registers it; remove the stale reservation", name)
+	}
+}
+
+// TestGenerateRenamesBodyFieldCollidingWithGlobalDryRun proves the INC-2026-166
+// bypass is closed: a body field named `dry_run` must NOT register a local
+// --dry-run flag (which cobra would resolve in preference to the inherited
+// global preview flag, silently sending instead of previewing). The derived
+// flag auto-renames; the wire field name is preserved on the JSON body.
+func TestGenerateRenamesBodyFieldCollidingWithGlobalDryRun(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("collide-global")
+	apiSpec.Resources["campaigns"] = spec.Resource{
+		Description: "Campaigns",
+		Endpoints: map[string]spec.Endpoint{
+			"create": {
+				Method:      "POST",
+				Path:        "/campaigns",
+				Description: "Create a campaign",
+				Body: []spec.Param{
+					{Name: "name", Type: "string", Description: "Campaign name"},
+					{Name: "dry_run", Type: "boolean", Description: "Spec field that must not shadow the global --dry-run"},
+				},
+			},
+			"get": {
+				Method:      "GET",
+				Path:        "/campaigns/{id}",
+				Description: "Get one campaign",
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), "collide-global-pp-cli")
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+
+	_, flagBindings := parseFlagDeclarations(t,
+		filepath.Join(outputDir, "internal", "cli", "campaigns_create.go"))
+
+	assert.NotContains(t, flagBindings, "dry-run",
+		"body field dry_run must not register a local --dry-run shadowing the global preview flag")
+
+	src, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "campaigns_create.go"))
+	require.NoError(t, err)
+	assert.Contains(t, string(src), `"dry_run"`,
+		"the wire-side body key must remain dry_run even though the public flag is renamed")
+}
+
+// TestGenerateRejectsAuthoredFlagCollidingWithGlobal covers the explicit
+// flag_name path: authoring flag_name: dry-run on a param is unambiguous intent
+// to claim a reserved global name and must hard-error rather than silently
+// rename.
+func TestGenerateRejectsAuthoredFlagCollidingWithGlobal(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("authored-global")
+	apiSpec.Resources["stores"] = spec.Resource{
+		Description: "Stores",
+		Endpoints: map[string]spec.Endpoint{
+			"find": {
+				Method:      "GET",
+				Path:        "/stores",
+				Description: "Find stores",
+				Params: []spec.Param{
+					{Name: "preview", Type: "boolean", FlagName: "dry-run"},
+				},
+			},
+		},
+	}
+
+	err := New(apiSpec, filepath.Join(t.TempDir(), "out")).Generate()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "collides with reserved flag --dry-run")
 }
 
 // parseFlagDeclarations returns the names of all `var flagXxx` declarations and

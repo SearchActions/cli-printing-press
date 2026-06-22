@@ -165,16 +165,66 @@ func uniquifyBodyTree(body []spec.Param, identPrefix, flagPrefix string, usedIde
 	return out
 }
 
+// globalPersistentFlagNames are the cobra flag names registered as root
+// PersistentFlags in root.go.tmpl and therefore inherited by every command. A
+// spec param or body field whose derived flag name matches one of these would
+// register a same-named LOCAL flag; cobra resolves the local flag in
+// preference to the inherited persistent one, so the global option silently
+// stops working on that command. For safety controls (--dry-run, --yes,
+// --no-input) that is a control bypass: a body field named `dry_run` made
+// `create --dry-run` SEND instead of preview (INC-2026-166). Reserving the
+// full set forces derived collisions to auto-rename (--dry-run-2, wire field
+// unchanged) and authored flag_name collisions to hard-error.
+//
+// Reserved unconditionally even for flags root.go.tmpl emits behind template
+// guards (--ignore-missing, --no-learn, --allow-partial-failure, --max-age,
+// --throttle-mode) so a printed CLI's flag namespace stays stable regardless
+// of which optional features a spec enables. The dynamic per-spec path
+// template flags (GlobalPathTemplateVars) are a separate shadow class tracked
+// in TODO.md. TestGlobalReservedFlagsMatchTemplate keeps this set in sync with
+// the template's PersistentFlags() block.
+var globalPersistentFlagNames = map[string]struct{}{
+	"json":                  {},
+	"compact":               {},
+	"csv":                   {},
+	"plain":                 {},
+	"quiet":                 {},
+	"config":                {},
+	"timeout":               {},
+	"dry-run":               {},
+	"no-cache":              {},
+	"no-input":              {},
+	"idempotent":            {},
+	"ignore-missing":        {},
+	"select":                {},
+	"yes":                   {},
+	"no-color":              {},
+	"human-friendly":        {},
+	"agent":                 {},
+	"no-learn":              {},
+	"allow-partial-failure": {},
+	"data-source":           {},
+	"max-age":               {},
+	"profile":               {},
+	"deliver":               {},
+	"rate-limit":            {},
+	"throttle-mode":         {},
+}
+
 // reservedFlagNamesForEndpoint returns identifiers and cobra flag names that
 // the command templates emit themselves and that user params or body fields
 // therefore must not shadow. The returned `idents` set is in the flag<Camel>
 // namespace (params); body<Camel> body-namespace identifiers carry no
 // reserved entries because the generator-introduced helpers (stdinBody) use
 // a different naming pattern. The `flags` set covers cobra flag names, which
-// params and body fields share.
+// params and body fields share, and is seeded with every root persistent
+// (global) flag name so local flags can never shadow an inherited global.
 func reservedFlagNamesForEndpoint(resKey, epName string, ep spec.Endpoint, asyncJobs map[string]AsyncJobInfo) (idents, flags map[string]struct{}) {
 	idents = map[string]struct{}{}
 	flags = map[string]struct{}{}
+	for name := range globalPersistentFlagNames {
+		flags[name] = struct{}{}
+	}
 	if ep.Pagination != nil {
 		idents["flagAll"] = struct{}{}
 		flags["all"] = struct{}{}

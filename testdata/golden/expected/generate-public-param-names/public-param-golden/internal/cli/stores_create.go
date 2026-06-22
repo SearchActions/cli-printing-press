@@ -13,7 +13,7 @@ import (
 )
 
 func newStoresCreateCmd(flags *rootFlags) *cobra.Command {
-	var flagDryRun bool
+	var flagDryRun2 bool
 	var bodyStoreCode string
 	var stdinBody bool
 
@@ -41,8 +41,8 @@ func newStoresCreateCmd(flags *rootFlags) *cobra.Command {
 
 			path := "/stores"
 			params := map[string]string{}
-			if flagDryRun != false {
-				params["$dry_run"] = fmt.Sprintf("%v", flagDryRun)
+			if flagDryRun2 != false {
+				params["$dry_run"] = fmt.Sprintf("%v", flagDryRun2)
 			}
 			var body map[string]any
 			if stdinBody {
@@ -194,7 +194,7 @@ func newStoresCreateCmd(flags *rootFlags) *cobra.Command {
 			return nil
 		},
 	}
-	cmd.Flags().BoolVar(&flagDryRun, "dry-run", false, "Preview without writing")
+	cmd.Flags().BoolVar(&flagDryRun2, "dry-run-2", false, "Preview without writing")
 	cmd.Flags().StringVar(&bodyStoreCode, "store-code", "", "Store code")
 	cmd.Flags().StringVar(&bodyStoreCode, "code", "", "Store code")
 	_ = cmd.Flags().MarkHidden("code")
