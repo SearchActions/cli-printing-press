@@ -10,7 +10,7 @@
   "required_headers": [],
   "tools": [
     {
-      "description": "Create a store record. Required: store-code. Optional: dry_run. Returns the new Store.",
+      "description": "Create a store record. Required: store-code. Optional: dry-run-2. Returns the new Store.",
       "method": "POST",
       "name": "stores_create",
       "no_auth": true,
@@ -18,7 +18,7 @@
         {
           "description": "Preview without writing",
           "location": "query",
-          "name": "dry_run",
+          "name": "dry-run-2",
           "type": "boolean",
           "wire_name": "$dry_run"
         },
