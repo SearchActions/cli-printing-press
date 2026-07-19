@@ -59,10 +59,29 @@ var blockedRootFlags = map[string]bool{
 	"token":    true,
 }
 
+// isSafeMCPFlagName rejects argument names that would stop being a flag name
+// once "--" is prepended: an embedded "=" splits the token early, and a
+// leading "-" produces "---name". Both let a caller shift the boundary
+// between flag name and flag value, which is what blockedRootFlags relies on
+// staying fixed.
+func isSafeMCPFlagName(k string) bool {
+	return k != "" && !strings.Contains(k, "=") && !strings.HasPrefix(k, "-")
+}
+
+// cliArgsFromMCP converts MCP tool arguments to CLI argv.
+//
+// Every value rides in the SAME token as its flag name ("--k=v"), never as a
+// following token. Split across two tokens, a value that begins with "-" is
+// re-parsed by pflag as a flag in its own right whenever the preceding flag
+// is boolean-typed (a bool consumes no argument), so {"json":"--deliver=..."}
+// would set --deliver despite it being blocked. blockedRootFlags filters
+// names, and names alone cannot constrain a channel where values become
+// argv tokens. The "--k=v" form keeps each argument to exactly one token, so
+// a hostile value stays a value.
 func cliArgsFromMCP(args map[string]any) []string {
 	keys := make([]string, 0, len(args))
 	for k := range args {
-		if !blockedRootFlags[k] {
+		if !blockedRootFlags[k] && isSafeMCPFlagName(k) {
 			keys = append(keys, k)
 		}
 	}
@@ -77,10 +96,10 @@ func cliArgsFromMCP(args map[string]any) []string {
 				out = append(out, "--"+k)
 			}
 		case float64:
-			out = append(out, "--"+k, strconv.FormatFloat(tv, 'f', -1, 64))
+			out = append(out, "--"+k+"="+strconv.FormatFloat(tv, 'f', -1, 64))
 		case string:
 			if tv != "" {
-				out = append(out, "--"+k, tv)
+				out = append(out, "--"+k+"="+tv)
 			}
 		case []any:
 			if len(tv) > 0 {
@@ -88,11 +107,11 @@ func cliArgsFromMCP(args map[string]any) []string {
 				for _, item := range tv {
 					parts = append(parts, fmt.Sprintf("%v", item))
 				}
-				out = append(out, "--"+k, strings.Join(parts, ","))
+				out = append(out, "--"+k+"="+strings.Join(parts, ","))
 			}
 		default:
 			if v != nil {
-				out = append(out, "--"+k, fmt.Sprintf("%v", v))
+				out = append(out, "--"+k+"="+fmt.Sprintf("%v", v))
 			}
 		}
 	}

