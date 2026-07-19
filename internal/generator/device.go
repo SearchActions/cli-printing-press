@@ -326,7 +326,7 @@ func (g *DeviceGenerator) renderEmbedded(relPath, tmplName string, data deviceTe
 
 const deviceGoModTemplate = `module {{.ModulePath}}
 
-go 1.26.4
+go 1.26.5
 
 require (
 	github.com/mark3labs/mcp-go v0.47.0
