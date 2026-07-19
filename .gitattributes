@@ -1,0 +1,20 @@
+# Normalize line endings on checkout.
+#
+# Without this, core.autocrlf=true smudges CRLF into the working tree while Go
+# write-back tooling (gofmt -w, and the lefthook pre-commit hook that runs it on
+# staged files) rewrites the same files back to LF. The result is a standing set
+# of phantom-modified files whose `git diff` is empty, which blocks `git merge`
+# with "local changes would be overwritten" on files that have no changes.
+#
+# It also keeps shell scripts and golden fixtures LF in the working tree.
+# scripts/*.sh run under bash on Linux and CI, where a CRLF shebang fails with
+# "bad interpreter"; scripts/golden.sh compares fixtures with byte-exact
+# `diff -u`, so a CRLF working copy makes every text fixture appear to differ.
+#
+# Safe to add without a renormalization commit: every text blob committed here
+# is already stored LF (`git ls-files --eol` reports no i/crlf and no i/mixed),
+# so this changes only checkout smudging, never a stored byte.
+* text=auto eol=lf
+
+# Vendored build cache — leave its bytes exactly as committed.
+.gocache/** -text
