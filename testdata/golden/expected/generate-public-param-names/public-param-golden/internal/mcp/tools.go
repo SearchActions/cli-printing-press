@@ -38,13 +38,13 @@ const (
 func RegisterTools(s *server.MCPServer) {
 	s.AddTool(
 		mcplib.NewTool("stores_create",
-			mcplib.WithDescription("Create a store record. Required: store-code. Optional: dry_run. Returns the new Store."),
-			mcplib.WithBoolean("dry_run", mcplib.Description("Preview without writing")),
+			mcplib.WithDescription("Create a store record. Required: store-code. Optional: dry-run-2. Returns the new Store."),
+			mcplib.WithBoolean("dry-run-2", mcplib.Description("Preview without writing")),
 			mcplib.WithString("store-code", mcplib.Required(), mcplib.Description("Store code")),
 			mcplib.WithDestructiveHintAnnotation(false),
 			mcplib.WithOpenWorldHintAnnotation(true),
 		),
-		makeAPIHandler("POST", "/stores", false, false, nil, mcpPageConfig{}, []mcpParamBinding{{PublicName: "dry_run", WireName: "$dry_run", Location: "query"}, {PublicName: "store-code", WireName: "store_code", Location: "body"}}, []string{}),
+		makeAPIHandler("POST", "/stores", false, false, nil, mcpPageConfig{}, []mcpParamBinding{{PublicName: "dry-run-2", WireName: "$dry_run", Location: "query"}, {PublicName: "store-code", WireName: "store_code", Location: "body"}}, []string{}),
 	)
 	s.AddTool(
 		mcplib.NewTool("stores_find",
