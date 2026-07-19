@@ -1,6 +1,7 @@
 package generator
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -17,8 +18,10 @@ type novelFeatureCommandRender struct {
 	Ident          string
 	Use            string
 	Short          string
+	Example        string
 	CommandPath    string
 	ReadOnlyString string
+	HasPositional  bool
 	Feature        bool
 	Flags          []novelFeatureFlagRender
 	Children       []novelFeatureChildRender
@@ -38,7 +41,9 @@ type novelFeatureChildRender struct {
 type novelFeatureTestRender struct {
 	Owner       string
 	Ident       string
-	SkipMessage string
+	CommandPath string
+	CommandArgs []string
+	CommandLeaf string
 }
 
 type novelFeatureStubNode struct {
@@ -57,9 +62,10 @@ func (g *Generator) renderNovelFeatureStubs() ([]novelFeatureCommandRender, erro
 		return nil, nil
 	}
 
+	generatedPaths := g.generatedCommandPaths()
 	var roots []novelFeatureCommandRender
 	for _, child := range sortedNovelChildren(root) {
-		rendered, err := g.renderNovelFeatureNode(child, true)
+		rendered, err := g.renderNovelFeatureNode(child, generatedPaths)
 		if err != nil {
 			return nil, err
 		}
@@ -103,6 +109,7 @@ func (g *Generator) buildNovelFeatureStubTree() *novelFeatureStubNode {
 
 func (g *Generator) novelFeatureChildrenByParent() map[string][]novelFeatureChildRender {
 	root := g.buildNovelFeatureStubTree()
+	generatedPaths := g.generatedCommandPaths()
 	out := map[string][]novelFeatureChildRender{}
 	var walk func(*novelFeatureStubNode)
 	walk = func(node *novelFeatureStubNode) {
@@ -110,6 +117,9 @@ func (g *Generator) novelFeatureChildrenByParent() map[string][]novelFeatureChil
 		if len(children) > 0 && len(node.path) > 0 {
 			parentPath := strings.Join(node.path, " ")
 			for _, child := range children {
+				if g.novelFeatureStubShouldSkip(child.path, generatedPaths) {
+					continue
+				}
 				out[parentPath] = append(out[parentPath], novelFeatureChildRender{Ident: novelFeatureStubIdent(child.path)})
 			}
 		}
@@ -123,18 +133,35 @@ func (g *Generator) novelFeatureChildrenByParent() map[string][]novelFeatureChil
 	return out
 }
 
-func (g *Generator) renderNovelFeatureNode(node *novelFeatureStubNode, topLevel bool) (*novelFeatureCommandRender, error) {
+func (g *Generator) renderNovelFeatureNode(node *novelFeatureStubNode, generatedPaths map[string]struct{}) (*novelFeatureCommandRender, error) {
+	var renderedChildren []novelFeatureChildRender
 	for _, child := range sortedNovelChildren(node) {
-		if _, err := g.renderNovelFeatureNode(child, false); err != nil {
+		rendered, err := g.renderNovelFeatureNode(child, generatedPaths)
+		if err != nil {
 			return nil, err
+		}
+		if rendered != nil {
+			renderedChildren = append(renderedChildren, novelFeatureChildRender{Ident: rendered.Ident})
 		}
 	}
 
 	data := g.novelFeatureCommandData(node)
+	data.Children = renderedChildren
 	outPath := filepath.Join("internal", "cli", novelFeatureStubFileName(node.path))
-	if _, err := os.Stat(filepath.Join(g.OutputDir, outPath)); err == nil {
-		fmt.Fprintf(os.Stderr, "warning: novel feature command %q maps to existing %s; leaving existing file unchanged\n", data.CommandPath, outPath)
+	if g.novelFeatureStubShouldSkipGenerated(node.path, generatedPaths) {
+		fmt.Fprintf(os.Stderr, "warning: novel feature command %q maps to generated command path; skipping novel stub\n", data.CommandPath)
 		return nil, nil
+	}
+	if err := g.migrateLegacyNovelFeatureStubPath(node.path, outPath); err != nil {
+		return nil, err
+	}
+	if exists, hasConstructor := g.novelFeatureStubExistingFileConstructorStatus(node.path); exists {
+		if !hasConstructor {
+			fmt.Fprintf(os.Stderr, "warning: novel feature command %q maps to existing %s without expected constructor %s; skipping novel stub\n", data.CommandPath, outPath, novelFeatureStubConstructorName(node.path))
+			return nil, nil
+		}
+		fmt.Fprintf(os.Stderr, "warning: novel feature command %q maps to existing %s; leaving existing file unchanged\n", data.CommandPath, outPath)
+		return &data, nil
 	}
 	if err := g.renderTemplate("novel_feature_command.go.tmpl", outPath, data); err != nil {
 		return nil, fmt.Errorf("rendering novel feature command %s: %w", data.CommandPath, err)
@@ -144,23 +171,91 @@ func (g *Generator) renderNovelFeatureNode(node *novelFeatureStubNode, topLevel 
 		testData := novelFeatureTestRender{
 			Owner:       g.Spec.Owner,
 			Ident:       data.Ident,
-			SkipMessage: "TODO: implement table-driven tests for " + data.CommandPath,
+			CommandPath: data.CommandPath,
+			CommandArgs: strings.Fields(data.CommandPath),
+			CommandLeaf: node.segment,
 		}
 		if err := g.renderTemplate("novel_feature_command_test.go.tmpl", testPath, testData); err != nil {
 			return nil, fmt.Errorf("rendering novel feature command test %s: %w", data.CommandPath, err)
 		}
 	}
 
-	if topLevel {
-		return &data, nil
+	return &data, nil
+}
+
+func (g *Generator) novelFeatureStubShouldSkip(parts []string, generatedPaths map[string]struct{}) bool {
+	return g.novelFeatureStubShouldSkipGenerated(parts, generatedPaths) || g.novelFeatureStubExistingFileMissingConstructor(parts)
+}
+
+func (g *Generator) novelFeatureStubShouldSkipGenerated(parts []string, generatedPaths map[string]struct{}) bool {
+	return novelFeatureStubCollidesWithGeneratedCommand(parts, generatedPaths)
+}
+
+func (g *Generator) novelFeatureStubExistingFileMissingConstructor(parts []string) bool {
+	exists, hasConstructor := g.novelFeatureStubExistingFileConstructorStatus(parts)
+	return exists && !hasConstructor
+}
+
+func (g *Generator) migrateLegacyNovelFeatureStubPath(parts []string, outPath string) error {
+	legacyName := novelFeatureStubLegacyFileName(parts)
+	currentName := novelFeatureStubFileName(parts)
+	if legacyName == currentName {
+		return nil
 	}
-	return nil, nil
+
+	legacyPath := filepath.Join("internal", "cli", legacyName)
+	if err := g.renameLegacyNovelFeatureFile(legacyPath, outPath); err != nil {
+		return err
+	}
+
+	legacyTestPath := filepath.Join("internal", "cli", strings.TrimSuffix(legacyName, ".go")+"_test.go")
+	currentTestPath := filepath.Join("internal", "cli", strings.TrimSuffix(currentName, ".go")+"_test.go")
+	return g.renameLegacyNovelFeatureFile(legacyTestPath, currentTestPath)
+}
+
+func (g *Generator) renameLegacyNovelFeatureFile(legacyPath, currentPath string) error {
+	legacyAbs := filepath.Join(g.OutputDir, legacyPath)
+	if _, err := os.Stat(legacyAbs); errors.Is(err, os.ErrNotExist) {
+		return nil
+	} else if err != nil {
+		return fmt.Errorf("checking legacy novel feature stub %s: %w", legacyPath, err)
+	}
+
+	currentAbs := filepath.Join(g.OutputDir, currentPath)
+	if _, err := os.Stat(currentAbs); err == nil {
+		fmt.Fprintf(os.Stderr, "warning: legacy novel feature stub %s still exists alongside %s; remove the legacy file to avoid duplicate build-tagged commands\n", legacyPath, currentPath)
+		return nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("checking novel feature stub %s: %w", currentPath, err)
+	}
+
+	if err := os.Rename(legacyAbs, currentAbs); err != nil {
+		return fmt.Errorf("renaming legacy novel feature stub %s to %s: %w", legacyPath, currentPath, err)
+	}
+	return nil
+}
+
+func (g *Generator) novelFeatureStubExistingFileConstructorStatus(parts []string) (bool, bool) {
+	outPath := filepath.Join("internal", "cli", novelFeatureStubFileName(parts))
+	data, err := os.ReadFile(filepath.Join(g.OutputDir, outPath))
+	if err != nil {
+		return false, false
+	}
+	constructor := "func " + novelFeatureStubConstructorName(parts) + "("
+	return true, strings.Contains(string(data), constructor)
+}
+
+func novelFeatureStubConstructorName(parts []string) string {
+	return "newNovel" + novelFeatureStubIdent(parts) + "Cmd"
 }
 
 func (g *Generator) novelFeatureCommandData(node *novelFeatureStubNode) novelFeatureCommandRender {
 	commandPath := strings.Join(node.path, " ")
 	short := "TODO: implement " + commandPath
+	use := node.segment
+	hasPositional := false
 	readOnly := true
+	example := ""
 	var flags []novelFeatureFlagRender
 	if node.feature != nil {
 		short = naming.OneLine(node.feature.Description)
@@ -172,11 +267,11 @@ func (g *Generator) novelFeatureCommandData(node *novelFeatureStubNode) novelFea
 		}
 		readOnly = novelFeatureReadOnly(*node.feature)
 		flags = novelFeatureFlags(*node.feature, node.path, g.Spec.Name)
-	}
-	children := sortedNovelChildren(node)
-	childData := make([]novelFeatureChildRender, 0, len(children))
-	for _, child := range children {
-		childData = append(childData, novelFeatureChildRender{Ident: novelFeatureStubIdent(child.path)})
+		hasPositional = novelFeatureHasPositional(node.feature.Command)
+		use = novelFeatureUse(node.segment, node.feature.Command)
+		example = novelFeatureExample(*node.feature, node.path, g.Spec.Name)
+	} else if len(node.children) > 0 {
+		short = novelFeatureParentShort(node)
 	}
 	readOnlyString := "true"
 	if !readOnly {
@@ -185,14 +280,59 @@ func (g *Generator) novelFeatureCommandData(node *novelFeatureStubNode) novelFea
 	return novelFeatureCommandRender{
 		Owner:          g.Spec.Owner,
 		Ident:          novelFeatureStubIdent(node.path),
-		Use:            node.segment,
+		Use:            use,
 		Short:          short,
+		Example:        example,
 		CommandPath:    commandPath,
 		ReadOnlyString: readOnlyString,
+		HasPositional:  hasPositional,
 		Feature:        node.feature != nil,
 		Flags:          flags,
-		Children:       childData,
 	}
+}
+
+func novelFeatureStubCollidesWithGeneratedCommand(parts []string, generatedPaths map[string]struct{}) bool {
+	_, ok := generatedPaths[novelFeatureCommandKey(parts)]
+	return ok
+}
+
+func (g *Generator) generatedCommandPaths() map[string]struct{} {
+	paths := map[string]struct{}{}
+	add := func(parts ...string) {
+		paths[novelFeatureCommandKey(parts)] = struct{}{}
+	}
+	for _, promoted := range g.PromotedCommands {
+		add(promoted.PromotedName)
+	}
+	for name, resource := range g.Spec.Resources {
+		if !g.PromotedResourceNames[name] {
+			add(name)
+		}
+		for eName := range resource.Endpoints {
+			if g.PromotedEndpointNames[name] == eName {
+				continue
+			}
+			add(name, eName)
+		}
+		for subName, subResource := range resource.SubResources {
+			add(name, subName)
+			for eName := range subResource.Endpoints {
+				add(name, subName, eName)
+			}
+		}
+	}
+	return paths
+}
+
+func novelFeatureCommandKey(parts []string) string {
+	normalized := make([]string, 0, len(parts))
+	for _, part := range parts {
+		if part == "" {
+			continue
+		}
+		normalized = append(normalized, toKebab(part))
+	}
+	return strings.Join(normalized, " ")
 }
 
 func sortedNovelChildren(node *novelFeatureStubNode) []*novelFeatureStubNode {
@@ -212,14 +352,13 @@ func sortedNovelChildren(node *novelFeatureStubNode) []*novelFeatureStubNode {
 }
 
 func novelFeatureCommandParts(command string) []string {
-	tokens := strings.Fields(strings.ToLower(command))
-	parts := make([]string, 0, len(tokens))
-	for _, token := range tokens {
+	parts := make([]string, 0)
+	for token := range strings.FieldsSeq(strings.ToLower(command)) {
 		token = strings.Trim(token, `"'`)
 		if token == "" {
 			continue
 		}
-		if strings.HasPrefix(token, "-") {
+		if strings.HasPrefix(token, "-") || novelFeatureTokenIsPositional(token) {
 			break
 		}
 		parts = append(parts, toKebab(token))
@@ -227,11 +366,71 @@ func novelFeatureCommandParts(command string) []string {
 	return parts
 }
 
+func novelFeatureHasPositional(command string) bool {
+	// Only tokens before the first flag are positional arguments; a `<`/`[`
+	// inside a flag-value hint (e.g. "search --filter [active|inactive]") is
+	// not a positional and must not re-arm the args-based Help guard (#2592).
+	for token := range strings.FieldsSeq(command) {
+		token = strings.Trim(token, `"'`)
+		if token == "" {
+			continue
+		}
+		if strings.HasPrefix(token, "-") {
+			break
+		}
+		if novelFeatureTokenIsPositional(token) {
+			return true
+		}
+	}
+	return false
+}
+
+func novelFeatureTokenIsPositional(token string) bool {
+	return strings.Contains(token, "<") || strings.Contains(token, "[")
+}
+
+func novelFeatureUse(segment, command string) string {
+	var positional []string
+	for token := range strings.FieldsSeq(command) {
+		token = strings.Trim(token, `"'`)
+		if token == "" {
+			continue
+		}
+		// Stop at the first flag: placeholders after a flag are value hints,
+		// not positional args, and must not leak into the cobra Use string.
+		if strings.HasPrefix(token, "-") {
+			break
+		}
+		if novelFeatureTokenIsPositional(token) {
+			positional = append(positional, token)
+		}
+	}
+	if len(positional) == 0 {
+		return segment
+	}
+	return strings.Join(append([]string{segment}, positional...), " ")
+}
+
+func novelFeatureParentShort(node *novelFeatureStubNode) string {
+	// Only called from the else-if len(node.children) > 0 branch, so children
+	// is always non-empty here.
+	children := sortedNovelChildren(node)
+	leafNames := make([]string, 0, len(children))
+	for _, child := range children {
+		leafNames = append(leafNames, child.segment)
+	}
+	return fmt.Sprintf("%s subcommands: %s", node.segment, strings.Join(leafNames, ", "))
+}
+
 func novelFeatureStubIdent(parts []string) string {
 	return commandIdent(parts...)
 }
 
 func novelFeatureStubFileName(parts []string) string {
+	return safeResourceFileStem(strings.TrimSuffix(novelFeatureStubLegacyFileName(parts), ".go")) + ".go"
+}
+
+func novelFeatureStubLegacyFileName(parts []string) string {
 	safeParts := make([]string, 0, len(parts))
 	for _, part := range parts {
 		if part == "" {
@@ -341,6 +540,22 @@ func novelFeatureFlags(feature NovelFeature, commandPath []string, apiName strin
 		})
 	}
 	return flags
+}
+
+// novelFeatureExample returns the prefix-stripped runnable form of the
+// feature's research example, suitable for a Cobra Example field. Empty when
+// the feature has no example or the example yields no tokens after stripping
+// the binary/command-path prefix.
+func novelFeatureExample(feature NovelFeature, commandPath []string, apiName string) string {
+	if strings.TrimSpace(feature.Example) == "" {
+		return ""
+	}
+	tokens, err := shellargs.Split(feature.Example)
+	if err != nil {
+		return ""
+	}
+	tokens = dropNovelFeatureExamplePrefix(tokens, commandPath, apiName)
+	return strings.Join(tokens, " ")
 }
 
 func dropNovelFeatureExamplePrefix(tokens []string, commandPath []string, apiName string) []string {

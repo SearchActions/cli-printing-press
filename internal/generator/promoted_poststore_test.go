@@ -3,6 +3,7 @@ package generator
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/mvanhorn/cli-printing-press/v4/internal/naming"
@@ -54,6 +55,15 @@ func TestPromotedHasStorePostRoutesThroughVerbBranch(t *testing.T) {
 		"HasStore + read-only POST must route through the verb branch with a built body")
 	assert.Contains(t, got, `attachFreshness(DataProvenance{Source: "live"}, flags)`,
 		"non-GET HasStore commands must synthesize a live-call prov so the downstream HasStore block compiles")
+	callIdx := strings.Index(got, "c.PostQueryWithParams(cmd.Context(), path, params, body)")
+	provIdx := strings.Index(got, `prov := attachFreshness(DataProvenance{Source: "live"}, flags)`)
+	require.NotEqual(t, -1, callIdx)
+	relErrIdx := strings.Index(got[callIdx:], "if err != nil")
+	require.NotEqual(t, -1, relErrIdx)
+	require.NotEqual(t, -1, provIdx)
+	errIdx := callIdx + relErrIdx
+	assert.Less(t, callIdx, errIdx)
+	assert.Less(t, errIdx, provIdx)
 }
 
 // TestPromotedHasStoreGetStillUsesResolveRead is the byte-compat guard for
@@ -86,7 +96,7 @@ func TestPromotedHasStoreGetStillUsesResolveRead(t *testing.T) {
 	require.NoError(t, err)
 	got := string(src)
 
-	assert.Contains(t, got, "resolveReadWithStrategy(",
+	assert.Contains(t, got, "resolveReadWithStrategyAndResponsePath(",
 		"HasStore + GET must keep routing through the cached fast-path")
 	assert.NotContains(t, got, "c.Get(cmd.Context(), path, params)",
 		"HasStore + GET must not also emit a direct c.Get call (would mean both branches fired)")

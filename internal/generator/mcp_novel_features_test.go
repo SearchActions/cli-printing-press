@@ -67,6 +67,9 @@ func TestMCPRegistersCobraTreeMirror(t *testing.T) {
 	require.NoError(t, err)
 	assert.Contains(t, string(root), "func RootCmd() *cobra.Command")
 
+	runGoCommand(t, outputDir, "mod", "tidy")
+	runGoCommand(t, outputDir, "test", "./internal/mcp/cobratree", "-run", "TestSplitShellArgs")
+
 	// main.go calls only RegisterTools; RegisterTools owns endpoint tools and
 	// the runtime command mirror.
 	main, err := os.ReadFile(filepath.Join(outputDir, "cmd", "noveltest-pp-mcp", "main.go"))
@@ -76,7 +79,7 @@ func TestMCPRegistersCobraTreeMirror(t *testing.T) {
 }
 
 // TestMCPNovelFeatureToolNameSanitization pins the snake-case tool-name
-// derivation across the corner cases the catalog actually uses.
+// derivation across the corner cases published CLIs use.
 func TestMCPNovelFeatureToolNameSanitization(t *testing.T) {
 	t.Parallel()
 
@@ -158,6 +161,7 @@ func TestMCPFrameworkCommandClassificationIsTopLevelOnly(t *testing.T) {
 import (
 	"testing"
 
+	"github.com/mark3labs/mcp-go/server"
 	"github.com/spf13/cobra"
 )
 
@@ -185,35 +189,55 @@ func TestFrameworkCommandClassificationIsTopLevelOnly(t *testing.T) {
 	}
 
 	root := &cobra.Command{Use: "depthcheck-pp-cli"}
-	topSearch := &cobra.Command{
+	topAuth := &cobra.Command{
+		Use: "auth",
+		RunE: func(cmd *cobra.Command, args []string) error { return nil },
+	}
+	library := &cobra.Command{Use: "library"}
+	librarySearch := &cobra.Command{
 		Use: "search",
 		RunE: func(cmd *cobra.Command, args []string) error { return nil },
 	}
-	items := &cobra.Command{Use: "items"}
-	itemSearch := &cobra.Command{
-		Use: "search",
+	topVersion := &cobra.Command{
+		Use: "version",
 		RunE: func(cmd *cobra.Command, args []string) error { return nil },
 	}
-	items.AddCommand(itemSearch)
-	root.AddCommand(topSearch, items)
+	libraryAuth := &cobra.Command{
+		Use: "auth",
+		RunE: func(cmd *cobra.Command, args []string) error { return nil },
+	}
+	library.AddCommand(librarySearch, libraryAuth)
+	root.AddCommand(topAuth, topVersion, library)
 
-	if got := classify(topSearch); got != commandFramework {
-		t.Fatalf("top-level search classify() = %v, want commandFramework", got)
+	if got := classify(topAuth); got != commandFramework {
+		t.Fatalf("top-level auth classify() = %v, want commandFramework", got)
 	}
-	if got := classify(itemSearch); got != commandNovel {
-		t.Fatalf("nested items search classify() = %v, want commandNovel", got)
+	if got := classify(topVersion); got != commandFramework {
+		t.Fatalf("top-level version classify() = %v, want commandFramework", got)
 	}
-	var mirrored []string
-	walk(root, nil, func(cmd *cobra.Command, path []string) {
-		if classify(cmd) == commandNovel && cmd.Runnable() {
-			mirrored = append(mirrored, toolNameForPath(path))
+	if got := classify(librarySearch); got != commandNovel {
+		t.Fatalf("nested library search classify() = %v, want commandNovel", got)
+	}
+	if got := classify(libraryAuth); got != commandNovel {
+		t.Fatalf("nested library auth classify() = %v, want commandNovel", got)
+	}
+	if got := toolNameForPath([]string{"library", "search"}); got != "library_search" {
+		t.Fatalf("nested search tool name = %q, want library_search", got)
+	}
+
+	s := server.NewMCPServer("test", "0.0.0")
+	RegisterAll(s, root, func() (string, error) { return "missing-binary", nil })
+	tools := s.ListTools()
+	if _, ok := tools["library_search"]; !ok {
+		t.Fatalf("nested library search was not mirrored: %#v", tools)
+	}
+	if _, ok := tools["library_auth"]; !ok {
+		t.Fatalf("nested library auth was not mirrored: %#v", tools)
+	}
+	for _, excluded := range []string{"auth", "version"} {
+		if _, ok := tools[excluded]; ok {
+			t.Fatalf("top-level framework command %q was mirrored: %#v", excluded, tools)
 		}
-	})
-	if got := toolNameForPath([]string{"items", "search"}); got != "items_search" {
-		t.Fatalf("nested search tool name = %q, want items_search", got)
-	}
-	if len(mirrored) != 1 || mirrored[0] != "items_search" {
-		t.Fatalf("mirrored tools = %v, want only items_search", mirrored)
 	}
 }
 `)
@@ -233,7 +257,10 @@ func TestMCPCobraTreeSiblingCLIPathUsesWindowsExecutableSuffix(t *testing.T) {
 	var testSrc strings.Builder
 	testSrc.WriteString(`package cobratree
 
-import "testing"
+import (
+	"path/filepath"
+	"testing"
+)
 
 func TestCLIExecutableNameUsesWindowsSuffix(t *testing.T) {
 	if got := cliExecutableName("windows"); got != "pathcheck-pp-cli.exe" {
@@ -244,6 +271,28 @@ func TestCLIExecutableNameUsesWindowsSuffix(t *testing.T) {
 	}
 	if got := cliExecutableName("darwin"); got != "pathcheck-pp-cli" {
 		t.Fatalf("cliExecutableName(darwin) = %q, want pathcheck-pp-cli", got)
+	}
+}
+
+func TestSiblingCLICandidatesUseWindowsSuffixThenFallback(t *testing.T) {
+	exePath := filepath.Join("tmp", "bin", "pathcheck-pp-mcp.exe")
+	windowsCandidates := siblingCLICandidates("windows", exePath)
+	if len(windowsCandidates) != 2 {
+		t.Fatalf("windows candidates length = %d, want 2: %#v", len(windowsCandidates), windowsCandidates)
+	}
+	if got, want := filepath.Base(windowsCandidates[0]), "pathcheck-pp-cli.exe"; got != want {
+		t.Fatalf("windows candidates[0] = %q, want %q", got, want)
+	}
+	if got, want := filepath.Base(windowsCandidates[1]), "pathcheck-pp-cli"; got != want {
+		t.Fatalf("windows candidates[1] = %q, want %q", got, want)
+	}
+
+	linuxCandidates := siblingCLICandidates("linux", filepath.Join("tmp", "bin", "pathcheck-pp-mcp"))
+	if len(linuxCandidates) != 1 {
+		t.Fatalf("linux candidates length = %d, want 1: %#v", len(linuxCandidates), linuxCandidates)
+	}
+	if got, want := filepath.Base(linuxCandidates[0]), "pathcheck-pp-cli"; got != want {
+		t.Fatalf("linux candidates[0] = %q, want %q", got, want)
 	}
 }
 `)

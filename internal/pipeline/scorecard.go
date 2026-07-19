@@ -110,6 +110,8 @@ const (
 	DimPathValidity          = "path_validity"
 	DimAuthProtocol          = "auth_protocol"
 	DimSyncCorrectness       = "sync_correctness"
+	DimTypeFidelity          = "type_fidelity"
+	DimDeadCode              = "dead_code"
 	DimLiveAPIVerification   = "live_api_verification"
 	// HTTP-API-shaped dimensions that do not apply to a BLE device CLI (no remote
 	// API, no sync->sql->search pipeline, no response cache). Marked N/A for
@@ -231,6 +233,7 @@ func scoreSpecDimensions(sc *Scorecard, outputDir, specPath string) (*openAPISpe
 		sc.UnscoredDimensions = append(sc.UnscoredDimensions, DimPathValidity, DimAuthProtocol)
 		return nil, nil
 	}
+	specPath = scorecardSpecPath(outputDir, specPath)
 	if specPath == "" {
 		// No spec: mark spec-dependent dimensions as unscored.
 		sc.UnscoredDimensions = append(sc.UnscoredDimensions, DimPathValidity, DimAuthProtocol)
@@ -242,10 +245,12 @@ func scoreSpecDimensions(sc *Scorecard, outputDir, specPath string) (*openAPISpe
 		return nil, err
 	}
 
-	if spec.IsSynthetic() {
-		// Hand-built commands intentionally go beyond the spec; path-validity
-		// is not applicable. Mark unscored so the tier-2 denominator excludes
-		// it rather than awarding a 10-point cushion the CLI didn't earn.
+	if spec.IsSynthetic() || spec.IsGraphQL {
+		// Hand-built commands intentionally go beyond the spec, and GraphQL
+		// CLIs expose semantic command paths over one POST endpoint. In both
+		// cases path-validity is not applicable. Mark unscored so the tier-2
+		// denominator excludes it rather than awarding a 10-point cushion the
+		// CLI didn't earn.
 		sc.UnscoredDimensions = append(sc.UnscoredDimensions, DimPathValidity)
 	} else {
 		pathValidity := evaluatePathValidity(outputDir, spec)
@@ -261,6 +266,14 @@ func scoreSpecDimensions(sc *Scorecard, outputDir, specPath string) (*openAPISpe
 		sc.UnscoredDimensions = append(sc.UnscoredDimensions, DimAuthProtocol)
 	}
 	return spec, nil
+}
+
+func scorecardSpecPath(outputDir, specPath string) string {
+	embedded := filepath.Join(outputDir, "spec.json")
+	if fileExists(embedded) {
+		return embedded
+	}
+	return specPath
 }
 
 func scoreDomainDimensions(sc *Scorecard, outputDir string, spec *openAPISpecInfo, verifyReport *VerifyReport, isDevice bool) {
@@ -295,6 +308,13 @@ func scoreDomainDimensions(sc *Scorecard, outputDir string, spec *openAPISpecInf
 	if isDevice {
 		sc.Steinberger.TypeFidelity = scoreTypeFidelityDevice(outputDir)
 	} else {
+		// Deliberately NOT gated on hasScorecardLocalStore. scoreTypeFidelity and
+		// its sub-scorers read only emitted command files and parser symbols --
+		// never the store -- so a store-less CLI can legitimately earn full marks.
+		// Marking the dimension N/A on store-absence drops an applicable dimension
+		// from the ratio, which moves the reported total in whichever direction the
+		// CLI's other tier-2 scores happen to sit, and silences selfimprove (it
+		// skips fix plans for unscored dimensions).
 		sc.Steinberger.TypeFidelity = scoreTypeFidelity(outputDir, spec)
 	}
 	sc.Steinberger.DeadCode = scoreDeadCode(outputDir)
@@ -1365,7 +1385,7 @@ func recomputeScorecardTotals(sc *Scorecard) {
 		sc.Steinberger.LiveAPIVerification,
 	)
 
-	tier2Max := scorecardTierMax(sc, 60, DimLiveAPIVerification, DimPathValidity, DimAuthProtocol, DimSyncCorrectness, DimDataPipelineIntegrity)
+	tier2Max := scorecardTierMax(sc, 60, DimLiveAPIVerification, DimPathValidity, DimAuthProtocol, DimSyncCorrectness, DimDataPipelineIntegrity, DimTypeFidelity)
 	tier2Normalized := 0
 	if tier2Max > 0 {
 		tier2Normalized = (tier2Raw * 50) / tier2Max
@@ -1385,10 +1405,21 @@ func scorecardTierMax(sc *Scorecard, base int, optionalDimensions ...string) int
 	max := base
 	for _, name := range optionalDimensions {
 		if sc.IsDimensionUnscored(name) {
-			max -= 10
+			max -= scorecardDimensionMax(name)
 		}
 	}
 	return max
+}
+
+func scorecardDimensionMax(name string) int {
+	if name == DimTypeFidelity || name == DimDeadCode {
+		return 5
+	}
+	return 10
+}
+
+func hasScorecardLocalStore(dir string) bool {
+	return fileExists(filepath.Join(dir, "internal", "store", "store.go"))
 }
 
 func scoreBreadth(dir string) int {
@@ -1473,9 +1504,23 @@ func scoreVision(dir string) int {
 	if fileExists(filepath.Join(cliDir, "import.go")) {
 		tier1 += 0.5
 	}
-	// internal/learn/doc.go is the presence sentinel for the recall/teach loop (+0.5).
-	if fileExists(filepath.Join(dir, "internal", "learn", "doc.go")) {
-		tier1 += 0.5
+	// Learn-loop credit is static-behavioral, never presence-only. The old
+	// internal/learn/doc.go sentinel is retired: with the learn loop
+	// default-on, every printed CLI ships that file, so its presence proves
+	// nothing. Instead the half point splits into two quarter-point signals:
+	//   +0.25 when the learn command surface (teach + recall + learnings) is
+	//         actually registered on the root command, read via the same
+	//         reachable-command parse the rest of the scorer uses;
+	//   +0.25 when the emitted seed artifact carries non-empty entity lookup
+	//         seeds (the per-CLI lookups.SeedConfig map the generator stamps).
+	// Both are pure static content scans. Execution proof (verify matrix,
+	// learn stats runs) belongs to verify and the acceptance print — the
+	// scorecard never executes binaries.
+	if learnCommandSurfaceRegistered(cliDir) {
+		tier1 += 0.25
+	}
+	if learnEntitySeedsNonEmpty(dir) {
+		tier1 += 0.25
 	}
 	// Workflow or compound command files
 	hasWorkflowShape := false
@@ -1584,6 +1629,52 @@ func registeredCommandContent(cliDir string, registeredFiles map[string]bool) ma
 func hasCommandContentMatching(commandContent map[string]string, match func(string) bool) bool {
 	for _, content := range commandContent {
 		if match(content) {
+			return true
+		}
+	}
+	return false
+}
+
+// learnCommandSurfaceRegistered reports whether the learn loop's command
+// surface is reachable from the emitted root command: teach, recall, and
+// learnings must all appear as registered constructor calls in root.go
+// (rootCmd.AddCommand(newTeachCmd(...)) and friends). This reuses the same
+// AST-based registered-call parse the reachable-command scorer uses, so an
+// orphan teach.go that nothing registers earns no credit.
+func learnCommandSurfaceRegistered(cliDir string) bool {
+	rootContent := readFileContent(filepath.Join(cliDir, "root.go"))
+	if rootContent == "" {
+		return false
+	}
+	ctors := addCommandConstructorCalls(rootContent)
+	return ctors["newTeachCmd"] && ctors["newRecallCmd"] && ctors["newLearningsCmd"]
+}
+
+// learnSeedMapRe matches the emitted shape that can actually carry seed rows.
+var learnSeedMapRe = regexp.MustCompile(`map\s*\[\s*string\s*\]\s*\[\s*\](?:lookups\.)?SeedConfig`)
+
+// learnSeedDataRe matches a stamped entity-lookup seed row: a Canonical
+// field assigned a string literal ({Canonical: "SEA", ...}). The generic
+// lookups library only ever writes variable references (Canonical:
+// s.Canonical), so this shape is unique to per-CLI seed data.
+var learnSeedDataRe = regexp.MustCompile(`Canonical:\s*"`)
+
+// learnEntitySeedsNonEmpty reports whether the emitted tree carries
+// non-empty entity lookup seeds. The generator stamps the per-CLI seed map
+// into internal/cli/learn_init.go as a lookups.SeedConfig literal with at
+// least one Canonical entry; an empty learn block emits no such literal.
+// A hand-authored seed table under internal/learn/lookups counts the same
+// way. Pure static content scan — no binary ever runs.
+func learnEntitySeedsNonEmpty(dir string) bool {
+	for _, p := range []string{
+		filepath.Join(dir, "internal", "cli", "learn_init.go"),
+		filepath.Join(dir, "internal", "learn", "lookups", "seeds.go"),
+	} {
+		content := readFileContent(p)
+		if content == "" {
+			continue
+		}
+		if learnSeedMapRe.MatchString(content) && learnSeedDataRe.MatchString(content) {
 			return true
 		}
 	}
@@ -2134,6 +2225,7 @@ type openAPISpecInfo struct {
 	OAuthScopeRequirements []oauthScopeRequirement
 	PositionalParamCount   int
 	Kind                   string // see apispec.KindREST / apispec.KindSynthetic
+	IsGraphQL              bool
 }
 
 func (s *openAPISpecInfo) IsSynthetic() bool {
@@ -2188,6 +2280,7 @@ func loadOpenAPISpecData(data []byte, specPath string) (*openAPISpecInfo, error)
 
 	info := &openAPISpecInfo{
 		SecuritySchemes: make(map[string]openAPISecurityScheme),
+		IsGraphQL:       hasGraphQLEndpointExtension(raw),
 	}
 	if paths, ok := raw["paths"].(map[string]any); ok {
 		for path := range paths {
@@ -2316,6 +2409,47 @@ func loadOpenAPISpecData(data []byte, specPath string) (*openAPISpecInfo, error)
 	}
 
 	return info, nil
+}
+
+func hasGraphQLEndpointExtension(raw map[string]any) bool {
+	if hasNonEmptyStringExtension(raw, "x-graphql-endpoint") {
+		return true
+	}
+	if info, ok := raw["info"].(map[string]any); ok && hasNonEmptyStringExtension(info, "x-graphql-endpoint") {
+		return true
+	}
+	if paths, ok := raw["paths"].(map[string]any); ok {
+		for _, pathValue := range paths {
+			pathItem, ok := pathValue.(map[string]any)
+			if !ok {
+				continue
+			}
+			if hasNonEmptyStringExtension(pathItem, "x-graphql-endpoint") {
+				return true
+			}
+			for method, operationValue := range pathItem {
+				if !isHTTPMethod(method) {
+					continue
+				}
+				operation, ok := operationValue.(map[string]any)
+				if ok && hasNonEmptyStringExtension(operation, "x-graphql-endpoint") {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+func hasNonEmptyStringExtension(fields map[string]any, key string) bool {
+	if fields == nil {
+		return false
+	}
+	value, ok := fields[key]
+	if !ok {
+		return false
+	}
+	return strings.TrimSpace(asString(value)) != ""
 }
 
 func operationIDFromRaw(operation map[string]any) string {
@@ -3323,6 +3457,9 @@ func scoreDeadCode(dir string) int {
 	// Use Count >= 2 because the definition itself contributes 1 occurrence of name+"(".
 	allContent := helpersContent + "\n" + otherHelpers
 	for _, name := range funcNames {
+		if isAllowedDeadHelper(name) {
+			continue
+		}
 		if strings.Count(allContent, name+"(") < 2 {
 			deadFunctions++
 		}
@@ -3783,14 +3920,14 @@ func buildGapReport(s SteinerScore, unscored []string) []string {
 		{"data_pipeline_integrity", s.DataPipelineIntegrity},
 		{"sync_correctness", s.SyncCorrectness},
 		{"type_fidelity", s.TypeFidelity},
-		{"dead_code", s.DeadCode},
+		{DimDeadCode, s.DeadCode},
 	}
 	for _, d := range dimensions {
 		if _, skip := unscoredSet[d.name]; skip {
 			continue
 		}
 		max := 10
-		if d.name == "type_fidelity" || d.name == "dead_code" {
+		if d.name == DimTypeFidelity || d.name == DimDeadCode {
 			max = 5
 		}
 		if d.score < max/2 {
@@ -3930,6 +4067,10 @@ func writeScorecardMD(sc *Scorecard, pipelineDir string) error {
 		{"Dead Code", s.DeadCode},
 	}
 	for _, d := range typeDimensions {
+		if sc.IsDimensionUnscored(strings.ToLower(strings.ReplaceAll(d.name, " ", "_"))) {
+			fmt.Fprintf(&b, "| %s | N/A |\n", d.name)
+			continue
+		}
 		bar := strings.Repeat("#", d.score) + strings.Repeat(".", 5-d.score)
 		fmt.Fprintf(&b, "| %s | %d/5 %s |\n", d.name, d.score, bar)
 	}

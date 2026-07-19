@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/mvanhorn/cli-printing-press/v4/internal/spec"
+	"github.com/stretchr/testify/require"
 )
 
 // TestBodyMap pins the rendered Go code for each of the three body-param
@@ -68,7 +69,11 @@ func TestBodyMap(t *testing.T) {
 				"\t\t\t\tif err := json.Unmarshal([]byte(bodyMetadata), &parsedMetadata); err != nil {\n" +
 				"\t\t\t\t\treturn fmt.Errorf(\"parsing --metadata JSON: %w\", err)\n" +
 				"\t\t\t\t}\n" +
-				"\t\t\t\tbody[\"metadata\"] = parsedMetadata\n" +
+				"\t\t\t\tasMap, ok := parsedMetadata.(map[string]any)\n" +
+				"\t\t\t\tif !ok {\n" +
+				"\t\t\t\t\treturn fmt.Errorf(\"--metadata must be a JSON object, got JSON %T\", parsedMetadata)\n" +
+				"\t\t\t\t}\n" +
+				"\t\t\t\tbody[\"metadata\"] = asMap\n" +
 				"\t\t\t}\n",
 		},
 		{
@@ -80,7 +85,11 @@ func TestBodyMap(t *testing.T) {
 				"\t\t\t\tif err := json.Unmarshal([]byte(bodyTags), &parsedTags); err != nil {\n" +
 				"\t\t\t\t\treturn fmt.Errorf(\"parsing --tags JSON: %w\", err)\n" +
 				"\t\t\t\t}\n" +
-				"\t\t\t\tbody[\"tags\"] = parsedTags\n" +
+				"\t\t\t\tasArray, ok := parsedTags.([]any)\n" +
+				"\t\t\t\tif !ok {\n" +
+				"\t\t\t\t\treturn fmt.Errorf(\"--tags must be a JSON array, got JSON %T\", parsedTags)\n" +
+				"\t\t\t\t}\n" +
+				"\t\t\t\tbody[\"tags\"] = asArray\n" +
 				"\t\t\t}\n",
 		},
 		{
@@ -100,6 +109,26 @@ func TestBodyMap(t *testing.T) {
 				"\t\t\t}\n",
 		},
 		{
+			// Polymorphic body fields (for example oneOf scalar-or-object)
+			// accept either a scalar string or a JSON object/array. JSON-looking
+			// values must be parsed before entering the body map so the API sees
+			// an object/array, not a quoted JSON string.
+			name:   "json-or-scalar branch parses composite values and keeps scalar fallback",
+			body:   []spec.Param{{Name: "response_engine", Type: "string", Format: "json_or_scalar"}},
+			indent: "\t\t\t",
+			want: "\t\t\tif bodyResponseEngine != \"\" {\n" +
+				"\t\t\t\tif looksLikeJSONComposite(bodyResponseEngine) {\n" +
+				"\t\t\t\t\tvar parsedResponseEngine any\n" +
+				"\t\t\t\t\tif err := json.Unmarshal([]byte(bodyResponseEngine), &parsedResponseEngine); err != nil {\n" +
+				"\t\t\t\t\t\treturn fmt.Errorf(\"parsing --response-engine JSON: %w\", err)\n" +
+				"\t\t\t\t\t}\n" +
+				"\t\t\t\t\tbody[\"response_engine\"] = parsedResponseEngine\n" +
+				"\t\t\t\t} else {\n" +
+				"\t\t\t\t\tbody[\"response_engine\"] = bodyResponseEngine\n" +
+				"\t\t\t\t}\n" +
+				"\t\t\t}\n",
+		},
+		{
 			name: "multiple params concatenate in order",
 			body: []spec.Param{
 				{Name: "name", Type: "string"},
@@ -114,7 +143,11 @@ func TestBodyMap(t *testing.T) {
 				"\t\tif err := json.Unmarshal([]byte(bodyTags), &parsedTags); err != nil {\n" +
 				"\t\t\treturn fmt.Errorf(\"parsing --tags JSON: %w\", err)\n" +
 				"\t\t}\n" +
-				"\t\tbody[\"tags\"] = parsedTags\n" +
+				"\t\tasArray, ok := parsedTags.([]any)\n" +
+				"\t\tif !ok {\n" +
+				"\t\t\treturn fmt.Errorf(\"--tags must be a JSON array, got JSON %T\", parsedTags)\n" +
+				"\t\t}\n" +
+				"\t\tbody[\"tags\"] = asArray\n" +
 				"\t}\n",
 		},
 		{
@@ -189,7 +222,7 @@ func TestBodyMap_BodyNameOverridesJSONKey(t *testing.T) {
 	if !strings.Contains(got, "bodyStartAfter") {
 		t.Errorf("expected public name to drive variable identity, got: %s", got)
 	}
-	if !strings.Contains(got, `body["searchAfter"] = parsedStartAfter`) {
+	if !strings.Contains(got, `body["searchAfter"] = asArray`) {
 		t.Errorf("expected body_name to drive JSON key, got: %s", got)
 	}
 	if strings.Contains(got, `body["startAfter"]`) {
@@ -257,6 +290,20 @@ func TestBodyMap_NestedObject_BooleanLeaf(t *testing.T) {
 	if got != want {
 		t.Errorf("bodyMap nested boolean leaf mismatch.\n got:\n%s\nwant:\n%s", got, want)
 	}
+}
+
+func TestBodyMap_NestedObject_DefaultTrueBooleanRequiresChangedFlag(t *testing.T) {
+	t.Parallel()
+	got := bodyMap([]spec.Param{{
+		Name: "settings",
+		Type: "object",
+		Fields: []spec.Param{
+			{Name: "enabled", Type: "boolean", Default: true},
+		},
+	}}, "\t")
+
+	require.Contains(t, got, `if cmd.Flags().Changed("settings-enabled") {`)
+	require.NotContains(t, got, `bodySettingsEnabled != false`)
 }
 
 // TestBodyMap_NestedObject_PreservesScalarSiblings verifies that
@@ -487,10 +534,10 @@ func TestBodyFlagRegs_NonJSONStaysFlat(t *testing.T) {
 	}
 }
 
-// TestBodyRequiredChecks_NestedField uses parent-prefixed flag in the
-// emitted `cmd.Flags().Changed(...)` call so the validator agrees with
-// the flag name registered in bodyFlagRegs.
-func TestBodyRequiredChecks_NestedField(t *testing.T) {
+// TestBodyRequiredChecks_OptionalNestedObject gates required child fields on
+// the optional parent being populated. JSON Schema's child `required` list
+// applies only when the parent object is present.
+func TestBodyRequiredChecks_OptionalNestedObject(t *testing.T) {
 	t.Parallel()
 	got := bodyRequiredChecks(spec.Endpoint{
 		Body: []spec.Param{{
@@ -498,14 +545,97 @@ func TestBodyRequiredChecks_NestedField(t *testing.T) {
 			Type: "object",
 			Fields: []spec.Param{
 				{Name: "dateTime", Type: "string", Required: true},
+				{Name: "timeZone", Type: "string"},
 			},
 		}},
 	}, "\t\t\t")
-	if !strings.Contains(got, `cmd.Flags().Changed("start-date-time")`) {
-		t.Errorf("expected parent-prefixed Changed() call for nested required field, got:\n%s", got)
+	require.Contains(t, got, `if bodyStartDateTime != "" || bodyStartTimeZone != "" {`)
+	require.Contains(t, got, `if !cmd.Flags().Changed("start-date-time") && !flags.dryRun {`)
+	require.Contains(t, got, `"required flag \"%s\" not set", "start-date-time"`)
+}
+
+func TestBodyRequiredChecks_OptionalNestedObjectDefaultActivatesParent(t *testing.T) {
+	t.Parallel()
+	got := bodyRequiredChecks(spec.Endpoint{
+		Body: []spec.Param{{
+			Name: "start",
+			Type: "object",
+			Fields: []spec.Param{
+				{Name: "dateTime", Type: "string", Required: true},
+				{Name: "timeZone", Type: "string", Default: "UTC"},
+			},
+		}},
+	}, "\t\t\t")
+	require.Contains(t, got, `if bodyStartDateTime != "" || bodyStartTimeZone != "" {`)
+	require.Contains(t, got, `if !cmd.Flags().Changed("start-date-time") && !flags.dryRun {`)
+}
+
+func TestBodyRequiredChecks_RecursiveOptionalObjects(t *testing.T) {
+	t.Parallel()
+	got := bodyRequiredChecks(spec.Endpoint{
+		Body: []spec.Param{{
+			Name: "outer",
+			Type: "object",
+			Fields: []spec.Param{
+				{Name: "label", Type: "string"},
+				{
+					Name: "config",
+					Type: "object",
+					Fields: []spec.Param{
+						{Name: "mode", Type: "string", Required: true},
+						{Name: "note", Type: "string"},
+					},
+				},
+			},
+		}},
+	}, "\t\t\t")
+	require.Contains(t, got, `if bodyOuterLabel != "" || bodyOuterConfigMode != "" || bodyOuterConfigNote != "" {`)
+	require.Contains(t, got, `if bodyOuterConfigMode != "" || bodyOuterConfigNote != "" {`)
+	require.Contains(t, got, `if !cmd.Flags().Changed("outer-config-mode") && !flags.dryRun {`)
+}
+
+func TestBodyRequiredChecks_RequiredNestedObjectRemainsUnconditional(t *testing.T) {
+	t.Parallel()
+	got := bodyRequiredChecks(spec.Endpoint{
+		Body: []spec.Param{{
+			Name:     "start",
+			Type:     "object",
+			Required: true,
+			Fields: []spec.Param{
+				{Name: "dateTime", Type: "string", Required: true},
+				{Name: "timeZone", Type: "string"},
+			},
+		}},
+	}, "\t\t\t")
+	require.NotContains(t, got, `cmd.Flags().Changed("start-time-zone")`)
+	require.Contains(t, got, `if !cmd.Flags().Changed("start-date-time") && !flags.dryRun {`)
+}
+
+func TestMCPBodyInputParams_NestedRequiredFollowsParent(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name           string
+		parentRequired bool
+		wantRequired   bool
+	}{
+		{name: "optional parent", parentRequired: false, wantRequired: false},
+		{name: "required parent", parentRequired: true, wantRequired: true},
 	}
-	if !strings.Contains(got, `"required flag \"%s\" not set", "start-date-time"`) {
-		t.Errorf("expected parent-prefixed flag name in error message, got:\n%s", got)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := mcpBodyInputParams(spec.Endpoint{Body: []spec.Param{{
+				Name:     "start",
+				Type:     "object",
+				Required: tt.parentRequired,
+				Fields: []spec.Param{{
+					Name: "dateTime", Type: "string", Required: true,
+				}},
+			}}})
+			require.Len(t, got, 1)
+			require.Equal(t, tt.wantRequired, got[0].Required)
+			require.Equal(t, "start-date-time", got[0].FlagName)
+		})
 	}
 }
 
@@ -553,6 +683,17 @@ func TestBodyJSONFallback_FlagRegs(t *testing.T) {
 	}
 }
 
+func TestBodyJSONFallback_FlagRegs_ArrayBody(t *testing.T) {
+	t.Parallel()
+	got := bodyFlagRegs(spec.Endpoint{BodyJSONFallback: true, BodyIsArray: true})
+	if !strings.Contains(got, "JSON array string") {
+		t.Errorf("expected array-shaped body-json help text, got:\n%s", got)
+	}
+	if strings.Contains(got, "JSON object string") {
+		t.Errorf("array body-json help must not describe an object, got:\n%s", got)
+	}
+}
+
 // TestBodyJSONFallback_RequiredChecks emits no required-flag check
 // because the parser cannot tell whether the request body is mandatory
 // for an opaque schema. An empty body either succeeds or surfaces a
@@ -584,6 +725,27 @@ func TestBodyJSONFallback_BodyMap(t *testing.T) {
 		if !strings.Contains(got, s) {
 			t.Errorf("body-json fallback output missing %q, got:\n%s", s, got)
 		}
+	}
+}
+
+func TestBodyJSONFallback_BodyMap_ArrayBody(t *testing.T) {
+	t.Parallel()
+	got := bodyMapForEndpointVars(spec.Endpoint{BodyJSONFallback: true, BodyIsArray: true}, "\t", "bodyMap", "body")
+	wantSubstrings := []string{
+		`if flagBodyJSON != ""`,
+		`var parsedBodyJSON any`,
+		`json.Unmarshal([]byte(flagBodyJSON), &parsedBodyJSON)`,
+		`asArray, ok := parsedBodyJSON.([]any)`,
+		`body = asArray`,
+		`--body-json must be a JSON array, got JSON %T`,
+	}
+	for _, s := range wantSubstrings {
+		if !strings.Contains(got, s) {
+			t.Errorf("array body-json fallback output missing %q, got:\n%s", s, got)
+		}
+	}
+	if strings.Contains(got, `asMap, ok := parsedBodyJSON.(map[string]any)`) {
+		t.Errorf("array body-json fallback must not force an object map, got:\n%s", got)
 	}
 }
 

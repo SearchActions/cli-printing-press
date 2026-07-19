@@ -7,8 +7,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/mvanhorn/cli-printing-press/v4/catalog"
-	catalogpkg "github.com/mvanhorn/cli-printing-press/v4/internal/catalog"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/spec"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -250,6 +248,75 @@ func TestCopyPublishableManuscriptDirExcludesDownloadedSources(t *testing.T) {
 	assert.NoFileExists(t, filepath.Join(dst, "research", "sources", "README.md"))
 }
 
+func TestCopyPublishableManuscriptDirExcludesRawBrowserSniffCaptures(t *testing.T) {
+	src := filepath.Join(t.TempDir(), "src")
+	dst := filepath.Join(t.TempDir(), "dst")
+
+	require.NoError(t, os.MkdirAll(filepath.Join(src, "discovery", "bundles"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(src, "discovery", "batch-01"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(src, "discovery", "v2", "bundles"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(src, "research", "squire-browser-sniff-spec-samples"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(src, "research"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(src, "proofs"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(src, "proofs", "snapshot.pre-pii-scrub"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(src, "discovery", "probe-001.json"), []byte(`{"email":"customer@gmail.com"}`+"\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(src, "discovery", "probe_users_show.json"), []byte(`{"email":"customer@gmail.com"}`+"\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(src, "discovery", "batch-01", "probe-002.json"), []byte(`{"email":"customer@gmail.com"}`+"\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(src, "discovery", "capture.har"), []byte("raw har"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(src, "discovery", "bundles", "app.js"), []byte("window.email='customer@gmail.com'"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(src, "discovery", "v2", "bundles", "app.js"), []byte("window.email='customer@gmail.com'"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(src, "research", "squire-browser-sniff-spec-samples", "sample.json"), []byte(`{"email":"customer@gmail.com"}`+"\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(src, "discovery", "traffic-analysis.json"), []byte(`{"auth_stripped":true}`+"\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(src, "discovery", "browser-sniff-report.md"), []byte("# Report"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(src, "research", "brief.md"), []byte("our synthesis"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(src, "proofs", "shipcheck.md.pre-pii-scrub"), []byte("customer@gmail.com"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(src, "proofs", "snapshot.pre-pii-scrub", "leak.json"), []byte(`{"email":"customer@gmail.com"}`), 0o644))
+
+	require.NoError(t, CopyPublishableManuscriptDir(src, dst))
+
+	assert.NoFileExists(t, filepath.Join(dst, "discovery", "probe-001.json"))
+	assert.NoFileExists(t, filepath.Join(dst, "discovery", "probe_users_show.json"))
+	assert.NoFileExists(t, filepath.Join(dst, "discovery", "batch-01", "probe-002.json"))
+	assert.NoFileExists(t, filepath.Join(dst, "discovery", "capture.har"))
+	assert.NoDirExists(t, filepath.Join(dst, "discovery", "bundles"))
+	assert.NoDirExists(t, filepath.Join(dst, "discovery", "v2", "bundles"))
+	assert.NoDirExists(t, filepath.Join(dst, "research", "squire-browser-sniff-spec-samples"))
+	assert.FileExists(t, filepath.Join(dst, "discovery", "traffic-analysis.json"))
+	assert.FileExists(t, filepath.Join(dst, "discovery", "browser-sniff-report.md"))
+	assert.FileExists(t, filepath.Join(dst, "research", "brief.md"))
+	assert.NoFileExists(t, filepath.Join(dst, "proofs", "shipcheck.md.pre-pii-scrub"))
+	assert.NoDirExists(t, filepath.Join(dst, "proofs", "snapshot.pre-pii-scrub"))
+}
+
+func TestCopyPublishableManuscriptDirCanIncludeRawBrowserSniffCaptures(t *testing.T) {
+	src := filepath.Join(t.TempDir(), "src")
+	dst := filepath.Join(t.TempDir(), "dst")
+
+	require.NoError(t, os.MkdirAll(filepath.Join(src, "discovery", "bundles"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(src, "research", "squire-browser-sniff-spec-samples"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(src, "research", "sources", "thirdparty"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(src, "discovery", "probe-001.json"), []byte(`{"status":"sample"}`+"\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(src, "discovery", "capture.har"), []byte("raw har"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(src, "discovery", "bundles", "app.js"), []byte("console.log('sample')"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(src, "research", "squire-browser-sniff-spec-samples", "sample.json"), []byte(`{"status":"sample"}`+"\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(src, "research", "sources", "thirdparty", "lib.py"), []byte("# third party"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(src, "research", "brief.md.pre-pii-scrub"), []byte("customer@gmail.com"), 0o644))
+	largeFile, err := os.Create(filepath.Join(src, "large-authored-artifact.bin"))
+	require.NoError(t, err)
+	require.NoError(t, largeFile.Truncate(publishableManuscriptMaxCaptureBytes))
+	require.NoError(t, largeFile.Close())
+
+	require.NoError(t, CopyPublishableManuscriptDirWithOptions(src, dst, PublishableManuscriptCopyOptions{IncludeRawCaptures: true}))
+
+	assert.FileExists(t, filepath.Join(dst, "discovery", "probe-001.json"))
+	assert.FileExists(t, filepath.Join(dst, "discovery", "capture.har"))
+	assert.FileExists(t, filepath.Join(dst, "discovery", "bundles", "app.js"))
+	assert.FileExists(t, filepath.Join(dst, "research", "squire-browser-sniff-spec-samples", "sample.json"))
+	assert.NoDirExists(t, filepath.Join(dst, "research", "sources"))
+	assert.NoFileExists(t, filepath.Join(dst, "research", "brief.md.pre-pii-scrub"))
+	assert.NoFileExists(t, filepath.Join(dst, "large-authored-artifact.bin"))
+}
+
 // publishManifestEnvSetup wires PRINTING_PRESS_HOME/SCOPE/REPO_ROOT to a temp dir
 // so RunRoot()/PipelineDir()/PublishedLibraryRoot() resolve under the test sandbox.
 // Returns the temp root and a state seeded with the given run ID.
@@ -309,28 +376,6 @@ func TestWriteCLIManifestForPublish_NovelFeaturesFromSkillFlowResearch(t *testin
 	assert.Equal(t, "today", m.NovelFeatures[1].Command)
 }
 
-func TestWriteCLIManifestForPublishKeepsCatalogDisplayNameOverTitleFallback(t *testing.T) {
-	tmp := t.TempDir()
-	t.Setenv("PRINTING_PRESS_HOME", tmp)
-	t.Setenv("PRINTING_PRESS_SCOPE", "test-scope")
-	t.Setenv("PRINTING_PRESS_REPO_ROOT", tmp)
-
-	state := NewStateWithRun("producthunt", filepath.Join(tmp, "working", "producthunt-pp-cli"), "20260507-display-name", "test-scope")
-	require.NoError(t, os.MkdirAll(state.WorkingDir, 0o755))
-	require.NoError(t, os.WriteFile(filepath.Join(state.WorkingDir, "spec.yaml"), []byte(`
-openapi: "3.0.0"
-info:
-  title: Producthunt API
-  version: "1.0"
-paths: {}
-`), 0o644))
-
-	require.NoError(t, writeCLIManifestForPublish(state, state.WorkingDir))
-
-	m := readPublishedManifest(t, state.WorkingDir)
-	assert.Equal(t, "Product Hunt", m.DisplayName)
-}
-
 func TestWriteCLIManifestForPublishPreservesGeneratedDescription(t *testing.T) {
 	tmp := t.TempDir()
 	t.Setenv("PRINTING_PRESS_HOME", tmp)
@@ -347,7 +392,7 @@ func TestWriteCLIManifestForPublishPreservesGeneratedDescription(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(state.WorkingDir, "spec.yaml"), []byte(`
 name: asana
 description: API-shaped fallback copy.
-cli_description: Spec CLI copy that should not replace generated catalog copy during publish.
+cli_description: Spec CLI copy that should not replace generated manifest copy during publish.
 version: "1.0"
 base_url: https://api.example.com
 auth:
@@ -393,10 +438,8 @@ resources:
 
 	require.NoError(t, writeCLIManifestForPublish(state, state.WorkingDir))
 
-	entry, err := catalogpkg.LookupFS(catalog.FS, "asana")
-	require.NoError(t, err)
 	m := readPublishedManifest(t, state.WorkingDir)
-	assert.Equal(t, entry.Description, m.Description)
+	assert.Equal(t, "API-shaped fallback copy.", m.Description)
 	assert.False(t, strings.HasSuffix(m.Description, "..."))
 }
 
@@ -429,7 +472,7 @@ resources: {}
 	assert.False(t, strings.HasSuffix(m.Description, "..."))
 }
 
-func TestWriteCLIManifestForPublishAppliesCatalogMetadataAfterNameOverride(t *testing.T) {
+func TestWriteCLIManifestForPublishRebasesAuthEnvAfterNameOverride(t *testing.T) {
 	tmp := t.TempDir()
 	t.Setenv("PRINTING_PRESS_HOME", tmp)
 	t.Setenv("PRINTING_PRESS_SCOPE", "test-scope")
@@ -461,12 +504,12 @@ paths:
 
 	m := readPublishedManifest(t, state.WorkingDir)
 	assert.Equal(t, []string{"ELEVENLABS_API_KEY"}, m.AuthEnvVars)
-	assert.Equal(t, "https://elevenlabs.io/app/settings/api-keys", m.AuthKeyURL)
+	assert.Empty(t, m.AuthKeyURL)
 
 	tools, err := ReadToolsManifest(state.WorkingDir)
 	require.NoError(t, err)
 	assert.Equal(t, "elevenlabs", tools.APIName)
-	assert.Equal(t, "https://api.elevenlabs.io", tools.BaseURL)
+	assert.Equal(t, "https://api.example.com", tools.BaseURL)
 	assert.Equal(t, []string{"ELEVENLABS_API_KEY"}, tools.Auth.EnvVars)
 }
 
@@ -584,12 +627,18 @@ func TestWriteCLIManifestForPublish_NovelFeaturesPreservedFromCarryForward(t *te
 	require.NoError(t, err)
 	require.NoError(t, os.WriteFile(filepath.Join(state.WorkingDir, CLIManifestFilename), existingData, 0o644))
 
-	// No research.json anywhere. Publish should preserve the carry-forward value.
-	require.NoError(t, writeCLIManifestForPublish(state, state.WorkingDir))
+	// No research.json anywhere. Publish should preserve the carry-forward value
+	// without warning that manual enrichment is required.
+	var stderr string
+	require.NoError(t, captureStderr(t, &stderr, func() error {
+		return writeCLIManifestForPublish(state, state.WorkingDir)
+	}))
 
 	m := readPublishedManifest(t, state.WorkingDir)
 	require.Len(t, m.NovelFeatures, 1, "carry-forward should preserve generate-time novel_features")
 	assert.Equal(t, "today", m.NovelFeatures[0].Command)
+	assert.NotContains(t, stderr, "manifest will require manual enrichment before publish")
+	assert.Contains(t, stderr, "preserving existing novel_features")
 }
 
 func TestWriteCLIManifestForPublish_AuthEnvVarSpecsPreservedFromCarryForward(t *testing.T) {
@@ -701,9 +750,10 @@ func TestWriteCLIManifestForPublish_NoResearchNoExistingManifest(t *testing.T) {
 
 	m := readPublishedManifest(t, state.WorkingDir)
 	assert.Empty(t, m.NovelFeatures, "no novel_features when neither research nor prior manifest has any")
-	assert.Contains(t, stderr, "debug: research.json not found at "+
+	assert.Contains(t, stderr, "warning: could not locate originating run's research.json at "+
 		filepath.Join(state.RunRoot(), "research.json")+" or "+
 		filepath.Join(state.PipelineDir(), "research.json"))
+	assert.Contains(t, stderr, "manifest will require manual enrichment before publish")
 	assert.NotContains(t, stderr, "read failed")
 	assert.NotContains(t, stderr, "failed to parse")
 }

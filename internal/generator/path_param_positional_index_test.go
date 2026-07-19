@@ -117,11 +117,15 @@ func TestPathParamArgsIndexUsesPositionalOrdinal(t *testing.T) {
 	}
 
 	// 1) Single positional with a non-positional query before it: args[0],
-	// no len-check (Cobra's MinimumNArgs(1) covers the first positional).
+	// with an explicit empty-string guard because Cobra's MinimumNArgs(1)
+	// allows callers to pass "" from an empty shell variable expansion.
 	tagsList := read(filepath.Join("internal", "cli", "tags_contacts_list-for-tag.go"))
 	assert.Contains(t, tagsList,
 		`path = replacePathParam(path, "tagId", args[0])`,
 		"single positional path param must use args[0] regardless of declared query params before it")
+	assert.Contains(t, tagsList,
+		`if len(args) < 1 || args[0] == ""`,
+		"first positional path param must reject explicit empty strings before URL substitution")
 	assert.NotContains(t, tagsList,
 		`args[2]`,
 		"must not interpolate the full-Params index for the positional")
@@ -291,7 +295,7 @@ func TestPathParamArgsIndexFlagExposedPathParam(t *testing.T) {
 		`path = replacePathParam(path, "reportId", args[0])`,
 		"positional path param must resolve to args[0] when a flag-exposed path param precedes it in Params")
 	assert.Contains(t, body,
-		`path = replacePathParam(path, "groupId", fmt.Sprintf("%v", flagGroupId))`,
+		`path = replacePathParam(path, "groupId", formatCLIParamValue(flagGroupId))`,
 		"flag-exposed path param must continue to substitute from its flag, not args[]")
 	assert.NotContains(t, body,
 		`args[1]`,
@@ -351,7 +355,7 @@ func TestPromotedCommandPathParamArgsIndexFlagExposedPathParam(t *testing.T) {
 		`path = replacePathParam(path, "reportId", args[0])`,
 		"promoted command: positional path param must resolve to args[0] when a flag-exposed path param precedes it")
 	assert.Contains(t, src,
-		`path = replacePathParam(path, "groupId", fmt.Sprintf("%v", flagGroupId))`,
+		`path = replacePathParam(path, "groupId", formatCLIParamValue(flagGroupId))`,
 		"promoted command: flag-exposed path param must continue to substitute from its flag")
 	assert.Contains(t, src,
 		`if len(args) < 1`,

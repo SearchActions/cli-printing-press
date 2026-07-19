@@ -123,12 +123,18 @@ func (g *DeviceGenerator) Generate() error {
 		"NOTICE":           "NOTICE.tmpl",
 		".goreleaser.yaml": "goreleaser.yaml.tmpl",
 		"AGENTS.md":        "agents_device.md.tmpl",
+		// Claude Code auto-loads CLAUDE.md, not AGENTS.md (codex/agy read AGENTS.md
+		// natively). Emit a CLAUDE.md that just imports it so a Claude session in the
+		// printed CLI loads the contract. Body is variant-agnostic (shared template).
+		"CLAUDE.md": "claude.md.tmpl",
 		// MCP surface: a stdio MCP server that mirrors the Cobra tree via the
 		// API-agnostic cobratree walker. The walker respects mcp:read-only and
 		// mcp:hidden annotations, so each device CLI's own commands decide what an
 		// agent can reach. The MCP binary execs the companion CLI (no BLE/CGO).
-		filepath.Join("cmd", data.MCPName, "main.go"): deviceMCPMainTemplate,
-		filepath.Join("internal", "mcp", "tools.go"):  deviceMCPToolsTemplate,
+		filepath.Join("cmd", data.MCPName, "main.go"):              deviceMCPMainTemplate,
+		filepath.Join("internal", "mcp", "tools.go"):               deviceMCPToolsTemplate,
+		filepath.Join("internal", "mcp", "bound", "bound.go"):      "mcp_bound.go.tmpl",
+		filepath.Join("internal", "mcp", "bound", "bound_test.go"): "mcp_bound_test.go.tmpl",
 	}
 	// The cobratree walker is API-agnostic and shared with the HTTP generator;
 	// single-source the file set. device files are keyed output->template, so
@@ -251,7 +257,7 @@ func (g *DeviceGenerator) templateData() deviceTemplateData {
 		HasSession:      g.Spec.Session.Mode == devicespec.SessionModeOptional || g.Spec.Session.Mode == devicespec.SessionModeRequired,
 		SessionRequired: g.Spec.Session.Mode == devicespec.SessionModeRequired,
 		HasStore:        hasStore,
-		// Device specs carry no catalog category, so the canonical install block
+		// Device specs carry no public-library category, so the canonical install block
 		// uses the category-agnostic installer path — matching what the verify-skill
 		// canonical-sections check expects (CanonicalSkillInstallSection(name, "")).
 		InstallSection: CanonicalSkillInstallSection(name, ""),
@@ -282,7 +288,9 @@ func deviceCommandCallable(command devicespec.DeviceCommand) bool {
 
 func (g *DeviceGenerator) render(relPath, tmplText string, data deviceTemplateData) error {
 	tmpl, err := template.New(relPath).Funcs(template.FuncMap{
-		"quote": func(value string) string { return fmt.Sprintf("%q", value) },
+		"quote":              func(value string) string { return fmt.Sprintf("%q", value) },
+		"goDirectiveVersion": resolveCurrentGoDirectiveVersion,
+		"goToolchainVersion": resolveCurrentGoToolchainVersion,
 	}).Parse(tmplText)
 	if err != nil {
 		return fmt.Errorf("parse %s template: %w", relPath, err)
@@ -326,13 +334,19 @@ func (g *DeviceGenerator) renderEmbedded(relPath, tmplName string, data deviceTe
 
 const deviceGoModTemplate = `module {{.ModulePath}}
 
-go 1.26.5
+go {{goDirectiveVersion}}
+
+toolchain {{goToolchainVersion}}
 
 require (
 	github.com/mark3labs/mcp-go v0.47.0
 	github.com/spf13/cobra v1.9.1
 	tinygo.org/x/bluetooth v0.15.0
 )
+
+// Floor the transitively-pulled x/sys (via tinygo.org/x/bluetooth) above the
+// vulnerable v0.31.0; tidy drops it for CLIs that pull no x/sys at all.
+require golang.org/x/sys v0.46.0 // indirect
 `
 
 const deviceMainTemplate = `// Copyright {{.CurrentYear}}. Licensed under Apache-2.0. See LICENSE.
@@ -392,17 +406,21 @@ func deviceTransport(flags *rootFlags) device.Transport {
 	return device.NewReplayTransport()
 }
 
-// novelCommands is an optional hook for hand-authored commands. It is nil by
-// default (no extra commands). To extend this CLI WITHOUT editing generated
-// files, add a file in package cli — it is preserved across regeneration — that
-// sets this var from an init function:
+// novelCommandHooks are optional hooks for hand-authored commands. To extend
+// this CLI WITHOUT editing generated files, add a file in package cli — it is
+// preserved across regeneration — that registers a hook from init. Hooks are
+// additive, so independent extensions cannot replace one another:
 //
 //	func init() {
-//		novelCommands = func(root *cobra.Command, flags *rootFlags) {
+//		registerNovelCommand(func(root *cobra.Command, flags *rootFlags) {
 //			root.AddCommand(newMyCmd(flags))
-//		}
+//		})
 //	}
-var novelCommands func(root *cobra.Command, flags *rootFlags)
+var novelCommandHooks []func(root *cobra.Command, flags *rootFlags)
+
+func registerNovelCommand(hook func(root *cobra.Command, flags *rootFlags)) {
+	novelCommandHooks = append(novelCommandHooks, hook)
+}
 
 func RootCmd() *cobra.Command {
 	var flags rootFlags
@@ -454,8 +472,8 @@ func newRootCmd(flags *rootFlags) *cobra.Command {
 {{- range .Commands}}
 	rootCmd.AddCommand(newDeviceCommandCmd(flags, device.CommandDefinition{Name: {{quote .Name}}, CharacteristicUUID: {{quote .CharacteristicUUID}}, Safety: {{quote .Safety}}, ValidationStatus: {{quote .ValidationStatus}}, PayloadHex: {{quote .PayloadHex}}, Parameters: []string{ {{- range .Parameters}}{{quote .}}, {{- end}} }}))
 {{- end}}
-	if novelCommands != nil {
-		novelCommands(rootCmd, flags)
+	for _, hook := range novelCommandHooks {
+		hook(rootCmd, flags)
 	}
 	return rootCmd
 }
@@ -2530,10 +2548,13 @@ import (
 	mcptools "{{.ModulePath}}/internal/mcp"
 )
 
+// version is the printed MCP server's version, overridable at build time via ldflags.
+var version = "0.0.0-dev"
+
 func main() {
 	s := server.NewMCPServer(
 		{{quote .DisplayName}},
-		"1.0.0",
+		version,
 		server.WithToolCapabilities(false),
 	)
 	mcptools.RegisterTools(s)
@@ -2551,13 +2572,13 @@ package mcp
 
 import (
 	"context"
-	"encoding/json"
 
 	mcplib "github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 
 	"{{.ModulePath}}/internal/cli"
 	"{{.ModulePath}}/internal/device"
+	"{{.ModulePath}}/internal/mcp/bound"
 	"{{.ModulePath}}/internal/mcp/cobratree"
 )
 
@@ -2579,10 +2600,10 @@ func RegisterTools(s *server.MCPServer) {
 }
 
 func handleContext(_ context.Context, _ mcplib.CallToolRequest) (*mcplib.CallToolResult, error) {
-	data, err := json.MarshalIndent(device.Capabilities(), "", "  ")
+	text, err := bound.JSON(device.Capabilities())
 	if err != nil {
 		return mcplib.NewToolResultError(err.Error()), nil
 	}
-	return mcplib.NewToolResultText(string(data)), nil
+	return mcplib.NewToolResultText(text), nil
 }
 `

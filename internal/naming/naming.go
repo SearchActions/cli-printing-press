@@ -45,6 +45,10 @@ const (
 	ThinCommandShortMinWords = 4
 )
 
+func PathKindEnvSuffixes() []string {
+	return []string{"HOME", "CONFIG_DIR", "DATA_DIR", "STATE_DIR", "CACHE_DIR"}
+}
+
 // IsThinCommandShort mirrors the agent-facing Short quality floor used
 // by tools-audit and generator fallback emission.
 func IsThinCommandShort(s string) bool {
@@ -53,11 +57,15 @@ func IsThinCommandShort(s string) bool {
 }
 
 func CLI(name string) string {
-	return name + CurrentCLISuffix
+	return trimPPSuffixToken(name) + CurrentCLISuffix
 }
 
 func MCP(name string) string {
-	return name + MCPSuffix
+	return trimPPSuffixToken(name) + MCPSuffix
+}
+
+func trimPPSuffixToken(name string) string {
+	return strings.TrimSuffix(name, "-pp")
 }
 
 func LegacyCLI(name string) string {
@@ -283,8 +291,8 @@ func OneLineNormalize(s string) string {
 	return strings.TrimSpace(s)
 }
 
-// CompactDescription produces compact human-facing copy for catalog, skill,
-// Homebrew, and agent-context descriptions. Unlike OneLine, it preserves
+// CompactDescription produces compact human-facing copy for skill, Homebrew,
+// manifest, and agent-context descriptions. Unlike OneLine, it preserves
 // quotes and backslashes because callers are responsible for escaping in their
 // target format.
 func CompactDescription(s string) string {
@@ -293,11 +301,17 @@ func CompactDescription(s string) string {
 	return truncateOneLine(s)
 }
 
-// CatalogDescription produces single-line prose for durable catalog metadata.
-// It normalizes markdown and whitespace without applying compact-surface
-// truncation, since this value becomes the canonical description in generated
-// manifests.
-func CatalogDescription(s string) string {
+// AuthoredDescription produces one-line human-facing copy for agent-authored
+// narrative and cli_description fields. It preserves the authored sentence
+// instead of truncating at punctuation, since brand dots, commas, and colons
+// are common in product headlines.
+func AuthoredDescription(s string) string {
+	return ManifestDescription(s)
+}
+
+// ManifestDescription is for durable generated metadata. It normalizes
+// markdown and whitespace, but leaves length policy to compact UI surfaces.
+func ManifestDescription(s string) string {
 	s = stripDescriptionMarkup(stripLeadingMarkdownHeading(s))
 	return collapseWhitespace(s)
 }

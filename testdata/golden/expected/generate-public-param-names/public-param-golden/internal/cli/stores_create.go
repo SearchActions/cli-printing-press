@@ -13,20 +13,33 @@ import (
 )
 
 func newStoresCreateCmd(flags *rootFlags) *cobra.Command {
-	var flagDryRun2 bool
+	var flagDryRun bool
 	var bodyStoreCode string
 	var stdinBody bool
 
 	cmd := &cobra.Command{
-		Use:         "create",
-		Short:       "Create a store record",
+		Use:   "create",
+		Short: "Create a store record",
+		// TODO: replace placeholder example values before relying on this for live dogfood.
 		Example:     "  public-param-golden-pp-cli stores create --store-code example-value",
 		Annotations: map[string]string{"pp:endpoint": "stores.create", "pp:method": "POST", "pp:path": "/stores"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// Bare invocation of a command with required input prints help
 			// instead of pflag's terse "required flag not set" error. Optional-
 			// only read commands fall through so a bare call still executes.
-			if cmd.Flags().NFlag() == 0 && len(args) == 0 && !flags.dryRun {
+			// Machine callers (--json/--agent, which sets asJSON) get a usage
+			// error + exit 2 instead of silent exit-0 help, so an incomplete
+			// invocation is never mistaken for success.
+			if !hasChangedLocalFlags(cmd) && len(args) == 0 && !flags.dryRun {
+				if flags.asJSON {
+					if printErr := printJSONFiltered(cmd.OutOrStdout(), map[string]any{
+						"error": "requires input",
+						"usage": cmd.CommandPath() + " --help",
+					}, flags); printErr != nil {
+						return printErr
+					}
+					return usageErr(fmt.Errorf("%q requires input; run %q for usage", cmd.CommandPath(), cmd.CommandPath()+" --help"))
+				}
 				return cmd.Help()
 			}
 			if !stdinBody {
@@ -34,17 +47,16 @@ func newStoresCreateCmd(flags *rootFlags) *cobra.Command {
 					return fmt.Errorf("required flag \"%s\" not set", "store-code")
 				}
 			}
+			path := "/stores"
 			c, err := flags.newClient()
 			if err != nil {
 				return err
 			}
-
-			path := "/stores"
 			params := map[string]string{}
-			if flagDryRun2 != false {
-				params["$dry_run"] = fmt.Sprintf("%v", flagDryRun2)
+			if flagDryRun != false {
+				params["$dry_run"] = formatCLIParamValue(flagDryRun)
 			}
-			var body map[string]any
+			var body any
 			if stdinBody {
 				stdinData, err := io.ReadAll(os.Stdin)
 				if err != nil {
@@ -56,9 +68,10 @@ func newStoresCreateCmd(flags *rootFlags) *cobra.Command {
 				}
 				body = jsonBody
 			} else {
-				body = map[string]any{}
+				bodyMap := map[string]any{}
+				body = bodyMap
 				if bodyStoreCode != "" {
-					body["store_code"] = bodyStoreCode
+					bodyMap["store_code"] = bodyStoreCode
 				}
 			}
 			data, statusCode, err := c.PostWithParams(cmd.Context(), path, params, body)
@@ -82,6 +95,9 @@ func newStoresCreateCmd(flags *rootFlags) *cobra.Command {
 						fmt.Fprintf(os.Stderr, "         succeeded: %d operation(s)\n", len(partialFailure.ResourceNames))
 					}
 				}
+			}
+			if !flags.dryRun && statusCode >= 200 && statusCode < 300 && (partialFailure == nil || flags.allowPartialFailure) {
+				writeMutationResponseToStore(cmd.Context(), "stores", data, "")
 			}
 			if wantsHumanTable(cmd.OutOrStdout(), flags) {
 				// Check if response contains an array (directly or wrapped in "data")
@@ -125,6 +141,9 @@ func newStoresCreateCmd(flags *rootFlags) *cobra.Command {
 					"status":   statusCode,
 					"success":  statusCode >= 200 && statusCode < 300 && (partialFailure == nil || flags.allowPartialFailure),
 				}
+				if flags.agent {
+					envelope["meta"] = map[string]any{"source": "live"}
+				}
 				if partialFailure != nil {
 					envelope["partial_failure"] = partialFailure
 				}
@@ -163,7 +182,11 @@ func newStoresCreateCmd(flags *rootFlags) *cobra.Command {
 				if len(filtered) > 0 {
 					var parsed any
 					if err := json.Unmarshal(filtered, &parsed); err == nil {
-						envelope["data"] = parsed
+						if flags.agent {
+							envelope["results"] = parsed
+						} else {
+							envelope["data"] = parsed
+						}
 					}
 				}
 				envelopeJSON, err := json.Marshal(envelope)
@@ -194,7 +217,7 @@ func newStoresCreateCmd(flags *rootFlags) *cobra.Command {
 			return nil
 		},
 	}
-	cmd.Flags().BoolVar(&flagDryRun2, "dry-run-2", false, "Preview without writing")
+	cmd.Flags().BoolVar(&flagDryRun, "dry-run", false, "Preview without writing")
 	cmd.Flags().StringVar(&bodyStoreCode, "store-code", "", "Store code")
 	cmd.Flags().StringVar(&bodyStoreCode, "code", "", "Store code")
 	_ = cmd.Flags().MarkHidden("code")

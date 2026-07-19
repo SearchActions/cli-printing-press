@@ -5,8 +5,10 @@ package cli
 
 import (
 	"fmt"
-	"github.com/spf13/cobra"
 	"os"
+
+	"github.com/spf13/cobra"
+	"printing-press-rich-pp-cli/internal/cliutil"
 	"printing-press-rich-pp-cli/internal/config"
 )
 
@@ -39,11 +41,13 @@ func newAuthSetupCmd(_ *rootFlags) *cobra.Command {
 			fmt.Fprintln(w, "No setup URL is configured for this CLI; check the API's docs.")
 			fmt.Fprintln(w, "")
 			fmt.Fprintln(w, "Then set:")
-			fmt.Fprintln(w, "  export RICH_AUTH_API_KEY=\"<your-token>\"")
-			fmt.Fprintln(w, "  export RICH_AUTH_OPTIONAL_TOKEN=\"<your-token>\"")
-			fmt.Fprintln(w, "  export RICH_AUTH_BOT_TOKEN=\"<your-token>\"")
-			fmt.Fprintln(w, "  export RICH_AUTH_USER_TOKEN=\"<your-token>\"")
+			fmt.Fprintln(w, "  export RICH_AUTH_API_KEY=\"your-token-here\"")
 			fmt.Fprintln(w, "  printing-press-rich-pp-cli auth set-token <token>")
+			fmt.Fprintln(w, "")
+			fmt.Fprintln(w, "Optional request credentials:")
+			fmt.Fprintln(w, "  export RICH_AUTH_OPTIONAL_TOKEN=\"your-token-here\"")
+			fmt.Fprintln(w, "  export RICH_AUTH_BOT_TOKEN=\"your-token-here\"")
+			fmt.Fprintln(w, "  export RICH_AUTH_USER_TOKEN=\"your-token-here\"")
 			if !launch {
 				return nil
 			}
@@ -90,12 +94,14 @@ func newAuthStatusCmd(flags *rootFlags) *cobra.Command {
 			if !authed {
 				fmt.Fprintln(w, red("Not authenticated"))
 				fmt.Fprintln(w, "")
-				fmt.Fprintln(w, "Set your token:")
+				fmt.Fprintln(w, "Set your credentials:")
 				fmt.Fprintln(w, "  export RICH_AUTH_API_KEY=\"your-token-here\" # Rich Auth API key.")
+				fmt.Fprintf(w, "  printing-press-rich-pp-cli auth set-token <token>\n")
+				fmt.Fprintln(w, "")
+				fmt.Fprintln(w, "Optional request credentials:")
 				fmt.Fprintln(w, "  export RICH_AUTH_OPTIONAL_TOKEN=\"your-token-here\" # Optional token for elevated read limits.")
 				fmt.Fprintln(w, "  export RICH_AUTH_BOT_TOKEN=\"your-token-here\" # Set this OR RICH_AUTH_USER_TOKEN for workspace access.")
 				fmt.Fprintln(w, "  export RICH_AUTH_USER_TOKEN=\"your-token-here\" # Set this OR RICH_AUTH_BOT_TOKEN for workspace access.")
-				fmt.Fprintf(w, "  printing-press-rich-pp-cli auth set-token <token>\n")
 				return authErr(fmt.Errorf("no credentials configured"))
 			}
 
@@ -110,7 +116,7 @@ func newAuthStatusCmd(flags *rootFlags) *cobra.Command {
 func newAuthSetTokenCmd(flags *rootFlags) *cobra.Command {
 	return &cobra.Command{
 		Use:     "set-token <token>",
-		Short:   "Save an API token to the config file",
+		Short:   "Save an API token to the credentials file",
 		Example: "  printing-press-rich-pp-cli auth set-token YOUR_TOKEN_HERE",
 		Args:    cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -134,17 +140,35 @@ func newAuthSetTokenCmd(flags *rootFlags) *cobra.Command {
 				return configErr(fmt.Errorf("saving token: %w", err))
 			}
 
-			// JSON envelope: {saved, config_path}.
+			savePath := credentialSavePath(cfg)
+			// JSON envelope: {saved, config_path, credentials_path}.
 			if flags.asJSON {
-				return printJSONFiltered(cmd.OutOrStdout(), map[string]any{
+				out := map[string]any{
 					"saved":       true,
 					"config_path": cfg.Path,
-				}, flags)
+				}
+				if !cfg.AgentcookieManagedByExternalStore() {
+					out["credentials_path"] = savePath
+				}
+				return printJSONFiltered(cmd.OutOrStdout(), out, flags)
 			}
-			fmt.Fprintf(cmd.OutOrStdout(), "Token saved to %s\n", cfg.Path)
+			fmt.Fprintf(cmd.OutOrStdout(), "Token saved to %s\n", savePath)
 			return nil
 		},
 	}
+}
+
+func credentialSavePath(cfg *config.Config) string {
+	if cfg != nil && cfg.AgentcookieManagedByExternalStore() {
+		return cfg.Path
+	}
+	if path, err := cliutil.CredentialsFilePath(); err == nil {
+		return path
+	}
+	if cfg != nil {
+		return cfg.Path
+	}
+	return ""
 }
 
 func newAuthLogoutCmd(flags *rootFlags) *cobra.Command {

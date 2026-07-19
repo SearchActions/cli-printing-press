@@ -51,7 +51,6 @@ func TestSkillSetupBlocksMatchWorkspaceContract(t *testing.T) {
 	}{
 		{path: filepath.Join("..", "..", "skills", "printing-press", "SKILL.md"), expectsManuscripts: true},
 		{path: filepath.Join("..", "..", "skills", "printing-press-score", "SKILL.md"), expectsManuscripts: true},
-		{path: filepath.Join("..", "..", "skills", "printing-press-catalog", "SKILL.md"), expectsManuscripts: false},
 		{path: filepath.Join("..", "..", "skills", "printing-press-publish", "SKILL.md"), expectsManuscripts: true},
 		{path: filepath.Join("..", "..", "skills", "printing-press-amend", "SKILL.md"), expectsManuscripts: true},
 	}
@@ -74,9 +73,16 @@ func TestSkillSetupBlocksMatchWorkspaceContract(t *testing.T) {
 			assert.Contains(t, block, `PRESS_RUNSTATE="$PRESS_HOME/.runstate/$PRESS_SCOPE"`)
 			assert.Contains(t, block, `PRESS_LIBRARY="$PRESS_HOME/library"`)
 
-			// May reference local build for repo-internal development,
-			// but must not hardcode go build or use ./cli-printing-press as default
-			assert.NotContains(t, block, `go build`)
+			// May reference local build for repo-internal development.
+			// Only /printing-press may rebuild it, and only after a stale local
+			// binary is detected against the checked-out source version.
+			if filepath.Base(filepath.Dir(tt.path)) == "printing-press" {
+				assert.Contains(t, block, `_rebuild_local_press_bin_if_stale`)
+				assert.Contains(t, block, `[local-binary-stale]`)
+				assert.Contains(t, block, `go build -o ./cli-printing-press ./cmd/cli-printing-press`)
+			} else {
+				assert.NotContains(t, block, `go build`)
+			}
 			// Must NOT contain REPO_ROOT or cd to repo
 			assert.NotContains(t, block, `REPO_ROOT`)
 			assert.NotContains(t, block, `cd "$REPO_ROOT"`)
@@ -88,6 +94,28 @@ func TestSkillSetupBlocksMatchWorkspaceContract(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestPrintingPressSetupContractRebuildsStaleRepoLocalBinary(t *testing.T) {
+	t.Parallel()
+
+	output, goLog := runPrintingPressSetupContract(t, "4.12.0", "4.23.0")
+
+	assert.Contains(t, output, "[local-binary-stale] local build v4.12.0 is older than source v4.23.0")
+	assert.Contains(t, output, "[local-binary-rebuilt] rebuilt")
+	assert.Contains(t, output, "PRINTING_PRESS_BIN=")
+	assert.Contains(t, goLog, "build -o ./cli-printing-press ./cmd/cli-printing-press")
+}
+
+func TestPrintingPressSetupContractLeavesFreshRepoLocalBinaryAlone(t *testing.T) {
+	t.Parallel()
+
+	output, goLog := runPrintingPressSetupContract(t, "4.23.0", "4.23.0")
+
+	assert.NotContains(t, output, "[local-binary-stale]")
+	assert.NotContains(t, output, "[local-binary-rebuilt]")
+	assert.Contains(t, output, "PRINTING_PRESS_BIN=")
+	assert.NotContains(t, goLog, "build -o ./cli-printing-press ./cmd/cli-printing-press")
 }
 
 func TestSkillsEnforceCurrencyFloor(t *testing.T) {
@@ -235,6 +263,9 @@ func TestPrintingPressSkillUsesRunRootStateFile(t *testing.T) {
 	assert.Contains(t, skill, `STATE_FILE="$API_RUN_DIR/state.json"`)
 	assert.NotContains(t, skill, `STATE_FILE="$PIPELINE_DIR/state.json"`)
 	assert.Contains(t, skill, `"working_dir": "$CLI_WORK_DIR"`)
+	assert.Contains(t, skill, `CANDIDATE_RUN_ID="$(date +%Y%m%d-%H%M%S)-$RUN_SUFFIX"`)
+	assert.Contains(t, skill, `if mkdir "$CANDIDATE_RUN_DIR" 2>/dev/null; then`)
+	assert.Contains(t, skill, "state file the source of truth for generate, dogfood acceptance, promote")
 }
 
 func TestPrintingPressSkillWarnsOnMultiSpecDirectories(t *testing.T) {
@@ -267,6 +298,131 @@ func TestPrintingPressSkillPreflightChecksGoToolchain(t *testing.T) {
 	assert.Contains(t, block, `if ! command -v go >/dev/null 2>&1; then`)
 	assert.Contains(t, block, `[setup-error] Go toolchain not found.`)
 	assert.Contains(t, block, `https://go.dev/dl/`)
+}
+
+func TestSetupContractsRequireGoToolchain(t *testing.T) {
+	t.Parallel()
+
+	for _, skill := range goRequiredSetupSkills() {
+		t.Run(skill.name, func(t *testing.T) {
+			t.Parallel()
+
+			output, err := runSkillSetupContract(t, skill, setupContractOptions{includeGo: false})
+
+			require.Error(t, err, output)
+			assert.Contains(t, output, "[setup-error] Go toolchain not found.")
+		})
+	}
+}
+
+func TestSetupContractsStayQuietInHealthyEnvironment(t *testing.T) {
+	t.Parallel()
+
+	for _, skill := range diskCheckedSetupSkills() {
+		t.Run(skill.name, func(t *testing.T) {
+			t.Parallel()
+
+			output, err := runSkillSetupContract(t, skill, setupContractOptions{
+				includeGo:       true,
+				goInstalled:     "1.26.5",
+				goBinary:        "1.26.5",
+				diskAvailableKB: "4194304",
+			})
+
+			require.NoError(t, err, output)
+			assert.NotContains(t, output, "[setup-error]")
+			assert.NotContains(t, output, "[go-toolchain-old]")
+			assert.NotContains(t, output, "[low-disk]")
+		})
+	}
+}
+
+func TestSetupContractsWarnOnOldGoToolchain(t *testing.T) {
+	t.Parallel()
+
+	for _, skill := range goCurrencySetupSkills() {
+		t.Run(skill.name, func(t *testing.T) {
+			t.Parallel()
+
+			output, err := runSkillSetupContract(t, skill, setupContractOptions{
+				includeGo:       true,
+				goInstalled:     "1.25.0",
+				goBinary:        "1.26.5",
+				diskAvailableKB: "4194304",
+			})
+
+			require.NoError(t, err, output)
+			assert.Contains(t, output, "[go-toolchain-old]")
+			assert.Contains(t, output, "PRESS_GO_INSTALLED=1.25.0")
+			assert.Contains(t, output, "PRESS_GO_REQUIRED=1.26.5")
+		})
+	}
+}
+
+func TestSetupContractsBlockOldGoWhenToolchainLocal(t *testing.T) {
+	t.Parallel()
+
+	for _, skill := range goCurrencySetupSkills() {
+		t.Run(skill.name, func(t *testing.T) {
+			t.Parallel()
+
+			output, err := runSkillSetupContract(t, skill, setupContractOptions{
+				includeGo:       true,
+				goInstalled:     "1.25.0",
+				goBinary:        "1.26.5",
+				goToolchain:     "local",
+				diskAvailableKB: "4194304",
+			})
+
+			require.Error(t, err, output)
+			assert.Contains(t, output, "[setup-error] Go 1.26.5 or newer is required")
+			assert.NotContains(t, output, "[go-toolchain-old]")
+		})
+	}
+}
+
+func TestSetupContractsWarnOnLowDisk(t *testing.T) {
+	t.Parallel()
+
+	for _, skill := range diskCheckedSetupSkills() {
+		t.Run(skill.name, func(t *testing.T) {
+			t.Parallel()
+
+			output, err := runSkillSetupContract(t, skill, setupContractOptions{
+				includeGo:       true,
+				goInstalled:     "1.26.5",
+				goBinary:        "1.26.5",
+				diskAvailableKB: "1048576",
+			})
+
+			require.NoError(t, err, output)
+			assert.Contains(t, output, "[low-disk]")
+			assert.Contains(t, output, "PRESS_DISK_AVAIL_KB=1048576")
+			assert.Contains(t, output, "PRESS_DISK_WARN_KB=3145728")
+		})
+	}
+}
+
+func TestSetupContractsBlockCriticallyLowDisk(t *testing.T) {
+	t.Parallel()
+
+	for _, skill := range diskCheckedSetupSkills() {
+		t.Run(skill.name, func(t *testing.T) {
+			t.Parallel()
+
+			output, err := runSkillSetupContract(t, skill, setupContractOptions{
+				includeGo:       true,
+				goInstalled:     "1.26.5",
+				goBinary:        "1.26.5",
+				diskAvailableKB: "1024",
+			})
+
+			require.Error(t, err, output)
+			assert.Contains(t, output, "[setup-error] Critically low disk space")
+			assert.Contains(t, output, "PRESS_DISK_AVAIL_KB=1024")
+			assert.Contains(t, output, "PRESS_DISK_FAIL_KB=524288")
+		})
+	}
 }
 
 func TestPrintingPressSkillPreflightSmokeTestsGoStdlib(t *testing.T) {
@@ -311,6 +467,31 @@ func TestPrintingPressSkillDistinguishesBearerFromRawAPIKey(t *testing.T) {
 	assert.Contains(t, block, "name: X-API-Key")
 }
 
+func TestSkillsProhibitProposalFallbackForRequestedArtifacts(t *testing.T) {
+	collapse := func(s string) string {
+		return strings.Join(strings.Fields(s), " ")
+	}
+
+	agents := collapse(readContractFile(t, filepath.Join("..", "..", "AGENTS.md")))
+	agentsBlock := substringBetween(t, agents, "## PR intent: implementation, publish, or proposal", "## Automated code review with Greptile")
+	assert.Contains(t, agentsBlock, "A request to generate, fix, or implement means produce the requested artifact, not a docs-only, plan, proposal, or spec PR.")
+	assert.Contains(t, agentsBlock, "Do not substitute one PR shape for another")
+	assert.Contains(t, agentsBlock, "When implementation or generation is blocked, report the exact blocker and stop.")
+	assert.Contains(t, agentsBlock, "Do not open a docs-only, plan, proposal, or spec PR here or in `printing-press-library` unless the user explicitly requested that shape")
+
+	publish := collapse(readContractFile(t, filepath.Join("..", "..", "skills", "printing-press-publish", "SKILL.md")))
+	publishBlock := substringBetween(t, publish, "## PR shape guard", "## Direct User Invocation Required")
+	assert.Contains(t, publishBlock, "This skill opens only a generated CLI publish PR or, with `--blocked-api-journal`, a `blocked-apis.json` journal PR.")
+	assert.Contains(t, publishBlock, "It never opens a docs-only, plan, proposal, or spec PR as a substitute for a CLI that is not ready to publish.")
+	assert.Contains(t, publishBlock, "If generation, validation, or live testing is blocked, report the exact blocker and stop.")
+
+	printingPress := collapse(readContractFile(t, filepath.Join("..", "..", "skills", "printing-press", "SKILL.md")))
+	holdBlock := substringBetween(t, printingPress, "### Hold-path menu", "#### If \"Run retro\"")
+	assert.Contains(t, holdBlock, "A hold is not permission to change PR shape.")
+	assert.Contains(t, holdBlock, "Do not substitute a docs-only, plan, proposal, or spec PR for the requested generated CLI.")
+	assert.Contains(t, holdBlock, "The only public-library PR this menu may lead to is the explicit `blocked-apis.json` journal option")
+}
+
 func TestPrintingPressSkillRunERequiredInputContract(t *testing.T) {
 	skill := readContractFile(t, filepath.Join("..", "..", "skills", "printing-press", "SKILL.md"))
 	template := substringBetween(t, skill, "#### Verify-friendly RunE template", "If the command reads a file or directory")
@@ -334,6 +515,8 @@ func TestPrintingPressSkillRunERequiredInputContract(t *testing.T) {
 	assert.Equal(t, 3, strings.Count(starters, "if len(args) == 0 && cmd.Flags().NFlag() == 0 {"))
 	assert.Equal(t, 3, strings.Count(starters, "return cmd.Help()"))
 	assert.Equal(t, 3, strings.Count(starters, "if dryRunOK(flags) {"))
+	assert.Equal(t, 3, strings.Count(starters, "ctx, cancel := boundCtx(cmd.Context(), flags)"))
+	assert.Equal(t, 3, strings.Count(starters, "defer cancel()"))
 	assert.Equal(t, 3, strings.Count(starters, "_ = cmd.Usage()"))
 	assert.Equal(t, 3, strings.Count(starters, `return usageErr(fmt.Errorf("<flag-or-arg> is required"))`))
 	assert.Contains(t, starters, "**RunE skeleton — parallel-fetch aggregation shape**")
@@ -344,9 +527,53 @@ func TestPrintingPressSkillRunERequiredInputContract(t *testing.T) {
 	assert.Contains(t, starters, "partial results: %d of %d fetches failed; average computed over %d items")
 }
 
+func TestPrintingPressSkillRequiresPerCommandTimeoutBoundary(t *testing.T) {
+	skill := readContractFile(t, filepath.Join("..", "..", "skills", "printing-press", "SKILL.md"))
+	checklist := substringBetween(t, skill, "### Agent Build Checklist (per command)", "#### Verify-friendly RunE template")
+	helpers := substringBetween(t, skill, "**Helpers already emitted by the generator.**", "```go")
+	review := substringBetween(t, skill, "## Phase 4.95: Local Code Review", "**Tool selection")
+
+	assert.Contains(t, checklist, "11. **Per-command timeout boundary**")
+	assert.Contains(t, checklist, "boundCtx(cmd.Context(), flags)")
+	assert.Contains(t, checklist, "Generated endpoint commands already pass `flags.timeout` into `client.New`")
+	assert.Contains(t, helpers, "`boundCtx(parent context.Context, flags *rootFlags) (context.Context, context.CancelFunc)`")
+	assert.Contains(t, review, "**Native timeout-boundary check.**")
+	assert.Contains(t, review, "Files that only use `flags.newClient()` / generated `internal/client`")
+}
+
+func TestPrintingPressSkillRoutesNovelFeatureDescriptionFixesThroughResearchJSON(t *testing.T) {
+	skill := readContractFile(t, filepath.Join("..", "..", "skills", "printing-press", "SKILL.md"))
+	skillReview := substringBetween(t, skill, "## Phase 4.8: Agentic SKILL Review", "## Phase 4.9: README/SKILL/AGENTS Correctness Audit")
+	docsReview := substringBetween(t, skill, "## Phase 4.9: README/SKILL/AGENTS Correctness Audit", "## Phase 4.85: Agentic Output Review")
+	codeReview := substringUntilNextHeader(t, skill, "## Phase 4.95: Local Code Review", "##")
+
+	for name, block := range map[string]string{
+		"skill review": skillReview,
+		"docs review":  docsReview,
+		"code review":  codeReview,
+	} {
+		t.Run(name, func(t *testing.T) {
+			assert.Contains(t, block, "research.json")
+			assert.Contains(t, block, "novel_features[].description")
+			assert.Contains(t, block, "novel_features[].narrative")
+			assert.Contains(t, block, "novel_features_built")
+			assert.Contains(t, block, `README "Unique Features"`)
+			assert.Contains(t, block, `SKILL "Unique Capabilities"`)
+			assert.Contains(t, block, "internal/cli/root.go")
+			assert.Contains(t, block, "internal/cli/which.go")
+			assert.Contains(t, block, "internal/mcp/tools.go")
+			assert.Contains(t, block, ".printing-press.json")
+		})
+	}
+
+	assert.Contains(t, skillReview, "Do not patch only\nREADME.md or SKILL.md")
+	assert.Contains(t, docsReview, "Do not patch only\nREADME.md, SKILL.md, or AGENTS.md")
+	assert.Contains(t, codeReview, "do not patch those files directly")
+}
+
 func TestPrintingPressSkillRequiresScanAndFilterCaps(t *testing.T) {
 	skill := readContractFile(t, filepath.Join("..", "..", "skills", "printing-press", "SKILL.md"))
-	block := substringBetween(t, skill, "12. **Scan-and-filter caps**", "#### Verify-friendly RunE template")
+	block := substringBetween(t, skill, "13. **Scan-and-filter caps**", "#### Verify-friendly RunE template")
 
 	assert.Contains(t, block, `"list, filter locally, fan out to detail"`)
 	assert.Contains(t, block, "**`--max-scan-pages int`**")
@@ -421,8 +648,8 @@ func TestPrintingPressSkillUsesRunstateForBuilds(t *testing.T) {
 	// Lock acquire should appear before generation.
 	assert.Contains(t, skill, `cli-printing-press lock acquire --cli <api>-pp-cli --scope "$PRESS_SCOPE"`)
 
-	// Lock promote should appear in Phase 5.5.
-	assert.Contains(t, skill, `cli-printing-press lock promote --cli <api>-pp-cli --dir "$CLI_WORK_DIR"`)
+	// Lock promote should use the preflight-selected binary, not PATH.
+	assert.Contains(t, skill, `"$PRINTING_PRESS_BIN" lock promote --cli <api>-pp-cli --dir "$CLI_WORK_DIR"`)
 
 	// Phase 6 should still reference $PRESS_LIBRARY (reads from promoted location, slug-keyed).
 	assert.Contains(t, skill, `$PRESS_LIBRARY/<api>`)
@@ -454,26 +681,24 @@ func TestPrintingPressSkillReprintPromoteRoutingHandlesRebuiltNovels(t *testing.
 	assert.Contains(t, promote, "A false Path A clobbers hand work; a")
 	assert.Contains(t, promote, "false Path B only asks for review")
 
-	assert.Contains(t, reprint, "Phase 5.6 first\ndry-runs `cli-printing-press regen-merge")
+	assert.Contains(t, reprint, "Phase 5.6 first\ndry-runs `\"$PRINTING_PRESS_BIN\" regen-merge")
 	assert.Contains(t, reprint, "fresh tree contains all prior novel work")
 	assert.Contains(t, reprint, "genuine `NOVEL-COLLISION` / missing-referent cases halt")
 	assert.Contains(t, reprint, "preserve the existing\nlibrary manifest's permanent `creator`")
 	assert.Contains(t, reprint, "Do not repair this by hand-editing")
 }
 
-func TestPrintingPressSkillSetsNonCatalogCategoryBeforeGenerate(t *testing.T) {
+func TestPrintingPressSkillSetsPublicLibraryCategoryBeforeGenerate(t *testing.T) {
 	skill := readContractFile(t, filepath.Join("..", "..", "skills", "printing-press", "SKILL.md"))
 	block := substringBetween(t, skill, "### Pre-Generation Category Enrichment", "### Pre-Generation Auth Enrichment")
 	generateBlocks := substringBetween(t, skill, "OpenAPI / internal YAML:", "GraphQL-only APIs:")
 
-	assert.Contains(t, block, "non-catalog CLI")
+	assert.Contains(t, block, "public-library category enum")
 	assert.Contains(t, block, "set the spec's top-level `category` before")
-	assert.Contains(t, block, "`docs/CATALOG.md`")
 	assert.Contains(t, block, "before the final `generate` invocation")
-	assert.Contains(t, block, "`--category <catalog-category>`")
-	assert.Contains(t, block, "Catalog-mode runs skip this step")
+	assert.Contains(t, block, "`--category <public-library-category>`")
 	assert.Contains(t, block, "verify-skill canonical-sections")
-	assert.GreaterOrEqual(t, strings.Count(generateBlocks, "--category <catalog-category>"), 7)
+	assert.GreaterOrEqual(t, strings.Count(generateBlocks, "--category <public-library-category>"), 7)
 }
 
 func TestPrintingPressSkillExamplesUseCurrentCLINaming(t *testing.T) {
@@ -494,9 +719,15 @@ func TestPublishSkillTracksCanonicalUpstreamAndOverwriteFlow(t *testing.T) {
 
 	assert.Contains(t, skill, "git remote add upstream")
 	assert.Contains(t, skill, "mvanhorn/printing-press-library")
-	assert.Contains(t, skill, "git fetch upstream")
+	assert.Contains(t, skill, "git fetch --filter=blob:none --depth 1 upstream")
+	assert.Contains(t, skill, "git fetch --filter=blob:none --depth 1 origin")
 	assert.Contains(t, skill, "git reset --hard upstream/main")
 	assert.Contains(t, skill, "git push --force-with-lease")
+
+	subsequentStart := strings.Index(skill, "### Subsequent publishes")
+	require.NotEqual(t, -1, subsequentStart)
+	subsequentBlock := skill[subsequentStart:]
+	assert.Contains(t, subsequentBlock, "sparse-checkout set tools cli-skills library/<category>")
 }
 
 func TestPublishSkillSkipsCliSkillsMirrorRegen(t *testing.T) {
@@ -513,15 +744,157 @@ func TestPublishSkillSkipsCliSkillsMirrorRegen(t *testing.T) {
 	// no longer has an in-PR auto-fix path for either.
 	assert.Contains(t, skill, "Fail on changes to generated artifacts")
 	assert.Contains(t, skill, "Do NOT regenerate or commit `cli-skills/pp-<api-slug>/SKILL.md` or")
-	assert.Contains(t, skill, "git add library/\ngit commit")
+	assert.Contains(t, skill, "git clean -fdq library/")
+	assert.Contains(t, skill, "git add -A library/")
+	assert.Contains(t, skill, `git add -f "library/<category>/<api-slug>/"`)
+	assert.Contains(t, skill, "UNEXPECTED_STAGED")
+	assert.Contains(t, skill, `git commit -m "feat(<api-slug>): add <api-slug>"`)
+	assert.NotContains(t, skill, `git add -f "library/<category>/<api-slug>/cmd/<api-slug>-pp-mcp/"`)
 	assert.NotContains(t, skill, "git add library/ cli-skills/")
 	assert.NotContains(t, skill, "git add library/ cli-skills/ registry.json")
 	assert.NotContains(t, skill, "REGISTRY_HAS_ENTRY")
 	assert.NotContains(t, skill, "seed one registry")
 	assert.NotContains(t, skill, "go run ./tools/generate-skills/main.go")
 
-	copyIntoLibrary := strings.Index(skill, `cp -r "$STAGING_DIR/library/<category>/<api-slug>"`)
+	copyIntoLibrary := strings.Index(skill, `cp -R "$STAGED_CLI_DIR/." "$PUBLISH_SWAP_DIR/"`)
 	require.NotEqual(t, -1, copyIntoLibrary)
+	assert.Contains(t, skill, `trap 'rm -rf "$RELEASE_LEDGER_TMP" "$PUBLISH_SWAP_DIR"' EXIT`)
+	assert.Contains(t, skill, `mv "$PUBLISH_SWAP_DIR" "$DEST_CLI_DIR"`)
+	assert.Contains(t, skill, "New CLIs omit .printing-press-release.json")
+	assert.NotContains(t, skill, "New CLIs keep the blank skeletons")
+}
+
+func TestPublishSkillReconcilesRuntimeVersionLayoutForReprints(t *testing.T) {
+	skill := readContractFile(t, filepath.Join("..", "..", "skills", "printing-press-publish", "SKILL.md"))
+
+	copyIntoLibrary := strings.Index(skill, `mv "$PUBLISH_SWAP_DIR" "$DEST_CLI_DIR"`)
+	require.NotEqual(t, -1, copyIntoLibrary)
+	reconciliation := skill[copyIntoLibrary:]
+
+	assert.Contains(t, reconciliation, "runtime version declaration layout")
+	assert.Contains(t, reconciliation, `VERSION_DECL_BASE_REF=upstream/main`)
+	assert.Contains(t, reconciliation, `git rev-parse --verify --quiet "$VERSION_DECL_BASE_REF"`)
+	assert.Contains(t, reconciliation, `VERSION_DECL_BASE_REF=origin/main`)
+	assert.Contains(t, reconciliation, `VERSION_DECL_DIFF="$(git diff --unified=0 "$VERSION_DECL_BASE_REF" --`)
+	assert.Contains(t, reconciliation, "failed to compare runtime version declarations with ${VERSION_DECL_BASE_REF}")
+	assert.Contains(t, reconciliation, `internal/cli/root.go`)
+	assert.Contains(t, reconciliation, `internal/cli/version.go`)
+	assert.Contains(t, reconciliation, `cmd/<api-slug>-pp-mcp/main.go`)
+	assert.Contains(t, reconciliation, `^[+-][[:space:]]*var version[[:space:]]*=`)
+	assert.Contains(t, reconciliation, "root.go declaration")
+	assert.Contains(t, reconciliation, "version.go declaration")
+	assert.Contains(t, reconciliation, "MCP main declaration")
+	assert.Contains(t, reconciliation, "no declaration")
+	assert.Contains(t, reconciliation, "Do not continue until the command prints no matching lines")
+	assert.Less(t,
+		strings.Index(reconciliation, "runtime version declaration layout"),
+		strings.Index(reconciliation, "# Verify this changed/new CLI builds"),
+		"version layout must be reconciled before the packaged CLI is verified")
+}
+
+func TestPublishSkillDisablesAutocrlfInManagedClone(t *testing.T) {
+	skill := readContractFile(t, filepath.Join("..", "..", "skills", "printing-press-publish", "SKILL.md"))
+	firstTimeSetup := substringBetween(t, skill, "### First-time setup", "### Subsequent publishes")
+
+	assert.GreaterOrEqual(t, strings.Count(firstTimeSetup, `git -C "$PUBLISH_REPO_DIR" config core.autocrlf false`), 2,
+		"both push-access and fork managed-clone setup paths must force LF checkout behavior")
+	assert.Contains(t, firstTimeSetup, "Skill-managed clones are owned by this flow")
+}
+
+func TestPolishSkillPreservesStandaloneFreeTextScope(t *testing.T) {
+	skill := readContractFile(t, filepath.Join("..", "..", "skills", "printing-press-polish", "SKILL.md"))
+	resolveBlock := substringBetween(t, skill, "### Resolve CLI", "### Phase 3 gate bundle")
+
+	assert.Contains(t, resolveBlock, "free-text scope")
+	assert.Contains(t, resolveBlock, "STANDALONE_MODE=true")
+	assert.Contains(t, resolveBlock, "trusted user scope")
+	assert.Contains(t, resolveBlock, "Mid-pipeline")
+	assert.Contains(t, resolveBlock, "strict grammar")
+	assert.Contains(t, resolveBlock, "asks which CLI to polish")
+}
+
+func TestAmendSkillHasDocumentationCheckpoint(t *testing.T) {
+	skill := readContractFile(t, filepath.Join("..", "..", "skills", "printing-press-amend", "SKILL.md"))
+	checkpointBlock := substringBetween(t, skill, "### Step 6 — Documentation update checkpoint", "### Output")
+	prDraftBlock := substringBetween(t, skill, "## Phase 6 — PR Draft Review Checkpoint", "### Assemble the draft")
+
+	assert.Contains(t, checkpointBlock, "new, renamed, or changed user-facing command")
+	assert.Contains(t, checkpointBlock, "cookbook recipe in both `SKILL.md` and `README.md`")
+	assert.Contains(t, checkpointBlock, "Unique Features")
+	assert.Contains(t, checkpointBlock, "verify_skill.py --dir")
+	assert.Contains(t, checkpointBlock, "blocking checklist")
+	assert.Contains(t, prDraftBlock, "documentation checkpoint")
+}
+
+func TestImportRewriteHandlesCRLFGoMod(t *testing.T) {
+	t.Parallel()
+
+	staging := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(staging, "go.mod"), []byte("module github.com/mvanhorn/printing-press-library/library/productivity/sample\r\n\r\ngo 1.26.5\r\n"), 0o644))
+	require.NoError(t, os.MkdirAll(filepath.Join(staging, "internal", "cli"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(staging, "internal", "cli", "root.go"), []byte("package cli\r\n\r\nimport \"github.com/mvanhorn/printing-press-library/library/productivity/sample/internal/client\"\r\n\r\nvar _ = client.New\r\n"), 0o644))
+
+	script := filepath.Join("..", "..", "skills", "printing-press-import", "references", "import-rewrite.sh")
+	out, err := exec.Command("bash", script, staging, "sample").CombinedOutput()
+	require.NoError(t, err, "import-rewrite.sh should tolerate CRLF go.mod: %s", string(out))
+
+	goMod, err := os.ReadFile(filepath.Join(staging, "go.mod"))
+	require.NoError(t, err)
+	assert.Contains(t, string(goMod), "module sample-pp-cli\r\n")
+	assert.NotContains(t, string(goMod), "github.com/mvanhorn/printing-press-library")
+	assert.NotContains(t, string(goMod), "\r\r\n")
+
+	root, err := os.ReadFile(filepath.Join(staging, "internal", "cli", "root.go"))
+	require.NoError(t, err)
+	assert.Contains(t, string(root), `"sample-pp-cli/internal/client"`)
+	assert.NotContains(t, string(root), "github.com/mvanhorn/printing-press-library")
+	assert.NotContains(t, string(root), "\r\r\n")
+}
+
+func TestPrintingPressSkillArchivesManuscriptContents(t *testing.T) {
+	skill := readContractFile(t, filepath.Join("..", "..", "skills", "printing-press", "SKILL.md"))
+
+	archive := substringBetween(t, skill, "### Archive Manuscripts", "# Archive discovery artifacts")
+	assert.Contains(t, archive, `mkdir -p "$PRESS_MANUSCRIPTS/$API_SLUG/$RUN_ID/research" "$PRESS_MANUSCRIPTS/$API_SLUG/$RUN_ID/proofs"`)
+	assert.Contains(t, archive, `cp -r "$RESEARCH_DIR/." "$PRESS_MANUSCRIPTS/$API_SLUG/$RUN_ID/research/"`)
+	assert.Contains(t, archive, `cp -r "$PROOFS_DIR/." "$PRESS_MANUSCRIPTS/$API_SLUG/$RUN_ID/proofs/"`)
+	assert.NotContains(t, archive, `cp -r "$PROOFS_DIR" "$PRESS_MANUSCRIPTS/$API_SLUG/$RUN_ID/proofs"`)
+}
+
+func TestPrintingPressSkillChecksBlockedAPIJournal(t *testing.T) {
+	skill := readContractFile(t, filepath.Join("..", "..", "skills", "printing-press", "SKILL.md"))
+
+	assert.Contains(t, skill, "blocked-apis.json")
+	assert.Contains(t, skill, "Blocked-API journal check skipped")
+	assert.Contains(t, skill, "Read the blocked journal before reasoning about registry matches")
+	assert.Contains(t, skill, "Add to blocked-API journal")
+	assert.Contains(t, skill, "/printing-press-publish --blocked-api-journal <api>")
+	assert.Contains(t, skill, "Offer journaling only when the one-line hold reason is a reachability or buildability blocker")
+	assert.Contains(t, skill, " (tracking #<entry.blocking_issue>; marked permanent)")
+}
+
+func TestPrintingPressRegistryCheckFailsClosedWhenRegistryUnavailable(t *testing.T) {
+	skill := readContractFile(t, filepath.Join("..", "..", "skills", "printing-press", "SKILL.md"))
+
+	assert.Contains(t, skill, "Public-library check failed: registry.json is unreachable")
+	assert.Contains(t, skill, "Stop here instead of treating the API as unpublished")
+	assert.Contains(t, skill, "Do not continue past a registry fetch/parse failure")
+	assert.NotContains(t, skill, "Public-library check skipped: registry.json unreachable. Proceeding to Phase 1.")
+}
+
+func TestPublishSkillDocumentsBlockedAPIJournalMode(t *testing.T) {
+	skill := readContractFile(t, filepath.Join("..", "..", "skills", "printing-press-publish", "SKILL.md"))
+
+	assert.Contains(t, skill, "Blocked API Journal Mode")
+	assert.Contains(t, skill, "git add blocked-apis.json")
+	assert.Contains(t, skill, "Do not continue into normal")
+	assert.Contains(t, skill, "printed-CLI package, live-test, registry, or skill-mirror steps")
+	assert.Contains(t, skill, "Journal-only PRs may edit `blocked-apis.json`")
+	assert.Contains(t, skill, "/printing-press publish notion --blocked-api-journal notion")
+	assert.Contains(t, skill, "' blocked-apis.json > blocked-apis.json.tmp || {")
+	assert.Contains(t, skill, "Error: jq failed to update blocked-apis.json")
+	assert.Contains(t, skill, "Error: blocked-apis.json update produced invalid JSON")
+	assert.NotContains(t, skill, "git add library/ blocked-apis.json")
 }
 
 func TestPublishSkillDocumentsPatchesIndexContract(t *testing.T) {
@@ -566,18 +939,50 @@ func TestAmendSkillRequiresUpstreamBreadcrumbsForTemporaryPatches(t *testing.T) 
 	assert.NotContains(t, skill, "workflow rejects PRs where one is present without the other")
 }
 
-func TestGeneratedAgentsTemplatePointsToCatalogForPatchMechanics(t *testing.T) {
+func TestAmendSkillResolvesPublishedStatusByPublicLibrarySlug(t *testing.T) {
+	skill := readContractFile(t, filepath.Join("..", "..", "skills", "printing-press-amend", "SKILL.md"))
+	transcript := readContractFile(t, filepath.Join("..", "..", "skills", "printing-press-amend", "references", "transcript-parsing.md"))
+
+	assert.Contains(t, skill, "Resolve target paths and publish status")
+	assert.Contains(t, skill, "Normalize the input to the bare CLI slug")
+	assert.Contains(t, skill, "looking up that slug in the public library")
+	assert.Contains(t, skill, "`~/printing-press-library/library/*/<slug>`")
+	assert.Contains(t, skill, "Do not infer publish status from the local working copy's git remotes")
+	assert.Contains(t, skill, "do not treat a missing `$PRESS_LIBRARY/<slug>` working copy as unpublished")
+	assert.Contains(t, skill, "Only use `published_status: local-only` when the slug is absent from the public library")
+	assert.Contains(t, skill, "target_binary_check: { local: \"1.0.0\", published: \"1.0.0\", status: \"current\" }\npublished_status: published")
+	assert.Contains(t, skill, "published_status: published\nscope_tier: bugs+features")
+
+	assert.Contains(t, transcript, "resolve publish status by slug lookup in the public library before consulting local working-copy state")
+	assert.Contains(t, transcript, "First enumerate top-level categories with `gh api repos/mvanhorn/printing-press-library/contents/library")
+	assert.Contains(t, transcript, "then iterate those category names with `gh api repos/mvanhorn/printing-press-library/contents/library/<category>/<slug>`")
+	assert.Contains(t, transcript, "Do not infer publish status from the local CLI working copy's git remotes")
+	assert.Contains(t, transcript, "a remote-less local checkout may still correspond to a published CLI")
+	assert.Contains(t, transcript, "do not treat a missing `$PRESS_LIBRARY/<slug>` working copy as unpublished")
+	assert.Contains(t, transcript, "published_status: published")
+	assert.Contains(t, transcript, "not on local git remotes or `$PRESS_LIBRARY/<slug>` presence")
+}
+
+func TestAmendSkillFiltersMissingTargetRepoLabels(t *testing.T) {
+	skill := readContractFile(t, filepath.Join("..", "..", "skills", "printing-press-amend", "SKILL.md"))
+
+	assert.Contains(t, skill, "gh label list --repo mvanhorn/printing-press-library")
+	assert.Contains(t, skill, "apply only labels that exist there")
+	assert.Contains(t, skill, "do not let a missing per-CLI or priority label fail the amend flow")
+}
+
+func TestGeneratedAgentsTemplatePointsToPublicLibraryForPatchMechanics(t *testing.T) {
 	template := readContractFile(t, filepath.Join("..", "generator", "templates", "agents.md.tmpl"))
 
 	// The per-CLI guide keeps CLI-local orientation plus a pointer to where
 	// customizations are recorded, but must NOT duplicate the patch-entry
 	// mechanics (schema, deferred_to_upstream, upstream_issue) -- those live once
-	// in the source catalog's AGENTS.md, the single source of truth. Duplicating
+	// in the public library's AGENTS.md, the single source of truth. Duplicating
 	// ecosystem schema into every generated CLI is what let published AGENTS.md
 	// drift to the legacy patch form; a stable pointer cannot rot.
 	assert.Contains(t, template, "## Local Customizations")
 	assert.Contains(t, template, ".printing-press-patches/")
-	assert.Contains(t, template, "source catalog's `AGENTS.md`")
+	assert.Contains(t, template, "public library's `AGENTS.md`")
 
 	// Mechanics must not be re-inlined into the per-CLI template.
 	assert.NotContains(t, template, "deferred_to_upstream")
@@ -589,11 +994,47 @@ func TestGeneratedAgentsTemplatePointsToCatalogForPatchMechanics(t *testing.T) {
 func TestPolishSkillHardGatesPublishValidate(t *testing.T) {
 	skill := readContractFile(t, filepath.Join("..", "..", "skills", "printing-press-polish", "SKILL.md"))
 
-	assert.Contains(t, skill, `cli-printing-press publish validate --dir "$CLI_DIR" --json`)
+	assert.Contains(t, skill, `"$PRINTING_PRESS_BIN" publish validate --dir "$CLI_DIR" --json`)
 	assert.Contains(t, skill, "Publish validation failures")
 	assert.Contains(t, skill, "The publish-validate leg is a hard ship-gate")
 	assert.Contains(t, skill, "phase5 acceptance")
 	assert.Contains(t, skill, "ship cannot fire while publish validate fails")
+}
+
+func TestPolishSkillInheritsPrintingPressBinaryFromParent(t *testing.T) {
+	mainSkill := readContractFile(t, filepath.Join("..", "..", "skills", "printing-press", "SKILL.md"))
+	polishSkill := readContractFile(t, filepath.Join("..", "..", "skills", "printing-press-polish", "SKILL.md"))
+
+	assert.Contains(t, mainSkill, "printing_press_bin: <captured PRINTING_PRESS_BIN>")
+	assert.Contains(t, polishSkill, "printing_press_bin: <abs-path>")
+	assert.Contains(t, polishSkill, `"$PRINTING_PRESS_BIN" lock update --cli "$CLI_NAME" --phase polish`)
+	assert.Contains(t, polishSkill, `"$PRINTING_PRESS_BIN" mcp-sync "$CLI_DIR"`)
+	assert.Contains(t, polishSkill, "mcp-sync refused")
+	assert.Contains(t, polishSkill, "reprint required")
+	assert.Contains(t, polishSkill, "/printing-press-reprint")
+	assert.Contains(t, polishSkill, "confirm `MCP Surface: PASS` before shipping")
+	assert.Contains(t, polishSkill, "Do not rerun dogfood against the stale `$CLI_DIR`")
+	assert.Contains(t, polishSkill, `"$PRINTING_PRESS_BIN" verify-skill --dir "$CLI_DIR"`)
+	assert.NotContains(t, polishSkill, "cli-printing-press lock update --cli \"$CLI_NAME\"")
+	assert.NotContains(t, polishSkill, "cli-printing-press mcp-sync \"$CLI_DIR\"")
+}
+
+func TestReprintSkillInitializesPrintingPressBinary(t *testing.T) {
+	reprintSkill := readContractFile(t, filepath.Join("..", "..", "skills", "printing-press-reprint", "SKILL.md"))
+
+	assert.Contains(t, reprintSkill, "printing_press_bin: <abs-path>")
+	assert.Contains(t, reprintSkill, `PRINTING_PRESS_BIN="${PRINTING_PRESS_BIN:-}"`)
+	assert.Contains(t, reprintSkill, `command -v cli-printing-press`)
+	assert.Contains(t, reprintSkill, `"$PRINTING_PRESS_BIN" scorecard --dir "$LIB_TARGET" --json`)
+}
+
+func TestReprintSkillSurfacesManifestDiffBeforeHandoff(t *testing.T) {
+	reprintSkill := readContractFile(t, filepath.Join("..", "..", "skills", "printing-press-reprint", "SKILL.md"))
+
+	assert.Contains(t, reprintSkill, "Before the hand-off, compare regenerated manifest files against the tracked")
+	assert.Contains(t, reprintSkill, "$LIB_TARGET/manifest.json")
+	assert.Contains(t, reprintSkill, "$LIB_TARGET/tools-manifest.json")
+	assert.Contains(t, reprintSkill, "Do not continue silently when tracked manifest fields")
 }
 
 func TestPolishSkillPinsGo126CompatibleGosecFallback(t *testing.T) {
@@ -687,8 +1128,8 @@ func TestPublishSkillOffersRetroForPolishHandoff(t *testing.T) {
 func TestPublishSkillPRBodyIncludesStableNovelCommands(t *testing.T) {
 	skill := readContractFile(t, filepath.Join("..", "..", "skills", "printing-press-publish", "SKILL.md"))
 
-	snapshotState := strings.Index(skill, "PREEXISTING_MERGED_PATHS=$(ls")
-	packageCopy := strings.Index(skill, `cp -r "$STAGING_DIR/library/<category>/<api-slug>"`)
+	snapshotState := strings.Index(skill, "PREEXISTING_MERGED_PATHS=$(git -C")
+	packageCopy := strings.Index(skill, `cp -R "$STAGED_CLI_DIR/." "$PUBLISH_SWAP_DIR/"`)
 	require.NotEqual(t, -1, snapshotState)
 	require.NotEqual(t, -1, packageCopy)
 	assert.Less(t, snapshotState, packageCopy)
@@ -706,6 +1147,97 @@ func TestPublishSkillPRBodyIncludesStableNovelCommands(t *testing.T) {
 	assert.Contains(t, skill, "`Alongside print`")
 	assert.Contains(t, skill, "--body-file \"$PR_BODY_FILE\"")
 	assert.NotContains(t, skill, "--body \"<constructed PR body>\"")
+}
+
+func TestPublishSkillCommitStageForceAddsIgnoredPackageArtifactsAndRejectsOutOfScopeStaging(t *testing.T) {
+	repo := t.TempDir()
+	runGit := func(args ...string) string {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = repo
+		out, err := cmd.CombinedOutput()
+		require.NoError(t, err, "git %v failed:\n%s", args, out)
+		return string(out)
+	}
+	runStageScript := func(env ...string) (string, error) {
+		t.Helper()
+		const script = `set -euo pipefail
+PREEXISTING_MERGED_PATHS="${PREEXISTING_MERGED_PATHS:-}"
+git add -A library/
+git add -f "library/other/acme/"
+EXPECTED_STAGE_PREFIXES=$(printf '%s\n' "library/other/acme/" "$PREEXISTING_MERGED_PATHS" | sed '/^$/d; s#/*$#/#' | sort -u)
+UNEXPECTED_STAGED=$(git diff --cached --name-only | awk -v prefixes="$EXPECTED_STAGE_PREFIXES" '
+BEGIN { n = split(prefixes, p, "\n") }
+{
+  matched = 0
+  for (i = 1; i <= n; i++) {
+    if (p[i] != "" && ($0 == p[i] || index($0, p[i]) == 1)) {
+      matched = 1
+      break
+    }
+  }
+  if (!matched) print
+}')
+if [ -n "$UNEXPECTED_STAGED" ]; then
+  echo "ERROR: publish staged paths outside the expected CLI scope:" >&2
+  printf '%s\n' "$UNEXPECTED_STAGED" | sed 's/^/- /' >&2
+  exit 1
+fi
+`
+		cmd := exec.Command("bash", "-c", script)
+		cmd.Dir = repo
+		cmd.Env = append(os.Environ(), env...)
+		out, err := cmd.CombinedOutput()
+		return string(out), err
+	}
+
+	runGit("init")
+	runGit("config", "user.email", "test@example.com")
+	runGit("config", "user.name", "Test User")
+	require.NoError(t, os.WriteFile(filepath.Join(repo, ".gitignore"), []byte("*-pp-cli\n*-pp-mcp\n.manuscripts/\nworkflow-verify-report.json\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(repo, "README.md"), []byte("# fixture\n"), 0o644))
+	runGit("add", ".gitignore", "README.md")
+	runGit("commit", "-m", "base")
+
+	packageDir := filepath.Join(repo, "library", "other", "acme")
+	require.NoError(t, os.MkdirAll(filepath.Join(packageDir, "cmd", "acme-pp-cli"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(packageDir, "cmd", "acme-pp-cli", "main.go"), []byte("package main\n"), 0o644))
+	require.NoError(t, os.MkdirAll(filepath.Join(packageDir, "cmd", "acme-pp-mcp"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(packageDir, "cmd", "acme-pp-mcp", "main.go"), []byte("package main\n"), 0o644))
+	require.NoError(t, os.MkdirAll(filepath.Join(packageDir, ".manuscripts", "run-1", "research"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(packageDir, ".manuscripts", "run-1", "research", "brief.md"), []byte("# research\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(packageDir, "workflow-verify-report.json"), []byte("{}\n"), 0o644))
+
+	stalePath := filepath.Join(repo, "library", "other", "stale-fragment", "README.md")
+	require.NoError(t, os.MkdirAll(filepath.Dir(stalePath), 0o755))
+	require.NoError(t, os.WriteFile(stalePath, []byte("# stale\n"), 0o644))
+
+	out, err := runStageScript()
+	require.Error(t, err)
+	assert.Contains(t, out, "publish staged paths outside the expected CLI scope")
+	assert.Contains(t, out, "library/other/stale-fragment/README.md")
+
+	runGit("reset")
+	require.NoError(t, os.RemoveAll(filepath.Join(repo, "library", "other", "stale-fragment")))
+	siblingPath := filepath.Join(repo, "library", "other", "acme-extra", "README.md")
+	require.NoError(t, os.MkdirAll(filepath.Dir(siblingPath), 0o755))
+	require.NoError(t, os.WriteFile(siblingPath, []byte("# sibling\n"), 0o644))
+	out, err = runStageScript("PREEXISTING_MERGED_PATHS=library/other/acme")
+	require.Error(t, err)
+	assert.Contains(t, out, "publish staged paths outside the expected CLI scope")
+	assert.Contains(t, out, "library/other/acme-extra/README.md")
+
+	runGit("reset")
+	require.NoError(t, os.RemoveAll(filepath.Join(repo, "library", "other", "acme-extra")))
+	out, err = runStageScript()
+	require.NoError(t, err, out)
+
+	staged := runGit("diff", "--cached", "--name-only")
+	assert.Contains(t, staged, "library/other/acme/cmd/acme-pp-cli/main.go")
+	assert.Contains(t, staged, "library/other/acme/cmd/acme-pp-mcp/main.go")
+	assert.Contains(t, staged, "library/other/acme/.manuscripts/run-1/research/brief.md")
+	assert.Contains(t, staged, "library/other/acme/workflow-verify-report.json")
+	assert.NotContains(t, staged, "library/other/stale-fragment/README.md")
 }
 
 func TestREADMEOutputContract(t *testing.T) {
@@ -770,6 +1302,297 @@ func extractContractBlock(t *testing.T, content string) string {
 	require.NotEqual(t, -1, endIdx, "missing contract end marker")
 
 	return content[startIdx : startIdx+endIdx]
+}
+
+func substringUntilNextHeader(t *testing.T, content, start, headerPrefix string) string {
+	t.Helper()
+
+	startIdx := strings.Index(content, start)
+	require.NotEqual(t, -1, startIdx, "missing start marker %q", start)
+	startIdx += len(start)
+
+	endIdx := strings.Index(content[startIdx:], "\n"+headerPrefix+" ")
+	require.NotEqual(t, -1, endIdx, "missing next header after %q", start)
+
+	return content[startIdx : startIdx+endIdx]
+}
+
+func runPrintingPressSetupContract(t *testing.T, localVersion, sourceVersion string) (output string, goLog string) {
+	t.Helper()
+
+	root := t.TempDir()
+	repo := filepath.Join(root, "repo")
+	fakeBin := filepath.Join(root, "bin")
+	home := filepath.Join(root, "home")
+	require.NoError(t, os.MkdirAll(filepath.Join(repo, "cmd", "cli-printing-press"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(repo, "internal", "version"), 0o755))
+	require.NoError(t, os.MkdirAll(fakeBin, 0o755))
+	require.NoError(t, os.MkdirAll(home, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(repo, "go.mod"), []byte("module example.com/press\n\ngo 1.20\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(repo, "internal", "version", "version.go"), []byte(`package version
+
+var Version = "`+sourceVersion+`" // x-release-please-version
+`), 0o644))
+	writeExecutable(t, filepath.Join(repo, "cli-printing-press"), versionScript(localVersion))
+
+	goLogPath := filepath.Join(root, "go.log")
+	require.NoError(t, os.WriteFile(goLogPath, nil, 0o644))
+	writeExecutable(t, filepath.Join(fakeBin, "go"), `#!/bin/sh
+echo "$@" >> "$GO_LOG"
+if [ "$1" = "run" ]; then
+  exit 0
+fi
+if [ "$1" = "build" ]; then
+  out=""
+  while [ "$#" -gt 0 ]; do
+    if [ "$1" = "-o" ]; then
+      shift
+      out="$1"
+      break
+    fi
+    shift
+  done
+  if [ -z "$out" ]; then
+    echo "missing -o" >&2
+    exit 1
+  fi
+  cat > "$out" <<'__PP_FAKE_BINARY__'
+`+versionScript(sourceVersion)+`__PP_FAKE_BINARY__
+  chmod +x "$out"
+  exit 0
+fi
+exit 0
+`)
+
+	gitInit := exec.Command("git", "init")
+	gitInit.Dir = repo
+	gitInitOutput, err := gitInit.CombinedOutput()
+	require.NoError(t, err, string(gitInitOutput))
+
+	skill := readContractFile(t, filepath.Join("..", "..", "skills", "printing-press", "SKILL.md"))
+	contract := extractContractBlock(t, skill)
+	contract = strings.ReplaceAll(contract, "```bash\n", "")
+	contract = strings.ReplaceAll(contract, "\n```", "")
+	scriptPath := filepath.Join(root, "setup-contract.sh")
+	writeExecutable(t, scriptPath, "#!/bin/sh\n"+contract)
+
+	cmd := exec.Command(scriptPath)
+	cmd.Dir = repo
+	cmd.Env = append(os.Environ(),
+		"ARGUMENTS=",
+		"GO_LOG="+goLogPath,
+		"HOME="+home,
+		"PATH="+fakeBin+string(os.PathListSeparator)+os.Getenv("PATH"),
+		"PRINTING_PRESS_HOME="+filepath.Join(home, "printing-press"),
+	)
+	out, err := cmd.CombinedOutput()
+	require.NoError(t, err, string(out))
+	logBytes, err := os.ReadFile(goLogPath)
+	require.NoError(t, err)
+	return string(out), string(logBytes)
+}
+
+func versionScript(version string) string {
+	return `#!/bin/sh
+if [ "$1" = "version" ] && [ "$2" = "--json" ]; then
+  echo '{"version":"` + version + `"}'
+  exit 0
+fi
+echo "cli-printing-press ` + version + `"
+`
+}
+
+func writeExecutable(t *testing.T, path, content string) {
+	t.Helper()
+
+	require.NoError(t, os.WriteFile(path, []byte(content), 0o755))
+}
+
+func linkHostToolIfNeeded(t *testing.T, dir, name string) {
+	t.Helper()
+
+	target := filepath.Join(dir, name)
+	if _, err := os.Stat(target); err == nil {
+		return
+	}
+	hostPath, err := exec.LookPath(name)
+	require.NoError(t, err)
+	require.NoError(t, os.Symlink(hostPath, target))
+}
+
+type setupSkill struct {
+	name string
+	path string
+}
+
+type setupContractOptions struct {
+	includeGo       bool
+	goInstalled     string
+	goBinary        string
+	goToolchain     string
+	diskAvailableKB string
+}
+
+func goRequiredSetupSkills() []setupSkill {
+	// Issue #3365 is scoped to the generation/build/publish/import flows that
+	// can fail late after writing generated files or cloning library repos.
+	// printing-press-score has a setup contract too, but it is intentionally
+	// outside this preflight-hardening selector.
+	return []setupSkill{
+		{name: "printing-press", path: filepath.Join("..", "..", "skills", "printing-press", "SKILL.md")},
+		{name: "printing-press-amend", path: filepath.Join("..", "..", "skills", "printing-press-amend", "SKILL.md")},
+		{name: "printing-press-polish", path: filepath.Join("..", "..", "skills", "printing-press-polish", "SKILL.md")},
+		{name: "printing-press-publish", path: filepath.Join("..", "..", "skills", "printing-press-publish", "SKILL.md")},
+		{name: "printing-press-import", path: filepath.Join("..", "..", "skills", "printing-press-import", "SKILL.md")},
+	}
+}
+
+func goCurrencySetupSkills() []setupSkill {
+	// printing-press-import resolves PRINTING_PRESS_BIN after setup, once the
+	// imported CLI has been selected, so setup cannot compare Go currency yet.
+	return []setupSkill{
+		{name: "printing-press", path: filepath.Join("..", "..", "skills", "printing-press", "SKILL.md")},
+		{name: "printing-press-amend", path: filepath.Join("..", "..", "skills", "printing-press-amend", "SKILL.md")},
+		{name: "printing-press-polish", path: filepath.Join("..", "..", "skills", "printing-press-polish", "SKILL.md")},
+		{name: "printing-press-publish", path: filepath.Join("..", "..", "skills", "printing-press-publish", "SKILL.md")},
+	}
+}
+
+func diskCheckedSetupSkills() []setupSkill {
+	return goRequiredSetupSkills()
+}
+
+func runSkillSetupContract(t *testing.T, skill setupSkill, opts setupContractOptions) (string, error) {
+	t.Helper()
+
+	if opts.goInstalled == "" {
+		opts.goInstalled = "1.26.5"
+	}
+	if opts.goBinary == "" {
+		opts.goBinary = opts.goInstalled
+	}
+	if opts.diskAvailableKB == "" {
+		opts.diskAvailableKB = "4194304"
+	}
+
+	root := t.TempDir()
+	repo := filepath.Join(root, "repo")
+	fakeBin := filepath.Join(root, "bin")
+	home := filepath.Join(root, "home")
+	pressHome := filepath.Join(home, "printing-press")
+	require.NoError(t, os.MkdirAll(filepath.Join(repo, "cmd", "cli-printing-press"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(repo, "internal", "version"), 0o755))
+	require.NoError(t, os.MkdirAll(fakeBin, 0o755))
+	require.NoError(t, os.MkdirAll(home, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(repo, "go.mod"), []byte("module example.com/press\n\ngo 1.20\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(repo, "internal", "version", "version.go"), []byte(`package version
+
+var Version = "4.23.0" // x-release-please-version
+`), 0o644))
+	writeExecutable(t, filepath.Join(repo, "cli-printing-press"), versionScript("4.23.0"))
+	writeExecutable(t, filepath.Join(fakeBin, "cli-printing-press"), versionScript("4.23.0"))
+	writeExecutable(t, filepath.Join(fakeBin, "curl"), "#!/bin/sh\nexit 1\n")
+	writeExecutable(t, filepath.Join(fakeBin, "shasum"), "#!/bin/sh\ncat >/dev/null\necho \"0123456789abcdef  -\"\n")
+	writeExecutable(t, filepath.Join(fakeBin, "df"), `#!/bin/sh
+echo "Filesystem 1024-blocks Used Available Capacity Mounted on"
+echo "fake 9999999 0 ${PP_FAKE_DF_AVAIL_KB:-4194304} 0% /"
+`)
+	if opts.includeGo {
+		writeExecutable(t, filepath.Join(fakeBin, "go"), `#!/bin/sh
+case "$1" in
+  env)
+    if [ "$2" = "GOVERSION" ]; then
+      echo "go${PP_FAKE_GO_INSTALLED:-1.26.5}"
+      exit 0
+    fi
+    exit 0
+    ;;
+  version)
+    if [ "$#" -ge 2 ]; then
+      echo "$2: go${PP_FAKE_GO_BINARY:-1.26.5}"
+    else
+      echo "go version go${PP_FAKE_GO_INSTALLED:-1.26.5} test/amd64"
+    fi
+    exit 0
+    ;;
+  run)
+    exit 0
+    ;;
+  list)
+    exit 1
+    ;;
+  build)
+    exit 0
+    ;;
+esac
+exit 0
+`)
+	}
+	pathValue := fakeBin + string(os.PathListSeparator) + "/usr/bin:/bin:/usr/sbin:/sbin"
+	if !opts.includeGo {
+		for _, tool := range []string{"awk", "dirname", "git", "head", "sed"} {
+			linkHostToolIfNeeded(t, fakeBin, tool)
+		}
+		pathValue = fakeBin
+	}
+
+	gitInit := exec.Command("git", "init")
+	gitInit.Dir = repo
+	gitInitOutput, err := gitInit.CombinedOutput()
+	require.NoError(t, err, string(gitInitOutput))
+
+	contract := setupBlockForSkill(t, skill.path)
+	scriptPath := filepath.Join(root, "setup-contract.sh")
+	writeExecutable(t, scriptPath, "#!/bin/sh\n"+contract)
+
+	env := append(os.Environ(),
+		"ARGUMENTS=",
+		"HOME="+home,
+		"PATH="+pathValue,
+		"PRINTING_PRESS_HOME="+pressHome,
+		"PP_FAKE_GO_INSTALLED="+opts.goInstalled,
+		"PP_FAKE_GO_BINARY="+opts.goBinary,
+		"PP_FAKE_DF_AVAIL_KB="+opts.diskAvailableKB,
+	)
+	if opts.goToolchain != "" {
+		env = append(env, "GOTOOLCHAIN="+opts.goToolchain)
+	} else {
+		env = append(env, "GOTOOLCHAIN=auto")
+	}
+
+	cmd := exec.Command("bash", scriptPath)
+	cmd.Dir = repo
+	cmd.Env = env
+	output, err := cmd.CombinedOutput()
+	return string(output), err
+}
+
+func setupBlockForSkill(t *testing.T, path string) string {
+	t.Helper()
+
+	full := readContractFile(t, path)
+	var block string
+	if strings.Contains(full, "<!-- PRESS_SETUP_CONTRACT_START -->") {
+		block = extractContractBlock(t, full)
+	} else {
+		block = firstBashBlockAfter(t, full, "## Setup")
+	}
+	block = strings.ReplaceAll(block, "```bash\n", "")
+	block = strings.ReplaceAll(block, "\n```", "")
+	return block
+}
+
+func firstBashBlockAfter(t *testing.T, content, marker string) string {
+	t.Helper()
+
+	start := strings.Index(content, marker)
+	require.NotEqual(t, -1, start, "missing setup marker %q", marker)
+	fenceStart := strings.Index(content[start:], "```bash\n")
+	require.NotEqual(t, -1, fenceStart, "missing setup bash fence after %q", marker)
+	fenceStart = start + fenceStart + len("```bash\n")
+	fenceEnd := strings.Index(content[fenceStart:], "\n```")
+	require.NotEqual(t, -1, fenceEnd, "missing setup bash fence end after %q", marker)
+	return content[fenceStart : fenceStart+fenceEnd]
 }
 
 func substringBetween(t *testing.T, content, start, end string) string {

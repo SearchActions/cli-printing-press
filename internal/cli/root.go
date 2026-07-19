@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"sort"
 	"strconv"
@@ -19,14 +20,13 @@ import (
 	"syscall"
 	"time"
 
-	catalogfs "github.com/mvanhorn/cli-printing-press/v4/catalog"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/artifacts"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/browsersniff"
-	"github.com/mvanhorn/cli-printing-press/v4/internal/catalog"
-	"github.com/mvanhorn/cli-printing-press/v4/internal/catalogmeta"
+	"github.com/mvanhorn/cli-printing-press/v4/internal/categories"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/devicespec"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/docspec"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/generator"
+	"github.com/mvanhorn/cli-printing-press/v4/internal/googlediscovery"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/graphql"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/llm"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/llmpolish"
@@ -35,6 +35,7 @@ import (
 	"github.com/mvanhorn/cli-printing-press/v4/internal/pipeline"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/pipeline/regenmerge"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/spec"
+	"github.com/mvanhorn/cli-printing-press/v4/internal/specmeta"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/version"
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
@@ -89,12 +90,12 @@ func NewRootCommand(commandName string) *cobra.Command {
 	rootCmd.AddCommand(newCrowdSniffCmd())
 	rootCmd.AddCommand(newDeviceSniffCmd())
 	rootCmd.AddCommand(newBluetoothSniffCmd())
-	rootCmd.AddCommand(newCatalogCmd())
 	rootCmd.AddCommand(newLibraryCmd())
 	rootCmd.AddCommand(newAuthCmd())
 	rootCmd.AddCommand(newPublishCmd())
 	rootCmd.AddCommand(newPolishCmd())
 	rootCmd.AddCommand(newWorkflowVerifyCmd())
+	rootCmd.AddCommand(newApifyActorAuditCmd())
 	rootCmd.AddCommand(newShipcheckCmd())
 	rootCmd.AddCommand(newLockCmd())
 	rootCmd.AddCommand(newMCPAuditCmd())
@@ -136,6 +137,7 @@ func newGenerateCmd() *cobra.Command {
 	var planFile string
 	var trafficAnalysisPath string
 	var authPreference string
+	var namePrefix bool
 	var mcpOrchestration string
 	var mcpTransport []string
 	var mcpEndpointTools string
@@ -213,12 +215,12 @@ func newGenerateCmd() *cobra.Command {
 				}
 
 				if snapshotDir != "" {
-					if err := finalizeForceMerge(snapshotDir, absOut, docYAML); err != nil {
+					if err := finalizeForceMerge(snapshotDir, absOut, docYAML, validate); err != nil {
 						return err
 					}
 				}
 
-				runID := pipeline.DeriveRunIDFromResearchDir(researchDir)
+				runID := pipeline.ResolveRunIDFromResearchDir(researchDir)
 				if runID == "" {
 					fmt.Fprintln(os.Stderr, "warning: could not derive run_id from --research-dir; phase5 dogfood acceptance will refuse to write without it")
 				}
@@ -226,7 +228,7 @@ func newGenerateCmd() *cobra.Command {
 					APIName:       parsed.Name,
 					DocsURL:       docsURL,
 					OutputDir:     absOut,
-					Description:   generateResult.CatalogDescription,
+					Description:   generateResult.ManifestDescription,
 					DisplayName:   generateResult.DisplayName,
 					Creator:       parsed.Creator,
 					Contributors:  parsed.Contributors,
@@ -281,10 +283,14 @@ func newGenerateCmd() *cobra.Command {
 				if len(planSpec.Commands) == 0 {
 					return &ExitError{Code: ExitInputError, Err: fmt.Errorf("plan contains no command definitions")}
 				}
+				planCommandCount := generator.GeneratedPlanCommandCount(planSpec.Commands)
 
-				absOut, _, snapshotDir, err := resolveGenerateOutputDir(outputDir, planSpec.CLIName, force, true)
+				absOut, _, snapshotDir, err := resolveGenerateOutputDir(outputDir, planSpec.CLIName, force, !dryRun)
 				if err != nil {
 					return err
+				}
+				if dryRun {
+					return printPlanDryRun(planSpec, absOut, planFile, planCommandCount)
 				}
 
 				if err := generator.GenerateFromPlan(planSpec, absOut); err != nil {
@@ -296,18 +302,19 @@ func newGenerateCmd() *cobra.Command {
 					// SpecChecksum, so the cross-spec guard naturally lands
 					// on the defensive full-merge path. Pass nil so any
 					// manifest hash that does exist still gates merge mode.
-					if err := finalizeForceMerge(snapshotDir, absOut, nil); err != nil {
+					if err := finalizeForceMerge(snapshotDir, absOut, nil, validate); err != nil {
 						return err
 					}
 				}
 
 				fmt.Fprintf(os.Stderr, "Generated %s at %s (from plan)\n", naming.CLI(planSpec.CLIName), absOut)
+				fmt.Fprintln(os.Stderr, "Notice: plan mode emits a lightweight scaffold, not a full Printing Press CLI. Use spec generation for store, MCP, manifest, and framework commands.")
 				if asJSON {
 					if err := json.NewEncoder(os.Stdout).Encode(map[string]any{
 						"name":       planSpec.CLIName,
 						"output_dir": absOut,
 						"plan_file":  planFile,
-						"commands":   len(planSpec.Commands),
+						"commands":   planCommandCount,
 					}); err != nil {
 						return fmt.Errorf("encoding JSON: %w", err)
 					}
@@ -351,7 +358,7 @@ func newGenerateCmd() *cobra.Command {
 						return err
 					}
 					if snapshotDir != "" {
-						if err := finalizeForceMerge(snapshotDir, absOut, archivedDeviceSpec); err != nil {
+						if err := finalizeForceMerge(snapshotDir, absOut, archivedDeviceSpec, validate); err != nil {
 							return err
 						}
 					}
@@ -395,7 +402,8 @@ func newGenerateCmd() *cobra.Command {
 				openapi.SetMaxEndpointsPerResource(maxEndpointsPerResource)
 			}
 
-			openAPIParseAuthPref := openAPIAuthPreferenceForGenerate(authPreference, cliName, specFiles, specURL)
+			authPreferenceManifestDir := openAPIAuthPreferenceManifestDir(outputDir, cliName, specFiles, researchDir, singleSpecData)
+			openAPIParseAuthPref := openAPIAuthPreferenceForGenerate(authPreference, authPreferenceManifestDir)
 
 			var specs []*spec.APISpec
 			var specRawBytes [][]byte // raw spec data for archiving
@@ -421,6 +429,8 @@ func newGenerateCmd() *cobra.Command {
 					})
 				} else if graphql.IsGraphQLSDL(data) {
 					apiSpec, err = graphql.ParseSDLBytes(specFile, data)
+				} else if googlediscovery.IsDiscovery(data) {
+					apiSpec, err = googlediscovery.Parse(specFile, data)
 				} else {
 					apiSpec, err = spec.ParseBytes(data)
 				}
@@ -428,7 +438,6 @@ func newGenerateCmd() *cobra.Command {
 					return &ExitError{Code: ExitSpecError, Err: fmt.Errorf("parsing spec %s: %w", specFile, err)}
 				}
 
-				enrichSpecFromCatalog(apiSpec, catalogSpecLookupRefs(specFiles, specURL)...)
 				if apiSpec.BaseURLIsPlaceholder {
 					return &ExitError{Code: ExitSpecError, Err: fmt.Errorf("spec %s declares no `servers:` block and no per-operation servers; the generator cannot resolve a real base URL and refuses to ship a CLI whose `doctor` would DNS-fail on every call. Add a `servers:` block with the real API host, or run via crowd-sniff with `--base-url` to supply one", specFile)}
 				}
@@ -447,7 +456,7 @@ func newGenerateCmd() *cobra.Command {
 				// cmd/<slug>-pp-cli matches what manifest/publish-validate look
 				// for. Explicit --name still wins.
 				if cliName != "" {
-					catalogmeta.RebaseAuthEnvPrefix(&apiSpec.Auth, apiSpec.Name, cliName)
+					specmeta.RebaseAuthEnvPrefix(&apiSpec.Auth, apiSpec.Name, cliName)
 					apiSpec.Name = cliName
 				} else if researchName := pipeline.LoadAPINameFromResearchDir(researchDir); researchName != "" {
 					apiSpec.Name = researchName
@@ -456,7 +465,7 @@ func newGenerateCmd() *cobra.Command {
 				if cliName == "" {
 					return &ExitError{Code: ExitInputError, Err: fmt.Errorf("--name is required when using multiple specs")}
 				}
-				apiSpec = mergeSpecs(specs, cliName)
+				apiSpec = mergeSpecsWithOptions(specs, cliName, mergeSpecOptions{NamePrefix: namePrefix})
 			}
 
 			if err := applyGenerateSpecFlags(apiSpec, specSource, "", category, clientPattern, httpTransport, owner, generateMCPFlagOverrides{
@@ -481,7 +490,7 @@ func newGenerateCmd() *cobra.Command {
 				return printDryRun(apiSpec, absOut, specFiles)
 			}
 
-			generateResult, err := runGenerateProject(apiSpec, absOut, generateProjectOptions{validate: validate, polish: polish, researchDir: researchDir, trafficAnalysisPath: trafficAnalysisPath, specFiles: specFiles, specURL: specURL, rejectUnshippablePageContextTraffic: true})
+			generateResult, err := runGenerateProject(apiSpec, absOut, generateProjectOptions{validate: validate, polish: polish, researchDir: researchDir, trafficAnalysisPath: trafficAnalysisPath, specFiles: specFiles, rejectUnshippablePageContextTraffic: true})
 			if err != nil {
 				return err
 			}
@@ -496,7 +505,7 @@ func newGenerateCmd() *cobra.Command {
 				if len(specRawBytes) > 0 {
 					primarySpec = specRawBytes[0]
 				}
-				if err := finalizeForceMerge(snapshotDir, absOut, primarySpec); err != nil {
+				if err := finalizeForceMerge(snapshotDir, absOut, primarySpec, validate); err != nil {
 					return err
 				}
 			}
@@ -518,25 +527,26 @@ func newGenerateCmd() *cobra.Command {
 				}
 			}
 
-			runID := pipeline.DeriveRunIDFromResearchDir(researchDir)
+			runID := pipeline.ResolveRunIDFromResearchDir(researchDir)
 			if runID == "" {
 				fmt.Fprintln(os.Stderr, "warning: could not derive run_id from --research-dir; phase5 dogfood acceptance will refuse to write without it")
 			}
 			if err := pipeline.WriteManifestForGenerate(pipeline.GenerateManifestParams{
-				APIName:       apiSpec.Name,
-				SpecSrcs:      specFiles,
-				SpecURL:       specURL,
-				OutputDir:     absOut,
-				Description:   generateResult.CatalogDescription,
-				DisplayName:   generateResult.DisplayName,
-				Creator:       apiSpec.Creator,
-				Contributors:  apiSpec.Contributors,
-				Owner:         apiSpec.Owner,
-				Printer:       apiSpec.Printer,
-				PrinterName:   apiSpec.PrinterName,
-				RunID:         runID,
-				Spec:          apiSpec,
-				NovelFeatures: generateResult.NovelFeatures,
+				APIName:        apiSpec.Name,
+				SpecSrcs:       specFiles,
+				SpecURL:        specURL,
+				OutputDir:      absOut,
+				Description:    generateResult.ManifestDescription,
+				DisplayName:    generateResult.DisplayName,
+				Creator:        apiSpec.Creator,
+				Contributors:   apiSpec.Contributors,
+				Owner:          apiSpec.Owner,
+				Printer:        apiSpec.Printer,
+				PrinterName:    apiSpec.PrinterName,
+				RunID:          runID,
+				Spec:           apiSpec,
+				AuthPreference: openAPIParseAuthPref,
+				NovelFeatures:  generateResult.NovelFeatures,
 			}); err != nil {
 				fmt.Fprintf(os.Stderr, "warning: could not write manifest: %v\n", err)
 			}
@@ -583,7 +593,7 @@ func newGenerateCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&asJSON, "json", false, "Output as JSON")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Parse spec and show what would be generated without writing files (remote specs are still fetched)")
 	cmd.Flags().StringVar(&specSource, "spec-source", "", "Spec provenance: official, community, sniffed/browser-sniffed, docs (affects generated client defaults like rate limiting)")
-	cmd.Flags().StringVar(&category, "category", "", "Public-library category for non-catalog generation")
+	cmd.Flags().StringVar(&category, "category", "", "Public-library category for generated CLI metadata")
 	cmd.Flags().StringVar(&clientPattern, "client-pattern", "", "HTTP client pattern: rest (default), proxy-envelope (wraps requests in POST envelope)")
 	cmd.Flags().StringVar(&httpTransport, "transport", "", "HTTP transport: standard, browser-http, browser-chrome, or browser-chrome-h3 (defaults based on spec provenance and reachability)")
 	cmd.Flags().StringVar(&mcpOrchestration, "mcp-orchestration", "", "MCP orchestration mode: endpoint-mirror or code")
@@ -596,7 +606,8 @@ func newGenerateCmd() *cobra.Command {
 	cmd.Flags().StringVar(&specURL, "spec-url", "", "Original spec URL for provenance (use when --spec is a local file downloaded from a URL)")
 	cmd.Flags().StringVar(&planFile, "plan", "", "Path to a markdown plan document for plan-driven generation (instead of --spec)")
 	cmd.Flags().StringVar(&trafficAnalysisPath, "traffic-analysis", "", "Path to browser-sniff traffic-analysis.json for advisory generation context")
-	cmd.Flags().StringVar(&authPreference, "auth-preference", "", "Preferred securityScheme name from the spec (overrides default selection and any catalog auth_preference; useful when a spec advertises multiple schemes such as OAuth2 + HTTP Basic and you want the simpler one). When omitted, a matching embedded catalog entry's auth_preference applies for OpenAPI parsing.")
+	cmd.Flags().StringVar(&authPreference, "auth-preference", "", "Preferred securityScheme name from the spec (overrides default selection; useful when a spec advertises multiple schemes such as OAuth2 + HTTP Basic and you want the simpler one).")
+	cmd.Flags().BoolVar(&namePrefix, "name-prefix", false, "Prefix resource command names with their source spec name when merging multiple specs")
 
 	return cmd
 }
@@ -631,35 +642,30 @@ type generateProjectOptions struct {
 	researchDir                         string
 	trafficAnalysisPath                 string
 	specFiles                           []string
-	specURL                             string
 	rejectUnshippablePageContextTraffic bool
 }
 
 type generateProjectResult struct {
-	NovelFeatures      []pipeline.NovelFeatureManifest
-	CatalogDescription string
-	DisplayName        string
-	Polished           bool
+	NovelFeatures       []pipeline.NovelFeatureManifest
+	ManifestDescription string
+	DisplayName         string
+	Polished            bool
 }
 
 func runGenerateProject(apiSpec *spec.APISpec, absOut string, opts generateProjectOptions) (generateProjectResult, error) {
-	var catalogEntry *catalog.Entry
 	if apiSpec != nil {
-		catalogEntry = lookupCatalogEntryForGenerateSpec(apiSpec.Name, catalogSpecLookupRefs(opts.specFiles, opts.specURL))
-		enrichSpecFromCatalogEntry(apiSpec, catalogEntry)
 		applyResearchAuthMetadata(apiSpec, opts.researchDir)
 	}
 	gen := generator.New(apiSpec, absOut)
-	if catalogEntry != nil {
-		gen.CatalogEntryDescription = catalogEntry.Description
-	}
 	novelFeatures := loadResearchSources(gen, opts.researchDir)
 	trafficAnalysis, err := loadTrafficAnalysisForGenerate(opts.trafficAnalysisPath, opts.specFiles, apiSpec.SpecSource)
 	if err != nil {
 		return generateProjectResult{}, &ExitError{Code: ExitInputError, Err: err}
 	}
-	if opts.rejectUnshippablePageContextTraffic && trafficAnalysisRequiresUnshippablePageContext(trafficAnalysis) {
-		return generateProjectResult{}, &ExitError{Code: ExitInputError, Err: fmt.Errorf("traffic analysis says this target requires live browser page-context execution; persistent browser transport is not a shippable printed CLI runtime. Re-run discovery for a Surf/direct/browser-clearance replayable surface instead")}
+	if opts.rejectUnshippablePageContextTraffic {
+		if err := validateTrafficAnalysisPageContextGate(trafficAnalysis, apiSpec.HTTPTransport); err != nil {
+			return generateProjectResult{}, &ExitError{Code: ExitInputError, Err: err}
+		}
 	}
 	// ApplyReachabilityDefaults runs first so its HAR-driven HTTP-version
 	// mapping wins for browser_http / browser_clearance_http modes.
@@ -676,6 +682,7 @@ func runGenerateProject(apiSpec *spec.APISpec, absOut string, opts generateProje
 	if err := gen.Generate(); err != nil {
 		return generateProjectResult{}, &ExitError{Code: ExitGenerationError, Err: fmt.Errorf("generating project: %w", err)}
 	}
+	manifestDescription := gen.ManifestDescription()
 	// Emit tools-manifest.json from the parsed spec so a fresh generate
 	// run produces the agent-facing tool description alongside the Go
 	// runtime surface. Without this, tools-manifest stays untouched until
@@ -683,7 +690,7 @@ func runGenerateProject(apiSpec *spec.APISpec, absOut string, opts generateProje
 	// (left over from a prior generation under a different spec / parser)
 	// silently misrepresents the current MCP tool set. Non-blocking: a
 	// warning is the same posture publish takes when this fails.
-	if err := pipeline.WriteToolsManifest(absOut, apiSpec); err != nil {
+	if err := pipeline.WriteToolsManifestWithDescription(absOut, apiSpec, manifestDescription); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: could not write tools manifest: %v\n", err)
 	}
 	if opts.validate {
@@ -692,10 +699,10 @@ func runGenerateProject(apiSpec *spec.APISpec, absOut string, opts generateProje
 		}
 	}
 	return generateProjectResult{
-		NovelFeatures:      novelFeatures,
-		CatalogDescription: gen.CatalogDescription(),
-		DisplayName:        gen.CatalogDisplayName(),
-		Polished:           runGeneratePolishPass(opts.polish, apiSpec.Name, absOut),
+		NovelFeatures:       novelFeatures,
+		ManifestDescription: manifestDescription,
+		DisplayName:         gen.ManifestDisplayName(),
+		Polished:            runGeneratePolishPass(opts.polish, apiSpec.Name, absOut),
 	}, nil
 }
 
@@ -785,10 +792,10 @@ func applyGenerateSpecFlags(apiSpec *spec.APISpec, specSource, defaultSpecSource
 		apiSpec.SpecSource = defaultSpecSource
 	}
 	if category != "" {
-		if !catalog.IsPublicCategory(category) {
+		if !categories.IsPublic(category) {
 			return &ExitError{
 				Code: ExitInputError,
-				Err:  fmt.Errorf("--category must be one of: %s", strings.Join(catalog.PublicCategories(), ", ")),
+				Err:  fmt.Errorf("--category must be one of: %s", strings.Join(categories.Public(), ", ")),
 			}
 		}
 		apiSpec.Category = category
@@ -982,6 +989,9 @@ func applyHTTPTransportDefault(apiSpec *spec.APISpec, analysis *browsersniff.Tra
 	if apiSpec == nil || apiSpec.HTTPTransport != "" {
 		return
 	}
+	if trafficAnalysisReachabilityOverrideMode(analysis) == "standard_http" {
+		return
+	}
 	if trafficAnalysisExplicitlyRecommendsBrowserHTTP3Transport(analysis) {
 		apiSpec.HTTPTransport = spec.HTTPTransportBrowserChromeH3
 		return
@@ -996,6 +1006,20 @@ func applyHTTPTransportDefault(apiSpec *spec.APISpec, analysis *browsersniff.Tra
 		// shipped CLIs on origins these heuristics flag behaving identically.
 		apiSpec.HTTPTransport = spec.HTTPTransportBrowserChromeH2
 	}
+}
+
+func validateTrafficAnalysisPageContextGate(analysis *browsersniff.TrafficAnalysis, httpTransport string) error {
+	if !trafficAnalysisRequiresUnshippablePageContext(analysis) {
+		return nil
+	}
+	overrideMode := trafficAnalysisReachabilityOverrideMode(analysis)
+	if overrideMode == "" {
+		return fmt.Errorf("traffic analysis says this target requires live browser page-context execution; persistent browser transport is not a shippable printed CLI runtime. Re-run discovery for a Surf/direct/browser-clearance replayable surface instead")
+	}
+	if !trafficAnalysisReachabilityOverrideMatchesTransport(overrideMode, httpTransport) {
+		return fmt.Errorf("traffic analysis reachability override %q conflicts with --transport/http_transport %q", overrideMode, httpTransport)
+	}
+	return nil
 }
 
 func trafficAnalysisRequiresUnshippablePageContext(analysis *browsersniff.TrafficAnalysis) bool {
@@ -1022,8 +1046,50 @@ func trafficAnalysisRequiresUnshippablePageContext(analysis *browsersniff.Traffi
 	return false
 }
 
+func trafficAnalysisReachabilityOverrideMode(analysis *browsersniff.TrafficAnalysis) string {
+	if analysis == nil {
+		return ""
+	}
+	const prefix = "reachability_override_browser_required_to_"
+	for _, hint := range analysis.GenerationHints {
+		hint = strings.ToLower(strings.TrimSpace(hint))
+		if !strings.HasPrefix(hint, prefix) {
+			continue
+		}
+		mode := strings.TrimSpace(strings.TrimPrefix(hint, prefix))
+		switch mode {
+		case "browser_http", "browser_clearance_http", "standard_http":
+			return mode
+		}
+	}
+	return ""
+}
+
+func trafficAnalysisReachabilityOverrideMatchesTransport(mode string, httpTransport string) bool {
+	httpTransport = strings.TrimSpace(httpTransport)
+	if httpTransport == "" {
+		return true
+	}
+	switch mode {
+	case "standard_http":
+		return httpTransport == spec.HTTPTransportStandard
+	case "browser_http", "browser_clearance_http":
+		switch httpTransport {
+		case spec.HTTPTransportBrowserHTTP, spec.HTTPTransportBrowserChrome, spec.HTTPTransportBrowserChromeH2, spec.HTTPTransportBrowserChromeH3:
+			return true
+		default:
+			return false
+		}
+	default:
+		return false
+	}
+}
+
 func trafficAnalysisRecommendsBrowserTransport(analysis *browsersniff.TrafficAnalysis) bool {
 	if analysis == nil {
+		return false
+	}
+	if trafficAnalysisReachabilityOverrideMode(analysis) == "standard_http" {
 		return false
 	}
 	if analysis.Reachability != nil {
@@ -1118,17 +1184,38 @@ func parseOpenAPISpec(specFile string, data []byte, opts openapi.ParseOptions) (
 }
 
 // openAPIAuthPreferenceForGenerate resolves AuthPreference for openapi.ParseWithOptions.
-// Explicit --auth-preference wins; otherwise a matching catalog entry's auth_preference
-// is used so catalog-driven generates pick the intended scheme before spec enrichment.
-func openAPIAuthPreferenceForGenerate(cliAuthPref, cliName string, specFiles []string, specURL string) string {
+// Explicit --auth-preference wins; existing same-directory manifests are the
+// durable fallback for reprints.
+func openAPIAuthPreferenceForGenerate(cliAuthPref, outputDir string) string {
 	if s := strings.TrimSpace(cliAuthPref); s != "" {
 		return s
 	}
-	entry := lookupCatalogEntryForGenerateSpec(strings.TrimSpace(cliName), catalogSpecLookupRefs(specFiles, specURL))
-	if entry == nil {
+	if strings.TrimSpace(outputDir) == "" {
 		return ""
 	}
-	return strings.TrimSpace(entry.AuthPreference)
+	if manifest, err := pipeline.ReadCLIManifest(outputDir); err == nil {
+		return strings.TrimSpace(manifest.AuthPreference)
+	}
+	return ""
+}
+
+func openAPIAuthPreferenceManifestDir(outputDir, cliName string, specFiles []string, researchDir string, singleSpecData []byte) string {
+	if strings.TrimSpace(outputDir) != "" {
+		return outputDir
+	}
+	name := strings.TrimSpace(cliName)
+	if name == "" {
+		name = pipeline.LoadAPINameFromResearchDir(researchDir)
+	}
+	if name == "" && len(specFiles) == 1 && len(singleSpecData) > 0 && openapi.IsOpenAPI(singleSpecData) {
+		if parsed, err := parseOpenAPISpec(specFiles[0], singleSpecData, openapi.ParseOptions{Lenient: true}); err == nil {
+			name = parsed.Name
+		}
+	}
+	if name == "" {
+		return ""
+	}
+	return pipeline.DefaultOutputDir(name)
 }
 
 // archiveSpecBytes picks the bytes and filename for the spec snapshot that
@@ -1169,6 +1256,14 @@ func archiveSpecBytes(apiSpec *spec.APISpec, specs []*spec.APISpec, specRawBytes
 }
 
 func mergeSpecs(specs []*spec.APISpec, name string) *spec.APISpec {
+	return mergeSpecsWithOptions(specs, name, mergeSpecOptions{})
+}
+
+type mergeSpecOptions struct {
+	NamePrefix bool
+}
+
+func mergeSpecsWithOptions(specs []*spec.APISpec, name string, opts mergeSpecOptions) *spec.APISpec {
 	if len(specs) == 1 {
 		return specs[0]
 	}
@@ -1221,8 +1316,15 @@ func mergeSpecs(specs []*spec.APISpec, name string) *spec.APISpec {
 				resource = resourceWithMergedSpecBaseURL(resource, s.BaseURL, merged.BaseURL)
 			}
 			key := multiSpecResourceName(s, resourceName, sharedPathPrefix)
-			if _, exists := merged.Resources[key]; exists {
-				key = s.Name + "-" + resourceName
+			if opts.NamePrefix {
+				key = prefixedMultiSpecResourceName(s, resourceName)
+			}
+			if existing, exists := merged.Resources[key]; exists {
+				if !opts.NamePrefix && resourceEndpointsCoveredBy(existing, resource) {
+					continue
+				}
+				key = prefixedMultiSpecResourceName(s, resourceName)
+				key = uniqueMultiSpecResourceName(merged.Resources, key)
 			}
 			resource = rewriteDefaultResourceDescription(resource, resourceName, key)
 			if key != resourceName {
@@ -1245,6 +1347,27 @@ func mergeSpecs(specs []*spec.APISpec, name string) *spec.APISpec {
 	}
 
 	return merged
+}
+
+func prefixedMultiSpecResourceName(s *spec.APISpec, resourceName string) string {
+	specName := strings.Trim(strings.TrimSpace(s.Name), "-")
+	resourceName = strings.Trim(strings.TrimSpace(resourceName), "-")
+	if specName == "" || resourceName == "" || specName == resourceName || strings.HasPrefix(resourceName, specName+"-") {
+		return resourceName
+	}
+	return specName + "-" + resourceName
+}
+
+func uniqueMultiSpecResourceName(resources map[string]spec.Resource, preferred string) string {
+	if _, exists := resources[preferred]; !exists {
+		return preferred
+	}
+	for i := 2; ; i++ {
+		candidate := fmt.Sprintf("%s-%d", preferred, i)
+		if _, exists := resources[candidate]; !exists {
+			return candidate
+		}
+	}
 }
 
 func mergeMultiSpecAuth(specs []*spec.APISpec) spec.AuthConfig {
@@ -1471,6 +1594,48 @@ func rewriteEndpointResourceRef(ref string, resourceRenames map[string]string) s
 		return renamed + "." + rest
 	}
 	return ref
+}
+
+func resourceEndpointsCoveredBy(existing, incoming spec.Resource) bool {
+	existingSignatures := resourceEndpointSignatures(existing)
+	incomingSignatures := resourceEndpointSignatures(incoming)
+	if len(existingSignatures) == 0 || len(incomingSignatures) == 0 {
+		return false
+	}
+	for signature := range incomingSignatures {
+		if _, ok := existingSignatures[signature]; !ok {
+			return false
+		}
+	}
+	return true
+}
+
+func resourceEndpointSignatures(resource spec.Resource) map[string]struct{} {
+	signatures := map[string]struct{}{}
+	addResourceEndpointSignatures(signatures, resource)
+	return signatures
+}
+
+func addResourceEndpointSignatures(signatures map[string]struct{}, resource spec.Resource) {
+	for _, endpoint := range resource.Endpoints {
+		signatures[endpointSignature(resource, endpoint)] = struct{}{}
+	}
+	for _, sub := range resource.SubResources {
+		if sub.BaseURL == "" {
+			sub.BaseURL = resource.BaseURL
+		}
+		addResourceEndpointSignatures(signatures, sub)
+	}
+}
+
+func endpointSignature(resource spec.Resource, endpoint spec.Endpoint) string {
+	baseURL := strings.TrimRight(strings.TrimSpace(endpoint.BaseURL), "/")
+	if baseURL == "" {
+		baseURL = strings.TrimRight(strings.TrimSpace(resource.BaseURL), "/")
+	}
+	method := strings.ToUpper(strings.TrimSpace(endpoint.Method))
+	path := strings.TrimRight(strings.TrimSpace(endpoint.Path), "/")
+	return method + " " + baseURL + " " + path
 }
 
 func multiSpecResourceName(s *spec.APISpec, resourceName string, sharedPathPrefix []string) string {
@@ -1795,13 +1960,18 @@ func claimOrForce(absOut string, force bool, explicitOutput bool) (resolvedAbsOu
 // one preserves hand-edits consistently — discarding snapshotDir after
 // generation would silently lose user work and leave an orphan that blocks
 // future --force runs.
-func finalizeForceMerge(snapshotDir, freshDir string, currentSpecBytes []byte) error {
+func finalizeForceMerge(snapshotDir, freshDir string, currentSpecBytes []byte, validate bool) error {
 	gomodMerged, err := mergeForceSnapshot(snapshotDir, freshDir, currentSpecBytes)
 	if err != nil {
 		return &ExitError{Code: ExitGenerationError, Err: err}
 	}
 	if gomodMerged {
 		retidyAfterMerge(freshDir)
+	}
+	if validate {
+		if err := validatePostMergeBuild(freshDir); err != nil {
+			return &ExitError{Code: ExitGenerationError, Err: fmt.Errorf("validating post-merge generated project: %w; snapshot preserved at %s", err, snapshotDir)}
+		}
 	}
 	if removeErr := os.RemoveAll(snapshotDir); removeErr != nil {
 		fmt.Fprintf(os.Stderr, "warning: could not remove snapshot dir %s: %v\n", snapshotDir, removeErr)
@@ -1827,12 +1997,17 @@ func finalizeForceMerge(snapshotDir, freshDir string, currentSpecBytes []byte) e
 // error includes the snapshot path so the user can recover manually with
 // `rm -rf <freshDir> && mv <snapshotDir> <freshDir>`.
 func mergeForceSnapshot(snapshotDir, freshDir string, currentSpecBytes []byte) (gomodMerged bool, err error) {
-	report, err := regenmerge.Classify(snapshotDir, freshDir, regenmerge.Options{Force: true})
+	novelOnly := !forceRegenSpecHashMatches(snapshotDir, currentSpecBytes)
+	baseDir, cleanupBase := synthesizeForceRegenBase(snapshotDir, currentSpecBytes, novelOnly)
+	if cleanupBase != nil {
+		defer cleanupBase()
+	}
+
+	classifyOpts := regenmerge.Options{Force: true, BaseDir: baseDir}
+	report, err := regenmerge.Classify(snapshotDir, freshDir, classifyOpts)
 	if err != nil {
 		return false, fmt.Errorf("classifying snapshot vs fresh: %w; snapshot preserved at %s", err, snapshotDir)
 	}
-
-	novelOnly := !forceRegenSpecHashMatches(snapshotDir, currentSpecBytes)
 
 	mergeOpts := regenmerge.Options{Force: true, NovelOnly: novelOnly}
 	if err := regenmerge.MergeIntoFreshTree(snapshotDir, freshDir, report, mergeOpts); err != nil {
@@ -1860,6 +2035,86 @@ func mergeForceSnapshot(snapshotDir, freshDir string, currentSpecBytes []byte) (
 	return report.GoMod != nil && report.GoMod.Merged, nil
 }
 
+func synthesizeForceRegenBase(snapshotDir string, currentSpecBytes []byte, novelOnly bool) (string, func()) {
+	if novelOnly || len(currentSpecBytes) == 0 {
+		return "", nil
+	}
+	manifest, err := pipeline.ReadCLIManifest(snapshotDir)
+	if err != nil {
+		return "", nil
+	}
+	priorVersion := strings.TrimSpace(manifest.PrintingPressVersion)
+	if priorVersion == "" || sameSemver(priorVersion, version.Version) {
+		return "", nil
+	}
+	if !validPrintingPressVersion(priorVersion) {
+		fmt.Fprintf(os.Stderr, "warning: cannot synthesize force-regen base from invalid printing_press_version %q\n", priorVersion)
+		return "", nil
+	}
+
+	tmp, err := os.MkdirTemp("", "printing-press-force-base-*")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "warning: cannot create force-regen base tempdir: %v\n", err)
+		return "", nil
+	}
+	cleanup := func() { _ = os.RemoveAll(tmp) }
+	specPath := filepath.Join(tmp, "spec.yaml")
+	baseDir := filepath.Join(tmp, "base")
+	if err := os.WriteFile(specPath, currentSpecBytes, 0o600); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: cannot write force-regen base spec: %v\n", err)
+		cleanup()
+		return "", nil
+	}
+	moduleVersion := strings.TrimPrefix(priorVersion, "v")
+	moduleVersion = "v" + moduleVersion
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "go", "run", forceRegenCommandModulePath(moduleVersion)+"@"+moduleVersion,
+		"generate", "--spec", specPath, "--output", baseDir, "--validate=false")
+	fmt.Fprintf(os.Stderr, "Synthesizing force-regen base with cli-printing-press %s (this may take a moment)...\n", moduleVersion)
+	out, err := cmd.CombinedOutput()
+	if ctx.Err() == context.DeadlineExceeded {
+		fmt.Fprintf(os.Stderr, "warning: force-regen base synthesis with cli-printing-press %s timed out; falling back to two-way merge\n", moduleVersion)
+		cleanup()
+		return "", nil
+	}
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "warning: force-regen base synthesis with cli-printing-press %s failed: %v\n%s", moduleVersion, err, out)
+		cleanup()
+		return "", nil
+	}
+	return baseDir, cleanup
+}
+
+func sameSemver(a, b string) bool {
+	return strings.TrimPrefix(strings.TrimSpace(a), "v") == strings.TrimPrefix(strings.TrimSpace(b), "v")
+}
+
+var printingPressVersionPattern = regexp.MustCompile(`^v?[0-9]+\.[0-9]+\.[0-9]+([-.+][0-9A-Za-z.-]+)?$`)
+
+func validPrintingPressVersion(v string) bool {
+	return printingPressVersionPattern.MatchString(strings.TrimSpace(v))
+}
+
+func forceRegenCommandModulePath(moduleVersion string) string {
+	major := printingPressMajor(moduleVersion)
+	base := "github.com/mvanhorn/cli-printing-press"
+	if major >= 2 {
+		base += "/v" + strconv.Itoa(major)
+	}
+	return base + "/cmd/cli-printing-press"
+}
+
+func printingPressMajor(moduleVersion string) int {
+	v := strings.TrimPrefix(strings.TrimSpace(moduleVersion), "v")
+	majorText, _, _ := strings.Cut(v, ".")
+	major, err := strconv.Atoi(majorText)
+	if err != nil {
+		return 0
+	}
+	return major
+}
+
 // retidyAfterMerge re-runs `go mod tidy` against dir so go.sum picks up
 // hashes for any requires the merge added. Generation's prior tidy ran
 // against fresh's go.mod before merge, so any preserved require from the
@@ -1873,6 +2128,21 @@ func retidyAfterMerge(dir string) {
 	if out, err := cmd.CombinedOutput(); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: post-merge `go mod tidy` failed: %v\n%s", err, out)
 	}
+}
+
+func validatePostMergeBuild(dir string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "go", "build", "./...")
+	cmd.Dir = dir
+	out, err := cmd.CombinedOutput()
+	if ctx.Err() == context.DeadlineExceeded {
+		return fmt.Errorf("go build ./... timed out after 5m")
+	}
+	if err != nil {
+		return fmt.Errorf("go build ./... failed: %w\n%s", err, out)
+	}
+	return nil
 }
 
 // forceRegenSpecHashMatches reports whether the snapshot's recorded spec
@@ -2076,7 +2346,7 @@ func newPrintCmd() *cobra.Command {
 		Use:   "print <api-name>",
 		Short: "Create an autonomous CLI generation pipeline",
 		Long:  "Creates a pipeline directory with plan seeds for each phase. Use /ce:work on each plan to execute.",
-		Example: `  # Run full pipeline for a catalog API
+		Example: `  # Run full pipeline for an API by name
   cli-printing-press print stripe
 
   # Force overwrite existing pipeline
@@ -2174,6 +2444,27 @@ func printDryRun(apiSpec *spec.APISpec, absOut string, specFiles []string) error
 		"spec_files":     specFiles,
 		"resource_count": resourceCount,
 		"endpoint_count": endpointCount,
+	}
+	enc := json.NewEncoder(os.Stdout)
+	enc.SetIndent("", "  ")
+	return enc.Encode(summary)
+}
+
+func printPlanDryRun(planSpec *generator.PlanSpec, absOut, planFile string, commandCount int) error {
+	fmt.Fprintf(os.Stderr, "Dry run — plan parsed, no files will be generated\n")
+	fmt.Fprintf(os.Stderr, "  Plan file:  %s\n", planFile)
+	fmt.Fprintf(os.Stderr, "  CLI name:   %s\n", planSpec.CLIName)
+	fmt.Fprintf(os.Stderr, "  Output dir: %s\n", absOut)
+	fmt.Fprintf(os.Stderr, "  Commands:   %d\n", commandCount)
+	fmt.Fprintln(os.Stderr, "  Contract:   lightweight scaffold, not a full Printing Press CLI")
+
+	summary := map[string]any{
+		"dry_run":    true,
+		"name":       planSpec.CLIName,
+		"output_dir": absOut,
+		"plan_file":  planFile,
+		"commands":   commandCount,
+		"contract":   "lightweight scaffold, not a full Printing Press CLI",
 	}
 	enc := json.NewEncoder(os.Stdout)
 	enc.SetIndent("", "  ")
@@ -2381,56 +2672,6 @@ func mergeAuthEnvVarNames(canonical, existing []string) []string {
 	return merged
 }
 
-// enrichSpecFromCatalog looks up the API in the embedded catalog and copies
-// generation metadata into the spec if present.
-func enrichSpecFromCatalog(apiSpec *spec.APISpec, specRefs ...string) {
-	if apiSpec == nil || apiSpec.Name == "" {
-		return
-	}
-	entry := lookupCatalogEntryForGenerateSpec(apiSpec.Name, specRefs)
-	if entry == nil {
-		return
-	}
-	enrichSpecFromCatalogEntry(apiSpec, entry)
-}
-
-func catalogSpecLookupRefs(specFiles []string, specURL string) []string {
-	refs := make([]string, 0, len(specFiles)+1)
-	if specURL != "" {
-		refs = append(refs, specURL)
-	}
-	refs = append(refs, specFiles...)
-	return refs
-}
-
-func lookupCatalogEntryForGenerateSpec(apiName string, specRefs []string) *catalog.Entry {
-	if name := strings.TrimSpace(apiName); name != "" {
-		if entry, err := catalog.LookupFS(catalogfs.FS, name); err == nil {
-			return entry
-		}
-	}
-	specURLs := make(map[string]struct{}, len(specRefs))
-	for _, ref := range specRefs {
-		ref = strings.TrimSpace(ref)
-		if strings.HasPrefix(ref, "https://") || strings.HasPrefix(ref, "http://") {
-			specURLs[ref] = struct{}{}
-		}
-	}
-	if len(specURLs) == 0 {
-		return nil
-	}
-	entries, err := catalog.ParseFS(catalogfs.FS)
-	if err != nil {
-		return nil
-	}
-	for i := range entries {
-		if _, ok := specURLs[entries[i].SpecURL]; ok {
-			return &entries[i]
-		}
-	}
-	return nil
-}
-
 func applyLibraryAttributionForGenerate(apiSpec *spec.APISpec, reprintContributor spec.Person) {
 	if apiSpec == nil || strings.TrimSpace(apiSpec.Name) == "" {
 		return
@@ -2466,63 +2707,6 @@ func applyLibraryAttributionForGenerate(apiSpec *spec.APISpec, reprintContributo
 	} else {
 		apiSpec.Contributors = spec.PrependContributor(manifest.Contributors, reprintContributor)
 	}
-}
-
-func enrichSpecFromCatalogEntry(apiSpec *spec.APISpec, entry *catalog.Entry) {
-	if apiSpec == nil || entry == nil {
-		return
-	}
-	if len(entry.ProxyRoutes) > 0 && len(apiSpec.ProxyRoutes) == 0 {
-		apiSpec.ProxyRoutes = entry.ProxyRoutes
-	}
-	if entry.Homepage != "" && apiSpec.WebsiteURL == "" {
-		apiSpec.WebsiteURL = entry.Homepage
-	}
-	if entry.BaseURL != "" && catalogmeta.IsReplaceableBaseURL(apiSpec.BaseURL, apiSpec.BaseURLIsPlaceholder) {
-		apiSpec.BaseURL = strings.TrimRight(entry.BaseURL, "/")
-		apiSpec.BaseURLIsPlaceholder = false
-	}
-	if entry.Category != "" {
-		apiSpec.Category = entry.Category
-	}
-	if len(entry.Regions) > 0 {
-		apiSpec.Regions = append([]string(nil), entry.Regions...)
-	}
-	if entry.APILanguage != "" {
-		apiSpec.APILanguage = entry.APILanguage
-	}
-	if entry.Creator != nil && !entry.Creator.IsZero() && apiSpec.Creator.IsZero() {
-		apiSpec.Creator = *entry.Creator
-	}
-	if entry.Owner != "" && apiSpec.Owner == "" {
-		apiSpec.Owner = entry.Owner
-	}
-	if entry.OwnerName != "" && apiSpec.OwnerName == "" {
-		apiSpec.OwnerName = entry.OwnerName
-	}
-	if entry.DisplayName != "" && (apiSpec.DisplayName == "" || apiSpec.DisplayNameDerivedFromTitle) {
-		apiSpec.DisplayName = entry.DisplayName
-		apiSpec.DisplayNameDerivedFromTitle = false
-	}
-	if entry.HTTPTransport != "" && apiSpec.HTTPTransport == "" {
-		apiSpec.HTTPTransport = entry.HTTPTransport
-	}
-	if mcpConfigured(entry.MCP) && !mcpConfigured(apiSpec.MCP) {
-		apiSpec.MCP = entry.MCP
-	}
-	if entry.BearerRefresh.BundleURL != "" && apiSpec.BearerRefresh.BundleURL == "" {
-		apiSpec.BearerRefresh.BundleURL = entry.BearerRefresh.BundleURL
-	}
-	if entry.BearerRefresh.Pattern != "" && apiSpec.BearerRefresh.Pattern == "" {
-		apiSpec.BearerRefresh.Pattern = entry.BearerRefresh.Pattern
-	}
-	if entry.AuthKeyURL != "" && apiSpec.Auth.Type != "none" {
-		apiSpec.Auth.KeyURL = entry.AuthKeyURL
-	}
-	if entry.AuthInstructions != "" && apiSpec.Auth.Type != "none" {
-		apiSpec.Auth.Instructions = entry.AuthInstructions
-	}
-	catalogmeta.ApplyCatalogAuthEnvVars(&apiSpec.Auth, entry.AuthEnvVars)
 }
 
 func mcpConfigured(m spec.MCPConfig) bool {

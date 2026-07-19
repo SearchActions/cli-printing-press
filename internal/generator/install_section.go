@@ -27,16 +27,16 @@ const canonicalSkillInstallSectionStartFormat = "## Prerequisites: Install the C
 	"\n" +
 	"This skill drives the `%[1]s-pp-cli` binary. **You must verify the CLI is installed before invoking any command from this skill.** If it is missing, install it first:\n" +
 	"\n" +
-	"1. Install via the Printing Press installer into a user bin directory:\n" +
+	"1. Install via the Printing Press installer. It defaults binaries to `$HOME/.local/bin` on macOS/Linux and `%%LOCALAPPDATA%%\\Programs\\PrintingPress\\bin` on Windows:\n" +
 	"   ```bash\n" +
-	"   npx -y @mvanhorn/printing-press-library install %[1]s --cli-only --bin-dir ~/.local/bin\n" +
+	"   npx -y @mvanhorn/printing-press-library install %[1]s --cli-only\n" +
 	"   ```\n" +
 	"2. Verify: `%[1]s-pp-cli --version`\n" +
-	"3. Ensure `~/.local/bin` is on `$PATH` for the agent/runtime that will invoke this skill.\n" +
+	"3. Ensure the reported install directory is on `$PATH` for the agent/runtime that will invoke this skill.\n" +
 	"\n"
 
 // canonicalSkillInstallSectionGoFallbackFormat is appended only once the
-// catalog category is known. Before publish, the category-agnostic installer is
+// public-library category is known. Before publish, the category-agnostic installer is
 // the only canonical path; emitting library/other/<slug> creates drift.
 const canonicalSkillInstallSectionGoFallbackFormat = "If the `npx` install fails (no Node, offline, etc.), fall back to a direct Go install (requires Go 1.26.5 or newer). This installs into `$GOPATH/bin` (default `$HOME/go/bin`), so add that directory to `$PATH` instead:\n" +
 	"\n" +
@@ -52,7 +52,7 @@ const canonicalSkillInstallSectionEnd = "If `--version` reports \"command not fo
 
 // CanonicalSkillInstallSection returns the exact text of the install/
 // prerequisites section that the generator emits into a printed CLI's
-// SKILL.md, given the CLI slug and catalog category. A blank category emits
+// SKILL.md, given the CLI slug and public-library category. A blank category emits
 // only the category-agnostic installer path so generate-time output does not
 // bake in the publish-time placeholder category.
 //

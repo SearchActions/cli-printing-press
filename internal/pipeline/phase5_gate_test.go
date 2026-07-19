@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/mvanhorn/cli-printing-press/v4/internal/spec"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -304,6 +305,29 @@ func TestValidatePhase5Gate_ManualLevelDocumentsAcceptedValues(t *testing.T) {
 	assert.Contains(t, result.Detail, "dogfood --live --write-acceptance")
 }
 
+func TestValidatePhase5Gate_ReportsMultipleAcceptanceMarkerIssues(t *testing.T) {
+	proofsDir := t.TempDir()
+	manifest := CLIManifest{APIName: "test", CLIName: "test-pp-cli", RunID: "run-1", AuthType: "none"}
+	writePhase5GateMarker(t, proofsDir, Phase5AcceptanceFilename, Phase5GateMarker{
+		SchemaVersion: 2,
+		Status:        "maybe",
+		Level:         "smoke",
+		AuthContext:   Phase5AuthContext{Type: "none"},
+	})
+
+	result := ValidatePhase5Gate(proofsDir, manifest)
+	require.False(t, result.Passed)
+	assert.Contains(t, result.Detail, "unsupported phase5 marker schema_version 2")
+	assert.Contains(t, result.Detail, "phase5 marker missing api_name")
+	assert.Contains(t, result.Detail, "phase5 marker missing run_id")
+	assert.Contains(t, result.Detail, `unknown phase5 gate status "maybe"`)
+	assert.Contains(t, result.Detail, "accepted: pass, fail")
+	assert.Contains(t, result.Detail, `unknown phase5 acceptance level "smoke"`)
+	assert.Contains(t, result.Detail, "accepted: quick, full")
+	assert.Contains(t, result.Detail, "missing matrix_size")
+	assert.Contains(t, result.Detail, "missing tests_passed")
+}
+
 func TestValidatePhase5Gate_UnknownLevelDocumentsAcceptedValues(t *testing.T) {
 	proofsDir := t.TempDir()
 	manifest := CLIManifest{APIName: "test", CLIName: "test-pp-cli", RunID: "run-1", AuthType: "none"}
@@ -338,6 +362,42 @@ func TestValidatePhase5Gate_NoAuthRequiresPassMarker(t *testing.T) {
 		Level:         "none",
 		SkipReason:    phase5SkipReasonAuthRequiredNoCredential,
 		AuthContext:   Phase5AuthContext{Type: "none"},
+	})
+
+	result := ValidatePhase5Gate(proofsDir, manifest)
+	require.False(t, result.Passed)
+	assert.Contains(t, result.Detail, "no-auth")
+}
+
+func TestValidatePhase5Gate_SyntheticNoAuthAllowsExternalCredentialSkip(t *testing.T) {
+	proofsDir := t.TempDir()
+	manifest := CLIManifest{APIName: "aws-billing", CLIName: "aws-billing-pp-cli", RunID: "run-1", AuthType: "none", SpecKind: spec.KindSynthetic}
+	writePhase5GateMarker(t, proofsDir, Phase5SkipFilename, Phase5GateMarker{
+		SchemaVersion: 1,
+		APIName:       "aws-billing",
+		RunID:         "run-1",
+		Status:        "skip",
+		Level:         "none",
+		SkipReason:    phase5SkipReasonExternalCredentialsUnavailable,
+		AuthContext:   Phase5AuthContext{Type: "oauth2", APIKeyAvailable: false},
+	})
+
+	result := ValidatePhase5Gate(proofsDir, manifest)
+	require.True(t, result.Passed, result.Detail)
+	assert.Equal(t, "skip", result.Status)
+}
+
+func TestValidatePhase5Gate_StandardNoAuthRejectsExternalCredentialSkip(t *testing.T) {
+	proofsDir := t.TempDir()
+	manifest := CLIManifest{APIName: "public-data", CLIName: "public-data-pp-cli", RunID: "run-1", AuthType: "none"}
+	writePhase5GateMarker(t, proofsDir, Phase5SkipFilename, Phase5GateMarker{
+		SchemaVersion: 1,
+		APIName:       "public-data",
+		RunID:         "run-1",
+		Status:        "skip",
+		Level:         "none",
+		SkipReason:    phase5SkipReasonExternalCredentialsUnavailable,
+		AuthContext:   Phase5AuthContext{Type: "none", APIKeyAvailable: false},
 	})
 
 	result := ValidatePhase5Gate(proofsDir, manifest)
@@ -488,6 +548,46 @@ func TestValidatePhase5Gate_CookieAuthNotSkippedByMissingAPIKey(t *testing.T) {
 	result := ValidatePhase5Gate(proofsDir, manifest)
 	require.False(t, result.Passed)
 	assert.Contains(t, result.Detail, "browser-session")
+}
+
+func TestValidatePhase5Gate_CookieAuthNoHarnessSessionSkipAllowed(t *testing.T) {
+	for _, authType := range []string{"cookie", "composed", "session_handshake"} {
+		t.Run(authType, func(t *testing.T) {
+			proofsDir := t.TempDir()
+			manifest := CLIManifest{APIName: "test", CLIName: "test-pp-cli", RunID: "run-1", AuthType: authType}
+			writePhase5GateMarker(t, proofsDir, Phase5SkipFilename, Phase5GateMarker{
+				SchemaVersion: 1,
+				APIName:       "test",
+				RunID:         "run-1",
+				Status:        "skip",
+				Level:         "none",
+				SkipReason:    phase5SkipReasonCookieAuthNoHarnessSession,
+				AuthContext:   Phase5AuthContext{Type: authType, BrowserSessionAvailable: false},
+			})
+
+			result := ValidatePhase5Gate(proofsDir, manifest)
+			require.True(t, result.Passed, result.Detail)
+			assert.Equal(t, "skip", result.Status)
+		})
+	}
+}
+
+func TestValidatePhase5Gate_CookieAuthRejectsWrongSkipReason(t *testing.T) {
+	proofsDir := t.TempDir()
+	manifest := CLIManifest{APIName: "test", CLIName: "test-pp-cli", RunID: "run-1", AuthType: "cookie"}
+	writePhase5GateMarker(t, proofsDir, Phase5SkipFilename, Phase5GateMarker{
+		SchemaVersion: 1,
+		APIName:       "test",
+		RunID:         "run-1",
+		Status:        "skip",
+		Level:         "none",
+		SkipReason:    "operator deferred",
+		AuthContext:   Phase5AuthContext{Type: "cookie"},
+	})
+
+	result := ValidatePhase5Gate(proofsDir, manifest)
+	require.False(t, result.Passed)
+	assert.Contains(t, result.Detail, "cookie-auth-no-harness-session")
 }
 
 func TestValidatePhase5Gate_SkipCannotOverrideManifestAuthType(t *testing.T) {

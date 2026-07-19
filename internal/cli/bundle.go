@@ -5,14 +5,15 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 
 	"github.com/mvanhorn/cli-printing-press/v4/internal/pipeline"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/platform"
 	"github.com/spf13/cobra"
+	"golang.org/x/mod/semver"
 	"golang.org/x/sync/errgroup"
 )
 
@@ -23,6 +24,7 @@ func newBundleCmd() *cobra.Command {
 	var binaryPath string
 	var cliSkipBuild bool
 	var cliBinaryPath string
+	var bundleVersion string
 
 	cmd := &cobra.Command{
 		Use:   "bundle <cli-dir>",
@@ -74,6 +76,9 @@ from another build pipeline.`,
 			if manifest.Name == "" {
 				return fmt.Errorf("manifest.name is empty; cannot determine binary name")
 			}
+			if err := validateBundleVersion(bundleVersion); err != nil {
+				return &ExitError{Code: ExitInputError, Err: err}
+			}
 
 			goos, goarch, err := resolvePlatform(platform)
 			if err != nil {
@@ -104,6 +109,7 @@ from another build pipeline.`,
 				CLIBinaryName: cliArchiveName,
 				CLIBinaryPath: cliBinaryPath,
 				OutputPath:    output,
+				Version:       bundleVersion,
 			}); err != nil {
 				return fmt.Errorf("packaging bundle: %w", err)
 			}
@@ -119,7 +125,23 @@ from another build pipeline.`,
 	cmd.Flags().StringVar(&binaryPath, "binary", "", "Pre-built MCP binary path (only meaningful with --skip-build)")
 	cmd.Flags().BoolVar(&cliSkipBuild, "cli-skip-build", false, "Skip go build for the companion CLI binary; use the binary at --cli-binary")
 	cmd.Flags().StringVar(&cliBinaryPath, "cli-binary", "", "Pre-built CLI binary path (only meaningful with --cli-skip-build)")
+	cmd.Flags().StringVar(&bundleVersion, "version", "", "Printed CLI release version to stamp into the bundled manifest")
 	return cmd
+}
+
+var bundleVersionPattern = regexp.MustCompile(`^[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$`)
+
+func validateBundleVersion(version string) error {
+	if version == "" {
+		return nil
+	}
+	if trimmed, ok := strings.CutPrefix(version, "v"); ok {
+		return fmt.Errorf("--version must not have a v prefix (got %q); use %q", version, trimmed)
+	}
+	if !bundleVersionPattern.MatchString(version) || !semver.IsValid("v"+version) {
+		return fmt.Errorf("--version must be a semantic version without a v prefix, e.g. %q (got %q)", "1.2.3", version)
+	}
+	return nil
 }
 
 // autoBundleForHost packages a host-platform .mcpb after generate.
@@ -240,19 +262,9 @@ func resolvePlatform(s string) (string, string, error) {
 
 // buildMCPBBinary invokes `go build` on cmd/<name>/main.go inside cliDir,
 // targeting the requested GOOS/GOARCH and writing to outputPath. We pass
-// -trimpath and -ldflags="-s -w" to match the bundle conventions Claude
-// Desktop's prebuilt examples use; users who need debug builds can
+// -trimpath and a blank build id to avoid embedding operator-local paths while
+// retaining the size-oriented ldflags Claude Desktop examples use. Users can
 // --skip-build and pass their own binary.
 func buildMCPBBinary(cliDir, mcpName, outputPath, goos, goarch string) error {
-	if err := os.MkdirAll(filepath.Dir(outputPath), 0o755); err != nil {
-		return fmt.Errorf("creating bin dir: %w", err)
-	}
-	pkg := "./cmd/" + mcpName
-	cmd := exec.Command("go", "build", "-trimpath", "-ldflags=-s -w", "-o", outputPath, pkg)
-	cmd.Dir = cliDir
-	cmd.Env = append(os.Environ(), "GOOS="+goos, "GOARCH="+goarch)
-	if out, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("go build %s: %w\n%s", pkg, err, string(out))
-	}
-	return nil
+	return pipeline.BuildMCPBBinary(cliDir, mcpName, outputPath, goos, goarch)
 }
