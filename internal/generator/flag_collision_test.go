@@ -408,7 +408,7 @@ func TestGenerateRenamesBodyFieldCollidingWithGlobalDryRun(t *testing.T) {
 
 	src, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "campaigns_create.go"))
 	require.NoError(t, err)
-	assert.Contains(t, string(src), `body["dry_run"]`,
+	assert.Contains(t, string(src), `bodyMap["dry_run"]`,
 		"the wire-side body key must remain dry_run in the body map even though the public flag is renamed")
 }
 

@@ -99,6 +99,7 @@ func TestReplacePathParamPreservesHierarchicalIdentifiers(t *testing.T) {
 		"../secret": "%2E%2E/secret",
 		"./file": "%2E/file",
 		"a b?c#d": "a%20b%3Fc%23d",
+		"a//b": "a%2F%2Fb",
 	}
 	for input, want := range tests {
 		if got := replacePathParam("/datasets/{id}", "id", input); got != "/datasets/"+want {
@@ -122,6 +123,7 @@ func TestEscapePathParamPreservesHierarchicalIdentifiers(t *testing.T) {
 		"../secret": "%2E%2E/secret",
 		"./file": "%2E/file",
 		"a b?c#d": "a%20b%3Fc%23d",
+		"a//b": "a%2F%2Fb",
 	}
 	for input, want := range tests {
 		if got := EscapePathParam(input); got != want {
@@ -145,6 +147,7 @@ func TestMCPPathValuePercentEncodesReservedCharacters(t *testing.T) {
 		"../secret": "%2E%2E/secret",
 		"./file": "%2E/file",
 		"a b?c#d": "a%20b%3Fc%23d",
+		"a//b": "a%2F%2Fb",
 	}
 	for input, want := range tests {
 		if got := mcpPathValue(input); got != want {
