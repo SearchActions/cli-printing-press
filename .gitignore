@@ -13,6 +13,11 @@ catalog/specs/*.graphql
 /cli-printing-press
 /printing-press
 /press-auth
+# Same binaries under their Windows names — without these a `go build` on
+# Windows leaves an untracked ~74MB executable that `git add -A` will commit.
+/cli-printing-press.exe
+/printing-press.exe
+/press-auth.exe
 library/
 dist/
 claude-upgrade-progress.json
