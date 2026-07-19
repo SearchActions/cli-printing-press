@@ -10,15 +10,31 @@ fi
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo_root"
 
-# Resolve a Python 3 interpreter. Linux/macOS contributors typically have
-# `python3` on PATH; Windows / Git Bash contributors typically have `python`.
-if command -v python3 >/dev/null 2>&1; then
-  PYTHON=python3
-elif command -v python >/dev/null 2>&1; then
-  PYTHON=python
-else
-  echo "scripts/golden.sh requires python (python3 or python) on PATH" >&2
-  exit 1
+# Resolve the normalizer used by normalize_text. Linux/macOS contributors
+# typically have `python3` on PATH; Windows / Git Bash contributors typically
+# have `python`.
+#
+# Probe by EXECUTING, not by `command -v`: Windows ships a python.exe App
+# Execution Alias that resolves on PATH and then exits with a Microsoft Store
+# install prompt rather than running. A presence-only check selects that shim
+# and the harness dies mid-pipeline on a machine that never had Python.
+NORMALIZER=""
+for candidate in python3 python; do
+  if command -v "$candidate" >/dev/null 2>&1 && "$candidate" -c "" >/dev/null 2>&1; then
+    NORMALIZER=("$candidate" "$repo_root/scripts/golden_normalize_windows.py")
+    break
+  fi
+done
+if [ -z "${NORMALIZER:-}" ]; then
+  # Perl ships with Git for Windows, so it is available exactly where the
+  # Store shim is the only "Python". The port is byte-equivalent; see
+  # scripts/golden_normalize_test.sh.
+  if command -v perl >/dev/null 2>&1; then
+    NORMALIZER=(perl "$repo_root/scripts/golden_normalize_windows.pl")
+  else
+    echo "scripts/golden.sh requires a working python3/python or perl on PATH" >&2
+    exit 1
+  fi
 fi
 
 binary="./cli-printing-press"
@@ -53,7 +69,7 @@ normalize_text() {
     -e "s|$actual_root_pattern|<ARTIFACT_DIR>|g" \
     -e "s|$repo_root_pattern|<REPO>|g" \
     -e "s|$home_pattern|<HOME>|g" |
-    "$PYTHON" "$repo_root/scripts/golden_normalize_windows.py" \
+    "${NORMALIZER[@]}" \
       "$actual_abs" "$actual_root" "$repo_root" "$HOME"
 }
 

@@ -35,12 +35,29 @@ import sys
 
 
 def windows_variants(p: str) -> list[str]:
-    """Backslash-form variants of a POSIX-style path."""
+    """Backslash-form variants of a POSIX-style path.
+
+    Git Bash reports paths in MSYS form (`/d/projects/x`), but the generator
+    running as a native Windows binary emits the drive form (`D:\\projects\\x`).
+    Converting separators alone yields `\\d\\projects\\x`, which matches
+    neither, so the drive form is emitted as an additional variant. Without
+    it every Windows-form path survives normalization with its absolute
+    prefix intact and the goldens are unusable on Windows.
+    """
     if not p:
         return []
-    win = p.replace("/", "\\")
-    win_json = win.replace("\\", "\\\\")
-    return [win_json, win]  # JSON-escaped first (longer prefix wins)
+    candidates = [p]
+    m = re.match(r"^/([A-Za-z])/(.*)$", p)
+    if m:
+        candidates.append("{}:/{}".format(m.group(1).upper(), m.group(2)))
+    variants = []
+    for candidate in candidates:
+        win = candidate.replace("/", "\\")
+        # JSON-escaped form first: json.dumps doubles each separator, and the
+        # longer prefix has to win.
+        variants.extend([win.replace("\\", "\\\\"), win])
+    # Drive form before MSYS form for the same longest-match reason.
+    return variants[2:] + variants[:2] if len(variants) == 4 else variants
 
 
 def main() -> int:
