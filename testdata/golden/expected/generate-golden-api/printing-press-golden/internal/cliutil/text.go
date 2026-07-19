@@ -39,9 +39,22 @@ func ScrubTerminal(s string) string {
 }
 
 // EscapePathParam preserves slash separators in hierarchical IDs so reserved
-// characters within each segment remain safe in the request URL.
+// characters within each segment remain safe in the request URL. Dot segments
+// ("." / "..") are encoded to %2E so a URL router cannot resolve traversal
+// inside the templated path. An empty segment (from a leading, trailing, or
+// doubled "/") cannot climb the hierarchy but selects a different route on
+// slash-collapsing proxies; a path-param value has no legitimate reason to
+// restructure the path, so any empty segment triggers a whole-value escape
+// that encodes every "/" too — the API then 404s instead of silently serving
+// an attacker-shaped URL. Both the CLI (replacePathParam) and MCP
+// (mcpPathValue) surfaces route through here, so the guard covers both.
 func EscapePathParam(value string) string {
 	segments := strings.Split(value, "/")
+	for _, segment := range segments {
+		if segment == "" {
+			return url.PathEscape(value)
+		}
+	}
 	for i, segment := range segments {
 		if segment == "." || segment == ".." {
 			segments[i] = strings.Repeat("%2E", len(segment))
