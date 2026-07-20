@@ -51,12 +51,12 @@ func ScrubTerminal(s string) string {
 // an attacker-shaped URL. Both the CLI (replacePathParam) and MCP
 // (mcpPathValue) surfaces route through here, so the guard covers both.
 func EscapePathParam(value string) string {
-	segments := strings.Split(value, "/")
-	for _, segment := range segments {
-		if segment == "" {
-			return url.PathEscape(value)
-		}
+	// An empty segment (value is empty, or has a leading/trailing/doubled "/")
+	// falls back to a whole-value escape that encodes every "/" too.
+	if value == "" || strings.HasPrefix(value, "/") || strings.HasSuffix(value, "/") || strings.Contains(value, "//") {
+		return url.PathEscape(value)
 	}
+	segments := strings.Split(value, "/")
 	for i, segment := range segments {
 		if segment == "." || segment == ".." {
 			segments[i] = strings.Repeat("%2E", len(segment))

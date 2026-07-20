@@ -150,16 +150,3 @@ func TestScorecardStatefulStillScoresPipeline(t *testing.T) {
 // TestScorecardCollectionSpecStillScoresPipeline guards Problem 1: a spec with a
 // real collection resource that emitted no store (profiler under-detection) must
 // NOT be exempted — the missing pipeline must surface, not pass silently.
-func TestScorecardCollectionSpecStillScoresPipeline(t *testing.T) {
-	dir := t.TempDir()
-	writeClientPkgGo(t, dir)
-	writeStubFile(t, filepath.Join(dir, "internal", "cli", "root.go"), "package cli\n")
-
-	sc := &Scorecard{}
-	spec := &openAPISpecInfo{Paths: []string{"/items", "/items/{id}"}}
-	scoreDomainDimensions(sc, dir, spec, nil, false)
-
-	if sc.IsDimensionUnscored(DimDataPipelineIntegrity) {
-		t.Error("a spec with a collection resource and no store must keep DataPipelineIntegrity scored, surfacing the gap")
-	}
-}

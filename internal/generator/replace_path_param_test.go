@@ -17,12 +17,10 @@ import (
 // generated cliutil/text.go and the CLI+MCP call sites. This table locks the
 // adversarial behavior contract.
 func escapePathParamForTest(value string) string {
-	segments := strings.Split(value, "/")
-	for _, segment := range segments {
-		if segment == "" {
-			return url.PathEscape(value)
-		}
+	if value == "" || strings.HasPrefix(value, "/") || strings.HasSuffix(value, "/") || strings.Contains(value, "//") {
+		return url.PathEscape(value)
 	}
+	segments := strings.Split(value, "/")
 	for i, segment := range segments {
 		if segment == "." || segment == ".." {
 			segments[i] = strings.Repeat("%2E", len(segment))

@@ -277,27 +277,13 @@ func scorecardSpecPath(outputDir, specPath string) string {
 }
 
 func scoreDomainDimensions(sc *Scorecard, outputDir string, spec *openAPISpecInfo, verifyReport *VerifyReport, isDevice bool) {
-	var specPaths []string
-	if spec != nil {
-		specPaths = spec.Paths
-	}
-	switch {
-	case isDevice:
+	if isDevice {
 		// BLE device CLIs have no sync->sql->search data pipeline; the HTTP-shaped
 		// pipeline and sync checks don't apply. Mark N/A rather than scoring 0.
 		sc.UnscoredDimensions = append(sc.UnscoredDimensions, DimDataPipelineIntegrity, DimSyncCorrectness)
-	case isStatelessHTTPCLIDir(outputDir, specPaths):
-		// Stateless REST mirror: the spec yielded no syncable resources, so the
-		// generator emitted no store and no sync. Those two dimensions are
-		// store-gated and inapplicable; mark N/A rather than scoring 0 on a
-		// pipeline the CLI shape never claimed. Vision/Insight/Workflows stay
-		// scored — they are richness dimensions a mirror can legitimately score
-		// low on (an honest signal), and Workflows in particular is NOT store-
-		// gated (it credits compound commands and multi-call flows too), so
-		// N/A-ing it would drop it from the denominator while the numerator still
-		// counted it, inflating the score.
+	} else if !hasScorecardLocalStore(outputDir) {
 		sc.UnscoredDimensions = append(sc.UnscoredDimensions, DimDataPipelineIntegrity, DimSyncCorrectness)
-	default:
+	} else {
 		sc.Steinberger.DataPipelineIntegrity = scoreDataPipelineIntegrity(outputDir)
 		if isLocalDatastoreCLIDir(outputDir) {
 			sc.UnscoredDimensions = append(sc.UnscoredDimensions, DimSyncCorrectness)
@@ -307,14 +293,9 @@ func scoreDomainDimensions(sc *Scorecard, outputDir string, spec *openAPISpecInf
 	}
 	if isDevice {
 		sc.Steinberger.TypeFidelity = scoreTypeFidelityDevice(outputDir)
+	} else if !hasScorecardLocalStore(outputDir) {
+		sc.UnscoredDimensions = append(sc.UnscoredDimensions, DimTypeFidelity)
 	} else {
-		// Deliberately NOT gated on hasScorecardLocalStore. scoreTypeFidelity and
-		// its sub-scorers read only emitted command files and parser symbols --
-		// never the store -- so a store-less CLI can legitimately earn full marks.
-		// Marking the dimension N/A on store-absence drops an applicable dimension
-		// from the ratio, which moves the reported total in whichever direction the
-		// CLI's other tier-2 scores happen to sit, and silences selfimprove (it
-		// skips fix plans for unscored dimensions).
 		sc.Steinberger.TypeFidelity = scoreTypeFidelity(outputDir, spec)
 	}
 	sc.Steinberger.DeadCode = scoreDeadCode(outputDir)

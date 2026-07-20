@@ -451,7 +451,7 @@ func TestCLIArgsFromMCPSkipsStructuredPositionals(t *testing.T) {
 		"id":       "123",
 		"format":   "json",
 	}, blocked)
-	want := []string{"--format", "json"}
+	want := []string{"--format=json"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("cliArgsFromMCP forwarded positionals as flags: got %v, want %v", got, want)
 	}
