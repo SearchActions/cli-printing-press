@@ -5,6 +5,7 @@ package cliutil
 
 import (
 	"html"
+	"net/url"
 	"regexp"
 	"strings"
 	"time"
@@ -21,6 +22,47 @@ import (
 // deeper escaping problem upstream — fix there, not here.
 func CleanText(s string) string {
 	return html.UnescapeString(strings.TrimSpace(s))
+}
+
+// ScrubTerminal prevents untrusted scalar values from altering terminal output.
+// Tabs and newlines become spaces; other control characters are removed.
+func ScrubTerminal(s string) string {
+	return strings.Map(func(r rune) rune {
+		if r == '\t' || r == '\n' {
+			return ' '
+		}
+		if r < 0x20 || (r >= 0x7f && r <= 0x9f) {
+			return -1
+		}
+		return r
+	}, s)
+}
+
+// EscapePathParam preserves slash separators in hierarchical IDs so reserved
+// characters within each segment remain safe in the request URL. Dot segments
+// ("." / "..") are encoded to %2E so a URL router cannot resolve traversal
+// inside the templated path. An empty segment (from a leading, trailing, or
+// doubled "/") cannot climb the hierarchy but selects a different route on
+// slash-collapsing proxies; a path-param value has no legitimate reason to
+// restructure the path, so any empty segment triggers a whole-value escape
+// that encodes every "/" too — the API then 404s instead of silently serving
+// an attacker-shaped URL. Both the CLI (replacePathParam) and MCP
+// (mcpPathValue) surfaces route through here, so the guard covers both.
+func EscapePathParam(value string) string {
+	// An empty segment (value is empty, or has a leading/trailing/doubled "/")
+	// falls back to a whole-value escape that encodes every "/" too.
+	if value == "" || strings.HasPrefix(value, "/") || strings.HasSuffix(value, "/") || strings.Contains(value, "//") {
+		return url.PathEscape(value)
+	}
+	segments := strings.Split(value, "/")
+	for i, segment := range segments {
+		if segment == "." || segment == ".." {
+			segments[i] = strings.Repeat("%2E", len(segment))
+			continue
+		}
+		segments[i] = url.PathEscape(segment)
+	}
+	return strings.Join(segments, "/")
 }
 
 // ParseStoredTime parses timestamps read back from SQLite-backed generated
@@ -77,7 +119,7 @@ func SanitizeErrorBody(msg string) string {
 	if len(msg) > 200 {
 		msg = msg[:200] + "..."
 	}
-	credPatterns := regexp.MustCompile(`(?i)(sk-[a-zA-Z0-9]{8,}|sk_live_[a-zA-Z0-9]+|Bearer\s+[a-zA-Z0-9._\-]+|key=[a-zA-Z0-9._\-]+)`)
+	credPatterns := regexp.MustCompile(`(?i)(sk-[a-zA-Z0-9]{8,}|sk_live_[a-zA-Z0-9]+|Bearer\s+[a-zA-Z0-9._\-]+|(?:key|token)=[a-zA-Z0-9._\-]+)`)
 	msg = credPatterns.ReplaceAllString(msg, "[REDACTED]")
 	return msg
 }

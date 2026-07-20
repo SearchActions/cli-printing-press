@@ -298,18 +298,33 @@ func TestReadmeEmitsHermesAndOpenClawInstallSections(t *testing.T) {
 	assert.Contains(t, content, "<!-- pp-hermes-install-anchor -->",
 		"sweep-tool anchor must be present so retrofit can locate the insertion point")
 
-	// Hermes section: both forms (CLI + chat) use the full
-	// mvanhorn/printing-press-library/cli-skills path.
-	assert.Contains(t, content, "## Install for Hermes")
-	assert.Contains(t, content, "hermes skills install mvanhorn/printing-press-library/cli-skills/pp-hermes-install --force",
+	hermesStart := strings.Index(content, "## Install for Hermes")
+	require.NotEqual(t, -1, hermesStart, "README must include the Hermes install section")
+	hermesEnd := strings.Index(content[hermesStart:], "## Install for OpenClaw")
+	require.NotEqual(t, -1, hermesEnd, "Hermes section must be followed by the OpenClaw install section")
+	hermesSection := content[hermesStart : hermesStart+hermesEnd]
+
+	openClawStart := hermesStart + hermesEnd
+	openClawEnd := strings.Index(content[openClawStart:], "## Use with Claude Desktop")
+	require.NotEqual(t, -1, openClawEnd, "OpenClaw section must be followed by the Claude Desktop section")
+	openClawSection := content[openClawStart : openClawStart+openClawEnd]
+
+	// Hermes section: install the binary as well as the focused skill; both
+	// skill-install forms use the full mvanhorn/printing-press-library/cli-skills path.
+	assert.Contains(t, hermesSection, "npx -y @mvanhorn/printing-press-library install hermes-install --cli-only",
+		"Hermes section must install the CLI binary before installing the focused skill")
+	assert.NotContains(t, hermesSection, "hermes-install --cli-only --bin-dir",
+		"Hermes binary install should rely on the installer default bin directory unless explicitly overridden")
+	assert.Contains(t, hermesSection, "hermes skills install mvanhorn/printing-press-library/cli-skills/pp-hermes-install --force",
 		"Hermes CLI form must use mvanhorn/printing-press-library/cli-skills (the short mvanhorn/cli-skills form was wrong)")
-	assert.Contains(t, content, "/skills install mvanhorn/printing-press-library/cli-skills/pp-hermes-install --force",
+	assert.Contains(t, hermesSection, "/skills install mvanhorn/printing-press-library/cli-skills/pp-hermes-install --force",
 		"Hermes chat form must use mvanhorn/printing-press-library/cli-skills")
 
 	// OpenClaw section: copyable code-fenced agent instruction.
-	assert.Contains(t, content, "## Install for OpenClaw")
-	assert.Contains(t, content, "npx -y @mvanhorn/printing-press-library install hermes-install --agent openclaw --bin-dir ~/.local/bin",
-		"OpenClaw form must install both the focused skill and binary into runtime-visible locations")
+	assert.Contains(t, openClawSection, "npx -y @mvanhorn/printing-press-library install hermes-install --agent openclaw",
+		"OpenClaw form must install both the focused skill and binary using the installer default bin directory")
+	assert.NotContains(t, openClawSection, "--agent openclaw --bin-dir",
+		"OpenClaw form should rely on the installer default bin directory unless explicitly overridden")
 }
 
 // TestReadmeFallsBackWhenNarrativeAbsent asserts the generic description
@@ -648,4 +663,60 @@ func TestOutputFormatsUsesRealCommandExample(t *testing.T) {
 		"Output Formats should not advertise the pre-promotion path; cobra promotes single-op resources to a leaf")
 	assert.False(t, strings.Contains(content, "realexample-pp-cli autocomplete list"),
 		"Output Formats should not hallucinate a 'list' endpoint that doesn't exist in the spec")
+}
+
+// TestGeneratedREADMEPathsSectionFollowsAuthSurface asserts the "Paths &
+// environment variables" docs describe only files the CLI actually emits:
+// auth CLIs document credentials.toml, auth sidecars, and the
+// first-auth-write migration; no-auth CLIs must not mention credential
+// files, cookies, or migration steps that don't exist in their output.
+func TestGeneratedREADMEPathsSectionFollowsAuthSurface(t *testing.T) {
+	t.Parallel()
+
+	authOnlyMentions := []string{
+		"credentials.toml",
+		"cookies",
+		"browser-session proof",
+		"auth sidecars",
+		"On the first auth write",
+		"credential-location warnings",
+	}
+
+	t.Run("auth surface documents credential files", func(t *testing.T) {
+		t.Parallel()
+		apiSpec := minimalSpec("paths-docs-auth")
+		outputDir := filepath.Join(t.TempDir(), "paths-docs-auth-pp-cli")
+		require.NoError(t, New(apiSpec, outputDir).Generate())
+
+		readme, err := os.ReadFile(filepath.Join(outputDir, "README.md"))
+		require.NoError(t, err)
+		content := string(readme)
+
+		require.Contains(t, content, "## Paths & environment variables")
+		for _, mention := range authOnlyMentions {
+			assert.Contains(t, content, mention,
+				"auth CLI paths docs should describe the credential surface")
+		}
+	})
+
+	t.Run("no-auth surface omits credential prose", func(t *testing.T) {
+		t.Parallel()
+		apiSpec := minimalSpec("paths-docs-noauth")
+		apiSpec.Auth = spec.AuthConfig{Type: "none"}
+		outputDir := filepath.Join(t.TempDir(), "paths-docs-noauth-pp-cli")
+		require.NoError(t, New(apiSpec, outputDir).Generate())
+
+		readme, err := os.ReadFile(filepath.Join(outputDir, "README.md"))
+		require.NoError(t, err)
+		content := string(readme)
+
+		require.Contains(t, content, "## Paths & environment variables",
+			"paths docs must still be emitted for no-auth CLIs")
+		for _, mention := range authOnlyMentions {
+			assert.NotContains(t, content, mention,
+				"no-auth CLI paths docs must not describe files the CLI never writes")
+		}
+		assert.Contains(t, content, "check path warnings in automation",
+			"no-auth migration paragraph keeps the doctor automation hint")
+	})
 }

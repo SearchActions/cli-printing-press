@@ -30,8 +30,10 @@ API_SLUG="$2"
 [[ -d "$STAGING" ]] || { echo "staging dir not found: $STAGING" >&2; exit 1; }
 [[ -f "$STAGING/go.mod" ]] || { echo "go.mod not found in $STAGING" >&2; exit 1; }
 
-# Read the current module path from go.mod to derive the public prefix.
-PUBLIC_MODULE=$(awk '$1=="module"{print $2; exit}' "$STAGING/go.mod")
+# Read the current module path from go.mod to derive the public prefix. Windows
+# checkouts may leave go.mod as CRLF; trim the carriage return from the parsed
+# token so source-file rewrites still match the LF-neutral import strings.
+PUBLIC_MODULE=$(awk '$1=="module"{print $2; exit}' "$STAGING/go.mod" | tr -d '\r')
 if [[ -z "$PUBLIC_MODULE" ]]; then
   echo "could not parse module path from $STAGING/go.mod" >&2
   exit 1
@@ -44,11 +46,21 @@ if [[ "$PUBLIC_MODULE" == "$LOCAL_MODULE" ]]; then
   exit 0
 fi
 
-# Rewrite go.mod first. Use a whitespace-bounded match (not an end-anchor)
-# so we work correctly on CRLF line endings — the fetched library tarball
-# arrives with CRLF on Windows, and `$` anchors land before the `\r`,
-# silently missing the substitution.
-perl -pi -e "s|^module\s+\Q${PUBLIC_MODULE}\E|module ${LOCAL_MODULE}|" \
+# Rewrite go.mod first. Two failure modes this pattern has to survive at once:
+#
+#   CRLF — the fetched tarball arrives with CRLF on Windows, and a `$` end-anchor
+#   lands before the `\r`, so an anchored pattern silently matches nothing.
+#   `\s` covers `\r`, and the lookahead consumes nothing, so the original line
+#   ending is preserved rather than rewritten.
+#
+#   Prefix collision — an unbounded `\s+` match rewrites a DIFFERENT module whose
+#   path merely starts with the target ("example.com/foo" also matching
+#   "example.com/foo-extra"). The `(?=\s|$)` lookahead requires the match to end
+#   at a real boundary.
+#
+# `s{}{}` delimiters, not `s||`: the alternation inside the lookahead collides
+# with `|` as a delimiter and perl dies on "/d and /u are mutually exclusive".
+perl -pi -e "s{^module\s+\Q${PUBLIC_MODULE}\E(?=\s|\$)}{module ${LOCAL_MODULE}}" \
   "$STAGING/go.mod"
 
 # Assert the rewrite actually happened. Catches the CRLF-anchor class of

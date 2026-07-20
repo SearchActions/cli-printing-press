@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"github.com/mvanhorn/cli-printing-press/v4/internal/naming"
@@ -30,6 +31,8 @@ const (
 // target. Matches goreleaser's default Go cross-compile matrix.
 var defaultMCPBPlatforms = []string{"darwin", "linux", "win32"}
 
+var semverVersionRE = regexp.MustCompile(`^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$`)
+
 // minClaudeDesktopVersion is the minimum Claude Desktop release that
 // understands the MCPB bundle format we emit. 1.0.0 is the version that
 // introduced MCPB support (Nov 2025); bump this if we adopt schema fields
@@ -50,7 +53,7 @@ const MCPBManifestVersion = "0.3"
 // root of an MCPB bundle ZIP. Field names and JSON tags match the upstream
 // schema at https://github.com/modelcontextprotocol/mcpb/blob/main/MANIFEST.md.
 // We do not exhaustively model every optional field — only what the
-// generator can fill from existing spec/catalog metadata. Authors who need
+// generator can fill from existing spec or manifest metadata. Authors who need
 // niche fields (icons, screenshots, prompts, localization) can hand-edit
 // the emitted manifest.json before bundling, which lives next to the CLI
 // source like .printing-press.json does.
@@ -201,10 +204,9 @@ func buildMCPBManifest(dir string, m CLIManifest) MCPBManifest {
 		ManifestVersion: MCPBManifestVersion,
 		Name:            m.MCPBinary,
 		DisplayName:     displayName,
-		// Bundle version tracks the printing-press release that produced
-		// it so Claude Desktop's update detection sees a fresh value on
-		// regeneration. A hardcoded "1.0.0" would defeat the host's
-		// "newer bundle available" prompt.
+		// The generated on-disk manifest does not know the printed CLI's
+		// release tag yet. Release packaging can stamp the bundle version
+		// into the ZIP without mutating this generate-time manifest.
 		Version:     bundleVersion(m),
 		Description: manifestDescription(existing, m, displayName),
 		Author:      MCPBAuthor{Name: "CLI Printing Press"},
@@ -226,18 +228,24 @@ func buildMCPBManifest(dir string, m CLIManifest) MCPBManifest {
 	}
 }
 
-// bundleVersion returns a semver-shaped version for the manifest. Prefers
-// the manifest's recorded printing-press version (so two bundles built
-// from different generator releases differ), falls back to the linker-
-// stamped version when the manifest field is empty (older runs).
+// bundleVersion returns the best known printed CLI bundle version at generate
+// time. Release packaging may still stamp the final public-library version
+// into the ZIP without mutating this generate-time manifest.
 func bundleVersion(m CLIManifest) string {
-	if m.PrintingPressVersion != "" {
-		return m.PrintingPressVersion
+	if v := strings.TrimSpace(m.APIVersion); isSemverVersion(v) {
+		return v
 	}
-	if version.Version != "" {
-		return version.Version
+	if v := strings.TrimSpace(m.PrintingPressVersion); isSemverVersion(v) {
+		return v
+	}
+	if v := strings.TrimSpace(version.Version); isSemverVersion(v) {
+		return v
 	}
 	return "0.0.0"
+}
+
+func isSemverVersion(v string) bool {
+	return semverVersionRE.MatchString(v)
 }
 
 // manifestDescription preserves hand-edited bundle descriptions while letting

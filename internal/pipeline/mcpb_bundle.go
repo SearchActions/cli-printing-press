@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 )
@@ -28,6 +29,10 @@ import (
 // the binary inside the zip; we deliberately do NOT serialize this name
 // into manifest.json because Claude Desktop's MCPB v0.3 schema
 // strictly rejects unknown top-level keys.
+//
+// Version optionally stamps the printed CLI release version into the
+// bundled manifest bytes. It does not mutate manifest.json on disk because
+// that file is generated before release tags exist.
 type BundleParams struct {
 	CLIDir        string
 	BinaryPath    string
@@ -35,6 +40,7 @@ type BundleParams struct {
 	CLIBinaryName string
 	CLIBinaryPath string
 	OutputPath    string
+	Version       string
 }
 
 // BuildMCPBBundle assembles an MCPB ZIP at OutputPath. The bundle layout is:
@@ -72,6 +78,13 @@ func BuildMCPBBundle(params BundleParams) error {
 			}
 		}
 	}
+	if params.Version != "" {
+		manifest.Version = params.Version
+		manifestData, err = rewriteMCPBManifestVersion(manifestData, params.Version)
+		if err != nil {
+			return err
+		}
+	}
 
 	if err := os.MkdirAll(filepath.Dir(params.OutputPath), 0o755); err != nil {
 		return fmt.Errorf("creating bundle output dir: %w", err)
@@ -105,6 +118,23 @@ func BuildMCPBBundle(params BundleParams) error {
 		return fmt.Errorf("finalizing bundle archive: %w", err)
 	}
 	return nil
+}
+
+func rewriteMCPBManifestVersion(data []byte, version string) ([]byte, error) {
+	var doc map[string]any
+	if err := json.Unmarshal(data, &doc); err != nil {
+		return nil, fmt.Errorf("parsing manifest document: %w", err)
+	}
+	doc["version"] = version
+
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	enc.SetIndent("", "  ")
+	if err := enc.Encode(doc); err != nil {
+		return nil, fmt.Errorf("marshaling manifest document: %w", err)
+	}
+	return buf.Bytes(), nil
 }
 
 func rewriteMCPBManifestLaunch(data []byte, entryPoint string) ([]byte, error) {
@@ -183,4 +213,20 @@ func DefaultBundleOutputPath(cliDir, mcpBinary, goos, goarch string) string {
 // to construct the path themselves.
 func StagedMCPBinaryPath(cliDir, mcpBinary string) string {
 	return filepath.Join(cliDir, "build", "stage", "bin", mcpBinary)
+}
+
+// BuildMCPBBinary centralizes build flags so direct bundle builds and promote
+// refreshes produce interchangeable staged binaries.
+func BuildMCPBBinary(cliDir, name, outputPath, goos, goarch string) error {
+	if err := os.MkdirAll(filepath.Dir(outputPath), 0o755); err != nil {
+		return fmt.Errorf("creating bin dir: %w", err)
+	}
+	pkg := "./cmd/" + name
+	cmd := exec.Command("go", "build", "-trimpath", "-ldflags=-s -w -buildid=", "-o", outputPath, pkg)
+	cmd.Dir = cliDir
+	cmd.Env = append(os.Environ(), "GOOS="+goos, "GOARCH="+goarch)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("go build %s: %w\n%s", pkg, err, string(out))
+	}
+	return nil
 }

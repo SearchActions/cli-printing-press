@@ -30,7 +30,7 @@ func (g *Generator) dedupeFlagIdentifiers() error {
 	}
 	for resName, res := range g.Spec.Resources {
 		for epName, ep := range res.Endpoints {
-			deduped, err := dedupeEndpointIdentifiers(resName, epName, ep, g.AsyncJobs)
+			deduped, err := dedupeEndpointIdentifiers(resName, epName, ep, g.AsyncJobs, g.Spec.UsesBrowserHTTPTransport())
 			if err != nil {
 				return err
 			}
@@ -44,7 +44,7 @@ func (g *Generator) dedupeFlagIdentifiers() error {
 			// correctly. DetectAsyncJobs does not currently walk
 			// sub-resources, so this lookup is a no-op today.
 			for epName, ep := range sub.Endpoints {
-				deduped, err := dedupeEndpointIdentifiers(subName, epName, ep, g.AsyncJobs)
+				deduped, err := dedupeEndpointIdentifiers(subName, epName, ep, g.AsyncJobs, g.Spec.UsesBrowserHTTPTransport())
 				if err != nil {
 					return err
 				}
@@ -62,8 +62,8 @@ func (g *Generator) dedupeFlagIdentifiers() error {
 // fields and query/path params each emit `cmd.Flags().*Var(..., flagName, ...)`
 // against the same cobra command, so collisions across the two lists must be
 // detected together.
-func dedupeEndpointIdentifiers(resKey, epName string, ep spec.Endpoint, asyncJobs map[string]AsyncJobInfo) (spec.Endpoint, error) {
-	flagIdents, flagNames := reservedFlagNamesForEndpoint(resKey, epName, ep, asyncJobs)
+func dedupeEndpointIdentifiers(resKey, epName string, ep spec.Endpoint, asyncJobs map[string]AsyncJobInfo, usesBrowserHTTPTransport bool) (spec.Endpoint, error) {
+	flagIdents, flagNames := reservedFlagNamesForEndpoint(resKey, epName, ep, asyncJobs, usesBrowserHTTPTransport)
 	if err := validateAuthoredPublicFlags(resKey, epName, ep, flagNames); err != nil {
 		return ep, err
 	}
@@ -209,6 +209,8 @@ var globalPersistentFlagNames = map[string]struct{}{
 	"deliver":               {},
 	"rate-limit":            {},
 	"throttle-mode":         {},
+	"home":                  {},
+	"insecure":              {},
 }
 
 // reservedFlagNamesForEndpoint returns identifiers and cobra flag names that
@@ -219,7 +221,16 @@ var globalPersistentFlagNames = map[string]struct{}{
 // a different naming pattern. The `flags` set covers cobra flag names, which
 // params and body fields share, and is seeded with every root persistent
 // (global) flag name so local flags can never shadow an inherited global.
-func reservedFlagNamesForEndpoint(resKey, epName string, ep spec.Endpoint, asyncJobs map[string]AsyncJobInfo) (idents, flags map[string]struct{}) {
+//
+// usesBrowserHTTPTransport is accepted for call-site compatibility but is not
+// consulted: --insecure is reserved unconditionally via globalPersistentFlagNames.
+// Gating a reservation on a spec-dependent feature would rename an unrelated
+// user-facing flag as soon as browser transport is toggled, and the drift guard
+// (TestGlobalReservedFlagsMatchTemplate) reads root.go.tmpl as raw bytes and
+// cannot see the template's {{if}}, so a conditional entry cannot be verified.
+// Every other guard-emitted flag is reserved unconditionally for the same reason.
+func reservedFlagNamesForEndpoint(resKey, epName string, ep spec.Endpoint, asyncJobs map[string]AsyncJobInfo, usesBrowserHTTPTransport bool) (idents, flags map[string]struct{}) {
+	_ = usesBrowserHTTPTransport
 	idents = map[string]struct{}{}
 	flags = map[string]struct{}{}
 	for name := range globalPersistentFlagNames {

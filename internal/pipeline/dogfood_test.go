@@ -44,6 +44,7 @@ func configure(flags *rootFlags) {
 	writeTestFile(t, filepath.Join(dir, "internal", "cli", "helpers.go"), `package cli
 func usedHelper() {}
 func deadHelper() {}
+func boundCtx() {}
 `)
 	writeTestFile(t, filepath.Join(dir, "internal", "cli", "users_list.go"), `package cli
 func usersList() {
@@ -405,6 +406,101 @@ components:
 	assert.Empty(t, report.OAuthScopeCoverage.Violations)
 }
 
+func TestRunDogfoodOAuthScopeCoverageReadsClientCredentialsScopeHelper(t *testing.T) {
+	dir, specPath := writeOAuthScopeCoverageFixture(t, `package cli
+import (
+	"net/url"
+	"os"
+)
+
+func resolveClientCredentialsScope() string {
+	if scope := os.Getenv("VIDEOS_OAUTH_SCOPE"); scope != "" {
+		return scope
+	}
+	return "all"
+}
+
+func mintClientCredentialsToken() {
+	form := url.Values{}
+	if scope := resolveClientCredentialsScope(); scope != "" {
+		form.Set("scope", scope)
+	}
+}
+`, `openapi: 3.0.0
+info:
+  title: Videos API
+  version: "1.0"
+servers:
+  - url: https://api.example.com
+paths:
+  /analytics:
+    get:
+      operationId: listAnalytics
+      security:
+        - OAuth2: [all]
+      responses:
+        "200":
+          description: ok
+components:
+  securitySchemes:
+    OAuth2:
+      type: oauth2
+      flows:
+        clientCredentials:
+          tokenUrl: https://example.com/token
+          scopes:
+            all: Full access
+`)
+
+	report, err := RunDogfood(dir, specPath)
+	require.NoError(t, err)
+
+	assert.Equal(t, 1, report.OAuthScopeCoverage.Checked)
+	assert.Equal(t, 1, report.OAuthScopeCoverage.Covered)
+	assert.Empty(t, report.OAuthScopeCoverage.Violations)
+}
+
+func TestRunDogfoodOAuthScopeCoverageIgnoresUnwiredClientCredentialsScopeHelper(t *testing.T) {
+	dir, specPath := writeOAuthScopeCoverageFixture(t, `package cli
+func resolveClientCredentialsScope() string {
+	return "all"
+}
+`, `openapi: 3.0.0
+info:
+  title: Videos API
+  version: "1.0"
+servers:
+  - url: https://api.example.com
+paths:
+  /analytics:
+    get:
+      operationId: listAnalytics
+      security:
+        - OAuth2: [all]
+      responses:
+        "200":
+          description: ok
+components:
+  securitySchemes:
+    OAuth2:
+      type: oauth2
+      flows:
+        clientCredentials:
+          tokenUrl: https://example.com/token
+          scopes:
+            all: Full access
+`)
+
+	report, err := RunDogfood(dir, specPath)
+	require.NoError(t, err)
+
+	assert.Equal(t, "FAIL", report.Verdict)
+	assert.Equal(t, 1, report.OAuthScopeCoverage.Checked)
+	assert.Equal(t, 0, report.OAuthScopeCoverage.Covered)
+	require.Len(t, report.OAuthScopeCoverage.Violations, 1)
+	assert.Equal(t, "generated auth files declare no OAuth scopes", report.OAuthScopeCoverage.Detail)
+}
+
 func TestRunDogfoodOAuthScopeCoverageIgnoresUnjoinedScopesVariable(t *testing.T) {
 	dir, specPath := writeOAuthScopeCoverageFixture(t, `package cli
 func helper() {
@@ -445,7 +541,7 @@ components:
 	assert.Equal(t, 1, report.OAuthScopeCoverage.Checked)
 	assert.Equal(t, 0, report.OAuthScopeCoverage.Covered)
 	require.Len(t, report.OAuthScopeCoverage.Violations, 1)
-	assert.Equal(t, "generated auth.go declares no OAuth scopes", report.OAuthScopeCoverage.Detail)
+	assert.Equal(t, "generated auth files declare no OAuth scopes", report.OAuthScopeCoverage.Detail)
 }
 
 func TestRunDogfoodOAuthScopeCoverageSurvivesUndefinedNonOAuthScheme(t *testing.T) {
@@ -492,6 +588,74 @@ components:
 	require.Len(t, report.OAuthScopeCoverage.Violations, 1)
 	assert.Equal(t, "GET /analytics", report.OAuthScopeCoverage.Violations[0].Endpoint)
 	assert.Equal(t, []string{"yt-analytics.readonly"}, report.OAuthScopeCoverage.Violations[0].RequiredScopes)
+}
+
+func TestRunDogfoodOAuthScopeCoverageSkipsResolvedAPIKeyAuth(t *testing.T) {
+	dir, specPath := writeOAuthScopeCoverageFixture(t, `package cli
+func authLogin() {}
+`, `openapi: 3.0.0
+info:
+  title: Videos API
+  version: "1.0"
+servers:
+  - url: https://api.example.com
+paths:
+  /videos:
+    get:
+      operationId: listVideos
+      responses:
+        "200":
+          description: ok
+  /analytics:
+    get:
+      operationId: listAnalytics
+      security:
+        - OAuth2: [yt-analytics.readonly]
+      responses:
+        "200":
+          description: ok
+components:
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-API-Key
+    OAuth2:
+      type: oauth2
+      flows:
+        authorizationCode:
+          authorizationUrl: https://example.com/auth
+          tokenUrl: https://example.com/token
+          scopes:
+            yt-analytics.readonly: Analytics read access
+`)
+	require.NoError(t, WriteCLIManifest(dir, CLIManifest{
+		SchemaVersion:  CurrentCLIManifestSchemaVersion,
+		APIName:        "videos",
+		CLIName:        "videos-pp-cli",
+		AuthType:       "api_key",
+		AuthPreference: "ApiKeyAuth",
+	}))
+	writeTestFile(t, filepath.Join(dir, "internal", "client", "client.go"), `package client
+func addAuth(req interface{ HeaderSet(string, string) }, authHeader string) {
+	req.HeaderSet("X-API-Key", authHeader)
+}
+func wire(req *request, authHeader string) {
+	req.Header.Set("X-API-Key", authHeader)
+}
+type request struct{ Header header }
+type header struct{}
+func (header) Set(string, string) {}
+`)
+
+	report, err := RunDogfood(dir, specPath)
+	require.NoError(t, err)
+
+	assert.NotEqual(t, "FAIL", report.Verdict, report.Issues)
+	assert.True(t, report.OAuthScopeCoverage.Skipped)
+	assert.Empty(t, report.OAuthScopeCoverage.Violations)
+	assert.Contains(t, report.OAuthScopeCoverage.Detail, "resolved auth type api_key")
+	assert.NotContains(t, report.Issues, "OAuth scope coverage missing for 1 endpoint(s)")
 }
 
 func TestLoadOpenAPISpecCollectsRootOAuthScopeRequirements(t *testing.T) {
@@ -781,6 +945,58 @@ func TestDeriveDogfoodVerdict(t *testing.T) {
 
 	report.ExampleCheck = ExampleCheckResult{Tested: 10, WithExamples: 10, ValidExamples: 10}
 	assert.Equal(t, "PASS", deriveDogfoodVerdict(report, true))
+}
+
+func TestDeriveDogfoodVerdict_FailsOnMissingDataSourceStrategy(t *testing.T) {
+	report := passingDogfoodReport()
+	report.NovelFeaturesCheck = NovelFeaturesCheckResult{Planned: 1, Found: 1, Stubbed: []string{"id-hunt"}}
+	report.ReimplementationCheck = ReimplementationCheckResult{
+		Checked: 1,
+		MissingDataSourceStrategy: []ReimplementationFinding{{
+			Command: "id-hunt",
+			File:    "id_hunt.go",
+			Reason:  "missing // pp:data-source <auto|local|live|computed> annotation",
+		}},
+	}
+
+	assert.Equal(t, "FAIL", deriveDogfoodVerdict(report, false))
+}
+
+func TestCheckDescriptionDriftFlagsManifestAndRootShort(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "internal", "cli"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, CLIManifestFilename), []byte(`{
+  "schema_version": 1,
+  "description": "Old stale headline"
+}
+`), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "internal", "cli", "root.go"), []byte(`package cli
+
+import "github.com/spf13/cobra"
+
+func newRootCmd() *cobra.Command {
+	return &cobra.Command{
+		Use: "example",
+		Short: "Old stale headline",
+	}
+}
+`), 0o644))
+
+	researchDir := t.TempDir()
+	require.NoError(t, writeResearchJSON(&ResearchResult{
+		Narrative: &ReadmeNarrative{
+			Headline: "Fresh headline from research",
+		},
+	}, researchDir))
+
+	got := checkDescriptionDrift(dir, researchDir)
+	require.Len(t, got.Findings, 2)
+	assert.Equal(t, "Fresh headline from research", got.Expected)
+	assert.Contains(t, got.Findings[0].Actual, "Old stale headline")
+	assert.Equal(t, "FAIL", deriveDogfoodVerdict(&DogfoodReport{
+		PipelineCheck:         PipelineResult{SyncCallsDomain: true, SyncResourcesPresent: true},
+		DescriptionDriftCheck: &got,
+	}, false))
 }
 
 func TestExtractExamplesSection(t *testing.T) {
@@ -1188,6 +1404,113 @@ func (c *Config) AuthHeader() string {
 	assert.Equal(t, "Bearer ", result.GeneratedFmt)
 }
 
+func TestCheckAuthRecognizesBearerTokenPrefixOverride(t *testing.T) {
+	dir := t.TempDir()
+
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "internal", "client"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "internal", "config"), 0o755))
+
+	writeTestFile(t, filepath.Join(dir, "internal", "client", "client.go"), `package client
+func authHeader() string { return configAuthHeader() }
+`)
+	writeTestFile(t, filepath.Join(dir, "internal", "config", "config.go"), `package config
+func (c *Config) AuthHeader() string {
+	return "Token " + c.Token
+}
+`)
+
+	result := checkAuth(dir, apispec.AuthConfig{Type: "bearer_token", Prefix: "Token"})
+	assert.True(t, result.Match)
+	assert.Equal(t, "Token ", result.GeneratedFmt)
+	assert.Contains(t, result.SpecScheme, `"Token " prefix`)
+}
+
+func TestCheckAuthMakesFormatOverPrefixPrecedenceExplicit(t *testing.T) {
+	dir := t.TempDir()
+
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "internal", "client"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "internal", "config"), 0o755))
+
+	writeTestFile(t, filepath.Join(dir, "internal", "client", "client.go"), `package client
+func authHeader() string { return configAuthHeader() }
+`)
+	writeTestFile(t, filepath.Join(dir, "internal", "config", "config.go"), `package config
+func (c *Config) AuthHeader() string {
+	return applyAuthFormat("Bearer {token}", map[string]string{"token": c.Token})
+}
+`)
+
+	result := checkAuth(dir, apispec.AuthConfig{Type: "bearer_token", Prefix: "Token", Format: "Bearer {token}"})
+	assert.True(t, result.Match)
+	assert.Equal(t, "Bearer ", result.GeneratedFmt)
+	assert.Contains(t, result.SpecScheme, `auth.format`)
+	assert.Contains(t, result.SpecScheme, `auth.prefix "Token" ignored`)
+	assert.Contains(t, result.Detail, `auth.format "Bearer" overrides auth.prefix "Token"`)
+}
+
+func TestCheckAuthRejectsBearerTokenPrefixMismatch(t *testing.T) {
+	dir := t.TempDir()
+
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "internal", "client"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "internal", "config"), 0o755))
+
+	writeTestFile(t, filepath.Join(dir, "internal", "client", "client.go"), `package client
+func authHeader() string { return configAuthHeader() }
+`)
+	writeTestFile(t, filepath.Join(dir, "internal", "config", "config.go"), `package config
+func (c *Config) AuthHeader() string {
+	return "Token " + c.Token
+}
+`)
+
+	result := checkAuth(dir, apispec.AuthConfig{Type: "bearer_token", Prefix: "Bearer"})
+	assert.False(t, result.Match)
+	assert.Equal(t, "Token ", result.GeneratedFmt)
+	assert.Contains(t, result.Detail, `spec expects "Bearer" but generated client uses "Token"`)
+}
+
+func TestCheckAuthRecognizesHeaderAPIKey(t *testing.T) {
+	dir := t.TempDir()
+
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "internal", "client"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "internal", "config"), 0o755))
+
+	writeTestFile(t, filepath.Join(dir, "internal", "client", "client.go"), `package client
+func (c *Client) do() {
+	authHeader := c.Config.AuthHeader()
+	req.Header.Set("x-api-key", authHeader)
+}
+`)
+	writeTestFile(t, filepath.Join(dir, "internal", "config", "config.go"), `package config
+func (c *Config) AuthHeader() string { return c.APIKey }
+`)
+
+	result := checkAuth(dir, apispec.AuthConfig{Type: "api_key", In: "header", Header: "x-api-key", Scheme: "ApiKeyAuth"})
+	assert.True(t, result.Match)
+	assert.Equal(t, "x-api-key", result.GeneratedFmt)
+	assert.Contains(t, result.SpecScheme, "x-api-key")
+}
+
+func TestCheckAuthRecognizesHeaderAPIKeyFromChainedAuthHeaderCall(t *testing.T) {
+	dir := t.TempDir()
+
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "internal", "client"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "internal", "config"), 0o755))
+
+	writeTestFile(t, filepath.Join(dir, "internal", "client", "client.go"), `package client
+func (c *Client) do() {
+	req.Header.Set("x-api-key", c.GetConfig().AuthHeader())
+}
+`)
+	writeTestFile(t, filepath.Join(dir, "internal", "config", "config.go"), `package config
+func (c *Config) AuthHeader() string { return c.APIKey }
+`)
+
+	result := checkAuth(dir, apispec.AuthConfig{Type: "api_key", In: "header", Header: "x-api-key", Scheme: "ApiKeyAuth"})
+	assert.True(t, result.Match)
+	assert.Equal(t, "x-api-key", result.GeneratedFmt)
+}
+
 func TestCheckAuthRejectsBearerApplyAuthFormatWithoutTokenPlaceholder(t *testing.T) {
 	dir := t.TempDir()
 
@@ -1396,6 +1719,47 @@ func (c *Config) AuthHeader() string {
 	result := checkAuth(dir, apispec.AuthConfig{Type: "api_key", Format: "Basic {username}:{password}"})
 	assert.True(t, result.Match)
 	assert.Equal(t, "Basic ", result.GeneratedFmt)
+}
+
+func TestLoadDogfoodOpenAPISpecUsesAuthPreference(t *testing.T) {
+	dir := t.TempDir()
+	specPath := filepath.Join(dir, "openapi.yaml")
+	writeTestFile(t, specPath, `openapi: 3.0.0
+info:
+  title: Multi Auth
+  version: "1.0"
+servers:
+  - url: https://api.example.com
+security:
+  - BearerAuth: []
+  - ApiKeyAuth: []
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: x-api-key
+paths:
+  /items:
+    get:
+      operationId: listItems
+      responses:
+        "200":
+          description: ok
+`)
+
+	defaultSpec, err := loadDogfoodOpenAPISpec(specPath, "")
+	require.NoError(t, err)
+	require.Equal(t, "bearer_token", defaultSpec.Auth.Type)
+
+	preferred, err := loadDogfoodOpenAPISpec(specPath, "ApiKeyAuth")
+	require.NoError(t, err)
+	assert.Equal(t, "api_key", preferred.Auth.Type)
+	assert.Equal(t, "ApiKeyAuth", preferred.Auth.Scheme)
+	assert.Equal(t, "x-api-key", preferred.Auth.Header)
 }
 
 func TestDeriveDogfoodVerdict_WiringChecks(t *testing.T) {
@@ -2190,6 +2554,110 @@ func newHealthCmd() *cobra.Command {
 		manifest := readPublishedManifest(t, cliDir)
 		assert.Equal(t, existing, manifest.NovelFeatures)
 	})
+}
+
+func TestSyncCLITranscendenceDocsSyncsNovelFeatureGoSurfaces(t *testing.T) {
+	cliDir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(cliDir, "internal", "cli"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(cliDir, "internal", "mcp"), 0o755))
+	writeTestFile(t, filepath.Join(cliDir, "internal", "cli", "which.go"), `package cli
+
+type whichEntry struct {
+	Command      string
+	Description  string
+	Group        string
+	WhyItMatters string
+}
+
+var whichIndex = []whichEntry{
+	{Command: "old", Description: "old copy", Group: "", WhyItMatters: ""},
+}
+`)
+	writeTestFile(t, filepath.Join(cliDir, "internal", "mcp", "tools.go"), `package mcp
+
+func context() map[string]any {
+	return map[string]any{
+		"command_mirror_capabilities": []map[string]string{
+			{"name": "Old", "command": "old", "description": "old copy", "rationale": "", "via": "mcp-command-mirror"},
+		},
+		"playbook": []map[string]string{
+			{"topic": "Old", "insight": "old why"},
+			{"topic": "Resource discovery", "insight": "Use the target site's resource hierarchy before narrowing to records."},
+		},
+	}
+}
+`)
+
+	artifacts, err := SyncCLITranscendenceDocs(cliDir, []NovelFeature{{
+		Name:         "Fresh insight",
+		Command:      "fresh scan",
+		Description:  "Fresh copy from research",
+		Rationale:    "Requires current research",
+		WhyItMatters: "Agents get the current path",
+		Group:        "Analysis",
+	}})
+	require.NoError(t, err)
+	assert.Contains(t, artifacts, syncedArtifact{Path: filepath.Join("internal", "cli", "which.go"), Detail: "whichIndex"})
+	assert.Contains(t, artifacts, syncedArtifact{Path: filepath.Join("internal", "mcp", "tools.go"), Detail: "command_mirror_capabilities"})
+
+	whichData, err := os.ReadFile(filepath.Join(cliDir, "internal", "cli", "which.go"))
+	require.NoError(t, err)
+	which := string(whichData)
+	assert.Contains(t, which, `Command: "fresh scan"`)
+	assert.Contains(t, which, `Description: "Fresh copy from research"`)
+	assert.NotContains(t, which, "old copy")
+
+	mcpData, err := os.ReadFile(filepath.Join(cliDir, "internal", "mcp", "tools.go"))
+	require.NoError(t, err)
+	mcp := string(mcpData)
+	assert.Contains(t, mcp, `"name": "Fresh insight"`)
+	assert.Contains(t, mcp, `"command": "fresh scan"`)
+	assert.Contains(t, mcp, `{"topic": "Resource discovery", "insight": "Use the target site's resource hierarchy before narrowing to records."}`)
+	assert.NotContains(t, mcp, `"topic": "Fresh insight"`)
+	assert.NotContains(t, mcp, "old copy")
+}
+
+func TestSyncCLITranscendenceDocsWarnsBeforeDroppingDocumentedCommands(t *testing.T) {
+	cliDir := t.TempDir()
+	writeTestFile(t, filepath.Join(cliDir, "README.md"), strings.Join([]string{
+		"# Test CLI",
+		"",
+		"## Unique Features",
+		"",
+		"These capabilities aren't available in any other tool for this API.",
+		"- **`health`** — current health",
+		"- **`reports sync`** — post-generation reports sync",
+		"",
+		"## Usage",
+		"",
+		"Run help.",
+		"",
+	}, "\n"))
+	writeTestFile(t, filepath.Join(cliDir, "SKILL.md"), strings.Join([]string{
+		"# Test Skill",
+		"",
+		"## Unique Capabilities",
+		"",
+		"These capabilities aren't available in any other tool for this API.",
+		"- **`health`** — current health",
+		"- **`stops sync`** — post-generation stops sync",
+		"",
+		"## Command Reference",
+		"",
+	}, "\n"))
+
+	var stderr string
+	_ = captureStderr(t, &stderr, func() []syncedArtifact {
+		artifacts, syncErr := SyncCLITranscendenceDocs(cliDir, []NovelFeature{{
+			Name:        "Health",
+			Command:     "health",
+			Description: "current health",
+		}})
+		require.NoError(t, syncErr)
+		return artifacts
+	})
+	assert.Contains(t, stderr, "dogfood_warning: README.md Unique Features will drop documented commands reports sync")
+	assert.Contains(t, stderr, "dogfood_warning: SKILL.md Unique Capabilities will drop documented commands stops sync")
 }
 
 // TestCheckNovelFeatures_BacktickUse pins that the walker matches commands
@@ -3268,6 +3736,22 @@ func TestCollectDogfoodIssues_IncludesNovelFeatureStubs(t *testing.T) {
 
 	issues := collectDogfoodIssues(report, false)
 	assert.Contains(t, issues, "1/2 novel features are TODO stubs: call")
+}
+
+func TestCollectDogfoodIssues_IncludesMissingDataSourceStrategy(t *testing.T) {
+	report := &DogfoodReport{
+		ReimplementationCheck: ReimplementationCheckResult{
+			Checked: 2,
+			MissingDataSourceStrategy: []ReimplementationFinding{{
+				Command: "id-hunt",
+				File:    "id_hunt.go",
+				Reason:  "missing // pp:data-source <auto|local|live|computed> annotation",
+			}},
+		},
+	}
+
+	issues := collectDogfoodIssues(report, false)
+	assert.Contains(t, issues, "1/2 novel features missing data-source strategy: id-hunt (id_hunt.go) — missing // pp:data-source <auto|local|live|computed> annotation")
 }
 
 func TestDeriveDogfoodVerdict_FailsOnMissingTests(t *testing.T) {

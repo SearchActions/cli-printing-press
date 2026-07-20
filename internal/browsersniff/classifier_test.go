@@ -148,6 +148,50 @@ func TestClassifyEntries(t *testing.T) {
 			},
 		},
 		{
+			name: "known telemetry hosts with json post bodies are noise",
+			entries: []EnrichedEntry{
+				{
+					Method:              "POST",
+					URL:                 "https://vortex.data.microsoft.com/collect/v1",
+					RequestHeaders:      map[string]string{"Content-Type": "application/json"},
+					RequestBody:         `{"name":"Microsoft.ApplicationInsights.PageView"}`,
+					ResponseContentType: "application/json",
+					ResponseBody:        `{"itemsReceived":1,"itemsAccepted":1}`,
+				},
+				{
+					Method:              "POST",
+					URL:                 "https://dc.services.visualstudio.com/v2/track",
+					RequestHeaders:      map[string]string{"Content-Type": "application/json"},
+					RequestBody:         `[{"name":"Microsoft.ApplicationInsights.Event"}]`,
+					ResponseContentType: "application/json",
+					ResponseBody:        `{"itemsReceived":1,"itemsAccepted":1}`,
+				},
+				{
+					Method:              "POST",
+					URL:                 "https://analytics.google.com/g/collect",
+					RequestHeaders:      map[string]string{"Content-Type": "application/json"},
+					RequestBody:         `{"client_id":"abc"}`,
+					ResponseContentType: "application/json",
+					ResponseBody:        `{}`,
+				},
+			},
+			wantNoiseURLs: []string{
+				"https://vortex.data.microsoft.com/collect/v1",
+				"https://dc.services.visualstudio.com/v2/track",
+				"https://analytics.google.com/g/collect",
+			},
+			wantClassByURL: map[string]string{
+				"https://vortex.data.microsoft.com/collect/v1":  "noise",
+				"https://dc.services.visualstudio.com/v2/track": "noise",
+				"https://analytics.google.com/g/collect":        "noise",
+			},
+			wantIsNoiseByURL: map[string]bool{
+				"https://vortex.data.microsoft.com/collect/v1":  true,
+				"https://dc.services.visualstudio.com/v2/track": true,
+				"https://analytics.google.com/g/collect":        true,
+			},
+		},
+		{
 			name: "first-party intake path without telemetry query remains api",
 			entries: []EnrichedEntry{
 				{
@@ -382,7 +426,10 @@ func TestDeduplicateEndpoints_SingleEntryHeuristics(t *testing.T) {
 		{"prefixed application id under resource", "https://example.com/records/r_0tf32xmAhEgGSh3TDWR", "/records/{record_id}"},
 		{"colon-composite under resource", "https://example.com/forms/creations/create-image:reference:gpt-image-2", "/forms/creations/{creation_id}"},
 		{"long base62 id under resource", "https://example.com/history/Zu2uNCmGDnmNCel8gbFQ", "/history/{history_id}"},
+		{"iso date under route", "https://example.com/predict/2026-08-16", "/predict/{date}"},
+		{"adjacent uppercase compact codes", "https://example.com/predict/FR/STN/DUB/2026-08-16", "/predict/{segment_0}/{segment_1}/{segment_2}/{date}"},
 		{"literal short segments remain literal", "https://example.com/api/health", "/api/health"},
+		{"single uppercase literal remains literal", "https://example.com/api/JSON", "/api/JSON"},
 		{"version segment retains literal v1 framing", "https://example.com/api/v1/users", "/api/v1/users"},
 		{"consecutive ids under same parent disambiguate", "https://example.com/resources/123/456", "/resources/{resource_id}/{resource_id_2}"},
 	}

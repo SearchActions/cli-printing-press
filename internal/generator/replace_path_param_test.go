@@ -2,39 +2,41 @@ package generator
 
 import (
 	"net/url"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 
-	"github.com/mvanhorn/cli-printing-press/v4/internal/spec"
 	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 )
 
-// replacePathParamForTest mirrors the function the helpers.go.tmpl template
-// emits into every generated CLI. Keep this byte-identical with the template
-// body — TestReplacePathParamTemplateMatchesLocalCopy is the guardrail that
-// blocks template drift from silently invalidating these table-driven cases.
-// See INC-2026-147.
-func replacePathParamForTest(path, name, value string) string {
+// escapePathParamForTest mirrors cliutil.EscapePathParam, the shared escaper
+// that both the emitted CLI (replacePathParam) and MCP (mcpPathValue) surfaces
+// route path-param values through. Keep this byte-identical with the template
+// body in cliutil_text.go.tmpl. The template-emission side is pinned separately
+// by TestReplacePathParamPercentEncodesValue / TestEscapePathParamPreserves-
+// HierarchicalIdentifiers in path_param_encoding_test.go, which assert the
+// generated cliutil/text.go and the CLI+MCP call sites. This table locks the
+// adversarial behavior contract.
+func escapePathParamForTest(value string) string {
+	if value == "" || strings.HasPrefix(value, "/") || strings.HasSuffix(value, "/") || strings.Contains(value, "//") {
+		return url.PathEscape(value)
+	}
 	segments := strings.Split(value, "/")
-	for _, s := range segments {
-		if s == "" || s == "." || s == ".." {
-			return strings.ReplaceAll(path, "{"+name+"}", url.PathEscape(value))
+	for i, segment := range segments {
+		if segment == "." || segment == ".." {
+			segments[i] = strings.Repeat("%2E", len(segment))
+			continue
 		}
+		segments[i] = url.PathEscape(segment)
 	}
-	for i, s := range segments {
-		segments[i] = url.PathEscape(s)
-	}
-	return strings.ReplaceAll(path, "{"+name+"}", strings.Join(segments, "/"))
+	return strings.Join(segments, "/")
 }
 
-// TestReplacePathParamBehavior locks in the per-segment escape + traversal
-// rejection contract that every generated CLI inherits from the template. The
-// negative cases (empty, ".", ".." segments and ?/# injection in any segment)
-// are the path-traversal defenses introduced by INC-2026-147.
-func TestReplacePathParamBehavior(t *testing.T) {
+// TestEscapePathParamBehavior locks the per-segment escape + traversal
+// neutralization contract every generated CLI inherits from cliutil. The dot
+// and empty-segment cases are the path-traversal / route-selection defenses:
+// "." and ".." are encoded to %2E per segment (preserving legitimate composite
+// IDs), and any empty segment falls back to a whole-value escape.
+func TestEscapePathParamBehavior(t *testing.T) {
 	t.Parallel()
 
 	cases := []struct {
@@ -49,11 +51,16 @@ func TestReplacePathParamBehavior(t *testing.T) {
 		// Non-traversal chars in a segment must be escaped, "/" must not be.
 		{"space-in-segment", "properties/foo bar", "properties/foo%20bar"},
 
-		// Traversal-allowing patterns fall back to whole-value escape, which
-		// encodes every "/" too — the API then 404s instead of letting the URL
-		// router resolve the dots to a different endpoint.
-		{"parent-dir-traversal", "properties/../accounts/123", "properties%2F..%2Faccounts%2F123"},
-		{"current-dir-traversal", "properties/./foo", "properties%2F.%2Ffoo"},
+		// Dot segments are encoded per-segment to %2E, so the URL router cannot
+		// resolve traversal, while the structural "/" is preserved.
+		{"parent-dir-embedded", "properties/../accounts/123", "properties/%2E%2E/accounts/123"},
+		{"current-dir-embedded", "properties/./foo", "properties/%2E/foo"},
+		{"bare-parent-dir", "..", "%2E%2E"},
+		{"bare-current-dir", ".", "%2E"},
+
+		// Empty segments (leading/trailing/doubled "/") fall back to whole-value
+		// escape, which encodes every "/" too — the API 404s instead of letting a
+		// slash-collapsing proxy select a different route.
 		{"leading-empty-segment", "/properties/123", "%2Fproperties%2F123"},
 		{"trailing-empty-segment", "properties/123/", "properties%2F123%2F"},
 		{"empty-mid-segment", "properties//456314183", "properties%2F%2F456314183"},
@@ -67,62 +74,8 @@ func TestReplacePathParamBehavior(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			got := replacePathParamForTest("{p}", "p", tc.value)
+			got := escapePathParamForTest(tc.value)
 			assert.Equal(t, tc.want, got)
 		})
 	}
-}
-
-// TestReplacePathParamTemplateMatchesLocalCopy is the guardrail bridging the
-// template emission and the table-driven cases above. If someone edits
-// helpers.go.tmpl and breaks the traversal-rejection check, the local copy in
-// replacePathParamForTest would still pass — this test reads the generated
-// helpers.go from a fresh generation and asserts the safety check survives.
-func TestReplacePathParamTemplateMatchesLocalCopy(t *testing.T) {
-	t.Parallel()
-
-	apiSpec := minimalSpec("path-param-guardrail")
-	apiSpec.Resources = map[string]spec.Resource{
-		"items": {
-			Description: "Items",
-			Endpoints: map[string]spec.Endpoint{
-				"get": {
-					Method:      "GET",
-					Path:        "/items/{itemId}",
-					Description: "Get item",
-					Params: []spec.Param{
-						{Name: "itemId", Type: "string", PathParam: true, Description: "Item ID"},
-					},
-				},
-			},
-		},
-	}
-
-	outputDir := filepath.Join(t.TempDir(), "path-param-guardrail-pp-cli")
-	require.NoError(t, New(apiSpec, outputDir).Generate())
-
-	helpersGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "helpers.go"))
-	require.NoError(t, err)
-	src := string(helpersGo)
-
-	// The template must emit the traversal-rejection check in the body of
-	// replacePathParam. Without this, the per-segment escape path would let
-	// "..", ".", and empty segments survive into the templated path.
-	assert.Contains(t, src, `s == "" || s == "." || s == ".."`,
-		"helpers.go.tmpl must emit the traversal-segment rejection check; see INC-2026-147")
-
-	// The whole-value escape fallback is what makes the API 404 instead of
-	// silently routing an authenticated request to an attacker-chosen URL.
-	assert.Contains(t, src, `url.PathEscape(value)`,
-		"helpers.go.tmpl must fall back to whole-value url.PathEscape when a traversal segment is detected")
-
-	// And per-segment PathEscape is what preserves structural "/" while
-	// neutralizing per-segment injection (?, #, spaces).
-	assert.Contains(t, src, `segments[i] = url.PathEscape(s)`,
-		"helpers.go.tmpl must percent-encode each segment individually for the happy path")
-
-	// net/url must be imported when HasPathParams is true. Without this the
-	// generated CLI fails to compile.
-	assert.Contains(t, src, `"net/url"`,
-		"helpers.go.tmpl must import net/url when HasPathParams is true")
 }

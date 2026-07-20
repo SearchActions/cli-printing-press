@@ -40,13 +40,29 @@ func TestLibraryDirName(t *testing.T) {
 
 func TestMCP(t *testing.T) {
 	tests := map[string]string{
-		"stripe":  "stripe-pp-mcp",
-		"cal-com": "cal-com-pp-mcp",
-		"notion":  "notion-pp-mcp",
+		"stripe":        "stripe-pp-mcp",
+		"cal-com":       "cal-com-pp-mcp",
+		"notion":        "notion-pp-mcp",
+		"foo-pp":        "foo-pp-mcp",
+		"foo-pp-events": "foo-pp-events-pp-mcp",
 	}
 	for input, want := range tests {
 		if got := MCP(input); got != want {
 			t.Fatalf("MCP(%q) = %q, want %q", input, got, want)
+		}
+	}
+}
+
+func TestCLI(t *testing.T) {
+	tests := map[string]string{
+		"foo":           "foo-pp-cli",
+		"foo-pp":        "foo-pp-cli",
+		"foo-pp-events": "foo-pp-events-pp-cli",
+	}
+
+	for input, want := range tests {
+		if got := CLI(input); got != want {
+			t.Fatalf("CLI(%q) = %q, want %q", input, got, want)
 		}
 	}
 }
@@ -68,6 +84,16 @@ func TestIsThinCommandShort(t *testing.T) {
 				t.Fatalf("IsThinCommandShort(%q) = %v, want %v", tt.in, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestAuthoredDescriptionPreservesAuthoredOneLiner(t *testing.T) {
+	in := "The first CLI for Scrape.do: requests, browsers, proxies, retries, and local SQLite analytics that keep agent workflows grounded without losing the brand dot or clause richness."
+
+	got := AuthoredDescription(in)
+
+	if got != in {
+		t.Fatalf("AuthoredDescription() = %q, want full authored one-liner %q", got, in)
 	}
 }
 
@@ -235,8 +261,8 @@ func TestCompactDescriptionsStripHTMLTags(t *testing.T) {
 	if got := CompactDescription(input); got != want {
 		t.Fatalf("CompactDescription(%q) = %q, want %q", input, got, want)
 	}
-	if got := CatalogDescription(input); got != want {
-		t.Fatalf("CatalogDescription(%q) = %q, want %q", input, got, want)
+	if got := ManifestDescription(input); got != want {
+		t.Fatalf("ManifestDescription(%q) = %q, want %q", input, got, want)
 	}
 }
 
@@ -276,10 +302,10 @@ func TestCompactDescriptionFallsBackToNonEmptyHardTruncation(t *testing.T) {
 	}
 }
 
-func TestCatalogDescriptionPreservesCompleteLongCopy(t *testing.T) {
+func TestManifestDescriptionPreservesCompleteLongCopy(t *testing.T) {
 	input := "Local-first CLI for the Roam HQ API (chat, On-Air events, transcripts, SCIM, webhooks) with offline FTS search and agent-friendly JSON output."
-	if got := CatalogDescription(input); got != input {
-		t.Fatalf("CatalogDescription(%q) = %q, want complete source sentence", input, got)
+	if got := ManifestDescription(input); got != input {
+		t.Fatalf("ManifestDescription(%q) = %q, want complete source sentence", input, got)
 	}
 }
 

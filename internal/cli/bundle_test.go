@@ -156,6 +156,79 @@ func TestNewBundleCmdWindowsPlatformUsesExeNamesInMCPB(t *testing.T) {
 	assert.Equal(t, "${__dirname}/bin/demo-pp-mcp.exe", manifest.Server.MCPConfig.Command)
 }
 
+func TestNewBundleCmdVersionStampsBundledManifest(t *testing.T) {
+	dir := t.TempDir()
+	writeBundleManifest(t, dir, pipeline.MCPBManifest{
+		ManifestVersion: pipeline.MCPBManifestVersion,
+		Name:            "demo-pp-mcp",
+		Version:         "0.0.0",
+		Server: pipeline.MCPBServer{
+			Type:       "binary",
+			EntryPoint: "bin/demo-pp-mcp",
+			MCPConfig:  pipeline.MCPBLaunchSpec{Command: "${__dirname}/bin/demo-pp-mcp"},
+		},
+	})
+
+	mcpBinary := filepath.Join(dir, "mcp")
+	outPath := filepath.Join(dir, "out.mcpb")
+	require.NoError(t, os.WriteFile(mcpBinary, []byte("mcp"), 0o755))
+
+	cmd := newBundleCmd()
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+	cmd.SilenceUsage = true
+	cmd.SetArgs([]string{
+		dir,
+		"--skip-build",
+		"--binary", mcpBinary,
+		"--output", outPath,
+		"--version", "0.1.4",
+	})
+
+	require.NoError(t, cmd.Execute())
+
+	manifest := readBundleZipManifest(t, outPath)
+	assert.Equal(t, "0.1.4", manifest.Version)
+
+	diskData, err := os.ReadFile(filepath.Join(dir, pipeline.MCPBManifestFilename))
+	require.NoError(t, err)
+	assert.Contains(t, string(diskData), `"version":"0.0.0"`)
+}
+
+func TestNewBundleCmdRejectsInvalidBundleVersion(t *testing.T) {
+	for _, tc := range []struct {
+		version string
+		wantErr string
+	}{
+		{version: "v0.1.4", wantErr: "--version must not have a v prefix"},
+		{version: "latest", wantErr: "--version must be a semantic version"},
+		{version: "0.1", wantErr: "--version must be a semantic version"},
+	} {
+		t.Run(tc.version, func(t *testing.T) {
+			dir := t.TempDir()
+			writeBundleManifest(t, dir, pipeline.MCPBManifest{
+				ManifestVersion: pipeline.MCPBManifestVersion,
+				Name:            "demo-pp-mcp",
+				Version:         "0.0.0",
+				Server: pipeline.MCPBServer{
+					Type:       "binary",
+					EntryPoint: "bin/demo-pp-mcp",
+					MCPConfig:  pipeline.MCPBLaunchSpec{Command: "${__dirname}/bin/demo-pp-mcp"},
+				},
+			})
+
+			cmd := newBundleCmd()
+			cmd.SilenceUsage = true
+			cmd.SetArgs([]string{dir, "--version", tc.version})
+
+			err := cmd.Execute()
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tc.wantErr)
+		})
+	}
+}
+
 func TestNewBundleCmdWindowsPlatformBuildsToExeStagingPaths(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("fake go shim uses POSIX shell")
@@ -193,6 +266,43 @@ func TestNewBundleCmdWindowsPlatformBuildsToExeStagingPaths(t *testing.T) {
 	entries := readBundleZipEntries(t, outPath)
 	assert.Contains(t, entries, "bin/demo-pp-mcp.exe")
 	assert.Contains(t, entries, "bin/demo-pp-cli.exe")
+}
+
+func TestBuildMCPBBinaryUsesReproducibleBuildFlags(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("fake go shim uses POSIX shell")
+	}
+
+	dir := t.TempDir()
+	fakeBin := t.TempDir()
+	callsPath := filepath.Join(t.TempDir(), "go-calls.txt")
+	fakeGo := filepath.Join(fakeBin, "go")
+	require.NoError(t, os.WriteFile(fakeGo, []byte(`#!/bin/sh
+printf '%s\n' "$*" >> "$FAKE_GO_CALLS"
+out=""
+while [ "$#" -gt 0 ]; do
+  if [ "$1" = "-o" ]; then
+    shift
+    out="$1"
+  fi
+  shift || true
+done
+if [ -z "$out" ]; then
+  echo "missing -o" >&2
+  exit 2
+fi
+mkdir -p "$(dirname "$out")"
+printf 'fake binary' > "$out"
+chmod 755 "$out"
+`), 0o755))
+	t.Setenv("PATH", fakeBin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("FAKE_GO_CALLS", callsPath)
+
+	require.NoError(t, buildMCPBBinary(dir, "demo-pp-mcp", filepath.Join(dir, "bin", "demo-pp-mcp"), "linux", "amd64"))
+
+	calls, err := os.ReadFile(callsPath)
+	require.NoError(t, err)
+	assert.Contains(t, string(calls), "build -trimpath -ldflags=-s -w -buildid= -o ")
 }
 
 func TestAutoBundleForHostSuccessPath(t *testing.T) {

@@ -6,7 +6,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/mvanhorn/cli-printing-press/v4/internal/catalogmeta"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/spec"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -117,6 +116,719 @@ func TestClientCredentialsAccessTokenCorrectsEnvFlowInputSource(t *testing.T) {
 	runGoCommand(t, outputDir, "test", "./internal/config", "-run", "TestClientCredentialsAccessToken")
 }
 
+func TestConfigSaveTokensDoesNotPersistEnvSourcedCredentials(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("oauth-env-save")
+	apiSpec.Auth = spec.AuthConfig{
+		Type:             "oauth2",
+		Header:           "Authorization",
+		Format:           "Bearer {access_token}",
+		OAuth2Grant:      spec.OAuth2GrantAuthorizationCode,
+		AuthorizationURL: "https://example.com/oauth/authorize",
+		TokenURL:         "https://example.com/oauth/token",
+		EnvVarSpecs: []spec.AuthEnvVar{
+			{Name: "GOOGLE_ADS_ACCESS_TOKEN", Kind: spec.AuthEnvVarKindPerCall, Required: false, Sensitive: true},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), "oauth-env-save-pp-cli")
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+
+	const runtimeTest = `package config
+
+import (
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+)
+
+func TestEnvSourcedCredentialsStayOutOfConfigSave(t *testing.T) {
+	t.Setenv("GOOGLE_ADS_ACCESS_TOKEN", "env-access-token")
+
+	configPath := filepath.Join(t.TempDir(), "config.toml")
+	dataDir := filepath.Join(t.TempDir(), "data")
+	t.Setenv("OAUTH_ENV_SAVE_DATA_DIR", dataDir)
+	credentialsPath := filepath.Join(dataDir, "credentials.toml")
+	initial := strings.Join([]string{
+		"client_id = \"disk-client-id\"",
+		"client_secret = \"disk-client-secret\"",
+		"access_token = \"disk-access-token\"",
+		"refresh_token = \"disk-refresh-token\"",
+		"ads_access_token = \"disk-ads-access-token\"",
+		"",
+	}, "\n")
+	if err := os.WriteFile(configPath, []byte(initial), 0o600); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	cfg, err := Load(configPath)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if cfg.GoogleAdsAccessToken != "env-access-token" {
+		t.Fatalf("GoogleAdsAccessToken after Load() = %q, want env-access-token", cfg.GoogleAdsAccessToken)
+	}
+	if err := cfg.save(); err != nil {
+		t.Fatalf("save() error = %v", err)
+	}
+	afterSave, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("ReadFile() after save error = %v", err)
+	}
+	afterSaveText := string(afterSave)
+	for _, leaked := range []string{"env-client-id", "env-client-secret", "env-access-token"} {
+		if strings.Contains(afterSaveText, leaked) {
+			t.Fatalf("config.toml leaked env value %q after save:\n%s", leaked, afterSaveText)
+		}
+	}
+	for _, stale := range []string{"disk-client-id", "disk-client-secret", "disk-access-token", "disk-refresh-token", "disk-ads-access-token"} {
+		if strings.Contains(afterSaveText, stale) {
+			t.Fatalf("config.toml kept credential value %q after save:\n%s", stale, afterSaveText)
+		}
+	}
+
+	expiry := time.Date(2030, 1, 2, 3, 4, 5, 0, time.UTC)
+	if err := cfg.SaveTokens(cfg.ClientID, cfg.ClientSecret, "refreshed-access-token", "refreshed-refresh-token", expiry); err != nil {
+		t.Fatalf("SaveTokens() error = %v", err)
+	}
+	afterTokens, err := os.ReadFile(credentialsPath)
+	if err != nil {
+		t.Fatalf("ReadFile(credentials.toml) after SaveTokens error = %v", err)
+	}
+	afterTokensText := string(afterTokens)
+	for _, leaked := range []string{"env-client-id", "env-client-secret", "env-access-token"} {
+		if strings.Contains(afterTokensText, leaked) {
+			t.Fatalf("credentials.toml leaked env value %q after SaveTokens:\n%s", leaked, afterTokensText)
+		}
+	}
+	for _, want := range []string{
+		"refreshed-access-token",
+		"refreshed-refresh-token",
+		"token_expiry",
+		"2030-01-02T03:04:05Z",
+	} {
+		if !strings.Contains(afterTokensText, want) {
+			t.Fatalf("credentials.toml missing %q after SaveTokens:\n%s", want, afterTokensText)
+		}
+	}
+	for _, stale := range []string{"disk-access-token", "disk-refresh-token", "disk-ads-access-token"} {
+		if strings.Contains(afterTokensText, stale) {
+			t.Fatalf("credentials.toml kept stale value %q after SaveTokens:\n%s", stale, afterTokensText)
+		}
+	}
+
+	reloaded, err := Load(configPath)
+	if err != nil {
+		t.Fatalf("Load() after SaveTokens error = %v", err)
+	}
+	if !reloaded.TokenExpiry.Equal(expiry) {
+		t.Fatalf("reloaded TokenExpiry = %s, want %s", reloaded.TokenExpiry.Format(time.RFC3339), expiry.Format(time.RFC3339))
+	}
+
+	if err := cfg.SaveTokens(cfg.ClientID, cfg.ClientSecret, "zero-expiry-access-token", "zero-expiry-refresh-token", time.Time{}); err != nil {
+		t.Fatalf("SaveTokens() zero expiry error = %v", err)
+	}
+	zeroExpiryData, err := os.ReadFile(credentialsPath)
+	if err != nil {
+		t.Fatalf("ReadFile(credentials.toml) after zero expiry SaveTokens error = %v", err)
+	}
+	if strings.Contains(string(zeroExpiryData), "token_expiry") {
+		t.Fatalf("credentials.toml wrote token_expiry for zero expiry:\n%s", string(zeroExpiryData))
+	}
+}
+
+func TestConfigSaveRoundTripWithoutEnvIsStable(t *testing.T) {
+	t.Setenv("CLIENT_ID", "")
+	t.Setenv("CLIENT_SECRET", "")
+	t.Setenv("GOOGLE_ADS_ACCESS_TOKEN", "")
+
+	configPath := filepath.Join(t.TempDir(), "config.toml")
+	expiry := time.Date(2031, 2, 3, 4, 5, 6, 0, time.UTC)
+	original := &Config{
+		Path:         configPath,
+		ClientID:     "disk-client-id",
+		ClientSecret: "disk-client-secret",
+		AccessToken:  "disk-access-token",
+		RefreshToken: "disk-refresh-token",
+		TokenExpiry:  expiry,
+		GoogleAdsAccessToken: "disk-ads-access-token",
+	}
+	if err := original.save(); err != nil {
+		t.Fatalf("initial save() error = %v", err)
+	}
+	before, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("ReadFile() before Load error = %v", err)
+	}
+
+	cfg, err := Load(configPath)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if err := cfg.save(); err != nil {
+		t.Fatalf("second save() error = %v", err)
+	}
+	after, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("ReadFile() after save error = %v", err)
+	}
+	if string(after) != string(before) {
+		t.Fatalf("config changed after no-env load+save\nbefore:\n%s\nafter:\n%s", before, after)
+	}
+}
+`
+	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "internal", "config", "env_save_tokens_test.go"), []byte(runtimeTest), 0o644))
+	runGoCommand(t, outputDir, "test", "./internal/config", "-run", "TestEnvSourcedCredentialsStayOutOfConfigSave|TestConfigSaveRoundTripWithoutEnvIsStable")
+}
+
+func TestAuthorizationCodeBearerUsesRefreshedAccessTokenOverStalePerCallToken(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("oauth-user-context-refresh")
+	apiSpec.Auth = spec.AuthConfig{
+		Type:             "bearer_token",
+		Header:           "Authorization",
+		Format:           "Bearer {token}",
+		OAuth2Grant:      spec.OAuth2GrantAuthorizationCode,
+		AuthorizationURL: "https://example.com/oauth/authorize",
+		TokenURL:         "https://example.com/oauth/token",
+		EnvVarSpecs: []spec.AuthEnvVar{
+			{Name: "OAUTH_USER_CONTEXT_TOKEN", Kind: spec.AuthEnvVarKindPerCall, Required: false, Sensitive: true},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), "oauth-user-context-refresh-pp-cli")
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+
+	cfgSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "config", "config.go"))
+	require.NoError(t, err)
+	body := authHeaderBody(t, string(cfgSrc))
+	accessIdx := strings.Index(body, `if c.AccessToken != ""`)
+	perCallIdx := strings.Index(body, `if c.OauthUserContextToken != ""`)
+	require.NotEqual(t, -1, accessIdx, "authorization_code bearer auth must consult OAuth access tokens")
+	assert.Equal(t, -1, perCallIdx, "authorization_code bearer auth must not send stale per-call fields instead of refreshed OAuth access tokens")
+
+	clientSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "client", "client.go"))
+	require.NoError(t, err)
+	require.Contains(t, string(clientSrc), `"grant_type":    {"refresh_token"}`, "client must emit refresh-token exchange")
+
+	const runtimeTest = `package config
+
+import (
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+
+	"oauth-user-context-refresh-pp-cli/internal/cliutil"
+)
+
+func TestRefreshedAccessTokenWinsOverStalePerCallToken(t *testing.T) {
+	// CI and parallel generator tests can carry API-shaped environment variables
+	// for unrelated jobs. This test is about disk-persisted OAuth refresh
+	// precedence, so run the generated config package with a sterile environment
+	// before loading config from disk.
+	oldEnv := os.Environ()
+	os.Clearenv()
+	if err := os.Setenv("HOME", t.TempDir()); err != nil {
+		t.Fatalf("Setenv(HOME) error = %v", err)
+	}
+	defer func() {
+		os.Clearenv()
+		for _, kv := range oldEnv {
+			parts := strings.SplitN(kv, "=", 2)
+			if len(parts) == 2 {
+				_ = os.Setenv(parts[0], parts[1])
+			}
+		}
+	}()
+
+	configPath := filepath.Join(t.TempDir(), "config.toml")
+	initial := strings.Join([]string{
+		"oauth_user_context_token = \"stale-user-context-token\"",
+		"access_token = \"old-access-token\"",
+		"refresh_token = \"old-refresh-token\"",
+		"client_id = \"client-id\"",
+		"client_secret = \"client-secret\"",
+		"",
+	}, "\n")
+	if err := os.WriteFile(configPath, []byte(initial), 0o600); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	cfg, err := Load(configPath)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if got := cfg.AuthHeader(); got != "Bearer old-access-token" {
+		t.Fatalf("AuthHeader() before refresh = %q, want Bearer old-access-token", got)
+	}
+	expiry := time.Date(2035, 1, 2, 3, 4, 5, 0, time.UTC)
+	if err := cfg.SaveTokens(cfg.ClientID, cfg.ClientSecret, "new-access-token", "new-refresh-token", expiry); err != nil {
+		t.Fatalf("SaveTokens() error = %v", err)
+	}
+	if got := cfg.AuthHeader(); got != "Bearer new-access-token" {
+		t.Fatalf("AuthHeader() after refresh = %q, want Bearer new-access-token", got)
+	}
+	after, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("ReadFile() error = %v", err)
+	}
+	if text := string(after); strings.Contains(text, "new-refresh-token") || strings.Contains(text, "new-access-token") {
+		t.Fatalf("config file should not retain rotated OAuth secrets after credentials split:\n%s", text)
+	}
+	creds, ok, err := cliutil.LoadCredentials()
+	if err != nil {
+		t.Fatalf("LoadCredentials() error = %v", err)
+	}
+	if !ok {
+		t.Fatal("LoadCredentials() ok = false, want true")
+	}
+	if creds.RefreshToken != "new-refresh-token" {
+		t.Fatalf("credentials refresh token = %q, want new-refresh-token", creds.RefreshToken)
+	}
+	if creds.AccessToken != "new-access-token" {
+		t.Fatalf("credentials access token = %q, want new-access-token", creds.AccessToken)
+	}
+}
+`
+	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "internal", "config", "oauth_refresh_precedence_test.go"), []byte(runtimeTest), 0o644))
+	runGoCommand(t, outputDir, "test", "./internal/config", "-run", "TestRefreshedAccessTokenWinsOverStalePerCallToken")
+}
+
+func TestConfigSaveBearerTokenPersistsBuiltinEnvCollisionWrite(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("bearer-refresh-collision")
+	apiSpec.Auth = spec.AuthConfig{
+		Type:   "bearer_token",
+		Header: "Authorization",
+		Format: "Bearer {access_token}",
+		EnvVarSpecs: []spec.AuthEnvVar{
+			{Name: "REFRESH_ACCESS_TOKEN", Kind: spec.AuthEnvVarKindPerCall, Required: false, Sensitive: true},
+		},
+	}
+	apiSpec.BearerRefresh = spec.BearerRefreshConfig{
+		BundleURL: "https://cdn.example.com/main.js",
+		Pattern:   `"(AAAAAAAA[^"]+)"`,
+	}
+
+	outputDir := filepath.Join(t.TempDir(), "bearer-refresh-collision-pp-cli")
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+
+	const runtimeTest = `package config
+
+import (
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+)
+
+func TestSaveBearerTokenPersistsOverBuiltinEnvOverride(t *testing.T) {
+	t.Setenv("REFRESH_ACCESS_TOKEN", "env-access-token")
+
+	configPath := filepath.Join(t.TempDir(), "config.toml")
+	dataDir := filepath.Join(t.TempDir(), "data")
+	t.Setenv("BEARER_REFRESH_COLLISION_DATA_DIR", dataDir)
+	credentialsPath := filepath.Join(dataDir, "credentials.toml")
+	if err := os.WriteFile(configPath, []byte("access_token = \"disk-access-token\"\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	cfg, err := Load(configPath)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if cfg.AccessToken != "env-access-token" {
+		t.Fatalf("AccessToken after Load() = %q, want env-access-token", cfg.AccessToken)
+	}
+
+	refreshedAt := time.Date(2032, 3, 4, 5, 6, 7, 0, time.UTC)
+	if err := cfg.SaveBearerToken("refreshed-access-token", refreshedAt); err != nil {
+		t.Fatalf("SaveBearerToken() error = %v", err)
+	}
+	after, err := os.ReadFile(credentialsPath)
+	if err != nil {
+		t.Fatalf("ReadFile(credentials.toml) error = %v", err)
+	}
+	text := string(after)
+	if !strings.Contains(text, "refreshed-access-token") {
+		t.Fatalf("credentials.toml missing refreshed token:\n%s", text)
+	}
+	for _, stale := range []string{"disk-access-token", "env-access-token"} {
+		if strings.Contains(text, stale) {
+			t.Fatalf("credentials.toml kept stale token %q:\n%s", stale, text)
+		}
+	}
+	configAfter, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("ReadFile(config.toml) error = %v", err)
+	}
+	if strings.Contains(string(configAfter), "refreshed-access-token") {
+		t.Fatalf("config.toml kept relocated refreshed token:\n%s", string(configAfter))
+	}
+}
+`
+	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "internal", "config", "bearer_builtin_collision_test.go"), []byte(runtimeTest), 0o644))
+	runGoCommand(t, outputDir, "test", "./internal/config", "-run", "TestSaveBearerTokenPersistsOverBuiltinEnvOverride")
+}
+
+// TestConfigSaveBearerTokenClearsNonBuiltinEnvCollision covers the #2720 review
+// gap: SaveBearerToken zeroed non-builtin custom env-var fields in memory but
+// did not delete their envOverrides entries, so configForSave restored the stale
+// on-disk value and the credential field was never cleared from config.toml on
+// refresh. Also exercises the fileConfig map-isolation (deep-copy) fix.
+func TestConfigSaveBearerTokenClearsNonBuiltinEnvCollision(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("bearer-refresh-custom-env")
+	apiSpec.Auth = spec.AuthConfig{
+		Type:   "bearer_token",
+		Header: "Authorization",
+		Format: "Bearer {access_token}",
+		EnvVarSpecs: []spec.AuthEnvVar{
+			{Name: "API_TENANT", Kind: spec.AuthEnvVarKindPerCall, Required: false, Sensitive: true},
+		},
+	}
+	apiSpec.BearerRefresh = spec.BearerRefreshConfig{
+		BundleURL: "https://cdn.example.com/main.js",
+		Pattern:   `"(AAAAAAAA[^"]+)"`,
+	}
+
+	outputDir := filepath.Join(t.TempDir(), "bearer-refresh-custom-env-pp-cli")
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+
+	const runtimeTest = `package config
+
+import (
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+)
+
+func TestSaveBearerTokenClearsNonBuiltinEnvOverride(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "config.toml")
+
+	// Seed a stale on-disk value for the non-builtin custom credential field,
+	// with no env override in effect.
+	seed, err := Load(configPath)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	seed.ApiTenant = "disk-tenant"
+	if err := seed.save(); err != nil {
+		t.Fatalf("seed save() error = %v", err)
+	}
+
+	// Now the env var overrides the disk value.
+	t.Setenv("API_TENANT", "env-tenant")
+	cfg, err := Load(configPath)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if cfg.ApiTenant != "env-tenant" {
+		t.Fatalf("ApiTenant after Load() = %q, want env-tenant", cfg.ApiTenant)
+	}
+
+	refreshedAt := time.Date(2032, 3, 4, 5, 6, 7, 0, time.UTC)
+	if err := cfg.SaveBearerToken("refreshed-access-token", refreshedAt); err != nil {
+		t.Fatalf("SaveBearerToken() error = %v", err)
+	}
+
+	after, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("ReadFile() error = %v", err)
+	}
+	text := string(after)
+	// On refresh the custom credential field must be cleared: neither the env
+	// value nor the stale on-disk value may survive. (Before the fix the
+	// lingering envOverride entry made configForSave write the stale disk value.)
+	for _, stale := range []string{"disk-tenant", "env-tenant"} {
+		if strings.Contains(text, stale) {
+			t.Fatalf("config.toml kept stale custom credential %q:\n%s", stale, text)
+		}
+	}
+}
+
+func TestSnapshotFileConfigIsolatesHeaderMap(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "config.toml")
+	cfg, err := Load(configPath)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if cfg.Headers == nil {
+		cfg.Headers = map[string]string{}
+	}
+	cfg.snapshotFileConfig()
+	// Mutating the live Headers map after snapshotting must not leak into the
+	// fileConfig snapshot (reference-type isolation, #2720 P2).
+	cfg.Headers["X-Isolation-Probe"] = "mutated"
+	if cfg.fileConfig != nil {
+		if _, leaked := cfg.fileConfig.Headers["X-Isolation-Probe"]; leaked {
+			t.Fatalf("snapshot fileConfig shares the Headers map with the live config")
+		}
+	}
+}
+`
+	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "internal", "config", "bearer_custom_collision_test.go"), []byte(runtimeTest), 0o644))
+	runGoCommand(t, outputDir, "test", "./internal/config", "-run", "TestSaveBearerTokenClearsNonBuiltinEnvOverride|TestSnapshotFileConfigIsolatesHeaderMap")
+}
+
+// TestConfigSaveCredentialClearsBuiltinEnvCollision covers the #2720 follow-up
+// Greptile P1: SaveCredential zeroed AuthHeaderVal/AccessToken but only deleted
+// the canonical env-var's override. A NON-canonical env var that collides with
+// the access_token builtin tag (resolving to the AccessToken field) left its
+// override active, so configForSave restored the stale on-disk value instead of
+// the cleared "". SaveCredential is the one credential-write method in the family
+// that previously had no builtin-collision test.
+func TestConfigSaveCredentialClearsBuiltinEnvCollision(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("apikey-builtin-collision")
+	apiSpec.Auth = spec.AuthConfig{
+		Type:   "api_key",
+		Header: "X-API-Key",
+		EnvVarSpecs: []spec.AuthEnvVar{
+			// Canonical request credential -> non-builtin custom field.
+			{Name: "SVC_API_KEY", Kind: spec.AuthEnvVarKindPerCall, Required: true, Sensitive: true},
+			// Non-canonical, collides with the access_token builtin tag -> AccessToken.
+			{Name: "SVC_ACCESS_TOKEN", Kind: spec.AuthEnvVarKindPerCall, Required: false, Sensitive: true},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), "apikey-builtin-collision-pp-cli")
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+
+	const runtimeTest = `package config
+
+import (
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+)
+
+func TestSaveCredentialClearsBuiltinEnvOverride(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "config.toml")
+	if err := os.WriteFile(configPath, []byte("access_token = \"disk-access-token\"\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	// SVC_ACCESS_TOKEN collides with the access_token builtin tag, so it resolves
+	// to the AccessToken field and marks an override on Load.
+	t.Setenv("SVC_ACCESS_TOKEN", "env-access-token")
+	cfg, err := Load(configPath)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if cfg.AccessToken != "env-access-token" {
+		t.Fatalf("AccessToken after Load() = %q, want env-access-token", cfg.AccessToken)
+	}
+
+	if err := cfg.SaveCredential("new-key"); err != nil {
+		t.Fatalf("SaveCredential() error = %v", err)
+	}
+	after, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("ReadFile() error = %v", err)
+	}
+	text := string(after)
+	// SaveCredential clears the alternate AccessToken slot; without deleting its
+	// env-override entry, configForSave would restore the stale on-disk value.
+	for _, stale := range []string{"disk-access-token", "env-access-token"} {
+		if strings.Contains(text, stale) {
+			t.Fatalf("config.toml kept stale AccessToken %q after SaveCredential:\n%s", stale, text)
+		}
+	}
+}
+`
+	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "internal", "config", "save_credential_collision_test.go"), []byte(runtimeTest), 0o644))
+	runGoCommand(t, outputDir, "test", "./internal/config", "-run", "TestSaveCredentialClearsBuiltinEnvOverride")
+}
+
+func TestConfigClearTokensClearsBuiltinEnvCollisionCredentials(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("clear-builtin-collision")
+	apiSpec.Auth = spec.AuthConfig{
+		Type:             "oauth2",
+		Header:           "Authorization",
+		Format:           "Bearer {access_token}",
+		OAuth2Grant:      spec.OAuth2GrantAuthorizationCode,
+		AuthorizationURL: "https://example.com/oauth/authorize",
+		TokenURL:         "https://example.com/oauth/token",
+		EnvVarSpecs: []spec.AuthEnvVar{
+			{Name: "CLEAR_ACCESS_TOKEN", Kind: spec.AuthEnvVarKindPerCall, Required: false, Sensitive: true},
+			{Name: "CLEAR_CLIENT_ID", Kind: spec.AuthEnvVarKindAuthFlowInput, Required: false, Sensitive: false},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), "clear-builtin-collision-pp-cli")
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+
+	const runtimeTest = `package config
+
+import (
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+)
+
+func TestClearTokensClearsBuiltinEnvOverridesOnDisk(t *testing.T) {
+	t.Setenv("CLEAR_ACCESS_TOKEN", "env-access-token")
+	t.Setenv("CLEAR_CLIENT_ID", "env-client-id")
+
+	configPath := filepath.Join(t.TempDir(), "config.toml")
+	dataDir := filepath.Join(t.TempDir(), "data")
+	t.Setenv("CLEAR_BUILTIN_COLLISION_DATA_DIR", dataDir)
+	credentialsPath := filepath.Join(dataDir, "credentials.toml")
+	initial := strings.Join([]string{
+		"client_id = \"disk-client-id\"",
+		"client_secret = \"disk-client-secret\"",
+		"access_token = \"disk-access-token\"",
+		"refresh_token = \"disk-refresh-token\"",
+		"",
+	}, "\n")
+	if err := os.WriteFile(configPath, []byte(initial), 0o600); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	cfg, err := Load(configPath)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if cfg.AccessToken != "env-access-token" {
+		t.Fatalf("AccessToken after Load() = %q, want env-access-token", cfg.AccessToken)
+	}
+	if cfg.ClientID != "env-client-id" {
+		t.Fatalf("ClientID after Load() = %q, want env-client-id", cfg.ClientID)
+	}
+
+	if err := cfg.ClearTokens(); err != nil {
+		t.Fatalf("ClearTokens() error = %v", err)
+	}
+	if _, err := os.Stat(credentialsPath); !os.IsNotExist(err) {
+		t.Fatalf("credentials.toml should be absent after ClearTokens, stat err=%v", err)
+	}
+	after, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("ReadFile() error = %v", err)
+	}
+	text := string(after)
+	for _, stale := range []string{"disk-client-id", "disk-client-secret", "disk-access-token", "disk-refresh-token", "env-client-id", "env-access-token"} {
+		if strings.Contains(text, stale) {
+			t.Fatalf("config.toml kept stale credential %q:\n%s", stale, text)
+		}
+	}
+	for _, field := range []string{"client_id", "client_secret", "access_token", "refresh_token"} {
+		if strings.Contains(text, field) {
+			t.Fatalf("config.toml kept credential field %q after ClearTokens:\n%s", field, text)
+		}
+	}
+}
+`
+	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "internal", "config", "clear_builtin_collision_test.go"), []byte(runtimeTest), 0o644))
+	runGoCommand(t, outputDir, "test", "./internal/config", "-run", "TestClearTokensClearsBuiltinEnvOverridesOnDisk")
+}
+
+func TestConfigSaveTokensPersistsClientIDBuiltinEnvCollisionWrite(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("oauth-client-id-collision")
+	apiSpec.Auth = spec.AuthConfig{
+		Type:             "oauth2",
+		Header:           "Authorization",
+		Format:           "Bearer {access_token}",
+		OAuth2Grant:      spec.OAuth2GrantAuthorizationCode,
+		AuthorizationURL: "https://example.com/oauth/authorize",
+		TokenURL:         "https://example.com/oauth/token",
+		EnvVarSpecs: []spec.AuthEnvVar{
+			{Name: "SAVE_CLIENT_ID", Kind: spec.AuthEnvVarKindAuthFlowInput, Required: false, Sensitive: false},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), "oauth-client-id-collision-pp-cli")
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+
+	const runtimeTest = `package config
+
+import (
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+)
+
+func TestSaveTokensPersistsClientIDOverBuiltinEnvOverride(t *testing.T) {
+	t.Setenv("SAVE_CLIENT_ID", "env-client-id")
+
+	configPath := filepath.Join(t.TempDir(), "config.toml")
+	dataDir := filepath.Join(t.TempDir(), "data")
+	t.Setenv("OAUTH_CLIENT_ID_COLLISION_DATA_DIR", dataDir)
+	credentialsPath := filepath.Join(dataDir, "credentials.toml")
+	initial := strings.Join([]string{
+		"client_id = \"disk-client-id\"",
+		"client_secret = \"disk-client-secret\"",
+		"access_token = \"disk-access-token\"",
+		"refresh_token = \"disk-refresh-token\"",
+		"",
+	}, "\n")
+	if err := os.WriteFile(configPath, []byte(initial), 0o600); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	cfg, err := Load(configPath)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if cfg.ClientID != "env-client-id" {
+		t.Fatalf("ClientID after Load() = %q, want env-client-id", cfg.ClientID)
+	}
+
+	expiry := time.Date(2033, 4, 5, 6, 7, 8, 0, time.UTC)
+	if err := cfg.SaveTokens("new-client-id", cfg.ClientSecret, "new-access-token", "new-refresh-token", expiry); err != nil {
+		t.Fatalf("SaveTokens() error = %v", err)
+	}
+	after, err := os.ReadFile(credentialsPath)
+	if err != nil {
+		t.Fatalf("ReadFile(credentials.toml) error = %v", err)
+	}
+	text := string(after)
+	for _, want := range []string{"new-client-id", "disk-client-secret", "new-access-token", "new-refresh-token"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("credentials.toml missing %q:\n%s", want, text)
+		}
+	}
+	for _, stale := range []string{"disk-client-id", "env-client-id", "disk-access-token", "disk-refresh-token"} {
+		if strings.Contains(text, stale) {
+			t.Fatalf("credentials.toml kept stale credential %q:\n%s", stale, text)
+		}
+	}
+
+	configAfter, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("ReadFile(config.toml) error = %v", err)
+	}
+	for _, credential := range []string{"new-client-id", "new-access-token", "new-refresh-token"} {
+		if strings.Contains(string(configAfter), credential) {
+			t.Fatalf("config.toml kept relocated credential %q:\n%s", credential, string(configAfter))
+		}
+	}
+}
+`
+	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "internal", "config", "save_tokens_client_id_collision_test.go"), []byte(runtimeTest), 0o644))
+	runGoCommand(t, outputDir, "test", "./internal/config", "-run", "TestSaveTokensPersistsClientIDOverBuiltinEnvOverride")
+}
+
 func TestClientCredentialsEnvVarsSkipTenantSetupInput(t *testing.T) {
 	t.Parallel()
 
@@ -174,13 +886,24 @@ func TestClientCredentialsRuntimeEntraTenantAndScope(t *testing.T) {
 	var gotPath string
 	var gotScope string
 	var gotClientID string
+	var gotClientSecret string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotPath = r.URL.Path
+		var ok bool
+		gotClientID, gotClientSecret, ok = r.BasicAuth()
+		if !ok {
+			t.Fatalf("missing HTTP Basic client credentials")
+		}
 		if err := r.ParseForm(); err != nil {
 			t.Fatalf("ParseForm() error = %v", err)
 		}
 		gotScope = r.Form.Get("scope")
-		gotClientID = r.Form.Get("client_id")
+		if got := r.Form.Get("client_id"); got != "" {
+			t.Fatalf("client_id leaked into form body: %q", got)
+		}
+		if got := r.Form.Get("client_secret"); got != "" {
+			t.Fatalf("client_secret leaked into form body: %q", got)
+		}
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = io.WriteString(w, ` + "`" + `{"access_token":"minted-token","expires_in":3600}` + "`" + `)
 	}))
@@ -200,6 +923,9 @@ func TestClientCredentialsRuntimeEntraTenantAndScope(t *testing.T) {
 	}
 	if gotClientID != "client-123" {
 		t.Fatalf("client_id = %q, want client-123", gotClientID)
+	}
+	if gotClientSecret != "secret-456" {
+		t.Fatalf("client_secret = %q, want secret-456", gotClientSecret)
 	}
 
 	t.Setenv("ENTRA_CC_OAUTH_SCOPE", "https://override.example/.default")
@@ -268,11 +994,20 @@ func TestAuthLoginTrimsClientCredentialEnvVars(t *testing.T) {
 	var gotClientID string
 	var gotClientSecret string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var ok bool
+		gotClientID, gotClientSecret, ok = r.BasicAuth()
+		if !ok {
+			t.Fatalf("missing HTTP Basic client credentials")
+		}
 		if err := r.ParseForm(); err != nil {
 			t.Fatalf("ParseForm() error = %v", err)
 		}
-		gotClientID = r.Form.Get("client_id")
-		gotClientSecret = r.Form.Get("client_secret")
+		if got := r.Form.Get("client_id"); got != "" {
+			t.Fatalf("client_id leaked into form body: %q", got)
+		}
+		if got := r.Form.Get("client_secret"); got != "" {
+			t.Fatalf("client_secret leaked into form body: %q", got)
+		}
 		if gotClientID != "cid.test123" || gotClientSecret != "secret.test456" {
 			http.Error(w, "untrimmed credentials", http.StatusBadRequest)
 			return
@@ -282,8 +1017,13 @@ func TestAuthLoginTrimsClientCredentialEnvVars(t *testing.T) {
 	}))
 	defer server.Close()
 
+	// 0o600: a token-bearing CLI's config must be owner-only. The read-time
+	// creds-perms guard in config.Load refuses an over-permissive config (the
+	// same file that holds access/refresh tokens after auth login), so a 0o644
+	// config would be a silent miss — token_url would drop and auth login would
+	// fall back to the spec-baked default endpoint instead of this mock server.
 	configPath := filepath.Join(t.TempDir(), "config.toml")
-	if err := os.WriteFile(configPath, []byte("token_url = \""+server.URL+"\"\n"), 0o644); err != nil {
+	if err := os.WriteFile(configPath, []byte("token_url = \""+server.URL+"\"\n"), 0o600); err != nil {
 		t.Fatalf("writing config: %v", err)
 	}
 	t.Setenv("TRIM_CC_CLIENT_ID", " cid.test123 ")
@@ -878,6 +1618,55 @@ func TestAuthHeader_EnvVarWinsOverFileToken(t *testing.T) {
 	}
 }
 
+func TestCredentialsRoundTripTestsRunForBrowserAndDeviceAuthFlavors(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name string
+		auth spec.AuthConfig
+	}{
+		{
+			name: "cookie-credentials-roundtrip",
+			auth: spec.AuthConfig{
+				Type:    "cookie",
+				Header:  "Authorization",
+				EnvVars: []string{"COOKIE_ROUNDTRIP_TOKEN"},
+			},
+		},
+		{
+			name: "composed-credentials-roundtrip",
+			auth: spec.AuthConfig{
+				Type:    "composed",
+				Header:  "Authorization",
+				EnvVars: []string{"COMPOSED_ROUNDTRIP_TOKEN"},
+			},
+		},
+		{
+			name: "device-code-credentials-roundtrip",
+			auth: spec.AuthConfig{
+				Type:                   "oauth2",
+				Header:                 "Authorization",
+				Format:                 "Bearer {token}",
+				OAuth2Grant:            spec.OAuth2GrantDeviceCode,
+				DeviceAuthorizationURL: "https://login.example.com/device",
+				TokenURL:               "https://login.example.com/token",
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			apiSpec := minimalSpec(tc.name)
+			apiSpec.Auth = tc.auth
+			outputDir := filepath.Join(t.TempDir(), tc.name+"-pp-cli")
+			require.NoError(t, New(apiSpec, outputDir).Generate())
+			runGoCommand(t, outputDir, "test", "./internal/cliutil", "./internal/config")
+		})
+	}
+}
+
 func TestAuthHeader_PreservesConfigAuthSourceForStoredBearerToken(t *testing.T) {
 	t.Parallel()
 
@@ -1165,81 +1954,24 @@ func TestTierRouting_BearerPrefix(t *testing.T) {
 		"default Bearer literal must not leak when tier prefix is overridden")
 }
 
-// TestCatalogAuthEnvVars_GenerateReadsCatalogNamesFirst pins the issue #1482
-// acceptance criterion: when a catalog entry declares auth_env_vars, the
-// generator emits config.go reading the catalog-declared names first, in
-// order, with the parser's name-derived default trailing as a fallback so
-// operators who already export the legacy name keep working without a
-// migration.
-func TestCatalogAuthEnvVars_GenerateReadsCatalogNamesFirst(t *testing.T) {
+func TestAuthNoneDoesNotEmitCredentialsScaffolding(t *testing.T) {
 	t.Parallel()
 
-	apiSpec := minimalSpec("stripe")
-	apiSpec.Auth = spec.AuthConfig{
-		Type:    "bearer_token",
-		Header:  "Authorization",
-		EnvVars: []string{"STRIPE_BEARER_AUTH"},
-		EnvVarSpecs: []spec.AuthEnvVar{
-			{Name: "STRIPE_BEARER_AUTH", Kind: spec.AuthEnvVarKindPerCall, Required: true, Sensitive: true, Inferred: true},
-		},
-	}
+	apiSpec := minimalSpec("auth-none-paths")
+	apiSpec.Auth = spec.AuthConfig{Type: "none"}
 
-	catalogmeta.ApplyCatalogAuthEnvVars(&apiSpec.Auth, []string{"STRIPE_SECRET_KEY", "STRIPE_API_KEY"})
-
-	outputDir := filepath.Join(t.TempDir(), "stripe-pp-cli")
+	outputDir := filepath.Join(t.TempDir(), "auth-none-paths-pp-cli")
 	require.NoError(t, New(apiSpec, outputDir).Generate())
 
-	cfgSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "config", "config.go"))
-	require.NoError(t, err)
-	content := string(cfgSrc)
-
-	for _, name := range []string{"STRIPE_SECRET_KEY", "STRIPE_API_KEY", "STRIPE_BEARER_AUTH"} {
-		field := resolveEnvVarField(name)
-		assert.Contains(t, content, "if v := os.Getenv(\""+name+"\"); v != \"\" {",
-			"Load() must read env var %s", name)
-		assert.Contains(t, content, "cfg."+field, "Config struct must carry field for %s", name)
+	if _, err := os.Stat(filepath.Join(outputDir, "internal", "cliutil", "credentials.go")); !os.IsNotExist(err) {
+		t.Fatalf("credentials.go stat error = %v, want no credentials scaffolding", err)
 	}
+	configSrc := readGeneratedFile(t, outputDir, "internal", "config", "config.go")
+	require.NotContains(t, configSrc, "LoadCredentials")
+	require.NotContains(t, configSrc, "SaveCredentials")
+	require.NotContains(t, configSrc, "RemoveCredentials")
 
-	body := authHeaderBody(t, content)
-	secretIdx := strings.Index(body, "if c."+resolveEnvVarField("STRIPE_SECRET_KEY")+` != ""`)
-	apiIdx := strings.Index(body, "if c."+resolveEnvVarField("STRIPE_API_KEY")+` != ""`)
-	bearerIdx := strings.Index(body, "if c."+resolveEnvVarField("STRIPE_BEARER_AUTH")+` != ""`)
-
-	require.NotEqual(t, -1, secretIdx, "AuthHeader must check STRIPE_SECRET_KEY first")
-	require.NotEqual(t, -1, apiIdx, "AuthHeader must check STRIPE_API_KEY")
-	require.NotEqual(t, -1, bearerIdx, "AuthHeader must retain STRIPE_BEARER_AUTH fallback")
-	assert.Less(t, secretIdx, apiIdx, "STRIPE_SECRET_KEY must be tried before STRIPE_API_KEY")
-	assert.Less(t, apiIdx, bearerIdx, "STRIPE_API_KEY must be tried before legacy STRIPE_BEARER_AUTH fallback")
-}
-
-// TestCatalogAuthEnvVars_GenerateUnchangedWithoutCatalogList pins the
-// negative acceptance criterion: an API without catalog auth_env_vars
-// continues to emit only the parser's name-derived default env var, so
-// existing CLIs regenerate to byte-equivalent config.go.
-func TestCatalogAuthEnvVars_GenerateUnchangedWithoutCatalogList(t *testing.T) {
-	t.Parallel()
-
-	apiSpec := minimalSpec("legacy")
-	apiSpec.Auth = spec.AuthConfig{
-		Type:    "bearer_token",
-		Header:  "Authorization",
-		EnvVars: []string{"LEGACY_BEARER_AUTH"},
-		EnvVarSpecs: []spec.AuthEnvVar{
-			{Name: "LEGACY_BEARER_AUTH", Kind: spec.AuthEnvVarKindPerCall, Required: true, Sensitive: true, Inferred: true},
-		},
-	}
-
-	catalogmeta.ApplyCatalogAuthEnvVars(&apiSpec.Auth, nil)
-
-	outputDir := filepath.Join(t.TempDir(), "legacy-pp-cli")
-	require.NoError(t, New(apiSpec, outputDir).Generate())
-
-	cfgSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "config", "config.go"))
-	require.NoError(t, err)
-	content := string(cfgSrc)
-
-	assert.Contains(t, content, "if v := os.Getenv(\"LEGACY_BEARER_AUTH\"); v != \"\"")
-	assert.NotContains(t, content, "STRIPE_SECRET_KEY")
+	requireGeneratedCompiles(t, outputDir)
 }
 
 // authHeaderBody slices out just the AuthHeader function body so precedence

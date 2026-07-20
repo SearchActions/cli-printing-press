@@ -34,6 +34,7 @@ dogfood.json
 scorecard.json
 printing-press-golden/README.md
 printing-press-golden/AGENTS.md
+printing-press-golden/CLAUDE.md
 printing-press-golden/SKILL.md
 printing-press-golden/internal/cli/doctor.go
 printing-press-golden/internal/cliutil/verifyenv.go
@@ -44,4 +45,5 @@ printing-press-golden/internal/cli/auto_refresh.go
 printing-press-golden/internal/cliutil/freshness.go
 printing-press-golden/internal/cli/api_discovery.go
 printing-press-golden/internal/cli/import.go
+printing-press-golden/internal/cli/resource_paths.go
 printing-press-golden/internal/cli/which.go

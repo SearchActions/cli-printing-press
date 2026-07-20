@@ -11,6 +11,7 @@ allowed-tools:
   - Glob
   - Grep
   - AskUserQuestion
+created_by: user
 ---
 
 # /printing-press publish
@@ -22,8 +23,17 @@ Publish a generated CLI from your local library to the [printing-press-library](
 /printing-press publish notion
 /printing-press publish notion --from-polish
 /printing-press publish notion --skip-live-test=auth-unavailable
+/printing-press publish notion --blocked-api-journal notion
 /printing-press publish
 ```
+
+## PR shape guard
+
+This skill opens only a generated CLI publish PR or, with
+`--blocked-api-journal`, a `blocked-apis.json` journal PR. It never opens a
+docs-only, plan, proposal, or spec PR as a substitute for a CLI that is not
+ready to publish. If generation, validation, or live testing is blocked, report
+the exact blocker and stop.
 
 ## Direct User Invocation Required
 
@@ -42,6 +52,13 @@ resolving the CLI name. The marker is not a second confirmation and is not
 passed to `cli-printing-press`; it only preserves standalone polish's old
 post-publish retro offer after the fresh-turn publish completes.
 
+If the request includes `--blocked-api-journal`, enter **Blocked API Journal
+Mode** below instead of the normal printed-CLI publish flow. This mode may be
+invoked from `/printing-press`'s hold-path menu after the user explicitly chose
+"Add to blocked-API journal"; that parent menu choice is sufficient user
+authorization for the public-library journal write. Do not require a second
+fresh-turn invocation for this journal-only mode.
+
 If the fresh user-authored request includes `--skip-live-test=<reason>`, record
 the exact non-empty reason as `SKIP_LIVE_TEST_REASON` and remove the flag before
 resolving the CLI name. This is the only supported escape valve for the
@@ -58,6 +75,101 @@ workflows. The library's `Fail on changes to generated artifacts` check in
 `verify-library-conventions.yml` hard-fails any PR — fork or same-repo — whose
 diff against base touches `registry.json` or `cli-skills/pp-*/SKILL.md`, so a
 publish that includes either is pre-rejected before review.
+
+The public library also owns per-CLI release accounting. Do not manually bump
+`CHANGELOG.md`, `.printing-press-release.json`, or runtime `var version = ...`
+for a publish PR. Fresh printed CLIs may include blank release-ledger skeletons;
+the library's post-merge workflow assigns the final `YYYY.M.N` release and
+stamps the runtime version after merge. When replacing an existing public
+library CLI, preserve its existing release-ledger files so changelog history is
+not lost in the reprint PR.
+
+`blocked-apis.json` is different: it is a hand-maintained public-library journal,
+not a generated registry surface. Journal-only PRs may edit `blocked-apis.json`
+and must not stage `library/`, `registry.json`, README catalog cells, or
+`cli-skills/`.
+
+## Blocked API Journal Mode
+
+Use this mode only when the invocation includes `--blocked-api-journal`. It
+records a held `/printing-press` attempt whose blocker is likely to repeat for
+other users until a machine or upstream issue changes.
+
+Required fields from the caller:
+
+- `slug`: canonical API slug, not the CLI binary name.
+- `attempted_at`: `YYYY-MM-DD`.
+- `verdict`: `hold`.
+- `reason`: concise blocker reason, with no secrets, local paths, cookies,
+  tokens, or account-specific details.
+- `blocking_issue`: Printing Press issue number if known, otherwise `null`.
+- `permanent`: boolean.
+
+If the caller did not provide one of these fields, infer only safe values from
+the current run context. If `reason` is missing or vague, stop and ask for one
+specific blocker sentence; do not write an unhelpful journal entry.
+
+Run the normal Setup, Configuration, scoped clone cleanup, and GitHub auth
+checks, then prepare the public-library clone exactly as the normal publish
+flow does: fork if needed, ensure `upstream` points to
+`mvanhorn/printing-press-library`, fetch `upstream`, and reset the clone to
+`upstream/main` before editing.
+
+Then update only `$PUBLISH_REPO_DIR/blocked-apis.json`:
+
+```bash
+cd "$PUBLISH_REPO_DIR"
+if [ ! -f blocked-apis.json ]; then
+  printf '[]\n' > blocked-apis.json
+fi
+jq --arg slug "<api-slug>" \
+   --arg attempted_at "<YYYY-MM-DD>" \
+   --arg verdict "hold" \
+   --arg reason "<reason>" \
+   --argjson blocking_issue '<number-or-null>' \
+   --argjson permanent '<true-or-false>' '
+  (if type == "array" then . else [] end)
+  | map(select(.slug != $slug))
+  + [{
+      slug: $slug,
+      attempted_at: $attempted_at,
+      verdict: $verdict,
+      reason: $reason,
+      blocking_issue: $blocking_issue,
+      permanent: $permanent
+    }]
+  | sort_by(.slug)
+' blocked-apis.json > blocked-apis.json.tmp || {
+  rm -f blocked-apis.json.tmp
+  echo "Error: jq failed to update blocked-apis.json"
+  exit 1
+}
+if ! jq empty blocked-apis.json.tmp; then
+  rm -f blocked-apis.json.tmp
+  echo "Error: blocked-apis.json update produced invalid JSON"
+  exit 1
+fi
+mv blocked-apis.json.tmp blocked-apis.json
+```
+
+Create a journal branch and PR:
+
+```bash
+git checkout -B chore/blocked-api-<api-slug>
+git add blocked-apis.json
+git commit -m "chore(<api-slug>): journal blocked API"
+git push --force-with-lease -u origin chore/blocked-api-<api-slug>
+```
+
+Open the PR against `mvanhorn/printing-press-library` with a body that includes:
+
+- the held API slug and reason
+- whether the block is permanent or tied to `blocking_issue`
+- the expected Phase 0 behavior: future `/printing-press <api-slug>` runs warn
+  before repeating the attempt
+
+After the PR is open, report the URL and stop. Do not continue into normal
+printed-CLI package, live-test, registry, or skill-mirror steps.
 
 ## Setup
 
@@ -99,7 +211,58 @@ if [ "$_press_repo" = "true" ]; then
 else
   PRINTING_PRESS_BIN="$(command -v cli-printing-press 2>/dev/null || true)"
 fi
+if ! command -v go >/dev/null 2>&1; then
+  echo ""
+  echo "[setup-error] Go toolchain not found."
+  echo ""
+  echo "This Printing Press flow runs Go-based build or validation commands."
+  echo "Install Go 1.26.5 or newer from https://go.dev/dl/, then verify with:"
+  echo "  go version"
+  echo "Then re-run this skill."
+  echo ""
+  return 1 2>/dev/null || exit 1
+fi
 echo "PRINTING_PRESS_BIN=$PRINTING_PRESS_BIN"
+
+_pp_semver_lt() {
+  awk -v a="$1" -v b="$2" 'BEGIN {
+    split(a, x, "."); split(b, y, ".")
+    for (i = 1; i <= 3; i++) {
+      if ((x[i] + 0) < (y[i] + 0)) exit 0
+      if ((x[i] + 0) > (y[i] + 0)) exit 1
+    }
+    exit 1
+  }'
+}
+
+_pp_go_version_norm() {
+  printf '%s\n' "$1" | sed -nE 's/.*go([0-9]+)\.([0-9]+)(\.([0-9]+))?.*/\1.\2.\4/p' | awk -F. 'NF >= 2 { printf "%d.%d.%d\n", $1, $2, ($3 == "" ? 0 : $3) }'
+}
+
+_pp_check_go_currency() {
+  _pp_go_installed="$(_pp_go_version_norm "$(go env GOVERSION 2>/dev/null)")"
+  _pp_go_required="$(_pp_go_version_norm "$(go version "$PRINTING_PRESS_BIN" 2>/dev/null)")"
+  if [ -z "$_pp_go_installed" ] || [ -z "$_pp_go_required" ] || ! _pp_semver_lt "$_pp_go_installed" "$_pp_go_required"; then
+    return 0
+  fi
+
+  echo ""
+  if [ "${GOTOOLCHAIN:-auto}" = "local" ]; then
+    echo "[setup-error] Go $_pp_go_required or newer is required by this cli-printing-press binary (installed: $_pp_go_installed)."
+    echo "GOTOOLCHAIN=local disables automatic toolchain downloads, so later Go quality gates would fail."
+    echo "Install Go $_pp_go_required or newer from https://go.dev/dl/, or unset GOTOOLCHAIN."
+    echo ""
+    return 1
+  fi
+
+  echo "[go-toolchain-old] Go $_pp_go_required or newer is required by this cli-printing-press binary (installed: $_pp_go_installed)."
+  echo "PRESS_GO_INSTALLED=$_pp_go_installed"
+  echo "PRESS_GO_REQUIRED=$_pp_go_required"
+  echo "Default GOTOOLCHAIN behavior may download the required toolchain during Go commands."
+  echo ""
+  return 0
+}
+_pp_check_go_currency || { return 1 2>/dev/null || exit 1; }
 
 PRESS_BASE="$(basename "$_scope_dir" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9_-]/-/g; s/^-+//; s/-+$//')"
 if [ -z "$PRESS_BASE" ]; then
@@ -113,11 +276,53 @@ PRESS_LIBRARY="$PRESS_HOME/library"
 PRESS_MANUSCRIPTS="$PRESS_HOME/manuscripts"
 PRESS_CURRENT="$PRESS_RUNSTATE/current"
 
+_pp_check_disk_space() {
+  _pp_disk_warn_kb="${PRINTING_PRESS_DISK_WARN_KB:-3145728}"
+  _pp_disk_fail_kb="${PRINTING_PRESS_DISK_FAIL_KB:-524288}"
+  case "$_pp_disk_warn_kb$_pp_disk_fail_kb" in
+    ""|*[!0-9]*) return 0 ;;
+  esac
+
+  _pp_disk_path="$PRESS_HOME"
+  while [ ! -e "$_pp_disk_path" ] && [ "$_pp_disk_path" != "/" ]; do
+    _pp_disk_path="$(dirname "$_pp_disk_path")"
+  done
+
+  _pp_disk_avail_kb="$(df -Pk "$_pp_disk_path" 2>/dev/null | awk 'NR == 2 { print $4; exit }')"
+  case "$_pp_disk_avail_kb" in
+    ""|*[!0-9]*) return 0 ;;
+  esac
+
+  if [ "$_pp_disk_avail_kb" -lt "$_pp_disk_fail_kb" ]; then
+    echo ""
+    echo "[setup-error] Critically low disk space on the Printing Press workspace volume."
+    echo "PRESS_DISK_PATH=$_pp_disk_path"
+    echo "PRESS_DISK_AVAIL_KB=$_pp_disk_avail_kb"
+    echo "PRESS_DISK_FAIL_KB=$_pp_disk_fail_kb"
+    echo "Free disk space or set PRINTING_PRESS_HOME to a volume with more room, then re-run this skill."
+    echo ""
+    return 1
+  fi
+
+  if [ "$_pp_disk_avail_kb" -lt "$_pp_disk_warn_kb" ]; then
+    echo ""
+    echo "[low-disk] Printing Press workspace volume is low on free space."
+    echo "PRESS_DISK_PATH=$_pp_disk_path"
+    echo "PRESS_DISK_AVAIL_KB=$_pp_disk_avail_kb"
+    echo "PRESS_DISK_WARN_KB=$_pp_disk_warn_kb"
+    echo "This flow may need several GiB for generated files, Go build cache, module downloads, or repository clones."
+    echo ""
+  fi
+}
+_pp_check_disk_space || { return 1 2>/dev/null || exit 1; }
+
 mkdir -p "$PRESS_RUNSTATE" "$PRESS_LIBRARY" "$PRESS_MANUSCRIPTS" "$PRESS_CURRENT"
 ```
 <!-- PRESS_SETUP_CONTRACT_END -->
 
 After running the setup contract, capture the `PRINTING_PRESS_BIN=<abs-path>` line from stdout. **Every subsequent `cli-printing-press ...` invocation in this skill must use that absolute path** (substitute the value, not the literal `$PRINTING_PRESS_BIN` token) — `export PATH` above only affects the single Bash tool call it runs in, so later calls open a fresh shell where bare `cli-printing-press` resolves against the user's default `PATH` and a stale global can shadow the local build.
+
+If setup emitted `[go-toolchain-old]` or `[low-disk]`, surface the advisory to the user and continue unless setup also emitted `[setup-error]`. `[go-toolchain-old]` means later Go commands may download the required toolchain or fail when downloads are blocked; `[low-disk]` means this run may need several GiB for generated files, Go build cache, module downloads, or repository clones.
 
 After capturing the binary path, check binary version compatibility. Read the `min-binary-version` field from this skill's YAML frontmatter. Run `<PRINTING_PRESS_BIN> version --json` and parse the version from the output. Compare it to `min-binary-version` using semver rules. If the installed binary is older than the minimum, stop immediately and tell the user: "cli-printing-press binary vX.Y.Z is older than the minimum required vA.B.C. Run `go install github.com/mvanhorn/cli-printing-press/v4/cmd/cli-printing-press@latest` to update."
 
@@ -218,16 +423,11 @@ Read `.printing-press.json` from the resolved CLI directory.
    > "Publishing as **<category>**. OK?"
    Give the user the option to change it
 
-2. If no `category` but `catalog_entry` is present, look it up:
-   ```bash
-   cli-printing-press catalog show <catalog_entry> --json
-   ```
-   Extract the category from the result. Present for confirmation
-
-3. If neither provides a category, present the full list via AskUserQuestion:
+2. If the manifest does not provide a category, present the full list via AskUserQuestion:
    - developer-tools, monitoring, cloud, project-management
    - productivity, social-and-messaging, sales-and-crm, marketing
-   - payments, auth, commerce, ai, media-and-entertainment, devices, other
+   - payments, auth, commerce, ai, food-and-dining, health, maps, media-and-entertainment, devices, other
+   - travel
 
 ## Step 4: Validate
 
@@ -431,7 +631,19 @@ If `$PUBLISH_REPO_DIR` does not exist:
    else
      REPO_URL="https://github.com/mvanhorn/printing-press-library.git"
    fi
-   git clone --depth 50 "$REPO_URL" "$PUBLISH_REPO_DIR"
+   # Lightweight clone: blobless + shallow + sparse. The publish flow only
+   # touches the target CLI's own directory — it no longer regenerates the
+   # cli-skills/registry mirror (see Step 6) — so materializing every other
+   # CLI's source is wasted bandwidth and disk (a full clone is multiple GB;
+   # this is tens of MB). The cone keeps `tools`, `cli-skills`, and the target
+   # `library/<category>` so the in-category find/rm/copy operations below work
+   # on a real working tree. Cross-category collision checks use `git ls-tree`
+   # (which reads the full tree from the blobless clone) instead of `ls`.
+   git clone --filter=blob:none --depth 1 --sparse "$REPO_URL" "$PUBLISH_REPO_DIR"
+   # Skill-managed clones are owned by this flow; force LF checkout behavior so
+   # Windows core.autocrlf defaults do not create CRLF-only mirror diffs.
+   git -C "$PUBLISH_REPO_DIR" config core.autocrlf false
+   git -C "$PUBLISH_REPO_DIR" sparse-checkout set tools cli-skills library/<category>
    ```
 
    **No push access** (`HAS_PUSH` is `false`):
@@ -454,10 +666,16 @@ If `$PUBLISH_REPO_DIR` does not exist:
      UPSTREAM_URL="https://github.com/mvanhorn/printing-press-library.git"
    fi
 
-   git clone --depth 50 "$FORK_URL" "$PUBLISH_REPO_DIR"
+   # Lightweight clone (blobless + shallow + sparse) — see the push-access
+   # branch above for the rationale and cone contents.
+   git clone --filter=blob:none --depth 1 --sparse "$FORK_URL" "$PUBLISH_REPO_DIR"
+   # Skill-managed clones are owned by this flow; force LF checkout behavior so
+   # Windows core.autocrlf defaults do not create CRLF-only mirror diffs.
+   git -C "$PUBLISH_REPO_DIR" config core.autocrlf false
    cd "$PUBLISH_REPO_DIR"
+   git sparse-checkout set tools cli-skills library/<category>
    git remote add upstream "$UPSTREAM_URL"
-   git fetch upstream
+   git fetch --filter=blob:none --depth 1 upstream
    ```
 
 4. **Cache the config:**
@@ -499,19 +717,37 @@ If the clone was removed due to an access change, re-run first-time setup above.
 
 ```bash
 cd "$PUBLISH_REPO_DIR"
+git config core.autocrlf false
 
 if [ "$(jq -r .access $PUBLISH_CONFIG)" = "push" ]; then
   # Push access: origin IS the upstream
-  git fetch origin
+  git fetch --filter=blob:none --depth 1 origin
   git checkout main
   git reset --hard origin/main
+  # Remove stale untracked library fragments from prior publish branches before
+  # copying this CLI. Ignored files hidden by a branch-local .gitignore can
+  # become ordinary untracked files after checkout, and a later broad library
+  # add must not sweep another CLI's leftovers into this PR.
+  git clean -fdq library/
 else
   # Fork: origin is the fork, upstream is canonical
-  git fetch upstream
+  git fetch --filter=blob:none --depth 1 upstream
   git checkout main
   git reset --hard upstream/main
+  # Remove stale untracked library fragments from prior publish branches before
+  # copying this CLI. Ignored files hidden by a branch-local .gitignore can
+  # become ordinary untracked files after checkout, and a later broad library
+  # add must not sweep another CLI's leftovers into this PR.
+  git clean -fdq library/
   # Also sync origin (fork) so git push works cleanly
   git push origin main --force-with-lease 2>/dev/null || true
+fi
+
+# Existing managed clones may already be sparse for a different publish
+# category. Refresh the cone for the current target category before Step 6 uses
+# filesystem-based removal and copy operations.
+if git -C "$PUBLISH_REPO_DIR" config --bool core.sparseCheckout | grep -qx true; then
+  git -C "$PUBLISH_REPO_DIR" sparse-checkout set tools cli-skills library/<category>
 fi
 ```
 
@@ -547,10 +783,25 @@ exists in the public library tree. Step 6 removes and replaces
 after packaging must use this pre-package snapshot, not a fresh `ls`.
 
 ```bash
-PREEXISTING_MERGED_PATHS=$(ls "$PUBLISH_REPO_DIR/library"/*/"<api-slug>" 2>/dev/null || true)
+# Read from the git tree, not the working dir: the sparse checkout only
+# materializes the target category, but a slug can collide in any category.
+PREEXISTING_MERGED_PATHS=$(git -C "$PUBLISH_REPO_DIR" ls-tree -r --name-only HEAD \
+  | sed -n 's#^\(library/[^/]*/<api-slug>\)/.*#\1#p' | sort -u || true)
 PREEXISTING_MERGED_COLLISION=false
 if [ -n "$PREEXISTING_MERGED_PATHS" ]; then
   PREEXISTING_MERGED_COLLISION=true
+  # If this is a category-change reprint, materialize the existing category path
+  # before Step 6 runs filesystem-based ledger preservation and removal.
+  if git -C "$PUBLISH_REPO_DIR" config --bool core.sparseCheckout | grep -qx true; then
+    while IFS= read -r EXISTING_MERGED_PATH; do
+      [ -n "$EXISTING_MERGED_PATH" ] || continue
+      if [ "$EXISTING_MERGED_PATH" != "library/<category>/<api-slug>" ]; then
+        git -C "$PUBLISH_REPO_DIR" sparse-checkout add "$EXISTING_MERGED_PATH"
+      fi
+    done <<EOF
+$PREEXISTING_MERGED_PATHS
+EOF
+  fi
 fi
 ```
 
@@ -585,21 +836,91 @@ Parse the JSON result. Note the `staged_dir`, `module_path`, `manuscripts_includ
 
 `publish package` performs the mandatory vendor-prefix secret scan over the staged CLI, including copied manuscripts, before returning success. If it reports `vendor-prefix tokens detected`, stop and remove or redact the reported file:line findings before retrying. This is a hard gate and does not depend on `gitleaks`, `trufflehog`, or destination-repo push protection.
 
-Then copy the staged CLI into the publish repo, replacing any existing version:
+Then copy the staged CLI into the publish repo, replacing any existing version
+while preserving the public library's release ledger files when this is a
+reprint:
 
 ```bash
-# Remove existing version (handles category changes)
-rm -rf "$PUBLISH_REPO_DIR/library"/*/"<api-slug>"
+STAGED_CLI_DIR="$STAGING_DIR/library/<category>/<api-slug>"
+DEST_CATEGORY_DIR="$PUBLISH_REPO_DIR/library/<category>"
+DEST_CLI_DIR="$DEST_CATEGORY_DIR/<api-slug>"
 
-# Copy staged CLI into publish repo (slug-keyed directory)
-cp -r "$STAGING_DIR/library/<category>/<api-slug>" "$PUBLISH_REPO_DIR/library/<category>/<api-slug>"
+if [ ! -d "$STAGED_CLI_DIR" ]; then
+  echo "missing staged CLI directory: $STAGED_CLI_DIR" >&2
+  exit 1
+fi
+mkdir -p "$DEST_CATEGORY_DIR"
+
+# Preserve release-ledger files from the current public-library entry before
+# removing it. New CLIs omit .printing-press-release.json until the library's
+# post-merge workflow stamps a real release; reprints keep existing changelog
+# history and release metadata until that workflow stamps the next release.
+RELEASE_LEDGER_TMP="$(mktemp -d)"
+PUBLISH_SWAP_DIR="$(mktemp -d "$DEST_CATEGORY_DIR/.<api-slug>.XXXXXX")"
+trap 'rm -rf "$RELEASE_LEDGER_TMP" "$PUBLISH_SWAP_DIR"' EXIT
+for LEDGER_FILE in CHANGELOG.md .printing-press-release.json; do
+  EXISTING_LEDGER="$(find "$PUBLISH_REPO_DIR/library" -mindepth 3 -maxdepth 3 -path "*/<api-slug>/$LEDGER_FILE" -print -quit)"
+  if [ -n "$EXISTING_LEDGER" ]; then
+    cp "$EXISTING_LEDGER" "$RELEASE_LEDGER_TMP/$LEDGER_FILE"
+  fi
+done
+
+# Copy staged CLI into a same-category swap dir before deleting the current
+# public-library entry. This keeps a failed copy from leaving the publish repo
+# with the old CLI removed.
+cp -R "$STAGED_CLI_DIR/." "$PUBLISH_SWAP_DIR/"
+
+for LEDGER_FILE in CHANGELOG.md .printing-press-release.json; do
+  if [ -f "$RELEASE_LEDGER_TMP/$LEDGER_FILE" ]; then
+    cp "$RELEASE_LEDGER_TMP/$LEDGER_FILE" "$PUBLISH_SWAP_DIR/$LEDGER_FILE"
+  fi
+done
+
+# Remove existing version (handles category changes), then atomically install
+# the prepared replacement within the destination category.
+rm -rf "$PUBLISH_REPO_DIR/library"/*/"<api-slug>"
+mv "$PUBLISH_SWAP_DIR" "$DEST_CLI_DIR"
+rm -rf "$RELEASE_LEDGER_TMP"
+trap - EXIT
+
+# Reprints must preserve the base CLI's runtime version declaration layout as
+# well as its ledger files. Fresh prints can move `var version = ...` between
+# files, but the public library's release-ledger guard rejects those moves in a
+# normal publish PR because the post-merge release workflow owns version stamps.
+cd "$PUBLISH_REPO_DIR"
+VERSION_DECL_BASE_REF=upstream/main
+if ! git rev-parse --verify --quiet "$VERSION_DECL_BASE_REF" >/dev/null; then
+  VERSION_DECL_BASE_REF=origin/main
+fi
+VERSION_DECL_DIFF="$(git diff --unified=0 "$VERSION_DECL_BASE_REF" -- \
+  "library/*/<api-slug>/internal/cli/root.go" \
+  "library/*/<api-slug>/internal/cli/version.go" \
+  "library/*/<api-slug>/cmd/<api-slug>-pp-mcp/main.go")" || {
+  echo "failed to compare runtime version declarations with ${VERSION_DECL_BASE_REF}" >&2
+  exit 1
+}
+printf '%s\n' "$VERSION_DECL_DIFF" \
+  | grep -E '^[+-][[:space:]]*var version[[:space:]]*=' || true
+
+# If the command prints a change, reconcile the replacement to the base tree:
+# - A root.go declaration stays in root.go with the exact stamped value; remove
+#   only the duplicate declaration from version.go and keep its command code.
+# - A version.go declaration stays in version.go with the exact stamped value;
+#   remove any fresh declaration added elsewhere in the internal CLI package.
+# - An MCP main declaration stays in MCP main with the exact stamped value. If
+#   the base MCP main hardcodes the version instead, preserve that expression.
+# - If the base has no declaration in one of these runtime surfaces, preserve
+#   that no declaration layout and its existing literal/reference form. Do not
+#   introduce the fresh print's 0.0.0-dev declaration.
+# Re-run the diff command after editing. Do not continue until the command prints no matching lines.
 
 # Remove root-level binaries (should not be committed). publish package
 # already strips these before the copy; this rm -f is belt-and-suspenders
-# for the agent path. Cover all three names the Makefile/`go build ./cmd/...`
-# can drop: bare slug, CLI binary, MCP peer.
+# for the agent path. Cover the names local build paths can drop: bare slug,
+# CLI binary, live-dogfood probe binary, and MCP peer.
 rm -f "$PUBLISH_REPO_DIR/library/<category>/<api-slug>/<api-slug>" \
       "$PUBLISH_REPO_DIR/library/<category>/<api-slug>/<cli-name>" \
+      "$PUBLISH_REPO_DIR/library/<category>/<api-slug>/<cli-name>-dogfood" \
       "$PUBLISH_REPO_DIR/library/<category>/<api-slug>/<api-slug>-pp-mcp"
 
 # Defense-in-depth: validate printer attribution before README and registry surfaces.
@@ -625,7 +946,9 @@ fi
 # artifacts` check in `verify-library-conventions.yml` hard-fails any PR
 # whose diff against base touches these files, regardless of fork vs
 # same-repo origin. The library no longer has an in-PR auto-fix path;
-# do not re-introduce a mirror or registry regen here.
+# do not re-introduce a mirror or registry regen here. Also do NOT hand-update
+# CHANGELOG.md, .printing-press-release.json, or runtime version strings for
+# release accounting; the library release-ledger workflow owns those post-merge.
 
 # Verify this changed/new CLI builds and has no reachable Go vulnerabilities from the publish repo
 cd "$PUBLISH_REPO_DIR/library/<category>/<api-slug>" \
@@ -866,7 +1189,11 @@ Present three options via AskUserQuestion:
 
 #### Update path (own PR)
 
-This is the existing update flow. Set `EXISTING_PR_NUMBER` from the detection step and proceed to Step 8, which handles force-push and PR description update.
+This is the existing update flow with a divergence guard. Set
+`EXISTING_PR_NUMBER` from the detection step and proceed to Step 8, which
+fetches the current PR branch head, checks for branch-only fixes that the new
+package would revert, and only then handles force-push and PR description
+update.
 
 #### Replace path
 
@@ -913,8 +1240,9 @@ Present the format to the user:
 **3. Verify each suggestion is non-colliding** before presenting:
 
 ```bash
-# Check merged
-ls "$PUBLISH_REPO_DIR/library"/*/"<suggestion>" 2>/dev/null
+# Check merged (read the git tree, not the sparse working dir)
+git -C "$PUBLISH_REPO_DIR" ls-tree -r --name-only HEAD \
+  | sed -n 's#^\(library/[^/]*/<suggestion>\)/.*#\1#p' | sort -u
 # Check open PRs
 gh pr list --repo mvanhorn/printing-press-library --head "feat/<suggestion>" --state open --json number
 ```
@@ -959,7 +1287,69 @@ Exit the publish flow. If Step 6 already wrote files into `$PUBLISH_REPO_DIR`, c
 
 **If `EXISTING_PR_NUMBER` is set** (updating an existing PR):
 
-Always overwrite the branch — the intent is clearly to update:
+Fetch and inspect the current PR branch before replacing it. The latest
+`origin/main` plus the newly packaged `library/<category>/<api-slug>/` tree is
+the proposed update. The remote PR branch may also contain accepted review
+fixes from the drive-to-green loop. Those branch-only edits must not be erased
+silently.
+
+```bash
+UPDATE_BRANCH="feat/<api-slug>"
+UPDATE_BASE_REF="refs/printing-press-update-base/<api-slug>"
+
+git fetch origin "+main:refs/remotes/origin/main" "+$UPDATE_BRANCH:$UPDATE_BASE_REF"
+
+# Show the scoped change from the current PR head to the new packaged working
+# tree. This is informational for clean updates and mandatory context for holds.
+git diff --stat "$UPDATE_BASE_REF" -- "library/<category>/<api-slug>/"
+
+# Branch-only paths are files that exist on the current PR branch but are absent
+# from the new packaged working tree. These are always a hold because a
+# force-push would delete them.
+WORKTREE_PATHS=$(find "library/<category>/<api-slug>" -type f -print 2>/dev/null | sort)
+BRANCH_ONLY_PATHS=$(comm -23 \
+  <(git ls-tree -r --name-only "$UPDATE_BASE_REF" -- "library/<category>/<api-slug>/" | sort) \
+  <([ -n "$WORKTREE_PATHS" ] && printf '%s\n' "$WORKTREE_PATHS" || true))
+
+# Modified paths need human review only when a branch patch relative to
+# origin/main is not present in the new packaged working tree. A strict superset
+# passes: if the branch patch can be reverse-applied from the working tree, the
+# fix is still there even if the file also has fresh generated changes.
+BRANCH_ONLY_EDITS=$(git diff --name-only origin/main "$UPDATE_BASE_REF" -- "library/<category>/<api-slug>/" | while read -r path; do
+  [ -n "$path" ] || continue
+  if git diff origin/main "$UPDATE_BASE_REF" -- "$path" | git apply --check --reverse >/dev/null 2>&1; then
+    continue
+  else
+    printf '%s\n' "$path"
+  fi
+done | sort -u)
+
+if [ -n "$BRANCH_ONLY_PATHS$BRANCH_ONLY_EDITS" ]; then
+  echo "HOLD: updating PR #$EXISTING_PR_NUMBER would overwrite branch-only changes."
+  if [ -n "$BRANCH_ONLY_PATHS" ]; then
+    echo "Files present on the PR branch but missing from the new package:"
+    printf '%s\n' "$BRANCH_ONLY_PATHS" | sed 's/^/- /'
+  fi
+  if [ -n "$BRANCH_ONLY_EDITS" ]; then
+    echo "Files edited on the PR branch and changed again by the new package:"
+    printf '%s\n' "$BRANCH_ONLY_EDITS" | sed 's/^/- /'
+  fi
+  echo "Do not push yet. Reconcile by restoring the branch-only fixes onto the new tree, or ask the user for explicit overwrite confirmation after showing the paths above."
+  exit 1
+fi
+```
+
+If the guard exits, offer the user two choices via `AskUserQuestion`:
+
+- **Reconcile first** — restore the named branch-only files or edits onto the
+  new packaged tree, keep or add matching `.printing-press-patches/<id>.json`
+  records for code-level fixes, rerun Step 6 verification, then rerun this
+  divergence guard.
+- **Overwrite intentionally** — only after the user confirms the listed paths
+  are obsolete, continue and include a PR-body note naming the overwritten
+  branch-only paths.
+
+If the guard finds no branch-only paths or edits, overwrite the local branch:
 
 ```bash
 git checkout -B feat/<api-slug>
@@ -1016,7 +1406,37 @@ git checkout -B feat/<api-slug>
 
 ```bash
 cd "$PUBLISH_REPO_DIR"
-git add library/
+git add -A library/
+# The staged package has already stripped local binaries and passed the
+# mandatory secret/PII scans, so it is the source of truth for this publish.
+# Force-add the whole CLI directory after the broad add: destination-repo or
+# package-local .gitignore rules such as `*-pp-cli`, `*-pp-mcp`,
+# `/.manuscripts/`, or report filenames must not silently suppress required
+# publish artifacts under cmd/, .manuscripts/, or metadata files.
+git add -f "library/<category>/<api-slug>/"
+
+# Pre-commit scope guard: only this CLI's replacement plus any pre-existing
+# merged paths for the same slug may be staged. This catches stale untracked
+# fragments from previous publish branches before they leak into the wrong PR.
+EXPECTED_STAGE_PREFIXES=$(printf '%s\n' "library/<category>/<api-slug>/" "$PREEXISTING_MERGED_PATHS" | sed '/^$/d; s#/*$#/#' | sort -u)
+UNEXPECTED_STAGED=$(git diff --cached --name-only | awk -v prefixes="$EXPECTED_STAGE_PREFIXES" '
+BEGIN { n = split(prefixes, p, "\n") }
+{
+  matched = 0
+  for (i = 1; i <= n; i++) {
+    if (p[i] != "" && ($0 == p[i] || index($0, p[i]) == 1)) {
+      matched = 1
+      break
+    }
+  }
+  if (!matched) print
+}')
+if [ -n "$UNEXPECTED_STAGED" ]; then
+  echo "ERROR: publish staged paths outside the expected CLI scope:" >&2
+  printf '%s\n' "$UNEXPECTED_STAGED" | sed 's/^/- /' >&2
+  echo "Reset the managed clone and rerun publish package before committing." >&2
+  exit 1
+fi
 git commit -m "feat(<api-slug>): add <api-slug>"
 ```
 
@@ -1025,6 +1445,9 @@ Push to origin (which is the fork for non-push users, or the upstream for push u
 **If updating an existing PR** (`EXISTING_PR_NUMBER` is set):
 
 ```bash
+# Only run this after the update-path divergence guard above has passed, or
+# after the user explicitly confirmed an intentional overwrite of the named
+# branch-only paths.
 git push --force-with-lease -u origin feat/<api-slug>
 ```
 
