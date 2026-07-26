@@ -20,7 +20,12 @@ import (
 func resetCredentialEnv(t *testing.T) (home, configPath string) {
 	t.Helper()
 	home = t.TempDir()
+	// os.UserHomeDir reads HOME on unix, USERPROFILE on Windows, and home on
+	// plan9. Setting only HOME leaves the real user home in play on Windows,
+	// so path resolution under test would escape the temp directory.
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("home", home)
 	for _, name := range []string{
 		"PRINTING_PRESS_OAUTH2_CONFIG",
 		"PRINTING_PRESS_OAUTH2_CONFIG_DIR",
