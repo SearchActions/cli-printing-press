@@ -77,7 +77,13 @@ func TestMCPPathResolutionMatchesCLIResolverWithPlatformDefaults(t *testing.T) {
 func resetMCPPathEnv(t *testing.T) string {
 	t.Helper()
 	home := t.TempDir()
+	// os.UserHomeDir reads a different variable per platform: HOME on unix,
+	// USERPROFILE on Windows, home on plan9. Setting only HOME leaves the real
+	// user home in play on Windows, so the test would assert against the
+	// developer's actual config directory instead of the temp one.
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("home", home)
 	for _, name := range []string{
 		"{{envName .Name}}_CONFIG",
 		"{{envName .Name}}_CONFIG_DIR",
