@@ -10717,9 +10717,12 @@ func TestGeneratedAuthHints_BasicCredentialsAreSchemeAware(t *testing.T) {
 	assert.NotContains(t, auth[setupStart:setupStart+setupEnd], `basicauth-pp-cli auth set-token <token>`)
 	statusStart := strings.Index(auth, "func newAuthStatusCmd")
 	require.NotEqual(t, -1, statusStart)
-	statusEnd := strings.Index(auth[statusStart:], "func newAuthSetTokenCmd")
+	// Bound the status block by whatever function comes next rather than by a
+	// named one: multi-credential auth registers set-credentials instead of
+	// set-token, so newAuthSetTokenCmd is not emitted at all here.
+	statusEnd := strings.Index(auth[statusStart+1:], "\nfunc ")
 	require.NotEqual(t, -1, statusEnd)
-	statusBlock := auth[statusStart : statusStart+statusEnd]
+	statusBlock := auth[statusStart : statusStart+1+statusEnd]
 	assert.Contains(t, statusBlock, "Set your credentials:")
 	assert.NotContains(t, statusBlock, `basicauth-pp-cli auth set-token <token>`)
 
