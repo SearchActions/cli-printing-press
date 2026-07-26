@@ -102,7 +102,6 @@ func newAuthStatusCmd(flags *rootFlags) *cobra.Command {
 		},
 	}
 }
-
 func newAuthSetTokenCmd(flags *rootFlags) *cobra.Command {
 	return &cobra.Command{
 		Use:     "set-token <token>",

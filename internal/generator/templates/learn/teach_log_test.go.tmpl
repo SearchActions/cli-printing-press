@@ -17,7 +17,12 @@ import (
 func withTempHomeForLog(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
+	// os.UserHomeDir reads HOME on unix, USERPROFILE on Windows, and home on
+	// plan9. Setting only HOME leaves the real user home in play on Windows,
+	// so path resolution under test would escape the temp directory.
 	t.Setenv("HOME", dir)
+	t.Setenv("USERPROFILE", dir)
+	t.Setenv("home", dir)
 	t.Setenv("{{envPrefix .Name}}_STATE_DIR", "")
 	t.Setenv("{{envPrefix .Name}}_HOME", "")
 	t.Setenv("XDG_STATE_HOME", "")
