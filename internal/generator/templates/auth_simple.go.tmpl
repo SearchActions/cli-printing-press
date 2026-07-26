@@ -382,10 +382,10 @@ func newAuthStatusCmd(flags *rootFlags) *cobra.Command {
 }
 
 {{- if $authSetTokenAvailable}}
-{{- /* Emitted only when it is also registered. Multi-credential auth (HTTP
-       Basic, which needs an id AND a token) registers set-credentials
-       instead, and an unregistered constructor is dead code the dogfood
-       wiring check correctly flags. */}}
+{{- /* Emit set-token only when it is also registered. Multi-credential auth
+       (HTTP Basic needs an id AND a token) registers set-credentials
+       instead, so emitting this unconditionally would leave a constructor
+       nothing calls. */}}
 func newAuthSetTokenCmd(flags *rootFlags) *cobra.Command {
 	return &cobra.Command{
 		Use:   "set-token <token>",

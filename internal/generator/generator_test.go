@@ -10725,6 +10725,11 @@ func TestGeneratedAuthHints_BasicCredentialsAreSchemeAware(t *testing.T) {
 	statusBlock := auth[statusStart : statusStart+1+statusEnd]
 	assert.Contains(t, statusBlock, "Set your credentials:")
 	assert.NotContains(t, statusBlock, `basicauth-pp-cli auth set-token <token>`)
+	// set-token's absence is only correct if set-credentials took its place;
+	// asserting the absence alone would still pass with neither command.
+	assert.NotContains(t, auth, "func newAuthSetTokenCmd")
+	assert.Contains(t, auth, "func newAuthSetCredentialsCmd")
+	assert.Contains(t, auth, "cmd.AddCommand(newAuthSetCredentialsCmd(flags))")
 
 	requireGeneratedCompiles(t, outputDir)
 }
