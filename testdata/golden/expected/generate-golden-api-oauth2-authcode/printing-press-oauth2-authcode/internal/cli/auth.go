@@ -97,6 +97,32 @@ func runOAuthLogin(cmd *cobra.Command, flags *rootFlags, clientID, clientSecret 
 	if err != nil {
 		return err
 	}
+	// Resolved before every return path, including the credential-free probe
+	// below: a misconfigured redirect host is a configuration error whether or
+	// not credentials happen to be present, and validating it only on the path
+	// that reaches the browser would let a probe report success for a value
+	// the real flow refuses.
+	//
+	// RFC 8252 §7.3 prescribes the loopback IP literal, and some providers do
+	// reject "localhost" — but the reverse is also true, and the RFC does not
+	// bind a provider's registration form: Intuit's developer portal refuses
+	// 127.0.0.1 as a redirect URI outright, so a CLI that can only send the IP
+	// literal cannot authorize against them at all. That failure is silent and
+	// expensive to diagnose: the provider accepts the authorize request, the
+	// user signs in and approves, and only then is the redirect refused, so
+	// the callback server waits out its whole timeout for a request that was
+	// never sent.
+	//
+	// Either spelling reaches the listener regardless of which is bound; a
+	// client that resolves ::1 first falls back to 127.0.0.1.
+	redirectHost := "127.0.0.1"
+	if v := strings.TrimSpace(os.Getenv("PRINTING_PRESS_OAUTH2_OAUTH_REDIRECT_HOST")); v != "" {
+		if err := validateRedirectHost(v); err != nil {
+			return fmt.Errorf("invalid PRINTING_PRESS_OAUTH2_OAUTH_REDIRECT_HOST %q: %w", v, err)
+		}
+		redirectHost = strings.ToLower(v)
+	}
+
 	// Credential-free probes cannot construct an authorize URL. Keep supplied
 	// or configured client IDs on the detailed verify path below so it still
 	// emits PKCE params.
@@ -144,30 +170,6 @@ func runOAuthLogin(cmd *cobra.Command, flags *rootFlags, clientID, clientSecret 
 	scopes := []string{"read", "write"}
 	if len(scopes) > 0 {
 		params.Set("scope", strings.Join(scopes, " "))
-	}
-
-	// Resolved above the verify short-circuit so the URL dry-run prints names
-	// the same host the live flow registers with the provider; a dry-run
-	// advertising a different redirect_uri would be worse than printing none.
-	//
-	// RFC 8252 §7.3 prescribes the loopback IP literal, and some providers do
-	// reject "localhost" — but the reverse is also true, and the RFC does not
-	// bind a provider's registration form: Intuit's developer portal refuses
-	// 127.0.0.1 as a redirect URI outright, so a CLI that can only send the IP
-	// literal cannot authorize against them at all. That failure is silent and
-	// expensive to diagnose: the provider accepts the authorize request, the
-	// user signs in and approves, and only then is the redirect refused, so
-	// the callback server waits out its whole timeout for a request that was
-	// never sent.
-	//
-	// Either spelling reaches the listener regardless of which is bound; a
-	// client that resolves ::1 first falls back to 127.0.0.1.
-	redirectHost := "127.0.0.1"
-	if v := strings.TrimSpace(os.Getenv("PRINTING_PRESS_OAUTH2_OAUTH_REDIRECT_HOST")); v != "" {
-		if err := validateRedirectHost(v); err != nil {
-			return fmt.Errorf("invalid PRINTING_PRESS_OAUTH2_OAUTH_REDIRECT_HOST %q: %w", v, err)
-		}
-		redirectHost = strings.ToLower(v)
 	}
 
 	// Short-circuit BEFORE binding the callback port or opening a browser, so
