@@ -39,6 +39,9 @@ func TestGenerateOAuth2RefreshAuth(t *testing.T) {
 	assert.Contains(t, configSrc, `return "Bearer " + c.AccessToken`)
 	assert.NotContains(t, configSrc, `c.AuthSource = "bearer_refresh"`)
 	assert.Contains(t, clientSrc, `"grant_type":    {"refresh_token"}`)
+	assert.Contains(t, clientSrc, "req.SetBasicAuth(c.Config.ClientID, c.Config.ClientSecret)")
+	assert.NotContains(t, clientSrc, `params.Set("client_secret", c.Config.ClientSecret)`)
+	assert.NotContains(t, clientSrc, `"client_id":     {c.Config.ClientID},`)
 	assert.Contains(t, clientSrc, `OAuth2 client ID is required when a refresh token is configured`)
 	assert.Contains(t, clientSrc, `tokenURL = "https://auth.example.com/oauth/token"`)
 	assert.Contains(t, doctorSrc, `report["auth"] = "misconfigured (oauth2 refresh)"`)
@@ -180,6 +183,8 @@ func TestOAuth2RefreshTokenUsedBeforeRequest(t *testing.T) {
 	var gotRefreshToken string
 	var gotClientID string
 	var gotClientSecret string
+	var gotBasicOK bool
+	var gotBodySecret string
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
@@ -188,13 +193,13 @@ func TestOAuth2RefreshTokenUsedBeforeRequest(t *testing.T) {
 		if ct := r.Header.Get("Content-Type"); ct != "application/x-www-form-urlencoded" {
 			t.Fatalf("content-type = %q, want application/x-www-form-urlencoded", ct)
 		}
+		gotClientID, gotClientSecret, gotBasicOK = r.BasicAuth()
 		if err := r.ParseForm(); err != nil {
 			t.Fatalf("ParseForm: %v", err)
 		}
 		gotGrant = r.Form.Get("grant_type")
 		gotRefreshToken = r.Form.Get("refresh_token")
-		gotClientID = r.Form.Get("client_id")
-		gotClientSecret = r.Form.Get("client_secret")
+		gotBodySecret = r.Form.Get("client_secret")
 		w.Header().Set("Content-Type", "application/json")
 		fmt.Fprint(w, `+"`"+`{"access_token":"access-123","refresh_token":"refresh-456","expires_in":3600}`+"`"+`)
 	}))
@@ -219,8 +224,14 @@ func TestOAuth2RefreshTokenUsedBeforeRequest(t *testing.T) {
 	if header != "Bearer access-123" {
 		t.Fatalf("auth header = %q, want Bearer access-123", header)
 	}
-	if gotGrant != "refresh_token" || gotRefreshToken != "refresh-123" || gotClientID != "client-123" || gotClientSecret != "secret-123" {
-		t.Fatalf("refresh form = grant:%q refresh:%q client_id:%q client_secret:%q", gotGrant, gotRefreshToken, gotClientID, gotClientSecret)
+	if gotGrant != "refresh_token" || gotRefreshToken != "refresh-123" {
+		t.Fatalf("refresh form = grant:%q refresh:%q", gotGrant, gotRefreshToken)
+	}
+	if !gotBasicOK || gotClientID != "client-123" || gotClientSecret != "secret-123" {
+		t.Fatalf("basic auth = ok:%v client_id:%q client_secret:%q", gotBasicOK, gotClientID, gotClientSecret)
+	}
+	if gotBodySecret != "" {
+		t.Fatalf("client_secret leaked into request body: %q", gotBodySecret)
 	}
 	if cfg.RefreshToken != "refresh-456" {
 		t.Fatalf("rotated refresh token = %q, want refresh-456", cfg.RefreshToken)

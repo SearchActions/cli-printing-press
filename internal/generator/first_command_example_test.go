@@ -3,8 +3,10 @@ package generator
 import (
 	"testing"
 
+	"github.com/mvanhorn/cli-printing-press/v4/internal/shellargs"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/spec"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // TestFirstCommandExampleHonorsPromotion covers issue #290. The Wikipedia
@@ -512,6 +514,99 @@ func TestFirstCommandExampleHonorsPromotion(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			assert.Equal(t, tc.want, firstCommandExample(tc.resources))
+		})
+	}
+}
+
+// A phrase-shaped default — a SQL query, a search expression — used to render
+// bare, so verify-skill read the words after the flag as stray positionals and
+// a copy-paste into a shell globbed the `*`. The injection cases matter most:
+// a value that merely opens and closes with a quote must still be re-quoted,
+// or the live middle of it runs.
+func TestShellQuoteExampleValue(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{name: "plain token is untouched", in: "domain_rank", want: "domain_rank"},
+		{name: "empty stays empty", in: "", want: ""},
+		{name: "uuid is untouched", in: "550e8400-e29b-41d4-a716-446655440000", want: "550e8400-e29b-41d4-a716-446655440000"},
+		{name: "path-shaped value is untouched", in: "/v3/company/reports", want: "/v3/company/reports"},
+		{name: "phrase with spaces is single-quoted", in: "select * from Account maxresults 100", want: "'select * from Account maxresults 100'"},
+		{name: "glob without spaces is still quoted", in: "*.json", want: "'*.json'"},
+		{name: "history reference is quoted", in: "!important", want: "'!important'"},
+		{name: "generator-owned empty-object placeholder passes through", in: "'{}'", want: "'{}'"},
+		{name: "generator-owned empty-array placeholder passes through", in: "'[]'", want: "'[]'"},
+		{name: "embedded single quote is escaped, not re-delimited", in: "it's a phrase", want: `'it'\''s a phrase'`},
+		{name: "command substitution is inert inside single quotes", in: `it's "$HOME"`, want: `'it'\''s "$HOME"'`},
+		{name: "quote-flanked injection is re-quoted whole", in: "'safe'; rm -rf /; echo 'safe'", want: `''\''safe'\''; rm -rf /; echo '\''safe'\'''`},
+		{name: "double-quote-flanked value is re-quoted whole", in: `"a b"`, want: `'"a b"'`},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tt.want, shellQuoteExampleValue(tt.in))
+		})
+	}
+}
+
+// Proves the quoting reaches the assembled example, not just the helper: the
+// emitted line must tokenize back to exactly one value for the flag.
+func TestRequiredFlagExampleQuotesDispatchDefaultWithSpaces(t *testing.T) {
+	t.Parallel()
+
+	ep := spec.Endpoint{
+		Method: "GET",
+		Path:   "/query",
+		Params: []spec.Param{{
+			Name:          "query",
+			Type:          "string",
+			Required:      true,
+			DispatchParam: true,
+			Default:       "select * from Account maxresults 100",
+		}},
+	}
+
+	assert.Equal(t,
+		[]string{"--query", "'select * from Account maxresults 100'"},
+		requiredFlagExampleParts(ep),
+	)
+}
+
+// The quoting is only correct if the tokenizer that consumes these examples
+// gives the original value back as exactly one argument — the property
+// verify-skill, validate-narrative and live-dogfood all depend on. Asserting
+// the round trip catches an escaping mistake that a string-equality test on
+// the quoted form would happily enshrine.
+func TestShellQuoteExampleValueRoundTripsThroughTokenizer(t *testing.T) {
+	t.Parallel()
+
+	values := []string{
+		"domain_rank",
+		"select * from Account maxresults 100",
+		"*.json",
+		"!important",
+		"it's a phrase",
+		`it's "$HOME"`,
+		"'safe'; rm -rf /; echo 'safe'",
+		`"a b"`,
+		"a\tb",
+		`back\slash`,
+		"$(whoami)",
+		"`hostname`",
+	}
+
+	for _, value := range values {
+		t.Run(value, func(t *testing.T) {
+			t.Parallel()
+			line := "example-pp-cli items list --query " + shellQuoteExampleValue(value)
+			args, err := shellargs.ArgsAfterBinary(line)
+			require.NoError(t, err)
+			require.Equal(t, []string{"items", "list", "--query", value}, args)
 		})
 	}
 }

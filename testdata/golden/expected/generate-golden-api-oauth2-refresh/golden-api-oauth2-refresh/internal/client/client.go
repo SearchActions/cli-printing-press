@@ -12,14 +12,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"golden-api-oauth2-refresh-pp-cli/internal/cliutil"
+	"golden-api-oauth2-refresh-pp-cli/internal/config"
 	"io"
 	"math"
 	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
-	"printing-press-oauth2-pp-cli/internal/cliutil"
-	"printing-press-oauth2-pp-cli/internal/config"
 	"sort"
 	"strings"
 	"time"
@@ -638,7 +638,7 @@ func (c *Client) doInternal(ctx context.Context, method, path string, params map
 			req.Header.Del(BinaryResponseHeader)
 		}
 		if req.Header.Get("User-Agent") == "" {
-			req.Header.Set("User-Agent", "printing-press-oauth2-pp-cli/1.0.0")
+			req.Header.Set("User-Agent", "golden-api-oauth2-refresh-pp-cli/1.0.0")
 		}
 		// Go's net/http omits Accept by default; browsers, curl, and other
 		// stdlibs always send it. Fingerprint-checking WAFs (Imperva, Akamai,
@@ -823,7 +823,7 @@ func (c *Client) authHeader(ctx context.Context) (string, error) {
 	if c.Config == nil {
 		return "", nil
 	}
-	if c.Config.AccessToken != "" && !c.Config.TokenExpiry.IsZero() && time.Now().After(c.Config.TokenExpiry) && c.Config.RefreshToken != "" && !(cliutil.IsVerifyEnv() && !cliutil.IsVerifyLiveHTTPEnv()) {
+	if ((c.Config.AccessToken != "" && !c.Config.TokenExpiry.IsZero() && time.Now().After(c.Config.TokenExpiry)) || c.Config.AccessToken == "") && c.Config.RefreshToken != "" && !(cliutil.IsVerifyEnv() && !cliutil.IsVerifyLiveHTTPEnv()) {
 		if authHeaderLooksLikePlaceholderCredential(c.Config.AccessToken) || authHeaderLooksLikePlaceholderCredential(c.Config.RefreshToken) || authHeaderLooksLikePlaceholderCredential(c.Config.ClientID) || authHeaderLooksLikePlaceholderCredential(c.Config.ClientSecret) {
 			return "", authPlaceholderCredentialError(c.Config)
 		}
@@ -884,7 +884,7 @@ func looksLikeCredentialPlaceholder(value string) bool {
 }
 
 func authPlaceholderCredentialError(cfg *config.Config) error {
-	return authPlaceholderCredentialErrorWithSetup(cfg, "printing-press-oauth2-pp-cli auth login --device-code or printing-press-oauth2-pp-cli auth set-token <token>")
+	return authPlaceholderCredentialErrorWithSetup(cfg, "golden-api-oauth2-refresh-pp-cli auth login")
 }
 
 func authPlaceholderCredentialErrorWithSetup(cfg *config.Config, setup string) error {
@@ -908,7 +908,7 @@ func (c *Client) refreshAccessToken(ctx context.Context) error {
 
 	tokenURL := c.Config.TokenURL
 	if tokenURL == "" {
-		tokenURL = "https://login.device.example/oauth/token"
+		tokenURL = "https://api.oauth2-refresh.example/oauth/token"
 	}
 
 	params := url.Values{
@@ -1144,6 +1144,8 @@ func (c *Client) maskCredentialText(text string, extraCredentials ...string) str
 		addCredential(c.Config.AccessToken)
 		addCredential(c.Config.RefreshToken)
 		addCredential(c.Config.ClientSecret)
+		addCredential(c.Config.Oauth2RefreshClientSecret)
+		addCredential(c.Config.Oauth2RefreshRefreshToken)
 	}
 	sort.SliceStable(masks, func(i, j int) bool {
 		return len(masks[i].needle) > len(masks[j].needle)

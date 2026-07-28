@@ -80,7 +80,7 @@ func commandExampleArgParts(ep spec.Endpoint) []string {
 		if val == "" {
 			val = "<" + p.Name + ">"
 		}
-		parts = append(parts, val)
+		parts = append(parts, shellQuoteExampleValue(val))
 	}
 	return append(parts, requiredFlagExampleParts(ep)...)
 }
@@ -88,9 +88,43 @@ func commandExampleArgParts(ep spec.Endpoint) []string {
 func readmeExampleArgs(ep spec.Endpoint) []string {
 	var parts []string
 	for _, p := range orderedPositionalParams(ep) {
-		parts = append(parts, skillExamplePositionalValue(p))
+		parts = append(parts, shellQuoteExampleValue(skillExamplePositionalValue(p)))
 	}
 	return append(parts, requiredFlagExampleParts(ep)...)
+}
+
+// Emitted pre-quoted, so re-quoting would nest the quotes and break the JSON
+// the generated command has to parse back.
+var preQuotedExampleValues = map[string]bool{"'{}'": true, "'[]'": true}
+
+// Everything a POSIX shell can act on. A value carrying any of these must reach
+// the shell as one inert argument: without quoting, a spec whose default or
+// example is a phrase — a SQL-shaped query, a search expression, a filter
+// string — renders as `--query select * from Account`, which verify-skill reads
+// as five stray positionals and a shell reads as a glob. `!` is here because
+// interactive bash expands history references before the command ever runs.
+const shellSensitiveChars = " \t\n*?[]{}$`\"'\\|&;<>()~#!"
+
+// shellQuoteExampleValue makes a rendered example value survive a copy-paste
+// into a shell and tokenize back to exactly one argument through shellargs.Split.
+//
+// Single quotes are the whole mechanism: POSIX suspends every expansion inside
+// them, so one rule covers globs, history references, command substitution and
+// word splitting alike. An embedded single quote closes the run, escapes itself
+// outside quotes, and reopens, which is the standard POSIX idiom for it.
+//
+// Deciding by "the value already looks quoted" would be the bug this shape
+// avoids: a value like `'safe'; rm -rf /; echo 'safe'` opens and closes with a
+// quote yet leaves the middle live, so only the exact generator-owned
+// placeholders are passed through untouched.
+func shellQuoteExampleValue(s string) string {
+	if s == "" || preQuotedExampleValues[s] {
+		return s
+	}
+	if !strings.ContainsAny(s, shellSensitiveChars) {
+		return s
+	}
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
 func requiredFlagExampleParts(ep spec.Endpoint) []string {
@@ -103,7 +137,7 @@ func requiredFlagExampleParts(ep spec.Endpoint) []string {
 		if val == "" {
 			val = "value"
 		}
-		parts = append(parts, "--"+publicFlagName(p), val)
+		parts = append(parts, "--"+publicFlagName(p), shellQuoteExampleValue(val))
 	}
 
 	switch strings.ToUpper(ep.Method) {
@@ -123,7 +157,7 @@ func requiredFlagExampleParts(ep spec.Endpoint) []string {
 				} else if val == "" {
 					val = "value"
 				}
-				parts = append(parts, "--"+publicFlagName(p), val)
+				parts = append(parts, "--"+publicFlagName(p), shellQuoteExampleValue(val))
 				break
 			}
 		}

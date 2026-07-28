@@ -1,0 +1,50 @@
+name: golden-api-oauth2-refresh
+description: "Purpose-built fixture for the OAuth2 refresh-token auth shape."
+version: "1.0.0"
+base_url: "https://api.oauth2-refresh.example/v1"
+
+# oauth2_refresh is reachable only from an internal spec — no OpenAPI
+# securityScheme maps to it — so this fixture is the sole golden coverage for
+# the fork. Pins in client.go:
+#   - the token exchange sends the client pair via SetBasicAuth
+#     (RFC 6749 §2.3.1 client_secret_basic, which Intuit and other providers
+#     require) and never as request-body credentials
+#   - the rotated refresh_token from the response is persisted through
+#     SaveTokens, so a rotating provider keeps working past the first refresh
+#   - the pre-request freshness branch that refreshes a missing or expired
+#     access token before authHeader returns
+# Pins in config.go: AuthSource="oauth2_refresh" and the Bearer AccessToken
+# emission. A regression in either the auth-style split or the rotation
+# persistence surfaces as a textual diff in the snapshotted files.
+auth:
+  type: oauth2_refresh
+  header: "Authorization"
+  format: "Bearer {token}"
+  token_url: "https://api.oauth2-refresh.example/oauth/token"
+  authorization_url: "https://api.oauth2-refresh.example/oauth/authorize"
+  scopes:
+    - read
+  env_vars:
+    - OAUTH2_REFRESH_CLIENT_ID
+    - OAUTH2_REFRESH_CLIENT_SECRET
+    - OAUTH2_REFRESH_REFRESH_TOKEN
+
+resources:
+  items:
+    description: "OAuth2 refresh-token items resource"
+    endpoints:
+      list:
+        method: GET
+        path: "/items"
+        description: "List items"
+        response:
+          type: array
+          item: Item
+
+types:
+  Item:
+    fields:
+      - name: id
+        type: string
+      - name: name
+        type: string
