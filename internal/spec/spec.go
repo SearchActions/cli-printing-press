@@ -84,6 +84,7 @@ const (
 	TierAuthTypeNone        = "none"
 	TierAuthTypeAPIKey      = "api_key"
 	TierAuthTypeBearerToken = "bearer_token"
+	AuthTypeOAuth2          = "oauth2"
 	AuthTypeOAuth2Refresh   = "oauth2_refresh"
 
 	TierAuthPlacementHeader = "header"
@@ -1177,6 +1178,19 @@ type AuthConfig struct {
 	// emits a Config field + os.Getenv loader per entry, then applies the
 	// credential according to In on every request.
 	AdditionalHeaders []AdditionalAuthHeader `yaml:"additional_headers,omitempty" json:"additional_headers,omitempty"`
+
+	// CallbackTemplateVars maps an OAuth callback query parameter to the
+	// EndpointTemplateVars placeholder it resolves. Some providers return the
+	// tenant identifier the API is addressed by *on the authorization
+	// redirect* rather than from any callable endpoint: Intuit sends
+	// ?realmId=<company id> alongside ?code=, and QuickBooks' every request
+	// path is /v3/company/{realm_id}/..., so a login that reads only `code`
+	// leaves the user hunting for an ID the flow already handed them. Declared
+	// as {callback_param: placeholder} (e.g. {realmId: realm_id}); the
+	// authorization_code template captures each listed param and persists it
+	// into Config.TemplateVars. Unlisted params are ignored, so a provider
+	// that returns nothing extra emits no capture code.
+	CallbackTemplateVars map[string]string `yaml:"callback_template_vars,omitempty" json:"callback_template_vars,omitempty"`
 }
 
 // AdditionalAuthHeader pairs a sibling-scheme credential destination with the
@@ -1737,6 +1751,51 @@ func validateOAuth2Refresh(c AuthConfig) error {
 // produces q.Set("", token); a SessionTokenURL is required to bootstrap; and
 // token_param_in is byte-compared in the template, so spec authors who write
 // "Header" or "QUERY" silently route to the wrong attachment path.
+// validateCallbackTemplateVars fails fast on a capture that could never
+// resolve. Three ways that happens:
+//
+//   - The grant has no callback. Only authorization_code redirects the user
+//     back with query params, so a mapping under client_credentials or
+//     device_code declares a capture from a request that never occurs.
+//   - The placeholder is absent from EndpointTemplateVars. The value would be
+//     written into TemplateVars and read by nothing, leaving a login that
+//     looks successful and requests that still carry {placeholder}.
+//   - A name carries surrounding whitespace. Validation trims, so " realm_id "
+//     would pass while the untrimmed key reached the emitted code and the
+//     value landed under a key URL expansion never looks up. Normalizing in
+//     place keeps the check and the emission reading the same string.
+func validateCallbackTemplateVars(s *APISpec) error {
+	if len(s.Auth.CallbackTemplateVars) == 0 {
+		return nil
+	}
+	if s.Auth.Type != AuthTypeOAuth2 && s.Auth.Type != AuthTypeOAuth2Refresh {
+		return fmt.Errorf("auth.callback_template_vars requires auth.type %q or %q, got %q", AuthTypeOAuth2, AuthTypeOAuth2Refresh, s.Auth.Type)
+	}
+	if grant := s.Auth.EffectiveOAuth2Grant(); grant != OAuth2GrantAuthorizationCode {
+		return fmt.Errorf("auth.callback_template_vars requires auth.oauth2_grant %q (the only grant with a browser callback), got %q", OAuth2GrantAuthorizationCode, grant)
+	}
+	normalized := make(map[string]string, len(s.Auth.CallbackTemplateVars))
+	for param, placeholder := range s.Auth.CallbackTemplateVars {
+		trimmedParam := strings.TrimSpace(param)
+		if trimmedParam == "" {
+			return fmt.Errorf("auth.callback_template_vars has an empty callback parameter name")
+		}
+		trimmedPlaceholder := strings.TrimSpace(placeholder)
+		if trimmedPlaceholder == "" {
+			return fmt.Errorf("auth.callback_template_vars[%q] has an empty template-var name", trimmedParam)
+		}
+		if !slices.Contains(s.EndpointTemplateVars, trimmedPlaceholder) {
+			return fmt.Errorf("auth.callback_template_vars[%q] targets %q, which is not in endpoint_template_vars %v", trimmedParam, trimmedPlaceholder, s.EndpointTemplateVars)
+		}
+		if existing, ok := normalized[trimmedParam]; ok && existing != trimmedPlaceholder {
+			return fmt.Errorf("auth.callback_template_vars has conflicting entries for callback parameter %q (%q and %q)", trimmedParam, existing, trimmedPlaceholder)
+		}
+		normalized[trimmedParam] = trimmedPlaceholder
+	}
+	s.Auth.CallbackTemplateVars = normalized
+	return nil
+}
+
 func validateSessionHandshake(c AuthConfig) error {
 	if c.Type != "session_handshake" {
 		return nil
@@ -3958,6 +4017,9 @@ func (s *APISpec) Validate() error {
 		return err
 	}
 	if err := validateOAuth2Refresh(s.Auth); err != nil {
+		return err
+	}
+	if err := validateCallbackTemplateVars(s); err != nil {
 		return err
 	}
 	if err := validateAuthPrefix(s.Auth); err != nil {

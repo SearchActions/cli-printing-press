@@ -19,7 +19,13 @@ import (
 	"os"
 	"os/exec"
 	"runtime"
+{{- if .Auth.CallbackTemplateVars}}
+	"sort"
+{{- end}}
 	"strings"
+{{- if .Auth.CallbackTemplateVars}}
+	"sync"
+{{- end}}
 	"time"
 
 	"{{modulePath}}/internal/cliutil"
@@ -214,6 +220,29 @@ func runOAuthLogin(cmd *cobra.Command, flags *rootFlags, clientID, clientSecret 
 		return nil
 	}
 
+	// Resolved before any side effect: past this point the flow binds a port,
+	// opens the user's browser, and starts a server, so a malformed override
+	// discovered later would cost a browser tab and a dangling listener to
+	// report a plain configuration error.
+	//
+	// A real browser login is sign-in, then possibly MFA, then picking which
+	// company/workspace to connect, then reading a consent screen. Two minutes
+	// routinely lost that race, and losing it is expensive: the callback
+	// server is gone by the time the user approves, so the authorization lands
+	// on a dead port and the whole flow restarts. Wait long enough that only a
+	// genuinely abandoned login times out.
+	authTimeout := 15 * time.Minute
+	if v := strings.TrimSpace(os.Getenv("{{envName .Name}}_AUTH_TIMEOUT")); v != "" {
+		parsed, err := time.ParseDuration(v)
+		if err != nil {
+			return fmt.Errorf("invalid {{envName .Name}}_AUTH_TIMEOUT %q: %w", v, err)
+		}
+		if parsed <= 0 {
+			return fmt.Errorf("{{envName .Name}}_AUTH_TIMEOUT must be positive, got %q", v)
+		}
+		authTimeout = parsed
+	}
+
 	listener, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))
 	if err != nil {
 		return fmt.Errorf("starting callback server: %w", err)
@@ -235,6 +264,14 @@ func runOAuthLogin(cmd *cobra.Command, flags *rootFlags, clientID, clientSecret 
 
 	codeCh := make(chan string, 1)
 	errCh := make(chan error, 1)
+{{- if .Auth.CallbackTemplateVars}}
+	// Some providers return the tenant identifier the API is addressed by on
+	// the authorization redirect itself, not from any callable endpoint. The
+	// value is only ever in flight during this one request, so capture it here
+	// or make the user go find it by hand.
+	capturedTemplateVars := map[string]string{}
+	var capturedMu sync.Mutex
+{{- end}}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/callback", func(w http.ResponseWriter, r *http.Request) {
@@ -254,6 +291,15 @@ func runOAuthLogin(cmd *cobra.Command, flags *rootFlags, clientID, clientSecret 
 			http.Error(w, "No code", http.StatusBadRequest)
 			return
 		}
+{{- if .Auth.CallbackTemplateVars}}
+		capturedMu.Lock()
+{{- range $param, $placeholder := .Auth.CallbackTemplateVars}}
+		if v := strings.TrimSpace(r.URL.Query().Get({{printf "%q" $param}})); v != "" {
+			capturedTemplateVars[{{printf "%q" $placeholder}}] = v
+		}
+{{- end}}
+		capturedMu.Unlock()
+{{- end}}
 		w.Header().Set("Content-Type", "text/html")
 		fmt.Fprint(w, "<html><body><h2>Authentication successful!</h2><p>You can close this tab.</p></body></html>")
 		codeCh <- code
@@ -267,8 +313,8 @@ func runOAuthLogin(cmd *cobra.Command, flags *rootFlags, clientID, clientSecret 
 	case code = <-codeCh:
 	case err := <-errCh:
 		return err
-	case <-time.After(2 * time.Minute):
-		return fmt.Errorf("authentication timed out after 2 minutes")
+	case <-time.After(authTimeout):
+		return fmt.Errorf("authentication timed out after %s; set {{envName .Name}}_AUTH_TIMEOUT to allow longer", authTimeout)
 	}
 
 	server.Shutdown(context.Background())
@@ -338,6 +384,20 @@ func runOAuthLogin(cmd *cobra.Command, flags *rootFlags, clientID, clientSecret 
 	if err := cfg.SaveTokens(clientID, clientSecret, tokenResp.AccessToken, tokenResp.RefreshToken, expiry); err != nil {
 		return fmt.Errorf("saving tokens: %w", err)
 	}
+{{- if .Auth.CallbackTemplateVars}}
+	capturedMu.Lock()
+	captured := make(map[string]string, len(capturedTemplateVars))
+	for k, v := range capturedTemplateVars {
+		captured[k] = v
+	}
+	capturedMu.Unlock()
+	if err := cfg.SaveTemplateVars(captured); err != nil {
+		return fmt.Errorf("saving callback template vars: %w", err)
+	}
+	for _, name := range sortedTemplateVarNames(captured) {
+		fmt.Fprintf(os.Stderr, "%s Captured %s=%s from the authorization callback.\n", green("OK"), name, captured[name])
+	}
+{{- end}}
 
 	if expiry.IsZero() {
 		fmt.Fprintf(os.Stderr, "%s Authentication successful! Token expiry not provided.\n", green("OK"))
@@ -501,6 +561,20 @@ func pkceCodeChallengeS256(verifier string) string {
 	sum := sha256.Sum256([]byte(verifier))
 	return base64.RawURLEncoding.EncodeToString(sum[:])
 }
+
+{{- if .Auth.CallbackTemplateVars}}
+
+// sortedTemplateVarNames keeps the captured-var confirmation lines in a stable
+// order; map iteration would shuffle them between otherwise identical logins.
+func sortedTemplateVarNames(vars map[string]string) []string {
+	names := make([]string, 0, len(vars))
+	for name := range vars {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
+}
+{{- end}}
 
 func openBrowser(url string) {
 	var cmd *exec.Cmd

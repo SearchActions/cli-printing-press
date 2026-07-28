@@ -158,6 +158,29 @@ func runOAuthLogin(cmd *cobra.Command, flags *rootFlags, clientID, clientSecret 
 		return nil
 	}
 
+	// Resolved before any side effect: past this point the flow binds a port,
+	// opens the user's browser, and starts a server, so a malformed override
+	// discovered later would cost a browser tab and a dangling listener to
+	// report a plain configuration error.
+	//
+	// A real browser login is sign-in, then possibly MFA, then picking which
+	// company/workspace to connect, then reading a consent screen. Two minutes
+	// routinely lost that race, and losing it is expensive: the callback
+	// server is gone by the time the user approves, so the authorization lands
+	// on a dead port and the whole flow restarts. Wait long enough that only a
+	// genuinely abandoned login times out.
+	authTimeout := 15 * time.Minute
+	if v := strings.TrimSpace(os.Getenv("PRINTING_PRESS_OAUTH2_AUTH_TIMEOUT")); v != "" {
+		parsed, err := time.ParseDuration(v)
+		if err != nil {
+			return fmt.Errorf("invalid PRINTING_PRESS_OAUTH2_AUTH_TIMEOUT %q: %w", v, err)
+		}
+		if parsed <= 0 {
+			return fmt.Errorf("PRINTING_PRESS_OAUTH2_AUTH_TIMEOUT must be positive, got %q", v)
+		}
+		authTimeout = parsed
+	}
+
 	listener, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))
 	if err != nil {
 		return fmt.Errorf("starting callback server: %w", err)
@@ -211,8 +234,8 @@ func runOAuthLogin(cmd *cobra.Command, flags *rootFlags, clientID, clientSecret 
 	case code = <-codeCh:
 	case err := <-errCh:
 		return err
-	case <-time.After(2 * time.Minute):
-		return fmt.Errorf("authentication timed out after 2 minutes")
+	case <-time.After(authTimeout):
+		return fmt.Errorf("authentication timed out after %s; set PRINTING_PRESS_OAUTH2_AUTH_TIMEOUT to allow longer", authTimeout)
 	}
 
 	server.Shutdown(context.Background())

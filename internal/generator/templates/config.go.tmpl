@@ -1021,6 +1021,42 @@ func (c *Config) SaveTokens(clientID, clientSecret, accessToken, refreshToken st
 	return c.save()
 }
 
+{{- if .Auth.CallbackTemplateVars}}
+
+// SaveTemplateVars persists endpoint template-var values learned at runtime —
+// today, the ones a provider returns on the OAuth callback. An env var for the
+// same placeholder still wins on the next Load, so this records a value
+// without overriding an operator's explicit choice. Empty values are ignored
+// rather than persisted as blanks that would mask a working default.
+func (c *Config) SaveTemplateVars(vars map[string]string) error {
+	if len(vars) == 0 {
+		return nil
+	}
+	if c.TemplateVars == nil {
+		c.TemplateVars = map[string]string{}
+	}
+	if c.fileConfig != nil && c.fileConfig.TemplateVars == nil {
+		c.fileConfig.TemplateVars = map[string]string{}
+	}
+	changed := false
+	for name, value := range vars {
+		value = strings.TrimSpace(value)
+		if name == "" || value == "" {
+			continue
+		}
+		c.TemplateVars[name] = value
+		if c.fileConfig != nil {
+			c.fileConfig.TemplateVars[name] = value
+		}
+		changed = true
+	}
+	if !changed {
+		return nil
+	}
+	return c.save()
+}
+{{- end}}
+
 {{- if authSetCredentialsAvailable .Auth}}
 
 // SaveCredentials persists a two-part request credential pair to the fields
