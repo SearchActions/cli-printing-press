@@ -285,13 +285,31 @@ func runOAuthLogin(cmd *cobra.Command, flags *rootFlags, clientID, clientSecret 
 	server := &http.Server{Handler: mux}
 	go server.Serve(listener)
 
+	// A real browser login is sign-in, then possibly MFA, then picking which
+	// company/workspace to connect, then reading a consent screen. Two minutes
+	// routinely lost that race, and the failure is expensive: the callback
+	// server is gone by the time the user approves, so the authorization lands
+	// on a dead port and the whole flow restarts. Wait long enough that only a
+	// genuinely abandoned login times out.
+	authTimeout := 15 * time.Minute
+	if v := strings.TrimSpace(os.Getenv("{{envName .Name}}_AUTH_TIMEOUT")); v != "" {
+		parsed, err := time.ParseDuration(v)
+		if err != nil {
+			return fmt.Errorf("invalid {{envName .Name}}_AUTH_TIMEOUT %q: %w", v, err)
+		}
+		if parsed <= 0 {
+			return fmt.Errorf("{{envName .Name}}_AUTH_TIMEOUT must be positive, got %q", v)
+		}
+		authTimeout = parsed
+	}
+
 	var code string
 	select {
 	case code = <-codeCh:
 	case err := <-errCh:
 		return err
-	case <-time.After(2 * time.Minute):
-		return fmt.Errorf("authentication timed out after 2 minutes")
+	case <-time.After(authTimeout):
+		return fmt.Errorf("authentication timed out after %s; set {{envName .Name}}_AUTH_TIMEOUT to allow longer", authTimeout)
 	}
 
 	server.Shutdown(context.Background())

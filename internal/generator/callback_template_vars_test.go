@@ -149,3 +149,29 @@ func TestSaveTemplateVarsSkipsBlankValues(t *testing.T) {
 	saveFn := configSrc[strings.Index(configSrc, "func (c *Config) SaveTemplateVars"):]
 	assert.Contains(t, saveFn[:strings.Index(saveFn, "\n}")], `if name == "" || value == "" {`)
 }
+
+// The browser-wait budget has to cover sign-in, MFA, company selection and a
+// consent screen. The old two-minute cap lost that race routinely, and the
+// failure is expensive: the callback server is gone by the time the user
+// approves, so the authorization lands on a dead port.
+func TestAuthLoginBrowserWaitIsGenerousAndOverridable(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := callbackTemplateVarSpec("auth-timeout")
+	require.NoError(t, apiSpec.Validate())
+
+	outputDir := filepath.Join(t.TempDir(), "auth-timeout-pp-cli")
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+
+	authSrc := readGeneratedFile(t, outputDir, "internal", "cli", "auth.go")
+
+	assert.Contains(t, authSrc, "authTimeout := 15 * time.Minute")
+	assert.NotContains(t, authSrc, "time.After(2 * time.Minute)")
+	// The override has to be rejected when unusable rather than silently
+	// falling back, or a typo produces a login that fails for the wrong reason.
+	assert.Contains(t, authSrc, `os.Getenv("AUTH_TIMEOUT_AUTH_TIMEOUT")`)
+	assert.Contains(t, authSrc, "invalid AUTH_TIMEOUT_AUTH_TIMEOUT")
+	assert.Contains(t, authSrc, "AUTH_TIMEOUT_AUTH_TIMEOUT must be positive")
+
+	requireGeneratedCompiles(t, outputDir)
+}
