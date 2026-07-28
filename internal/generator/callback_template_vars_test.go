@@ -175,3 +175,122 @@ func TestAuthLoginBrowserWaitIsGenerousAndOverridable(t *testing.T) {
 
 	requireGeneratedCompiles(t, outputDir)
 }
+
+// Whitespace in a declared name used to pass validation (which trims) while
+// the untrimmed key reached the emitted code, so the captured value landed
+// under a key URL expansion never looks up — a login that reports success and
+// requests that still carry {realm_id}.
+func TestCallbackTemplateVarsNormalizeWhitespace(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := callbackTemplateVarSpec("callback-whitespace")
+	apiSpec.Auth.CallbackTemplateVars = map[string]string{"  realmId  ": "  realm_id  "}
+	require.NoError(t, apiSpec.Validate())
+
+	// Validation normalizes in place so the check and the emission read the
+	// same string.
+	assert.Equal(t, map[string]string{"realmId": "realm_id"}, apiSpec.Auth.CallbackTemplateVars)
+
+	outputDir := filepath.Join(t.TempDir(), "callback-whitespace-pp-cli")
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+
+	authSrc := readGeneratedFile(t, outputDir, "internal", "cli", "auth.go")
+	assert.Contains(t, authSrc, `r.URL.Query().Get("realmId")`)
+	assert.Contains(t, authSrc, `capturedTemplateVars["realm_id"] = v`)
+	assert.NotContains(t, authSrc, `Get("  realmId  ")`)
+	assert.NotContains(t, authSrc, `capturedTemplateVars["  realm_id  "]`)
+
+	requireGeneratedCompiles(t, outputDir)
+}
+
+// Two spellings of one callback param that disagree on the target placeholder
+// resolve by map iteration order — nondeterministic, so reject rather than
+// silently pick one.
+func TestCallbackTemplateVarsRejectConflictingEntries(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := callbackTemplateVarSpec("callback-conflict")
+	apiSpec.EndpointTemplateVars = []string{"realm_id", "tenant_id"}
+	apiSpec.Auth.CallbackTemplateVars = map[string]string{
+		"realmId":   "realm_id",
+		" realmId ": "tenant_id",
+	}
+
+	err := apiSpec.Validate()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "conflicting entries for callback parameter")
+}
+
+// Only authorization_code redirects the user back with query params, so a
+// mapping under any other grant declares a capture from a request that never
+// happens. Fail at parse time rather than emit dead code.
+func TestCallbackTemplateVarsRequireAuthorizationCodeGrant(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		mutate  func(*spec.APISpec)
+		wantErr string
+	}{
+		{
+			name: "client_credentials has no browser callback",
+			mutate: func(s *spec.APISpec) {
+				s.Auth.OAuth2Grant = spec.OAuth2GrantClientCredentials
+			},
+			wantErr: "requires auth.oauth2_grant",
+		},
+		{
+			name: "device_code has no browser callback",
+			mutate: func(s *spec.APISpec) {
+				s.Auth.OAuth2Grant = spec.OAuth2GrantDeviceCode
+				s.Auth.DeviceAuthorizationURL = "https://auth.example.com/device"
+			},
+			wantErr: "requires auth.oauth2_grant",
+		},
+		{
+			name: "non-OAuth auth has no callback at all",
+			mutate: func(s *spec.APISpec) {
+				s.Auth.Type = "api_key"
+			},
+			wantErr: "requires auth.type",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			apiSpec := callbackTemplateVarSpec("callback-grant")
+			tt.mutate(apiSpec)
+
+			err := apiSpec.Validate()
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tt.wantErr)
+		})
+	}
+}
+
+// The timeout override has to be resolved before the flow binds a port, opens
+// the user's browser and starts a server: discovering a malformed value after
+// those side effects costs a stray browser tab and a dangling listener to
+// report a plain configuration error.
+func TestAuthLoginValidatesTimeoutBeforeSideEffects(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := callbackTemplateVarSpec("timeout-order")
+	require.NoError(t, apiSpec.Validate())
+
+	outputDir := filepath.Join(t.TempDir(), "timeout-order-pp-cli")
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+
+	authSrc := readGeneratedFile(t, outputDir, "internal", "cli", "auth.go")
+
+	parseAt := strings.Index(authSrc, "authTimeout := 15 * time.Minute")
+	listenAt := strings.Index(authSrc, `net.Listen("tcp"`)
+	browserAt := strings.Index(authSrc, "openBrowser(fullURL)")
+	require.Positive(t, parseAt)
+	require.Positive(t, listenAt)
+	require.Positive(t, browserAt)
+
+	assert.Less(t, parseAt, listenAt, "timeout must be parsed before the callback port is bound")
+	assert.Less(t, parseAt, browserAt, "timeout must be parsed before the browser is opened")
+}

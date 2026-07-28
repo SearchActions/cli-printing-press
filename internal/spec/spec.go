@@ -84,6 +84,7 @@ const (
 	TierAuthTypeNone        = "none"
 	TierAuthTypeAPIKey      = "api_key"
 	TierAuthTypeBearerToken = "bearer_token"
+	AuthTypeOAuth2          = "oauth2"
 	AuthTypeOAuth2Refresh   = "oauth2_refresh"
 
 	TierAuthPlacementHeader = "header"
@@ -1751,25 +1752,47 @@ func validateOAuth2Refresh(c AuthConfig) error {
 // token_param_in is byte-compared in the template, so spec authors who write
 // "Header" or "QUERY" silently route to the wrong attachment path.
 // validateCallbackTemplateVars fails fast on a capture that could never
-// resolve: a placeholder absent from EndpointTemplateVars would be written into
-// TemplateVars and read by nothing, leaving the operator with a login that
-// looks successful and requests that still carry an unresolved {placeholder}.
+// resolve. Three ways that happens:
+//
+//   - The grant has no callback. Only authorization_code redirects the user
+//     back with query params, so a mapping under client_credentials or
+//     device_code declares a capture from a request that never occurs.
+//   - The placeholder is absent from EndpointTemplateVars. The value would be
+//     written into TemplateVars and read by nothing, leaving a login that
+//     looks successful and requests that still carry {placeholder}.
+//   - A name carries surrounding whitespace. Validation trims, so " realm_id "
+//     would pass while the untrimmed key reached the emitted code and the
+//     value landed under a key URL expansion never looks up. Normalizing in
+//     place keeps the check and the emission reading the same string.
 func validateCallbackTemplateVars(s *APISpec) error {
 	if len(s.Auth.CallbackTemplateVars) == 0 {
 		return nil
 	}
+	if s.Auth.Type != AuthTypeOAuth2 && s.Auth.Type != AuthTypeOAuth2Refresh {
+		return fmt.Errorf("auth.callback_template_vars requires auth.type %q or %q, got %q", AuthTypeOAuth2, AuthTypeOAuth2Refresh, s.Auth.Type)
+	}
+	if grant := s.Auth.EffectiveOAuth2Grant(); grant != OAuth2GrantAuthorizationCode {
+		return fmt.Errorf("auth.callback_template_vars requires auth.oauth2_grant %q (the only grant with a browser callback), got %q", OAuth2GrantAuthorizationCode, grant)
+	}
+	normalized := make(map[string]string, len(s.Auth.CallbackTemplateVars))
 	for param, placeholder := range s.Auth.CallbackTemplateVars {
-		if strings.TrimSpace(param) == "" {
+		trimmedParam := strings.TrimSpace(param)
+		if trimmedParam == "" {
 			return fmt.Errorf("auth.callback_template_vars has an empty callback parameter name")
 		}
-		placeholder = strings.TrimSpace(placeholder)
-		if placeholder == "" {
-			return fmt.Errorf("auth.callback_template_vars[%q] has an empty template-var name", param)
+		trimmedPlaceholder := strings.TrimSpace(placeholder)
+		if trimmedPlaceholder == "" {
+			return fmt.Errorf("auth.callback_template_vars[%q] has an empty template-var name", trimmedParam)
 		}
-		if !slices.Contains(s.EndpointTemplateVars, placeholder) {
-			return fmt.Errorf("auth.callback_template_vars[%q] targets %q, which is not in endpoint_template_vars %v", param, placeholder, s.EndpointTemplateVars)
+		if !slices.Contains(s.EndpointTemplateVars, trimmedPlaceholder) {
+			return fmt.Errorf("auth.callback_template_vars[%q] targets %q, which is not in endpoint_template_vars %v", trimmedParam, trimmedPlaceholder, s.EndpointTemplateVars)
 		}
+		if existing, ok := normalized[trimmedParam]; ok && existing != trimmedPlaceholder {
+			return fmt.Errorf("auth.callback_template_vars has conflicting entries for callback parameter %q (%q and %q)", trimmedParam, existing, trimmedPlaceholder)
+		}
+		normalized[trimmedParam] = trimmedPlaceholder
 	}
+	s.Auth.CallbackTemplateVars = normalized
 	return nil
 }
 
