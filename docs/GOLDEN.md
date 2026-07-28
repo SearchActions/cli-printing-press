@@ -32,4 +32,23 @@ Device Sniff uses separate deterministic fixtures because device specs are proto
 
 If `verify` fails, inspect `.gotmp/golden/actual/<case-name>/` and the generated `.diff` files. Decide whether the change is a regression or an intentional behavior change. If it is a regression, fix code. If it is intentional, run `scripts/golden.sh update`, review fixture diffs, and mention the golden update in the final summary.
 
+### Line-ending false failures — check before you ever run `update`
+
+`golden.sh` compares fixtures with byte-exact `diff -u`, so a working copy whose fixtures carry CRLF makes **every text fixture appear to differ**. The tell is a `.diff` where each line is a paired removal and addition of **byte-identical text** (`-name: httpbin` / `+name: httpbin`). A case count far larger than the number of things you actually changed (29 cases after two template edits) is the same signal.
+
+Running `update` on that state rewrites frozen fixtures from a checkout artifact and silently destroys the baseline for every future run.
+
+The repo-root `.gitattributes` sets `* text=auto eol=lf`, so a fresh clone or a fresh `git worktree` cannot land in this state. A working tree that was checked out **before** that line existed still holds CRLF until it is renormalized, and `core.autocrlf=true` is the common Windows default that produced it.
+
+**Required before `scripts/golden.sh update`, whenever the failing-case count looks inflated:** reproduce the failure in a clean `git worktree` of the same commit and compare counts.
+
+```bash
+git worktree add ../golden-check HEAD
+cd ../golden-check && bash scripts/golden.sh verify
+```
+
+If the clean worktree reports fewer failures than your tree, the delta is line-ending noise and `update` is **forbidden** — fix the checkout (`git add --renormalize .`, or work in the clean worktree), then re-verify. Only the cases that still fail in the clean worktree are real.
+
+This is distinct from generator-emitted CRLF on Windows hosts, which is about *newly emitted* artifacts rather than *frozen fixtures* failing to compare. Do not fold the two.
+
 Golden verification does not replace `go test ./...`, `go vet ./...`, `golangci-lint run ./...`, or `go build -o ./cli-printing-press ./cmd/cli-printing-press`. It is an additional check for behavior-sensitive changes and runs in CI as a separate `Golden` workflow, not as part of `go test ./...`.

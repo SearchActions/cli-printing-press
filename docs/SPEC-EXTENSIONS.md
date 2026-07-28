@@ -1693,3 +1693,69 @@ x-streaming:
     statuses: [live, pending]
     primary_key: event_id
 ```
+
+## Doctor Probe Fields (internal YAML only — not `x-*` extensions)
+
+These are **not** OpenAPI extensions. They live on the internal YAML spec and
+are documented here because this is the only spec-field reference in the repo.
+`internal/openapi/parser.go` never reads them, so a spec sourced from OpenAPI
+cannot declare them and always gets the derived value described below.
+
+They control which endpoint the generated `doctor` command probes to decide
+whether credentials are valid.
+
+### `auth.verify_path`
+
+Path appended to `base_url` that `doctor` GETs to validate credentials. Set it
+to a known-good authenticated endpoint that returns 2xx for any valid token
+(`/v1/account` for Stripe, `/user` for GitHub, `/users/@me` for Discord).
+
+Parsed field: `APISpec.Auth.VerifyPath` (`internal/spec/spec.go`)
+
+Rules:
+- Optional. An authored value is **never** overwritten
+  (`deriveAuthVerifyPath`, `internal/generator/doctor_health_path.go`).
+- When empty, the generator derives one: the first GET endpoint whose path
+  ends in a "me-shaped" tail, most-specific first — `users/me.json`,
+  `users/me`, `users/@me`, `current_user`, `me.json`, `whoami`, `viewer`,
+  `account`, `self`, `user`, `me`.
+- When nothing qualifies, `doctor` probes the bare base URL and reports
+  401/403 as *inconclusive* rather than *invalid*, because many versioned API
+  roots demand credentials regardless of token validity.
+
+**Set this explicitly on any API with a partner or app tier alongside customer
+keys** (Aircall, Stripe, Slack, HubSpot). The derivation only knows about path
+shape, not about who is allowed to call it: on Aircall it selected
+`/v1/integrations/me`, which is served only to OAuth partner tokens, so
+`doctor` reported `WARN Credentials: scope-limited (HTTP 403)` forever against
+perfectly valid customer credentials. The symptom reads as a credential
+problem, so the wrong response is to re-check the credentials — set
+`verify_path` to a path the configured auth mode can actually reach.
+
+```yaml
+auth:
+  type: api_key
+  verify_path: "/ping"
+```
+
+### `auth.verify_query`
+
+GraphQL document `doctor` POSTs as `{"query": "<verify_query>"}` against
+`base_url`, for GraphQL APIs with no REST verify endpoint. HTTP 2xx with no
+top-level `errors` array counts as verified; 401/403 as rejected.
+
+Parsed field: `APISpec.Auth.VerifyQuery`
+
+Rules:
+- Optional. Opaque to the generator — any query that returns 2xx and no
+  `errors` for a valid token works; `{ viewer { id } }` is the convention.
+- If both this and `auth.verify_path` are set, `verify_path` wins (the REST
+  probe is cheaper).
+
+### `health_check_path`
+
+Top-level (sibling of `auth`, not nested under it). Path for `doctor`'s
+**unauthenticated** reachability probe, which is a separate check from
+credential validation above.
+
+Parsed field: `APISpec.HealthCheckPath`
