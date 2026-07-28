@@ -3,8 +3,10 @@ package generator
 import (
 	"testing"
 
+	"github.com/mvanhorn/cli-printing-press/v4/internal/shellargs"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/spec"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // TestFirstCommandExampleHonorsPromotion covers issue #290. The Wikipedia
@@ -516,11 +518,11 @@ func TestFirstCommandExampleHonorsPromotion(t *testing.T) {
 	}
 }
 
-// TestShellQuoteExampleValue locks the quoting rule that keeps a rendered
-// example one shell argument. A dispatch param whose default is a phrase — a
-// SQL-shaped query, a search expression — used to render bare, so verify-skill
-// read the words after the flag as stray positionals and a copy-paste into a
-// shell globbed the `*`.
+// A phrase-shaped default — a SQL query, a search expression — used to render
+// bare, so verify-skill read the words after the flag as stray positionals and
+// a copy-paste into a shell globbed the `*`. The injection cases matter most:
+// a value that merely opens and closes with a quote must still be re-quoted,
+// or the live middle of it runs.
 func TestShellQuoteExampleValue(t *testing.T) {
 	t.Parallel()
 
@@ -535,10 +537,13 @@ func TestShellQuoteExampleValue(t *testing.T) {
 		{name: "path-shaped value is untouched", in: "/v3/company/reports", want: "/v3/company/reports"},
 		{name: "phrase with spaces is single-quoted", in: "select * from Account maxresults 100", want: "'select * from Account maxresults 100'"},
 		{name: "glob without spaces is still quoted", in: "*.json", want: "'*.json'"},
-		{name: "already single-quoted JSON placeholder is left alone", in: "'{}'", want: "'{}'"},
-		{name: "already double-quoted value is left alone", in: `"a b"`, want: `"a b"`},
-		{name: "embedded single quote falls back to double quotes", in: "it's a phrase", want: `"it's a phrase"`},
-		{name: "double quotes and dollars are escaped under double quoting", in: `it's "$HOME"`, want: `"it's \"\$HOME\""`},
+		{name: "history reference is quoted", in: "!important", want: "'!important'"},
+		{name: "generator-owned empty-object placeholder passes through", in: "'{}'", want: "'{}'"},
+		{name: "generator-owned empty-array placeholder passes through", in: "'[]'", want: "'[]'"},
+		{name: "embedded single quote is escaped, not re-delimited", in: "it's a phrase", want: `'it'\''s a phrase'`},
+		{name: "command substitution is inert inside single quotes", in: `it's "$HOME"`, want: `'it'\''s "$HOME"'`},
+		{name: "quote-flanked injection is re-quoted whole", in: "'safe'; rm -rf /; echo 'safe'", want: `''\''safe'\''; rm -rf /; echo '\''safe'\'''`},
+		{name: "double-quote-flanked value is re-quoted whole", in: `"a b"`, want: `'"a b"'`},
 	}
 
 	for _, tt := range tests {
@@ -549,9 +554,8 @@ func TestShellQuoteExampleValue(t *testing.T) {
 	}
 }
 
-// TestRequiredFlagExampleQuotesDispatchDefaultWithSpaces proves the quoting
-// reaches the assembled example, not just the helper: the emitted line must
-// tokenize back to exactly one value for the flag.
+// Proves the quoting reaches the assembled example, not just the helper: the
+// emitted line must tokenize back to exactly one value for the flag.
 func TestRequiredFlagExampleQuotesDispatchDefaultWithSpaces(t *testing.T) {
 	t.Parallel()
 
@@ -571,4 +575,38 @@ func TestRequiredFlagExampleQuotesDispatchDefaultWithSpaces(t *testing.T) {
 		[]string{"--query", "'select * from Account maxresults 100'"},
 		requiredFlagExampleParts(ep),
 	)
+}
+
+// The quoting is only correct if the tokenizer that consumes these examples
+// gives the original value back as exactly one argument — the property
+// verify-skill, validate-narrative and live-dogfood all depend on. Asserting
+// the round trip catches an escaping mistake that a string-equality test on
+// the quoted form would happily enshrine.
+func TestShellQuoteExampleValueRoundTripsThroughTokenizer(t *testing.T) {
+	t.Parallel()
+
+	values := []string{
+		"domain_rank",
+		"select * from Account maxresults 100",
+		"*.json",
+		"!important",
+		"it's a phrase",
+		`it's "$HOME"`,
+		"'safe'; rm -rf /; echo 'safe'",
+		`"a b"`,
+		"a\tb",
+		`back\slash`,
+		"$(whoami)",
+		"`hostname`",
+	}
+
+	for _, value := range values {
+		t.Run(value, func(t *testing.T) {
+			t.Parallel()
+			line := "example-pp-cli items list --query " + shellQuoteExampleValue(value)
+			args, err := shellargs.ArgsAfterBinary(line)
+			require.NoError(t, err)
+			require.Equal(t, []string{"items", "list", "--query", value}, args)
+		})
+	}
 }

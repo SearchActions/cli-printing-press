@@ -93,37 +93,38 @@ func readmeExampleArgs(ep spec.Endpoint) []string {
 	return append(parts, requiredFlagExampleParts(ep)...)
 }
 
-// shellQuoteExampleValue single-quotes a rendered example value that carries
-// whitespace or a shell metacharacter, so the emitted example survives a
-// copy-paste into a shell and tokenizes back to one argument through
-// shellargs.Split. Without it, a spec whose default or example is a phrase — a
-// SQL-shaped query, a search expression, a filter string — renders as
-// `--query select * from Account`, which verify-skill reads as five stray
-// positionals and a user's shell reads as a glob.
-//
-// Values that already carry their own quoting (jsonStringBodyExamplePlaceholder)
-// are left alone; a value containing a single quote takes double quotes, since
-// POSIX has no way to escape one inside single quotes.
-func shellQuoteExampleValue(s string) string {
-	if s == "" || !strings.ContainsAny(s, " \t\n*?[]{}$`\"'\\|&;<>()~#") {
-		return s
-	}
-	if isShellQuoted(s) {
-		return s
-	}
-	if strings.Contains(s, "'") {
-		escaped := strings.NewReplacer(`\`, `\\`, `"`, `\"`, "`", "\\`", "$", `\$`).Replace(s)
-		return `"` + escaped + `"`
-	}
-	return "'" + s + "'"
-}
+// Emitted pre-quoted, so re-quoting would nest the quotes and break the JSON
+// the generated command has to parse back.
+var preQuotedExampleValues = map[string]bool{"'{}'": true, "'[]'": true}
 
-func isShellQuoted(s string) bool {
-	if len(s) < 2 {
-		return false
+// Everything a POSIX shell can act on. A value carrying any of these must reach
+// the shell as one inert argument: without quoting, a spec whose default or
+// example is a phrase — a SQL-shaped query, a search expression, a filter
+// string — renders as `--query select * from Account`, which verify-skill reads
+// as five stray positionals and a shell reads as a glob. `!` is here because
+// interactive bash expands history references before the command ever runs.
+const shellSensitiveChars = " \t\n*?[]{}$`\"'\\|&;<>()~#!"
+
+// shellQuoteExampleValue makes a rendered example value survive a copy-paste
+// into a shell and tokenize back to exactly one argument through shellargs.Split.
+//
+// Single quotes are the whole mechanism: POSIX suspends every expansion inside
+// them, so one rule covers globs, history references, command substitution and
+// word splitting alike. An embedded single quote closes the run, escapes itself
+// outside quotes, and reopens, which is the standard POSIX idiom for it.
+//
+// Deciding by "the value already looks quoted" would be the bug this shape
+// avoids: a value like `'safe'; rm -rf /; echo 'safe'` opens and closes with a
+// quote yet leaves the middle live, so only the exact generator-owned
+// placeholders are passed through untouched.
+func shellQuoteExampleValue(s string) string {
+	if s == "" || preQuotedExampleValues[s] {
+		return s
 	}
-	first, last := s[0], s[len(s)-1]
-	return (first == '\'' && last == '\'') || (first == '"' && last == '"')
+	if !strings.ContainsAny(s, shellSensitiveChars) {
+		return s
+	}
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
 func requiredFlagExampleParts(ep spec.Endpoint) []string {
