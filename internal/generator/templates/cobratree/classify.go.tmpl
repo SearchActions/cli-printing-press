@@ -49,7 +49,7 @@ const (
 //
 //  1. A typed MCP tool already covers the same capability (the typed tool's
 //     schema is strictly better than a shell-out). Examples:
-//     `context`/`about`/`agent-context`, `api` (endpoint mirror tools cover it).
+//     `about`/`agent-context`, `api` (endpoint mirror tools cover it).
 //  2. The command is non-functional via MCP (interactive setup, shell-only
 //     ergonomics, trivial introspection, local-only feedback). Examples:
 //     `auth`, `completion`, `doctor`, `version`, `feedback`, `profile`,
