@@ -294,3 +294,74 @@ func TestAuthLoginValidatesTimeoutBeforeSideEffects(t *testing.T) {
 	assert.Less(t, parseAt, listenAt, "timeout must be parsed before the callback port is bound")
 	assert.Less(t, parseAt, browserAt, "timeout must be parsed before the browser is opened")
 }
+
+// RFC 8252 §7.3 prescribes the loopback IP literal, but the RFC does not bind
+// a provider's registration form: Intuit's portal refuses to accept 127.0.0.1
+// as a redirect URI, so a CLI that can only send it cannot authorize at all.
+// The failure is silent — the provider accepts the authorize request, the user
+// approves, and only then is the redirect refused, so the callback server
+// waits out its whole timeout for a request that was never sent.
+func TestAuthRedirectHostSpecOverride(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name         string
+		redirectHost string
+		wantHost     string
+	}{
+		{name: "default is the RFC loopback literal", redirectHost: "", wantHost: "127.0.0.1"},
+		{name: "spec can demand localhost", redirectHost: "localhost", wantHost: "localhost"},
+		{name: "case is normalized", redirectHost: "LocalHost", wantHost: "localhost"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			apiSpec := callbackTemplateVarSpec("redirect-host")
+			apiSpec.Auth.RedirectHost = tt.redirectHost
+			require.NoError(t, apiSpec.Validate())
+
+			outputDir := filepath.Join(t.TempDir(), "redirect-host-pp-cli")
+			require.NoError(t, New(apiSpec, outputDir).Generate())
+
+			authSrc := readGeneratedFile(t, outputDir, "internal", "cli", "auth.go")
+			assert.Contains(t, authSrc, `redirectHost := "`+tt.wantHost+`"`)
+			// The URI is assembled from the resolved host, never a hardcoded one.
+			assert.Contains(t, authSrc, `fmt.Sprintf("http://%s:%d/callback", redirectHost,`)
+			assert.NotContains(t, authSrc, `"http://127.0.0.1:%d/callback"`)
+
+			requireGeneratedCompiles(t, outputDir)
+		})
+	}
+}
+
+// The host lands in the redirect_uri the provider sends the authorization code
+// to, so anything non-loopback would hand that code to another machine.
+func TestAuthRedirectHostRejectsNonLoopback(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		host    string
+		wantErr string
+	}{
+		{name: "external host", host: "evil.example.com", wantErr: "not a loopback host"},
+		{name: "full URL", host: "http://localhost", wantErr: "must be a bare host"},
+		{name: "host with port", host: "localhost:8085", wantErr: "must be a bare host"},
+		{name: "bare IPv6 literal needs bracketing to be a legal URL host", host: "::1", wantErr: "must be a bare host"},
+		{name: "userinfo smuggling", host: "localhost@evil.example.com", wantErr: "must be a bare host"},
+		{name: "path smuggling", host: "localhost/../evil", wantErr: "must be a bare host"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			apiSpec := callbackTemplateVarSpec("redirect-host-bad")
+			apiSpec.Auth.RedirectHost = tt.host
+
+			err := apiSpec.Validate()
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tt.wantErr)
+		})
+	}
+}

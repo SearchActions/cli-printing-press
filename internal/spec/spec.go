@@ -1179,6 +1179,18 @@ type AuthConfig struct {
 	// credential according to In on every request.
 	AdditionalHeaders []AdditionalAuthHeader `yaml:"additional_headers,omitempty" json:"additional_headers,omitempty"`
 
+	// RedirectHost overrides the loopback host the authorization_code flow
+	// puts in redirect_uri. Defaults to the RFC 8252 §7.3 IP literal
+	// (127.0.0.1); set to "localhost" for providers whose registration form
+	// refuses the IP literal — Intuit's developer portal rejects 127.0.0.1
+	// outright, so a CLI that can only send it cannot authorize at all, and
+	// the failure is silent: the provider accepts the authorize request, the
+	// user signs in and approves, and only then is the redirect refused, so
+	// the callback server waits out its whole timeout. Only loopback hosts are
+	// accepted; the listener binds loopback regardless, and a non-loopback
+	// redirect would hand the authorization code to another host.
+	RedirectHost string `yaml:"redirect_host,omitempty" json:"redirect_host,omitempty"`
+
 	// CallbackTemplateVars maps an OAuth callback query parameter to the
 	// EndpointTemplateVars placeholder it resolves. Some providers return the
 	// tenant identifier the API is addressed by *on the authorization
@@ -1764,6 +1776,28 @@ func validateOAuth2Refresh(c AuthConfig) error {
 //     would pass while the untrimmed key reached the emitted code and the
 //     value landed under a key URL expansion never looks up. Normalizing in
 //     place keeps the check and the emission reading the same string.
+//
+// validateRedirectHost keeps auth.redirect_host loopback-only. The value is
+// interpolated into the redirect_uri the provider sends the authorization code
+// to, so a non-loopback host would hand that code to another machine. The
+// callback listener binds loopback regardless, so a remote value could never
+// receive the callback anyway — rejecting it at parse time turns a silent hang
+// into a clear error.
+func validateRedirectHost(c AuthConfig) error {
+	host := strings.TrimSpace(c.RedirectHost)
+	if host == "" {
+		return nil
+	}
+	if strings.ContainsAny(host, ":/@?#") {
+		return fmt.Errorf("auth.redirect_host %q must be a bare host such as %q or %q, not a URL, host:port, or IPv6 literal", host, "localhost", "127.0.0.1")
+	}
+	switch strings.ToLower(host) {
+	case "localhost", "127.0.0.1":
+		return nil
+	}
+	return fmt.Errorf("auth.redirect_host %q is not a loopback host (valid: %q, %q)", host, "localhost", "127.0.0.1")
+}
+
 func validateCallbackTemplateVars(s *APISpec) error {
 	if len(s.Auth.CallbackTemplateVars) == 0 {
 		return nil
@@ -3490,8 +3524,12 @@ var orGroupTokenRe = regexp.MustCompile(`\b[A-Z][A-Z0-9_]*\b`)
 // the path so generated cobra `Args: cobra.ExactArgs(N)` sites and the
 // matching `replacePathParam(...args[i])` calls line up.
 func (s *APISpec) EnrichPathParams() {
+	baseURLVars := map[string]struct{}{}
+	for _, m := range pathParamRe.FindAllStringSubmatch(s.BaseURL, -1) {
+		baseURLVars[m[1]] = struct{}{}
+	}
 	for resourceName, r := range s.Resources {
-		s.enrichResourcePathParams(&r)
+		s.enrichResourcePathParams(&r, baseURLVars)
 		s.Resources[resourceName] = r
 	}
 }
@@ -3702,20 +3740,30 @@ func PathContainsPlaceholder(path, name string) bool {
 	return strings.Contains(path, "{"+name+"}")
 }
 
-func (s *APISpec) enrichResourcePathParams(r *Resource) {
+func (s *APISpec) enrichResourcePathParams(r *Resource, baseURLVars map[string]struct{}) {
 	if r.Endpoints != nil {
 		for endpointName, e := range r.Endpoints {
-			enrichEndpointPathParams(&e)
+			enrichEndpointPathParams(&e, baseURLVars)
 			r.Endpoints[endpointName] = e
 		}
 	}
 	for subName, sub := range r.SubResources {
-		s.enrichResourcePathParams(&sub)
+		s.enrichResourcePathParams(&sub, baseURLVars)
 		r.SubResources[subName] = sub
 	}
 }
 
-func enrichEndpointPathParams(e *Endpoint) {
+// baseURLVars lists placeholders that appear in the spec's BaseURL. Those are
+// global by construction — every request substitutes them from config — so a
+// path occurrence of the same placeholder must not also become a positional
+// argument, which would demand a value the CLI already holds (QuickBooks'
+// /companyinfo/{realm_id} under base_url .../company/{realm_id}).
+//
+// Deliberately narrower than "any EndpointTemplateVar": a template var that is
+// env-backed but appears on only a few endpoint paths, and not in the BaseURL,
+// stays positional so it can vary per call. PromoteGlobalPathTemplateVars owns
+// that case and only strips placeholders common to most endpoints.
+func enrichEndpointPathParams(e *Endpoint, baseURLVars map[string]struct{}) {
 	if e.Path == "" {
 		return
 	}
@@ -3757,6 +3805,11 @@ func enrichEndpointPathParams(e *Endpoint) {
 					break
 				}
 			}
+			continue
+		}
+		if _, inBaseURL := baseURLVars[name]; inBaseURL {
+			// buildURL substitutes this from Config.TemplateVars on every
+			// request; a positional would demand a value the CLI already has.
 			continue
 		}
 		e.Params = append(e.Params, Param{
@@ -4017,6 +4070,9 @@ func (s *APISpec) Validate() error {
 		return err
 	}
 	if err := validateOAuth2Refresh(s.Auth); err != nil {
+		return err
+	}
+	if err := validateRedirectHost(s.Auth); err != nil {
 		return err
 	}
 	if err := validateCallbackTemplateVars(s); err != nil {
