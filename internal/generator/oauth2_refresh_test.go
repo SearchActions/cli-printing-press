@@ -54,6 +54,7 @@ func TestGenerateOAuth2RefreshAuth(t *testing.T) {
 	assert.Contains(t, readme, "This CLI uses OAuth2 with refresh-token rotation.")
 	assert.Contains(t, skill, "This CLI uses OAuth2 with refresh-token rotation.")
 
+	writeOAuth2RefreshRuntimeTest(t, outputDir)
 	runGoCommand(t, outputDir, "test", "./internal/client", "-run", "^TestOAuth2Refresh(TokenUsedBeforeRequest|AfterUnauthorizedPersistsRotatedTokens)$")
 }
 
