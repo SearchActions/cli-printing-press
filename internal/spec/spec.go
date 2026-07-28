@@ -1177,6 +1177,19 @@ type AuthConfig struct {
 	// emits a Config field + os.Getenv loader per entry, then applies the
 	// credential according to In on every request.
 	AdditionalHeaders []AdditionalAuthHeader `yaml:"additional_headers,omitempty" json:"additional_headers,omitempty"`
+
+	// CallbackTemplateVars maps an OAuth callback query parameter to the
+	// EndpointTemplateVars placeholder it resolves. Some providers return the
+	// tenant identifier the API is addressed by *on the authorization
+	// redirect* rather than from any callable endpoint: Intuit sends
+	// ?realmId=<company id> alongside ?code=, and QuickBooks' every request
+	// path is /v3/company/{realm_id}/..., so a login that reads only `code`
+	// leaves the user hunting for an ID the flow already handed them. Declared
+	// as {callback_param: placeholder} (e.g. {realmId: realm_id}); the
+	// authorization_code template captures each listed param and persists it
+	// into Config.TemplateVars. Unlisted params are ignored, so a provider
+	// that returns nothing extra emits no capture code.
+	CallbackTemplateVars map[string]string `yaml:"callback_template_vars,omitempty" json:"callback_template_vars,omitempty"`
 }
 
 // AdditionalAuthHeader pairs a sibling-scheme credential destination with the
@@ -1737,6 +1750,29 @@ func validateOAuth2Refresh(c AuthConfig) error {
 // produces q.Set("", token); a SessionTokenURL is required to bootstrap; and
 // token_param_in is byte-compared in the template, so spec authors who write
 // "Header" or "QUERY" silently route to the wrong attachment path.
+// validateCallbackTemplateVars fails fast on a capture that could never
+// resolve: a placeholder absent from EndpointTemplateVars would be written into
+// TemplateVars and read by nothing, leaving the operator with a login that
+// looks successful and requests that still carry an unresolved {placeholder}.
+func validateCallbackTemplateVars(s *APISpec) error {
+	if len(s.Auth.CallbackTemplateVars) == 0 {
+		return nil
+	}
+	for param, placeholder := range s.Auth.CallbackTemplateVars {
+		if strings.TrimSpace(param) == "" {
+			return fmt.Errorf("auth.callback_template_vars has an empty callback parameter name")
+		}
+		placeholder = strings.TrimSpace(placeholder)
+		if placeholder == "" {
+			return fmt.Errorf("auth.callback_template_vars[%q] has an empty template-var name", param)
+		}
+		if !slices.Contains(s.EndpointTemplateVars, placeholder) {
+			return fmt.Errorf("auth.callback_template_vars[%q] targets %q, which is not in endpoint_template_vars %v", param, placeholder, s.EndpointTemplateVars)
+		}
+	}
+	return nil
+}
+
 func validateSessionHandshake(c AuthConfig) error {
 	if c.Type != "session_handshake" {
 		return nil
@@ -3958,6 +3994,9 @@ func (s *APISpec) Validate() error {
 		return err
 	}
 	if err := validateOAuth2Refresh(s.Auth); err != nil {
+		return err
+	}
+	if err := validateCallbackTemplateVars(s); err != nil {
 		return err
 	}
 	if err := validateAuthPrefix(s.Auth); err != nil {
