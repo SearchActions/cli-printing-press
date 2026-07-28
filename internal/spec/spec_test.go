@@ -6967,12 +6967,11 @@ resources:
 	})
 }
 
-// A placeholder in the BaseURL is global by construction: buildURL substitutes
-// it from config on every request. Synthesizing a positional for a path
-// occurrence of the same placeholder demands a value the CLI already holds, so
-// `company info` reported "missing required argument" for the realm ID it had
-// captured at login. Distinct from the sparse-template-var case above, which
-// deliberately stays positional.
+// A placeholder in the BaseURL is resolved from configuration on every
+// request, so a path occurrence of the same placeholder must not also become a
+// positional parameter — that would demand a value the CLI already holds. A
+// template var absent from the BaseURL stays positional so it can vary
+// per call.
 func TestEnrichPathParamsSkipsBaseURLTemplateVars(t *testing.T) {
 	t.Parallel()
 
