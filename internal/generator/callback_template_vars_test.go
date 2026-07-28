@@ -365,3 +365,33 @@ func TestAuthRedirectHostRejectsNonLoopback(t *testing.T) {
 		})
 	}
 }
+
+// The credential-free probe returns before the flow ever reaches the browser,
+// so a resolver placed after it would let a probe report success for a
+// redirect host the real login refuses. Ordering is asserted against the
+// emitted source so it cannot drift back below either short-circuit.
+func TestAuthRedirectHostResolvesBeforeEveryReturn(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := callbackTemplateVarSpec("redirect-order")
+	require.NoError(t, apiSpec.Validate())
+
+	outputDir := filepath.Join(t.TempDir(), "redirect-order-pp-cli")
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+
+	authSrc := readGeneratedFile(t, outputDir, "internal", "cli", "auth.go")
+
+	resolveAt := strings.Index(authSrc, "redirectHost := ")
+	probeAt := strings.Index(authSrc, `"status":"dry_run"`)
+	verifyAt := strings.Index(authSrc, "if cliutil.IsVerifyEnv() {")
+	listenAt := strings.Index(authSrc, `net.Listen("tcp"`)
+	require.Positive(t, resolveAt)
+	require.Positive(t, probeAt)
+	require.Positive(t, listenAt)
+
+	assert.Less(t, resolveAt, probeAt, "must resolve before the credential-free probe returns")
+	assert.Less(t, resolveAt, verifyAt, "must resolve before the verify short-circuit")
+	assert.Less(t, resolveAt, listenAt, "must resolve before the callback port is bound")
+	// Exactly one resolver — a second would drift out of sync with the first.
+	assert.Equal(t, 1, strings.Count(authSrc, "redirectHost := "))
+}
