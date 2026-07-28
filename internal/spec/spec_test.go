@@ -6966,3 +6966,42 @@ resources:
 		assert.Equal(t, "title", ep.Body[0].Name)
 	})
 }
+
+// A placeholder in the BaseURL is resolved from configuration on every
+// request, so a path occurrence of the same placeholder must not also become a
+// positional parameter — that would demand a value the CLI already holds. A
+// template var absent from the BaseURL stays positional so it can vary
+// per call.
+func TestEnrichPathParamsSkipsBaseURLTemplateVars(t *testing.T) {
+	t.Parallel()
+
+	input := `name: testapi
+base_url: https://{api_host}/v3/company/{realm_id}
+endpoint_template_vars: [api_host, realm_id]
+auth:
+  type: bearer_token
+  env_vars: [TESTAPI_TOKEN]
+resources:
+  company:
+    description: Company
+    endpoints:
+      info:
+        method: GET
+        path: /companyinfo/{realm_id}
+  invoices:
+    description: Invoices
+    endpoints:
+      get:
+        method: GET
+        path: /invoice/{id}
+`
+	s, err := ParseBytes([]byte(input))
+	require.NoError(t, err)
+
+	// The BaseURL placeholder must not become an argument...
+	assert.NotContains(t, paramNames(s.Resources["company"].Endpoints["info"].Params), "realm_id")
+	// ...while an ordinary path placeholder still does.
+	assert.Contains(t, paramNames(s.Resources["invoices"].Endpoints["get"].Params), "id")
+	// The placeholder stays in the path for buildURL to substitute.
+	assert.Contains(t, s.Resources["company"].Endpoints["info"].Path, "{realm_id}")
+}

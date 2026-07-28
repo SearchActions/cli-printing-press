@@ -97,6 +97,32 @@ func runOAuthLogin(cmd *cobra.Command, flags *rootFlags, clientID, clientSecret 
 	if err != nil {
 		return err
 	}
+	// Resolved before every return path, including the credential-free probe
+	// below: a misconfigured redirect host is a configuration error whether or
+	// not credentials happen to be present, and validating it only on the path
+	// that reaches the browser would let a probe report success for a value
+	// the real flow refuses.
+	//
+	// RFC 8252 §7.3 prescribes the loopback IP literal, and some providers do
+	// reject "localhost" — but the reverse is also true, and the RFC does not
+	// bind a provider's registration form: Intuit's developer portal refuses
+	// 127.0.0.1 as a redirect URI outright, so a CLI that can only send the IP
+	// literal cannot authorize against them at all. That failure is silent and
+	// expensive to diagnose: the provider accepts the authorize request, the
+	// user signs in and approves, and only then is the redirect refused, so
+	// the callback server waits out its whole timeout for a request that was
+	// never sent.
+	//
+	// Either spelling reaches the listener regardless of which is bound; a
+	// client that resolves ::1 first falls back to 127.0.0.1.
+	redirectHost := "127.0.0.1"
+	if v := strings.TrimSpace(os.Getenv("PRINTING_PRESS_OAUTH2_OAUTH_REDIRECT_HOST")); v != "" {
+		if err := validateRedirectHost(v); err != nil {
+			return fmt.Errorf("invalid PRINTING_PRESS_OAUTH2_OAUTH_REDIRECT_HOST %q: %w", v, err)
+		}
+		redirectHost = strings.ToLower(v)
+	}
+
 	// Credential-free probes cannot construct an authorize URL. Keep supplied
 	// or configured client IDs on the detailed verify path below so it still
 	// emits PKCE params.
@@ -147,13 +173,13 @@ func runOAuthLogin(cmd *cobra.Command, flags *rootFlags, clientID, clientSecret 
 	}
 
 	// Short-circuit BEFORE binding the callback port or opening a browser, so
-	// verify / validate-narrative neither binds 127.0.0.1:<port> (which would
+	// verify / validate-narrative neither binds the loopback port (which would
 	// EADDRINUSE on a parallel run or occupied port) nor launches a browser
 	// (which would time out). The redirect_uri shown here is informational and
 	// derived from the configured --port; the live flow below uses the actual
 	// bound port, which the OS assigns when --port 0 is passed.
 	if cliutil.IsVerifyEnv() {
-		params.Set("redirect_uri", fmt.Sprintf("http://127.0.0.1:%d/callback", port))
+		params.Set("redirect_uri", fmt.Sprintf("http://%s:%d/callback", redirectHost, port))
 		fmt.Fprintf(w, "would launch: %s\n", authURL+"?"+params.Encode())
 		return nil
 	}
@@ -189,10 +215,9 @@ func runOAuthLogin(cmd *cobra.Command, flags *rootFlags, clientID, clientSecret 
 
 	// Derive the redirect URI from the live listener address so an OS-assigned
 	// ephemeral port (--port 0) is reflected in both the auth request and the
-	// token exchange below. Use 127.0.0.1, not "localhost": RFC 8252 §7.3
-	// prescribes the loopback IP literal, and some providers reject
-	// "localhost" redirect URIs outright.
-	redirectURI := fmt.Sprintf("http://127.0.0.1:%d/callback", listener.Addr().(*net.TCPAddr).Port)
+	// token exchange below. redirectHost was resolved above the verify
+	// short-circuit so both paths name the same host.
+	redirectURI := fmt.Sprintf("http://%s:%d/callback", redirectHost, listener.Addr().(*net.TCPAddr).Port)
 	params.Set("redirect_uri", redirectURI)
 	fullURL := authURL + "?" + params.Encode()
 
@@ -447,6 +472,29 @@ func generatePKCEVerifier() (string, error) {
 func pkceCodeChallengeS256(verifier string) string {
 	sum := sha256.Sum256([]byte(verifier))
 	return base64.RawURLEncoding.EncodeToString(sum[:])
+}
+
+// validateRedirectHost keeps the redirect-host override pointed at this
+// machine. The value is interpolated into the redirect_uri the provider sends
+// the authorization code to, so a non-loopback host would hand that code to
+// somewhere else — the classic redirect-hijack shape. The listener binds
+// loopback regardless, so a remote host could never receive the callback
+// anyway; rejecting it turns a silent hang into a clear error.
+//
+// Ports and schemes are not accepted: the port comes from the live listener
+// and the scheme is fixed at http, which is what RFC 8252 §7.3 permits for a
+// loopback redirect. A bare ::1 is likewise rejected — it needs bracketing to
+// be a legal URL host, and no provider is known to want it when 127.0.0.1 and
+// localhost both exist.
+func validateRedirectHost(host string) error {
+	if strings.ContainsAny(host, ":/@?#") {
+		return fmt.Errorf("expected a bare host such as localhost or 127.0.0.1, not a URL, host:port, or IPv6 literal")
+	}
+	switch strings.ToLower(host) {
+	case "localhost", "127.0.0.1":
+		return nil
+	}
+	return fmt.Errorf("only loopback hosts are allowed (localhost, 127.0.0.1)")
 }
 
 func openBrowser(url string) {

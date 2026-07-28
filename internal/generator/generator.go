@@ -300,6 +300,7 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 		"authErrorCheckHint":                  authErrorCheckHint,
 		"authSetupHint":                       authSetupHint,
 		"authBrowserLoginAvailable":           authBrowserLoginAvailable,
+		"authRedirectHost":                    authRedirectHost,
 		"authEnvPlaceholder":                  authEnvPlaceholder,
 		"authEnvPlaceholderByName":            authEnvPlaceholderByName,
 		"authEnvHintComment":                  authEnvHintComment,
@@ -1795,6 +1796,18 @@ func authSetupHint(auth spec.AuthConfig, cliName string) string {
 		return "Set Basic credentials with: export " + strings.Join(exports, " ")
 	}
 	return "Set credentials with: export " + strings.Join(exports, " ")
+}
+
+// authRedirectHost resolves the loopback host emitted into the OAuth
+// redirect_uri. RFC 8252 §7.3 prescribes the IP literal, but the RFC does not
+// bind a provider's registration form: Intuit refuses to accept 127.0.0.1 as a
+// redirect URI, so specs for such providers declare "localhost". Validation
+// lives in spec.validateRedirectHost; an unrecognized value never reaches here.
+func authRedirectHost(auth spec.AuthConfig) string {
+	if host := strings.TrimSpace(auth.RedirectHost); host != "" {
+		return strings.ToLower(host)
+	}
+	return "127.0.0.1"
 }
 
 func authBrowserLoginAvailable(auth spec.AuthConfig) bool {

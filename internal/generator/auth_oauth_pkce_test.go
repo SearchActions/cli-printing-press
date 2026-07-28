@@ -43,9 +43,13 @@ func TestOAuthLoginUsesPKCEWhenNoClientSecret(t *testing.T) {
 	require.Contains(t, auth, `tokenParams.Set("client_secret", clientSecret)`)
 	require.Contains(t, auth, `tokenParams.Set("code_verifier", codeVerifier)`)
 
-	// RFC 8252 loopback redirect: IP literal, never "localhost".
-	require.Contains(t, auth, `redirectURI := fmt.Sprintf("http://127.0.0.1:%d/callback"`)
-	require.NotContains(t, auth, `http://localhost:%d/callback`)
+	// RFC 8252 loopback redirect. The host is now spec-pinnable
+	// (auth.redirect_host) because some providers refuse the IP literal at
+	// registration, but a spec that says nothing must still get the RFC
+	// default — that default is what this fixture asserts.
+	require.Contains(t, auth, `redirectHost := "127.0.0.1"`)
+	require.Contains(t, auth, `redirectURI := fmt.Sprintf("http://%s:%d/callback", redirectHost,`)
+	require.NotContains(t, auth, `redirectHost := "localhost"`)
 
 	binPath := filepath.Join(outputDir, "oauth-pkce-login-pp-cli")
 	runGoCommand(t, outputDir, "build", "-o", binPath, "./cmd/oauth-pkce-login-pp-cli")
