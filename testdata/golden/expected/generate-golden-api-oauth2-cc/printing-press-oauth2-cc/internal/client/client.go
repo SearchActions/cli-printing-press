@@ -1038,10 +1038,18 @@ func (c *Client) refreshAccessToken(ctx context.Context) error {
 	params := url.Values{
 		"grant_type":    {"refresh_token"},
 		"refresh_token": {c.Config.RefreshToken},
-		"client_id":     {c.Config.ClientID},
 	}
-	if c.Config.ClientSecret != "" {
-		params.Set("client_secret", c.Config.ClientSecret)
+	// RFC 6749 §2.3.1 makes client_secret_basic the mechanism every
+	// authorization server must accept, while credentials in the request body
+	// are only optionally supported — providers such as Intuit reject a
+	// body-only exchange with invalid_client. §2.3 forbids presenting two
+	// authentication methods at once, so a confidential client sends the pair
+	// in the header and nothing in the body; a public client (no secret)
+	// identifies itself with client_id in the body per §3.2.1. Same split as
+	// the client_credentials mint above.
+	usesBasic := c.Config.ClientSecret != ""
+	if !usesBasic {
+		params.Set("client_id", c.Config.ClientID)
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, tokenURL, strings.NewReader(params.Encode()))
@@ -1049,6 +1057,9 @@ func (c *Client) refreshAccessToken(ctx context.Context) error {
 		return fmt.Errorf("building refresh request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	if usesBasic {
+		req.SetBasicAuth(c.Config.ClientID, c.Config.ClientSecret)
+	}
 	resp, err := c.HTTPClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("refreshing access token: %w", err)

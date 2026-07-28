@@ -515,3 +515,60 @@ func TestFirstCommandExampleHonorsPromotion(t *testing.T) {
 		})
 	}
 }
+
+// TestShellQuoteExampleValue locks the quoting rule that keeps a rendered
+// example one shell argument. A dispatch param whose default is a phrase — a
+// SQL-shaped query, a search expression — used to render bare, so verify-skill
+// read the words after the flag as stray positionals and a copy-paste into a
+// shell globbed the `*`.
+func TestShellQuoteExampleValue(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{name: "plain token is untouched", in: "domain_rank", want: "domain_rank"},
+		{name: "empty stays empty", in: "", want: ""},
+		{name: "uuid is untouched", in: "550e8400-e29b-41d4-a716-446655440000", want: "550e8400-e29b-41d4-a716-446655440000"},
+		{name: "path-shaped value is untouched", in: "/v3/company/reports", want: "/v3/company/reports"},
+		{name: "phrase with spaces is single-quoted", in: "select * from Account maxresults 100", want: "'select * from Account maxresults 100'"},
+		{name: "glob without spaces is still quoted", in: "*.json", want: "'*.json'"},
+		{name: "already single-quoted JSON placeholder is left alone", in: "'{}'", want: "'{}'"},
+		{name: "already double-quoted value is left alone", in: `"a b"`, want: `"a b"`},
+		{name: "embedded single quote falls back to double quotes", in: "it's a phrase", want: `"it's a phrase"`},
+		{name: "double quotes and dollars are escaped under double quoting", in: `it's "$HOME"`, want: `"it's \"\$HOME\""`},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tt.want, shellQuoteExampleValue(tt.in))
+		})
+	}
+}
+
+// TestRequiredFlagExampleQuotesDispatchDefaultWithSpaces proves the quoting
+// reaches the assembled example, not just the helper: the emitted line must
+// tokenize back to exactly one value for the flag.
+func TestRequiredFlagExampleQuotesDispatchDefaultWithSpaces(t *testing.T) {
+	t.Parallel()
+
+	ep := spec.Endpoint{
+		Method: "GET",
+		Path:   "/query",
+		Params: []spec.Param{{
+			Name:          "query",
+			Type:          "string",
+			Required:      true,
+			DispatchParam: true,
+			Default:       "select * from Account maxresults 100",
+		}},
+	}
+
+	assert.Equal(t,
+		[]string{"--query", "'select * from Account maxresults 100'"},
+		requiredFlagExampleParts(ep),
+	)
+}

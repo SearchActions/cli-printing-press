@@ -80,7 +80,7 @@ func commandExampleArgParts(ep spec.Endpoint) []string {
 		if val == "" {
 			val = "<" + p.Name + ">"
 		}
-		parts = append(parts, val)
+		parts = append(parts, shellQuoteExampleValue(val))
 	}
 	return append(parts, requiredFlagExampleParts(ep)...)
 }
@@ -88,9 +88,42 @@ func commandExampleArgParts(ep spec.Endpoint) []string {
 func readmeExampleArgs(ep spec.Endpoint) []string {
 	var parts []string
 	for _, p := range orderedPositionalParams(ep) {
-		parts = append(parts, skillExamplePositionalValue(p))
+		parts = append(parts, shellQuoteExampleValue(skillExamplePositionalValue(p)))
 	}
 	return append(parts, requiredFlagExampleParts(ep)...)
+}
+
+// shellQuoteExampleValue single-quotes a rendered example value that carries
+// whitespace or a shell metacharacter, so the emitted example survives a
+// copy-paste into a shell and tokenizes back to one argument through
+// shellargs.Split. Without it, a spec whose default or example is a phrase — a
+// SQL-shaped query, a search expression, a filter string — renders as
+// `--query select * from Account`, which verify-skill reads as five stray
+// positionals and a user's shell reads as a glob.
+//
+// Values that already carry their own quoting (jsonStringBodyExamplePlaceholder)
+// are left alone; a value containing a single quote takes double quotes, since
+// POSIX has no way to escape one inside single quotes.
+func shellQuoteExampleValue(s string) string {
+	if s == "" || !strings.ContainsAny(s, " \t\n*?[]{}$`\"'\\|&;<>()~#") {
+		return s
+	}
+	if isShellQuoted(s) {
+		return s
+	}
+	if strings.Contains(s, "'") {
+		escaped := strings.NewReplacer(`\`, `\\`, `"`, `\"`, "`", "\\`", "$", `\$`).Replace(s)
+		return `"` + escaped + `"`
+	}
+	return "'" + s + "'"
+}
+
+func isShellQuoted(s string) bool {
+	if len(s) < 2 {
+		return false
+	}
+	first, last := s[0], s[len(s)-1]
+	return (first == '\'' && last == '\'') || (first == '"' && last == '"')
 }
 
 func requiredFlagExampleParts(ep spec.Endpoint) []string {
@@ -103,7 +136,7 @@ func requiredFlagExampleParts(ep spec.Endpoint) []string {
 		if val == "" {
 			val = "value"
 		}
-		parts = append(parts, "--"+publicFlagName(p), val)
+		parts = append(parts, "--"+publicFlagName(p), shellQuoteExampleValue(val))
 	}
 
 	switch strings.ToUpper(ep.Method) {
@@ -123,7 +156,7 @@ func requiredFlagExampleParts(ep spec.Endpoint) []string {
 				} else if val == "" {
 					val = "value"
 				}
-				parts = append(parts, "--"+publicFlagName(p), val)
+				parts = append(parts, "--"+publicFlagName(p), shellQuoteExampleValue(val))
 				break
 			}
 		}

@@ -1,0 +1,20 @@
+# Locks the OAuth2 refresh-token auth shape contract end-to-end. No OpenAPI
+# securityScheme maps to oauth2_refresh, so the internal fixture beside this
+# case is the only golden coverage the fork has.
+#
+#   spec.go        → AuthConfig.Type=oauth2_refresh, TokenURL required
+#   client.go.tmpl → refreshAccessToken: client pair via SetBasicAuth,
+#                    rotated refresh_token persisted through SaveTokens,
+#                    pre-request freshness branch on a missing/expired token
+#   config.go.tmpl → AuthSource="oauth2_refresh", Bearer AccessToken emission
+
+# client.go carries the token exchange. The load-bearing contract is that the
+# client pair travels in the Authorization header (RFC 6749 §2.3.1
+# client_secret_basic) and never in the request body — a provider that
+# implements only the required mechanism rejects a body-only exchange — and
+# that the rotated refresh token is written back rather than discarded.
+golden-api-oauth2-refresh/internal/client/client.go
+
+# config.go's AuthHeader must emit the AccessToken-first Bearer branch and
+# tag AuthSource, which is what doctor reports and what SaveTokens updates.
+golden-api-oauth2-refresh/internal/config/config.go
