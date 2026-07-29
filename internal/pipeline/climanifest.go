@@ -297,21 +297,80 @@ func RefreshCLIManifestFromSpec(dir string, parsed *spec.APISpec) error {
 	return WriteCLIManifest(dir, m)
 }
 
+// agentRecordedManifestFields are written by commands OTHER than generate --
+// `verify` (PersistVerifyToManifest) and `scorecard`
+// (PersistScorecardToManifest). CLIManifest has no struct field for them, so a
+// plain marshal of m cannot carry them and a reprint would drop the recorded
+// result. They are carried forward verbatim instead: a reprint changes what the
+// CLI IS, not what was measured about it, and erasing a recorded
+// `verdict: WARN` makes a known-warning CLI look unassessed.
+var agentRecordedManifestFields = []string{"verify", "scorecard"}
+
 // WriteCLIManifest marshals m as indented JSON and writes it to
 // dir/.printing-press.json. It preserves existing release-ledger files because
-// the public library workflow owns updating them after merge.
+// the public library workflow owns updating them after merge, and carries
+// forward the agent-recorded verify/scorecard blocks (see
+// agentRecordedManifestFields).
 func WriteCLIManifest(dir string, m CLIManifest) error {
 	data, err := json.MarshalIndent(m, "", "  ")
 	if err != nil {
 		return fmt.Errorf("marshaling CLI manifest: %w", err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, CLIManifestFilename), data, 0o644); err != nil {
+	path := filepath.Join(dir, CLIManifestFilename)
+	if merged, err := carryForwardRecordedFields(path, data); err != nil {
+		return err
+	} else if merged != nil {
+		data = merged
+	}
+	if err := os.WriteFile(path, data, 0o644); err != nil {
 		return fmt.Errorf("writing CLI manifest: %w", err)
 	}
 	if err := WriteReleaseLedgerSkeleton(dir, m); err != nil {
 		return err
 	}
 	return nil
+}
+
+// carryForwardRecordedFields copies agentRecordedManifestFields from the
+// manifest already at path into the freshly marshaled data. It returns nil
+// when there is nothing to carry forward, so a fresh print is unaffected. A
+// field the caller already populated wins, so this only ever fills gaps.
+func carryForwardRecordedFields(path string, fresh []byte) ([]byte, error) {
+	existing, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("reading CLI manifest for field preservation: %w", err)
+	}
+	var prev map[string]json.RawMessage
+	if err := json.Unmarshal(existing, &prev); err != nil {
+		// A corrupt manifest is not a reason to fail the write that replaces
+		// it; there is simply nothing trustworthy to carry forward.
+		return nil, nil
+	}
+	var next map[string]json.RawMessage
+	if err := json.Unmarshal(fresh, &next); err != nil {
+		return nil, fmt.Errorf("parsing fresh CLI manifest: %w", err)
+	}
+	carried := false
+	for _, key := range agentRecordedManifestFields {
+		if _, ok := next[key]; ok {
+			continue
+		}
+		if v, ok := prev[key]; ok {
+			next[key] = v
+			carried = true
+		}
+	}
+	if !carried {
+		return nil, nil
+	}
+	merged, err := json.MarshalIndent(next, "", "  ")
+	if err != nil {
+		return nil, fmt.Errorf("marshaling merged CLI manifest: %w", err)
+	}
+	return merged, nil
 }
 
 func WriteReviewedSecretSuppressions(dir string, suppressions []ReviewedSecretSuppression) error {

@@ -2688,3 +2688,55 @@ func TestWriteManifestForGenerateNoCategoryAnywhere(t *testing.T) {
 	got := readPublishedManifest(t, dir)
 	assert.Empty(t, got.Category, "manifest.Category should stay empty when no source provides one")
 }
+
+func TestWriteCLIManifestPreservesRecordedVerifyAndScorecard(t *testing.T) {
+	dir := t.TempDir()
+	// A reprint runs WriteCLIManifest over a manifest that `verify` and
+	// `scorecard` already wrote. CLIManifest has no struct field for either
+	// block, so without preservation a plain marshal silently drops them and
+	// a known-warning CLI reads as unassessed.
+	require.NoError(t, os.WriteFile(filepath.Join(dir, CLIManifestFilename), []byte(`{
+  "schema_version": 1,
+  "api_name": "example",
+  "cli_name": "example-pp-cli",
+  "verify": {"mode": "mock", "pass_rate": 96.97, "passed": 32, "total": 33, "failed": 1, "verdict": "WARN"},
+  "scorecard": {"steinberger": {"percentage": 96, "grade": "A", "total": 96}}
+}`+"\n"), 0o644))
+
+	require.NoError(t, WriteCLIManifest(dir, CLIManifest{
+		SchemaVersion:        1,
+		PrintingPressVersion: "4.29.0",
+		APIName:              "example",
+		CLIName:              "example-pp-cli",
+		RunID:                "20260728-000000",
+	}))
+
+	data, err := os.ReadFile(filepath.Join(dir, CLIManifestFilename))
+	require.NoError(t, err)
+	var got map[string]json.RawMessage
+	require.NoError(t, json.Unmarshal(data, &got))
+
+	require.Contains(t, got, "verify", "reprint dropped the recorded verify block")
+	require.Contains(t, got, "scorecard", "reprint dropped the recorded scorecard block")
+	assert.Contains(t, string(got["verify"]), `"verdict": "WARN"`)
+	assert.Contains(t, string(got["verify"]), `"failed": 1`)
+	assert.Contains(t, string(got["scorecard"]), `"grade": "A"`)
+	// The reprint's own fields must still land.
+	assert.Contains(t, string(got["run_id"]), "20260728-000000")
+}
+
+func TestWriteCLIManifestFreshPrintHasNoRecordedBlocks(t *testing.T) {
+	// Preservation must not invent blocks a fresh print never had.
+	dir := t.TempDir()
+	require.NoError(t, WriteCLIManifest(dir, CLIManifest{
+		SchemaVersion: 1,
+		APIName:       "example",
+		CLIName:       "example-pp-cli",
+	}))
+	data, err := os.ReadFile(filepath.Join(dir, CLIManifestFilename))
+	require.NoError(t, err)
+	var got map[string]json.RawMessage
+	require.NoError(t, json.Unmarshal(data, &got))
+	assert.NotContains(t, got, "verify")
+	assert.NotContains(t, got, "scorecard")
+}
