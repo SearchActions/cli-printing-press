@@ -366,7 +366,11 @@ func carryForwardRecordedFields(path string, fresh []byte) ([]byte, error) {
 	if !carried {
 		return nil, nil
 	}
-	merged, err := json.MarshalIndent(next, "", "  ")
+	// Use the canonical serializer, not json.MarshalIndent: it emits the
+	// project's key order and the trailing newline. Marshaling the map
+	// directly would sort every key alphabetically and drop the newline,
+	// turning a two-field preservation into a whole-file rewrite.
+	merged, err := marshalCLIManifestObject(next)
 	if err != nil {
 		return nil, fmt.Errorf("marshaling merged CLI manifest: %w", err)
 	}
