@@ -1866,9 +1866,11 @@ func applySpecWalkers(s *spec.APISpec, deps []DependentResource, syncable map[st
 			if keyField == "" {
 				keyField = parentIDFieldForDependent(parent, syncable)
 			}
+			meta := metaFromEndpoint(s, resourceName, r, e, types, resourceNameIndex)
 			lookupKey := "GET " + e.Path
 			if idx, ok := byPath[lookupKey]; ok {
 				deps[idx].ParentResource = parent
+				deps[idx].BaseURL = dependentBaseURL(meta.BaseURL, parent, syncable)
 				if keyParam != "" {
 					deps[idx].ParentIDParam = keyParam
 				}
@@ -1876,7 +1878,6 @@ func applySpecWalkers(s *spec.APISpec, deps []DependentResource, syncable map[st
 				deps[idx].PathParams = dependentPathParams(e.Path, parent, deps[idx].ParentIDParam, keyField)
 				continue
 			}
-			meta := metaFromEndpoint(s, resourceName, r, e, types, resourceNameIndex)
 			deps = append(deps, DependentResource{
 				Name:                  spec.ToSnakeCase(resourceName),
 				ParentResource:        parent,
