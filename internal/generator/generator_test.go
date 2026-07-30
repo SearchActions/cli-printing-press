@@ -16767,6 +16767,53 @@ func TestGenerateResourceBaseURLOverrideRoutesToOverrideHost(t *testing.T) {
 	runGoCommand(t, outputDir, "build", "./...")
 }
 
+// TestGenerateSyncUsesPerResourceBaseURL locks the multi-host sync fix: sync
+// must request each resource against its own per-resource base URL, not the
+// CLI's compiled default. A single-host resource keeps a relative sync path
+// (byte-identical to pre-fix output); a resource with a base_url override
+// emits an absolute sync path. Exercises the full profiler -> template path
+// (metaFromEndpoint populating SyncableResource.BaseURL). Generated sync.go
+// must compile.
+func TestGenerateSyncUsesPerResourceBaseURL(t *testing.T) {
+	t.Parallel()
+	apiSpec := minimalSpec("sync-multihost")
+	apiSpec.BaseURL = "https://data.example.com/v1"
+	apiSpec.Resources = map[string]spec.Resource{
+		"events": {
+			Endpoints: map[string]spec.Endpoint{
+				"list": {Method: "GET", Path: "/events", Response: spec.ResponseDef{Type: "array", Item: "object"}},
+			},
+		},
+		"accounts": {
+			BaseURL: "https://admin.example.com/v1",
+			Endpoints: map[string]spec.Endpoint{
+				"list": {Method: "GET", Path: "/accounts", Response: spec.ResponseDef{Type: "array", Item: "object"}},
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	require.NoError(t, gen.Generate())
+
+	syncSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "sync.go"))
+	require.NoError(t, err)
+	src := string(syncSrc)
+
+	// Single-host resource: sync path stays relative (no override).
+	assert.Regexp(t, `"events":\s+"/events",`, src,
+		"single-host sync resource must keep its relative path")
+	// Override resource: sync path becomes absolute on the override host.
+	assert.Regexp(t, `"accounts":\s+"https://admin\.example\.com/v1/accounts",`, src,
+		"sync must route a base_url-overridden resource to its own host")
+	// No overridden resource should route to the CLI default (data) host.
+	assert.NotContains(t, src, `"accounts": "https://data.example.com`,
+		"sync must not route an overridden resource to the CLI default host")
+
+	runGoCommand(t, outputDir, "mod", "tidy")
+	runGoCommand(t, outputDir, "build", "./...")
+}
+
 // TestGenerateSubResourceInheritsParentBaseURL — a sub-resource without
 // its own BaseURL inherits the parent resource's override. An explicit
 // sub-resource override takes precedence.
