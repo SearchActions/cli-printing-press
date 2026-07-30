@@ -2564,7 +2564,7 @@ func describeResourceFailure(count int, label string, resources []string) string
 func syncResourcePath(resource string) (string, error) {
 	paths := map[string]string{ // #nosec G101 -- endpoint paths, not credentials.
 {{- range .SyncableResources}}
-		"{{.Name}}": "{{.Path}}",
+		"{{.Name}}": {{printf "%q" (endpointPathWithBase .BaseURL .Path)}},
 {{- end}}
 	}
 	if p, ok := paths[resource]; ok {
@@ -2777,7 +2777,7 @@ type dependentPathParamDef struct {
 func dependentResourceDefs() []dependentResourceDef {
 	return []dependentResourceDef{
 {{- range .DependentSyncResources}}
-		{Name: "{{.Name}}", ParentTable: "{{.ParentResource}}", ParentIDParam: "{{.ParentIDParam}}", PathTemplate: "{{.Path}}", KeyField: "{{.KeyField}}", ReconcileMode: "{{.ReconcileMode}}", GenericScopeJSONPath: "{{.GenericScopeJSONPath}}"{{if .PathParams}}, PathParams: []dependentPathParamDef{
+		{Name: "{{.Name}}", ParentTable: "{{.ParentResource}}", ParentIDParam: "{{.ParentIDParam}}", PathTemplate: {{printf "%q" (endpointPathWithBase .BaseURL .Path)}}, KeyField: "{{.KeyField}}", ReconcileMode: "{{.ReconcileMode}}", GenericScopeJSONPath: "{{.GenericScopeJSONPath}}"{{if .PathParams}}, PathParams: []dependentPathParamDef{
 {{- range .PathParams}}
 			{Param: "{{.Param}}", Field: "{{.Field}}"},
 {{- end}}

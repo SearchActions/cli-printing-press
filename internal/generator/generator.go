@@ -375,6 +375,7 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 		},
 		"effectiveEndpointPath":        effectiveEndpointPath,
 		"effectiveSubEndpointPath":     effectiveSubEndpointPath,
+		"endpointPathWithBase":         endpointPathWithBase,
 		"enumLiteral":                  enumLiteral,
 		"enumDescriptionHint":          enumDescriptionHint,
 		"jsonStringParam":              isJSONStringParam,

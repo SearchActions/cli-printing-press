@@ -99,10 +99,11 @@ type DiscriminatorDispatch struct {
 
 // SyncableResource describes a resource that supports list sync (paginated or single-page).
 type SyncableResource struct {
-	Name   string
-	Path   string
-	Method string
-	Tier   string
+	Name    string
+	Path    string
+	Method  string
+	Tier    string
+	BaseURL string
 	// SkipDefaultSync keeps resources callable via --resources while excluding
 	// auth-flow endpoints from generated "sync all" defaults.
 	SkipDefaultSync bool
@@ -204,6 +205,7 @@ type DependentResource struct {
 	Path           string // full path template, e.g. "/channels/{channel_id}/messages"
 	Method         string
 	Tier           string
+	BaseURL        string
 	PathParams     []DependentPathParam
 
 	// IDField is the primary-key field name resolved from the spec
@@ -1647,6 +1649,7 @@ func dependentResourceFromEntry(entry parameterizedEntry, knownParents map[strin
 		ParentResource:        ctx.parentResource,
 		ParentIDParam:         dependentParentIDParam(entry.meta.Path, ctx.parentPathSegment, ctx.firstParam),
 		Path:                  entry.meta.Path,
+		BaseURL:               dependentBaseURL(entry.meta.BaseURL, ctx.parentResource, syncable),
 		Method:                entry.meta.Method,
 		Tier:                  entry.meta.Tier,
 		PathParams:            dependentPathParams(entry.meta.Path, ctx.parentPathSegment, ctx.firstParam, keyField),
@@ -1879,6 +1882,7 @@ func applySpecWalkers(s *spec.APISpec, deps []DependentResource, syncable map[st
 				ParentResource:        parent,
 				ParentIDParam:         keyParam,
 				Path:                  e.Path,
+				BaseURL:               dependentBaseURL(meta.BaseURL, parent, syncable),
 				Method:                meta.Method,
 				Tier:                  meta.Tier,
 				PathParams:            dependentPathParams(e.Path, parent, keyParam, keyField),
@@ -2178,6 +2182,7 @@ func resolveParentResourceName(walkParent, paramName string, knownParents map[st
 // converted into a SyncableResource at the end of Profile().
 type syncableMeta struct {
 	Path                  string
+	BaseURL               string
 	Method                string
 	Tier                  string
 	SkipDefaultSync       bool
@@ -2231,6 +2236,7 @@ func metaFromEndpoint(s *spec.APISpec, resourceName string, resource spec.Resour
 	hydratePath, hydrateIDParam := scalarIDHydrationTarget(s, resourceName, e, types)
 	return syncableMeta{
 		Path:                  e.Path,
+		BaseURL:               syncableBaseURL(resource, e),
 		Method:                strings.ToUpper(e.Method),
 		Tier:                  s.EffectiveTier(resource, e),
 		SkipDefaultSync:       isAuthTaggedEndpoint(e) || hasTypedResponseWithoutRuntimeID(resourceName, e, types),
@@ -2258,6 +2264,33 @@ func metaFromEndpoint(s *spec.APISpec, resourceName string, resource spec.Resour
 		HydrateIDParam:        hydrateIDParam,
 		MembershipField:       e.MembershipField,
 	}
+}
+
+// syncableBaseURL resolves the host a syncable resource's requests must target:
+// a per-operation server URL wins, falling back to the resource-level base. It
+// mirrors the generator's effectiveEndpointBaseURL precedence so sync and the
+// endpoint-mirror commands agree on the host for multi-host APIs.
+func syncableBaseURL(resource spec.Resource, e spec.Endpoint) string {
+	baseURL := e.BaseURL
+	if baseURL == "" {
+		baseURL = resource.BaseURL
+	}
+	return strings.TrimRight(baseURL, "/")
+}
+
+// dependentBaseURL resolves a dependent resource's host: the child's own
+// per-operation/resource base wins; when the child declares none it inherits
+// the parent syncable resource's resolved base, mirroring the generator's
+// effectiveSubEndpointBaseURL precedence (endpoint, then sub-resource, then
+// parent).
+func dependentBaseURL(childBaseURL, parentResource string, syncable map[string]syncableMeta) string {
+	if childBaseURL != "" {
+		return childBaseURL
+	}
+	if parent, ok := syncable[parentResource]; ok {
+		return parent.BaseURL
+	}
+	return ""
 }
 
 func hasScalarIDHydrationTarget(s *spec.APISpec, resourceName string, endpoint spec.Endpoint, types map[string]spec.TypeDef) bool {
@@ -3099,6 +3132,7 @@ func sortedSyncableResources(m map[string]syncableMeta) []SyncableResource {
 		resources[i] = SyncableResource{
 			Name:                  name,
 			Path:                  meta.Path,
+			BaseURL:               meta.BaseURL,
 			Method:                meta.Method,
 			Tier:                  meta.Tier,
 			SkipDefaultSync:       meta.SkipDefaultSync,
