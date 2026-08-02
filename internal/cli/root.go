@@ -30,6 +30,7 @@ import (
 	"github.com/mvanhorn/cli-printing-press/v4/internal/graphql"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/llm"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/llmpolish"
+	"github.com/mvanhorn/cli-printing-press/v4/internal/mcpspec"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/naming"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/openapi"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/pipeline"
@@ -88,6 +89,7 @@ func NewRootCommand(commandName string) *cobra.Command {
 	rootCmd.AddCommand(newPrintCmd())
 	rootCmd.AddCommand(newBrowserSniffCmd())
 	rootCmd.AddCommand(newCrowdSniffCmd())
+	rootCmd.AddCommand(newMCPSniffCmd())
 	rootCmd.AddCommand(newDeviceSniffCmd())
 	rootCmd.AddCommand(newBluetoothSniffCmd())
 	rootCmd.AddCommand(newLibraryCmd())
@@ -431,6 +433,8 @@ func newGenerateCmd() *cobra.Command {
 					apiSpec, err = graphql.ParseSDLBytes(specFile, data)
 				} else if googlediscovery.IsDiscovery(data) {
 					apiSpec, err = googlediscovery.Parse(specFile, data)
+				} else if mcpspec.IsMCPToolsList(data) {
+					apiSpec, err = mcpspec.Parse(specFile, data, mcpspec.ParseOptions{Name: cliName})
 				} else {
 					apiSpec, err = spec.ParseBytes(data)
 				}

@@ -234,6 +234,13 @@ type APISpec struct {
 	// model couldn't represent that without hardcoding "/graphql" in the
 	// generated client.
 	GraphQLEndpointPath string `yaml:"graphql_endpoint_path,omitempty" json:"graphql_endpoint_path,omitempty"`
+	// MCPEndpointPath is the path appended to BaseURL for JSON-RPC POSTs when
+	// the upstream API is an MCP server (e.g. "/v1/design/mcp"). Its presence
+	// is what marks a spec as MCP-backed: every endpoint's semantic Method
+	// stays the verb that drives tool safety annotations, while the emitted
+	// transport rewrites the call to a POST of a tools/call envelope at this
+	// path. Mutually exclusive with GraphQLEndpointPath.
+	MCPEndpointPath string `yaml:"mcp_endpoint_path,omitempty" json:"mcp_endpoint_path,omitempty"`
 	// EndpointTemplateVars lists placeholder names embedded in BaseURL,
 	// GraphQLEndpointPath, or per-tenant request paths as {var}
 	// (e.g., ["shop", "version"], or ["tenant"] for per-tenant SaaS APIs
@@ -517,7 +524,7 @@ func (s *APISpec) hasURLTemplateVars() bool {
 }
 
 func (s *APISpec) visitURLTemplateSources(deterministic bool, visit func(string) bool) bool {
-	if !visit(s.BaseURL) || !visit(s.BasePath) || !visit(s.GraphQLEndpointPath) {
+	if !visit(s.BaseURL) || !visit(s.BasePath) || !visit(s.GraphQLEndpointPath) || !visit(s.MCPEndpointPath) {
 		return false
 	}
 
@@ -4023,6 +4030,12 @@ func (s *APISpec) Validate() error {
 	}
 	if err := validateReservedPlaceholderHost("base_url", s.BaseURL); err != nil {
 		return err
+	}
+	// A spec is either GraphQL-backed or MCP-backed, never both: each selects
+	// its own request-body envelope, and declaring both would emit two
+	// transports racing to own the same POST.
+	if strings.TrimSpace(s.GraphQLEndpointPath) != "" && strings.TrimSpace(s.MCPEndpointPath) != "" {
+		return fmt.Errorf("graphql_endpoint_path and mcp_endpoint_path are mutually exclusive; a spec targets one transport")
 	}
 	if len(s.Resources) == 0 {
 		return fmt.Errorf("at least one resource is required")

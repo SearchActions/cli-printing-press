@@ -2831,6 +2831,15 @@ func (g *Generator) renderOptionalSupportFiles() error {
 		}
 	}
 
+	// MCP-backed specs get the JSON-RPC tools/call transport. Reads route
+	// through the read-only POST helper so they bypass the verify-mode
+	// mutation gate the same way GraphQL queries do.
+	if isMCPSpec(g.Spec) {
+		if err := g.renderTemplate("mcp_client.go.tmpl", filepath.Join("internal", "client", "mcp.go"), g.Spec); err != nil {
+			return fmt.Errorf("rendering mcp client: %w", err)
+		}
+	}
+
 	// For GraphQL specs, emit additional client files (GraphQL transport + query constants)
 	if isGraphQLSpec(g.Spec) {
 		if err := g.renderTemplate("graphql_client.go.tmpl", filepath.Join("internal", "client", "graphql.go"), g.Spec); err != nil {
@@ -8424,6 +8433,12 @@ func isGraphQLSpec(s *spec.APISpec) bool {
 	if s == nil {
 		return false
 	}
+	// An MCP spec whose server happens to sit at /graphql must not also be
+	// treated as GraphQL: the two transports are mutually exclusive and
+	// emitting both clients would produce duplicate helpers.
+	if isMCPSpec(s) {
+		return false
+	}
 	hasListEndpoint := false
 	for _, r := range s.Resources {
 		for eName, ep := range r.Endpoints {
@@ -8436,6 +8451,14 @@ func isGraphQLSpec(s *spec.APISpec) bool {
 		}
 	}
 	return hasListEndpoint
+}
+
+// isMCPSpec reports whether the upstream API is an MCP server, in which case
+// every endpoint is a JSON-RPC tools/call POST to MCPEndpointPath. Unlike the
+// GraphQL heuristic this is an explicit spec field, so it needs no path
+// sniffing.
+func isMCPSpec(s *spec.APISpec) bool {
+	return s != nil && strings.TrimSpace(s.MCPEndpointPath) != ""
 }
 
 func networkFallbackReason(s *spec.APISpec) string {

@@ -1263,6 +1263,14 @@ func sleepContext(ctx context.Context, wait time.Duration) error {
 // do executes an HTTP request. headerOverrides, when non-nil, override global
 // RequiredHeaders for this specific request (used for per-endpoint API versioning).
 func (c *Client) do(ctx context.Context, method, path string, params map[string]string, body any, headerOverrides map[string]string) (json.RawMessage, int, error) {
+{{- if .MCPEndpointPath}}
+	// The upstream API is an MCP server: an endpoint's path addresses a tool,
+	// not a route. Rewrite here so every generated command, sync pass, and
+	// orchestration path shares one JSON-RPC envelope.
+	if tool, ok := mcpToolForPath(path); ok {
+		return c.mcpDispatch(ctx, tool, method, params, body, headerOverrides, false)
+	}
+{{- end}}
 	return c.doInternal(ctx, method, path, params, body, headerOverrides, false)
 }
 
@@ -1273,6 +1281,11 @@ func (c *Client) do(ctx context.Context, method, path string, params map[string]
 // but the verify-mode short-circuit does not fire because the operation
 // does not mutate remote state.
 func (c *Client) doRead(ctx context.Context, method, path string, params map[string]string, body any, headerOverrides map[string]string) (json.RawMessage, int, error) {
+{{- if .MCPEndpointPath}}
+	if tool, ok := mcpToolForPath(path); ok {
+		return c.mcpDispatch(ctx, tool, method, params, body, headerOverrides, true)
+	}
+{{- end}}
 	return c.doInternal(ctx, method, path, params, body, headerOverrides, true)
 }
 
