@@ -30,7 +30,7 @@ import (
 {{- end}}
 	"unicode"
 
-{{- if or .HasPathParams (and .Auth.Type (ne .Auth.Type "none")) .HasDataLayer .HasStorePath}}
+{{- if or .HasReplacePathParam (and .Auth.Type (ne .Auth.Type "none")) .HasDataLayer .HasStorePath}}
 	"{{modulePath}}/internal/cliutil"
 {{- end}}
 {{- if .HasRequiredRoles}}
@@ -1079,7 +1079,7 @@ func newTabWriter(w io.Writer) *tabwriter.Writer {
 	return tabwriter.NewWriter(w, 2, 4, 2, ' ', 0)
 }
 
-{{- if .HasPathParams}}
+{{- if .HasReplacePathParam}}
 // replacePathParam escapes path-param values before substituting them so
 // reserved characters within each segment remain safe in the request URL.
 func replacePathParam(path, name, value string) string {

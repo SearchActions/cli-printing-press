@@ -1,0 +1,5 @@
+sync-walker-query-golden/.printing-press.json
+sync-walker-query-golden/.printing-press-patches/.gitkeep
+sync-walker-query-golden/internal/cli/sync.go
+sync-walker-query-golden/internal/cli/helpers.go
+sync-walker-query-golden/internal/store/store.go

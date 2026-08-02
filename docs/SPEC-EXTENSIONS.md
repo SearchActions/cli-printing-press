@@ -1590,8 +1590,17 @@ paths:
 Declares a hierarchical-walk dependency for a child endpoint. Synthesizes (or
 augments) a dependent-resource entry so the generator's existing
 parent-child sync machinery handles the fan-out — fetch the parent, extract
-the named field from each parent record, substitute it into the child path,
-fetch each child.
+the named field from each parent record, apply it to the child request, fetch
+each child.
+
+**Where the extracted key lands** is decided per request: if the child path
+contains `{<key_param>}`, the value is substituted into the path; if it does
+not, the value is sent as a **query parameter** named `key_param`. The second
+form is what method-style APIs need — Slack's `/conversations.history?channel=<id>`
+has no path placeholder to substitute into. Parent scope is applied after
+user-supplied `--global-param` / `--resource-param` flags, so a user flag
+cannot retarget the parent key and collapse every iteration of the fan-out
+onto one wrong parent.
 
 Use this when the auto-detected parent-child link in the profiler would miss
 your endpoint or pick the wrong parent. Common cases:
@@ -1603,6 +1612,11 @@ your endpoint or pick the wrong parent. Common cases:
   path, so the path has no `{placeholder}` for auto-detection to read.
 - The child path uses a parent field that is not the parent's primary key
   (e.g. Yahoo Fantasy's `game_key`, Reddit's `subreddit` name).
+- The child endpoint is scoped by a **required query parameter** rather than a
+  path segment, so the profiler's default sync-resource detection excludes it
+  (`hasRequiredScopeParams`). Pair the walker with `syncable: true` to opt the
+  endpoint into the default sync set, and set `key_param` to the query
+  parameter's name (e.g. Slack's `/conversations.history` scoped by `channel`).
 
 Parsed field: `Endpoint.Walker` (a `*spec.WalkerConfig`)
 
@@ -1616,13 +1630,14 @@ Rules:
 - `key_field` (string, optional): the field to extract from each parent
   record for substitution into the child path. Defaults to the parent's
   primary key. Set this when the child path needs a non-PK field.
-- `key_param` (string, optional): the placeholder name in the child path
-  that receives the extracted value. Defaults to the first (and only)
-  `{placeholder}` in the child path when there is exactly one. **Required
-  explicitly when the child path has 0 or 2+ placeholders** — the
-  single-placeholder default would otherwise pick the wrong slot (or no
-  slot at all). The generator warns and drops the walker when it's ambiguous
-  and `key_param` is missing.
+- `key_param` (string, optional): the name that receives the extracted value —
+  a `{placeholder}` in the child path when one matches, otherwise a query
+  parameter. Defaults to the first (and only) `{placeholder}` in the child
+  path when there is exactly one. **Required explicitly when the child path
+  has 0 or 2+ placeholders** — with 2+ the single-placeholder default would
+  pick the wrong slot, and with 0 there is no slot to pick, so the name can
+  only come from you. The generator warns and drops the walker when it's
+  ambiguous and `key_param` is missing.
 - Walker-emitted dependents flow through the same `syncDependentResource`
   machinery as auto-detected ones, so concurrency/retry/cursor/Upsert
   behavior is identical.
