@@ -92,9 +92,9 @@ for CLIs and agents: no localhost callback server and no client secret.
 				return authErr(fmt.Errorf("client ID required (set --client-id or DEVICE_CODE_CLIENT_ID)"))
 			}
 
-			tokenURL := cfg.TokenURL
-			if tokenURL == "" {
-				tokenURL = "https://login.device.example/oauth/token"
+			tokenURL, err := config.ResolveTokenURL(cfg.TokenURL)
+			if err != nil {
+				return authErr(err)
 			}
 			deviceAuthorizationURL := cfg.DeviceAuthorizationURL
 			if deviceAuthorizationURL == "" {
@@ -198,9 +198,11 @@ func newAuthPollCmd(flags *rootFlags) *cobra.Command {
 				return authErr(fmt.Errorf("pending device code expired; run auth login --device-code again"))
 			}
 			clientID := state.ClientID
-			tokenURL := state.TokenURL
-			if tokenURL == "" {
-				tokenURL = "https://login.device.example/oauth/token"
+			// state.TokenURL comes from a file written next to cfg.Path, so it
+			// shares the --config ingress and gets the same host pin.
+			tokenURL, err := config.ResolveTokenURL(state.TokenURL)
+			if err != nil {
+				return authErr(err)
 			}
 			ctx := cmd.Context()
 			if timeout > 0 {
@@ -246,9 +248,9 @@ func newAuthRefreshCmd(flags *rootFlags) *cobra.Command {
 			if cfg.RefreshToken == "" {
 				return authErr(fmt.Errorf("no refresh token stored; run auth login --device-code"))
 			}
-			tokenURL := cfg.TokenURL
-			if tokenURL == "" {
-				tokenURL = "https://login.device.example/oauth/token"
+			tokenURL, err := config.ResolveTokenURL(cfg.TokenURL)
+			if err != nil {
+				return authErr(err)
 			}
 			tok, err := oauth.RefreshToken(cmd.Context(), nil, tokenURL, cfg.ClientID, cfg.ClientSecret, cfg.RefreshToken)
 			if err != nil {

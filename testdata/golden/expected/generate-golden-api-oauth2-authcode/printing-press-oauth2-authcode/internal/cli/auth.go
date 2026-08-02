@@ -266,9 +266,9 @@ func runOAuthLogin(cmd *cobra.Command, flags *rootFlags, clientID, clientSecret 
 	server.Shutdown(context.Background())
 
 	tokenURL := ""
-	tokenURL = cfg.TokenURL
-	if tokenURL == "" {
-		tokenURL = "https://accounts.authcode.example/oauth/token"
+	tokenURL, err = config.ResolveTokenURL(cfg.TokenURL)
+	if err != nil {
+		return authErr(err)
 	}
 	tokenParams := url.Values{
 		"grant_type":   {"authorization_code"},

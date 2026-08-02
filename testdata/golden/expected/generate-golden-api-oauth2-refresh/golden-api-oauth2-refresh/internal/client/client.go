@@ -906,9 +906,9 @@ func (c *Client) refreshAccessToken(ctx context.Context) error {
 		return fmt.Errorf("refreshing access token: OAuth2 client ID is required when a refresh token is configured; set client_id in config or the client ID environment variable")
 	}
 
-	tokenURL := c.Config.TokenURL
-	if tokenURL == "" {
-		tokenURL = "https://api.oauth2-refresh.example/oauth/token"
+	tokenURL, err := config.ResolveTokenURL(c.Config.TokenURL)
+	if err != nil {
+		return fmt.Errorf("refreshing access token: %w", err)
 	}
 
 	params := url.Values{
@@ -917,12 +917,13 @@ func (c *Client) refreshAccessToken(ctx context.Context) error {
 	}
 	// RFC 6749 §2.3.1 makes client_secret_basic the mechanism every
 	// authorization server must accept, while credentials in the request body
-	// are only optionally supported — providers such as Intuit reject a
-	// body-only exchange with invalid_client. §2.3 forbids presenting two
+	// are only optionally supported. §2.3 forbids presenting two
 	// authentication methods at once, so a confidential client sends the pair
 	// in the header and nothing in the body; a public client (no secret)
-	// identifies itself with client_id in the body per §3.2.1. Same split as
-	// the client_credentials mint above.
+	// identifies itself with client_id in the body per §3.2.1. The reason is
+	// credential hygiene plus that MUST/MAY asymmetry — a body param puts the
+	// OAuth application secret where proxies and access logs capture it most
+	// readily — not provider rejection. Same split as the mint above.
 	usesBasic := c.Config.ClientSecret != ""
 	if !usesBasic {
 		params.Set("client_id", c.Config.ClientID)
