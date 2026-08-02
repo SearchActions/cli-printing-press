@@ -170,6 +170,16 @@ func (c *Client) ensureMCPSession(ctx context.Context) {
 			mcpSession.id = init.SessionID
 		}
 	}
+
+	// The lifecycle requires notifications/initialized before any other
+	// request; a strict server rejects tools/call until it arrives. It is a
+	// notification, so it carries no id and expects no response, and its
+	// failure is not fatal for the permissive servers that never needed it.
+	notify := map[string]any{
+		"jsonrpc": "2.0",
+		"method":  "notifications/initialized",
+	}
+	_, _, _ = c.PostQueryWithParamsAndHeaders(ctx, mcpEndpointPath, nil, notify, mcpBaseHeadersLocked())
 }
 
 // mcpToolByPath maps each endpoint's synthetic path to the MCP tool it

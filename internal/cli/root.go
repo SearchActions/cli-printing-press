@@ -443,6 +443,12 @@ func newGenerateCmd() *cobra.Command {
 				}
 
 				if apiSpec.BaseURLIsPlaceholder {
+					// An MCP catalog has no `servers:` block to add and no
+					// crowd-sniff path, so the generic remedy would send the
+					// operator somewhere that cannot help.
+					if apiSpec.MCPEndpointPath != "" {
+						return &ExitError{Code: ExitSpecError, Err: fmt.Errorf("MCP tool catalog %s records no server URL, so the generator cannot resolve a base URL and refuses to ship a CLI whose `doctor` would DNS-fail on every call. Re-capture it with `cli-printing-press mcp-sniff --url <server>`, which records the URL, or add a top-level \"server_url\" to the capture", specFile)}
+					}
 					return &ExitError{Code: ExitSpecError, Err: fmt.Errorf("spec %s declares no `servers:` block and no per-operation servers; the generator cannot resolve a real base URL and refuses to ship a CLI whose `doctor` would DNS-fail on every call. Add a `servers:` block with the real API host, or run via crowd-sniff with `--base-url` to supply one", specFile)}
 				}
 

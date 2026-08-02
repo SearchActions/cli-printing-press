@@ -4031,10 +4031,15 @@ func (s *APISpec) Validate() error {
 	if err := validateReservedPlaceholderHost("base_url", s.BaseURL); err != nil {
 		return err
 	}
+	// Normalize before any gate reads it. Generator code trims, but the
+	// client template gates on `{{if .MCPEndpointPath}}`, which treats a
+	// whitespace-only value as true — emitting the MCP dispatch calls while
+	// mcp.go is never rendered, so the generated module fails to compile.
+	s.MCPEndpointPath = strings.TrimSpace(s.MCPEndpointPath)
 	// A spec is either GraphQL-backed or MCP-backed, never both: each selects
 	// its own request-body envelope, and declaring both would emit two
 	// transports racing to own the same POST.
-	if strings.TrimSpace(s.GraphQLEndpointPath) != "" && strings.TrimSpace(s.MCPEndpointPath) != "" {
+	if strings.TrimSpace(s.GraphQLEndpointPath) != "" && s.MCPEndpointPath != "" {
 		return fmt.Errorf("graphql_endpoint_path and mcp_endpoint_path are mutually exclusive; a spec targets one transport")
 	}
 	if len(s.Resources) == 0 {

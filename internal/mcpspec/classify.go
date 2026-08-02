@@ -406,6 +406,16 @@ func splitServerURL(raw string) (baseURL, endpointPath string, err error) {
 	if u.Scheme == "" || u.Host == "" {
 		return "", "", fmt.Errorf("MCP server URL %q must be absolute (https://host/path)", raw)
 	}
+	// The generated client replays only scheme+host+path, so a URL carrying
+	// userinfo or a query string would silently lose them and stop working.
+	// Reject at parse time rather than dropping them. The error deliberately
+	// does not echo the URL, which would print the credential.
+	if u.User != nil {
+		return "", "", fmt.Errorf("MCP server URL must not embed credentials; pass them with --token or --header instead")
+	}
+	if u.RawQuery != "" {
+		return "", "", fmt.Errorf("MCP server URL %q must not carry a query string; the generated client cannot replay it", u.Scheme+"://"+u.Host+u.Path)
+	}
 	path := strings.TrimRight(u.Path, "/")
 	return u.Scheme + "://" + u.Host, path, nil
 }

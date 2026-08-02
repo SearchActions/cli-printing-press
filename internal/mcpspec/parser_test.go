@@ -463,6 +463,29 @@ func TestParseRejectsRelativeServerURL(t *testing.T) {
 	assert.Contains(t, err.Error(), "must be absolute")
 }
 
+func TestParseRejectsUnreplayableServerURLParts(t *testing.T) {
+	// The generated client replays only scheme+host+path. A URL carrying
+	// userinfo or a query would silently lose them, so both are rejected at
+	// parse time rather than dropped.
+	t.Run("credentials rejected and never echoed", func(t *testing.T) {
+		_, err := Parse("t.json", []byte(designCatalog), ParseOptions{
+			ServerURL: "https://alice:hunter2@mcp.test/mcp",
+		})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "must not embed credentials")
+		assert.NotContains(t, err.Error(), "hunter2", "the error must not print the credential")
+		assert.NotContains(t, err.Error(), "alice")
+	})
+
+	t.Run("query string rejected", func(t *testing.T) {
+		_, err := Parse("t.json", []byte(designCatalog), ParseOptions{
+			ServerURL: "https://mcp.test/mcp?tenant=acme",
+		})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "query string")
+	})
+}
+
 func TestParseRejectsEmptyCatalog(t *testing.T) {
 	_, err := Parse("t.json", []byte(`{"tools":[]}`), ParseOptions{})
 	require.Error(t, err)

@@ -202,6 +202,11 @@ func validateMCPServerURL(raw string) error {
 	if u.Host == "" {
 		return fmt.Errorf("--url %q has no host", raw)
 	}
+	// The capture file records the server URL, so embedded credentials would
+	// be written to disk. The message never echoes the URL.
+	if u.User != nil {
+		return fmt.Errorf("--url must not embed credentials; pass them with --token or --header instead")
+	}
 	return nil
 }
 
@@ -251,6 +256,12 @@ func (s *mcpSniffer) initialize(ctx context.Context) (json.RawMessage, error) {
 	if err != nil {
 		return nil, err
 	}
+	// The lifecycle requires notifications/initialized before any other
+	// request; a strict server rejects tools/list until it arrives. It is a
+	// notification, so it carries no id and expects no response, and its
+	// failure is not fatal for permissive servers that never needed it.
+	s.notify(ctx, "notifications/initialized")
+
 	var info struct {
 		ServerInfo json.RawMessage `json:"serverInfo"`
 	}
@@ -258,6 +269,33 @@ func (s *mcpSniffer) initialize(ctx context.Context) (json.RawMessage, error) {
 		return nil, nil
 	}
 	return info.ServerInfo, nil
+}
+
+// notify sends a JSON-RPC notification: no id, no response expected.
+func (s *mcpSniffer) notify(ctx context.Context, method string) {
+	payload, err := json.Marshal(map[string]any{"jsonrpc": "2.0", "method": method})
+	if err != nil {
+		return
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, s.url, bytes.NewReader(payload))
+	if err != nil {
+		return
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json, text/event-stream")
+	req.Header.Set("MCP-Protocol-Version", "2025-06-18")
+	if s.sessionID != "" {
+		req.Header.Set("Mcp-Session-Id", s.sessionID)
+	}
+	for name, value := range s.headers {
+		req.Header.Set(name, value)
+	}
+	resp, err := s.client.Do(req)
+	if err != nil {
+		return
+	}
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<20))
+	_ = resp.Body.Close()
 }
 
 func (s *mcpSniffer) listTools(ctx context.Context) ([]any, error) {

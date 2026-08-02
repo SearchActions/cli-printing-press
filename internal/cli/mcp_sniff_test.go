@@ -27,6 +27,9 @@ func TestValidateMCPServerURL(t *testing.T) {
 		{name: "localhost http accepted", url: "http://localhost:3000/mcp"},
 		{name: "plaintext remote rejected", url: "http://mcp.example.com/mcp", wantErr: "must be https"},
 		{name: "empty rejected", url: "", wantErr: "--url is required"},
+		// The capture file records the server URL, so embedded credentials
+		// would be written to disk at 0644.
+		{name: "embedded credentials rejected", url: "https://alice:hunter2@mcp.example.com/mcp", wantErr: "must not embed credentials"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -85,7 +88,14 @@ func newFakeMCPServer(t *testing.T, requireAuth bool) *httptest.Server {
 			Method string          `json:"method"`
 			Params json.RawMessage `json:"params"`
 		}
-		require.NoError(t, json.NewDecoder(r.Body).Decode(&req))
+		// require calls runtime.Goexit on failure, which from a handler
+		// goroutine leaves the test hanging rather than failing. Report and
+		// return instead.
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Errorf("decoding request: %v", err)
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
 		w.Header().Set("Content-Type", "application/json")
 
 		switch req.Method {
