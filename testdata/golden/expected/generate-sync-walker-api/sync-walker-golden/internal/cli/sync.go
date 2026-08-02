@@ -1960,6 +1960,12 @@ func syncOneParent(
 	parentIDJSON, _ := json.Marshal(parentID)
 	parentFKKey := dep.ParentTable + "_id"
 	path := dep.PathTemplate
+	// Parent-key values destined for the query string rather than a path
+	// placeholder. A walker may point at an endpoint whose path carries no
+	// {placeholder} at all (the parent key is a query param, e.g.
+	// /conversations.history?channel=<id>); substituting into the path would
+	// then silently drop the scope and fetch the collection unscoped.
+	scopeParams := map[string]string{}
 	for _, pathParam := range pathParams {
 		// Strip the NUL-composite parent suffix that resourceStorageID builds
 		// for parent-keyed parents: the path needs the BARE entity id. Leaving
@@ -1967,7 +1973,12 @@ func syncOneParent(
 		// url.PathEscape into the URL, which nginx rejects with HTTP 400.
 		// BareResourceID is a no-op on non-composite ids, so this is safe for
 		// every path param (plain parents are unaffected).
-		path = replacePathParam(path, pathParam.Param, store.BareResourceID(parentRow[pathParam.Field]))
+		value := store.BareResourceID(parentRow[pathParam.Field])
+		if strings.Contains(path, "{"+pathParam.Param+"}") {
+			path = replacePathParam(path, pathParam.Param, value)
+			continue
+		}
+		scopeParams[pathParam.Param] = value
 	}
 
 	cursor := ""
@@ -1992,6 +2003,12 @@ func syncOneParent(
 		// Dependent path: --param is skipped (already scoped by the parent path
 		// segment); --global-param and --resource-param still apply.
 		userParams.applyTo(dep.Name, params, true)
+		// Parent scope is structural, not a preference, so it is applied after
+		// user flags: letting --global-param retarget the parent key would make
+		// every iteration of the fan-out request the same wrong parent.
+		for scopeParam, scopeValue := range scopeParams {
+			params[scopeParam] = scopeValue
+		}
 
 		data, err := c.Get(ctx, path, params)
 		if err != nil {

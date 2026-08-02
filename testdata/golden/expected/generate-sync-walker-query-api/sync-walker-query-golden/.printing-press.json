@@ -1,0 +1,29 @@
+{
+  "api_name": "sync-walker-query-golden",
+  "api_version": "1.0.0",
+  "auth_env_vars": [
+    "WALKER_QUERY_GOLDEN_TOKEN"
+  ],
+  "auth_type": "bearer_token",
+  "cli_name": "sync-walker-query-golden-pp-cli",
+  "creator": {
+    "handle": "printing-press-golden",
+    "name": "printing-press-golden"
+  },
+  "description": "Golden fixture for a spec-declared walker whose child endpoint carries the parent key in the QUERY STRING rather than",
+  "display_name": "Sync Walker Query Golden",
+  "generated_at": "<GENERATED_AT>",
+  "mcp_binary": "sync-walker-query-golden-pp-mcp",
+  "mcp_ready": "full",
+  "mcp_tool_count": 2,
+  "owner": "printing-press-golden",
+  "printer": "printing-press-golden",
+  "printer_name": "printing-press-golden",
+  "printing_press_version": "<PRINTING_PRESS_VERSION>",
+  "run_id": "<RUN_ID>",
+  "schema_version": 2,
+  "spec_checksum": "sha256:048d030c6453653f5f7d1eddc082e3b3d2c3533de676461a5264d54d23f1c534",
+  "spec_format": "internal",
+  "spec_path": "sync-walker-query-api.yaml",
+  "spec_url": "file://testdata/golden/fixtures/sync-walker-query-api.yaml"
+}

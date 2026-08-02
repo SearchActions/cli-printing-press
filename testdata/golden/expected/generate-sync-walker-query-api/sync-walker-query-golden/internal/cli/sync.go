@@ -13,16 +13,16 @@ import (
 	"io"
 	"net/url"
 	"os"
-	"printing-press-golden-pp-cli/internal/client"
-	"printing-press-golden-pp-cli/internal/cliutil"
-	"printing-press-golden-pp-cli/internal/learn"
-	"printing-press-golden-pp-cli/internal/learn/lookups"
-	"printing-press-golden-pp-cli/internal/store"
 	"regexp"
 	"sort"
 	"strconv"
 	"strings"
 	"sync"
+	"sync-walker-query-golden-pp-cli/internal/client"
+	"sync-walker-query-golden-pp-cli/internal/cliutil"
+	"sync-walker-query-golden-pp-cli/internal/learn"
+	"sync-walker-query-golden-pp-cli/internal/learn/lookups"
+	"sync-walker-query-golden-pp-cli/internal/store"
 	"sync/atomic"
 	"time"
 )
@@ -93,22 +93,22 @@ Resource scoping:
   the dependent by name; the parent table must already be populated
   from a prior sync.`,
 		Example: `  # Sync all resources
-  printing-press-golden-pp-cli sync
+  sync-walker-query-golden-pp-cli sync
 
   # Sync specific resources only
-  printing-press-golden-pp-cli sync --resources channels,messages
+  sync-walker-query-golden-pp-cli sync --resources channels,messages
 
   # Full resync (ignore previous checkpoint)
-  printing-press-golden-pp-cli sync --full
+  sync-walker-query-golden-pp-cli sync --full
 
   # Incremental sync: only records from the last 7 days
-  printing-press-golden-pp-cli sync --since 7d
+  sync-walker-query-golden-pp-cli sync --since 7d
 
   # Parallel sync with 8 workers
-  printing-press-golden-pp-cli sync --concurrency 8
+  sync-walker-query-golden-pp-cli sync --concurrency 8
 
   # Latest-only: refresh head of each resource, no historical backfill
-  printing-press-golden-pp-cli sync --latest-only`,
+  sync-walker-query-golden-pp-cli sync --latest-only`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			userParams, err := parseSyncUserParams(paramFlags, resourceParamFlags, globalParamFlags)
 			if err != nil {
@@ -122,7 +122,7 @@ Resource scoping:
 			c.NoCache = true
 
 			if dbPath == "" {
-				dbPath = defaultDBPath("printing-press-golden-pp-cli")
+				dbPath = defaultDBPath("sync-walker-query-golden-pp-cli")
 			}
 
 			db, err := store.OpenWithContext(cmd.Context(), dbPath)
@@ -908,24 +908,10 @@ func cursorPageHasContinuation(cursorType string, hasMore bool, nextCursor strin
 // Values are detected from the API spec by the profiler at generation time.
 func determinePaginationDefaults(resource string) paginationDefaults {
 	switch resource {
-	case "projects":
-		return paginationDefaults{
-			cursorParam: "cursor",
-			cursorType:  "cursor",
-			limitParam:  "limit",
-			limit:       25,
-		}
-	case "projects/tasks":
-		return paginationDefaults{
-			cursorParam: "cursor",
-			cursorType:  "cursor",
-			limitParam:  "limit",
-			limit:       50,
-		}
 	}
 	return paginationDefaults{
-		cursorParam: "cursor",
-		cursorType:  "cursor",
+		cursorParam: "after",
+		cursorType:  "",
 		limitParam:  "limit",
 		limit:       100,
 	}
@@ -933,10 +919,6 @@ func determinePaginationDefaults(resource string) paginationDefaults {
 
 func resourceSupportsPagination(resource string) bool {
 	switch resource {
-	case "projects":
-		return true
-	case "tasks":
-		return true
 	}
 	return false
 }
@@ -1674,16 +1656,8 @@ func upsertSingleObject(db *store.Store, resource string, data json.RawMessage) 
 	}
 
 	switch resource {
-	case "projects":
-		return db.UpsertProjects(data)
-	case "avatar":
-		return db.UpsertAvatar(data)
-	case "tasks":
-		return db.UpsertTasks(data)
-	case "export":
-		return db.UpsertExport(data)
-	case "summary":
-		return db.UpsertSummary(data)
+	case "messages":
+		return db.UpsertMessages(data)
 	default:
 		return db.Upsert(resource, id, data)
 	}
@@ -1720,8 +1694,8 @@ func parseSinceDuration(s string) (time.Time, error) {
 
 func defaultSyncResources() []string {
 	return []string{
-		"currencies",
-		"projects",
+		"channels",
+		"messages",
 	}
 }
 
@@ -1730,8 +1704,8 @@ func defaultSyncResources() []string {
 // validation to reject misspellings before they become silent no-ops.
 func knownSyncResourceNames() []string {
 	names := []string{
-		"currencies",
-		"projects",
+		"channels",
+		"messages",
 	}
 	for _, dep := range dependentResourceDefs() {
 		names = append(names, dep.Name)
@@ -1761,8 +1735,8 @@ func describeResourceFailure(count int, label string, resources []string) string
 // this preserves the actual endpoint path like "/ISteamApps/GetAppList/v2".
 func syncResourcePath(resource string) (string, error) {
 	paths := map[string]string{ // #nosec G101 -- endpoint paths, not credentials.
-		"currencies": "/currencies",
-		"projects":   "/projects",
+		"channels": "/conversations.list",
+		"messages": "/conversations.history",
 	}
 	if p, ok := paths[resource]; ok {
 		return p, nil
@@ -1886,9 +1860,7 @@ type dependentPathParamDef struct {
 
 func dependentResourceDefs() []dependentResourceDef {
 	return []dependentResourceDef{
-		{Name: "tasks", ParentTable: "projects", ParentIDParam: "projectId", PathTemplate: "/projects/{projectId}/tasks", KeyField: "", ReconcileMode: "per_parent", GenericScopeJSONPath: "$.project", PathParams: []dependentPathParamDef{
-			{Param: "projectId", Field: "id"},
-		}},
+		{Name: "messages", ParentTable: "channels", ParentIDParam: "channel", PathTemplate: "/conversations.history", KeyField: "id", ReconcileMode: "none", GenericScopeJSONPath: ""},
 	}
 }
 
@@ -2521,10 +2493,7 @@ func dependentParentRows(db *store.Store, parentTable string, pathParams []depen
 // Includes both flat resources and dependent (parent-child) resources so
 // annotations on a child path-item are honored at runtime, not just on
 // flat paths.
-var resourceIDFieldOverrides = map[string]string{
-	"projects": "id",
-	"tasks":    "id",
-}
+var resourceIDFieldOverrides = map[string]string{}
 
 // partitionOutcome tracks whether a sync loop (flat tenant-scoped OR dependent
 // per-parent) enumerated its partition completely. complete is set ONLY at
@@ -2572,11 +2541,7 @@ func flatReconcileDef(resource string) flatReconcileDefT {
 // actually emitted. Generic-only resources are absent and resolve to "" so
 // ReconcilePartition deletes only from the shared resources table.
 var reconcileTypedTables = map[string]string{
-	"avatar":   "avatar",
-	"export":   "export",
-	"projects": "projects",
-	"summary":  "summary",
-	"tasks":    "tasks",
+	"messages": "messages",
 }
 
 func reconcileTypedTable(resource string) string {
@@ -2668,9 +2633,7 @@ var pageEnvelopeMetadataKeys = map[string]bool{
 // Includes both flat resources and dependent (parent-child) resources so a
 // failed child sync flagged x-critical: true exits non-zero just like a
 // flat-resource critical failure.
-var criticalResources = map[string]bool{
-	"projects": true,
-}
+var criticalResources = map[string]bool{}
 
 // extractID resolves an item's primary-key field. It consults the
 // per-resource templated override first; on miss, it falls through to the
