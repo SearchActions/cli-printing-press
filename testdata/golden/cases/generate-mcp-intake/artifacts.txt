@@ -1,0 +1,6 @@
+mcp-intake-golden/internal/client/mcp.go
+mcp-intake-golden/internal/cli/widgets_list.go
+mcp-intake-golden/internal/cli/widgets_create.go
+mcp-intake-golden/internal/cli/widgets_delete.go
+mcp-intake-golden/internal/cli/promoted_digests.go
+mcp-intake-golden/tools-manifest.json
