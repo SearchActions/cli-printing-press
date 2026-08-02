@@ -346,9 +346,9 @@ func runOAuthLogin(cmd *cobra.Command, flags *rootFlags, clientID, clientSecret 
 
 	tokenURL := ""
 {{- if .Auth.TokenURL}}
-	tokenURL = cfg.TokenURL
-	if tokenURL == "" {
-		tokenURL = {{printf "%q" .Auth.TokenURL}}
+	tokenURL, err = config.ResolveTokenURL(cfg.TokenURL)
+	if err != nil {
+		return authErr(err)
 	}
 {{- end}}
 	tokenParams := url.Values{

@@ -11,6 +11,9 @@ import (
 	"encoding/json"
 {{- end}}
 	"fmt"
+{{- if and .HasAuthCommand .Auth.TokenURL}}
+	"net/url"
+{{- end}}
 	"os"
 	"path/filepath"
 	"strings"
@@ -1399,6 +1402,49 @@ func (c *Config) save() error {
 {{- end}}
 	return nil
 }
+
+{{- if and .HasAuthCommand .Auth.TokenURL}}
+// ResolveTokenURL returns the OAuth2 token endpoint to POST to, accepting an
+// override only when it keeps the spec-declared host over https.
+//
+// The token exchange carries client_secret and refresh_token — offline,
+// re-mintable credentials, and in the confidential-client case the OAuth
+// application's own secret shared across every user of that client. An
+// unconstrained override turns "point this CLI at a config file" into
+// "hand over that credential", and a config file is reachable from anywhere:
+// resolveConfigPath accepts an arbitrary --config path or {{envName .Name}}_CONFIG,
+// while credentials still load from the pinned private credentials file.
+//
+// Only the authority is pinned. Path, query and tenant substitution stay free,
+// so provider-specific rewrites (a /common/ tenant segment, a regional path)
+// keep working.
+func ResolveTokenURL(override string) (string, error) {
+	const specTokenURL = {{printf "%q" .Auth.TokenURL}}
+	override = strings.TrimSpace(override)
+	if override == "" {
+		return specTokenURL, nil
+	}
+	if override == specTokenURL {
+		return override, nil
+	}
+
+	spec, err := url.Parse(specTokenURL)
+	if err != nil {
+		return "", fmt.Errorf("parsing built-in token URL %q: %w", specTokenURL, err)
+	}
+	got, err := url.Parse(override)
+	if err != nil {
+		return "", fmt.Errorf("token_url %q is not a valid URL: %w", override, err)
+	}
+	if got.Scheme != "https" {
+		return "", fmt.Errorf("token_url %q must use https (the token exchange carries client_secret and refresh_token)", override)
+	}
+	if !strings.EqualFold(got.Host, spec.Host) {
+		return "", fmt.Errorf("token_url host %q is not allowed; this CLI only exchanges tokens with %q. Path and query may be overridden, the host may not", got.Host, spec.Host)
+	}
+	return override, nil
+}
+{{- end}}
 
 {{- if .HasAuthCommand}}
 func (c *Config) scrubLegacyCredentials() {
