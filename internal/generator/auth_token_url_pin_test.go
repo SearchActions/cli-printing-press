@@ -102,3 +102,62 @@ func TestResolveTokenURLPin(t *testing.T) {
 	// override that slipped through surfaces here as a real failure.
 	runGoCommandRequired(t, outputDir, "test", "./internal/config/", "-run", "TestResolveTokenURLPin")
 }
+
+// configSrcForTokenPin reads a generated CLI's config.go. The spec's token URL
+// now lives there as the specTokenURL const that ResolveTokenURL falls back to,
+// rather than as a literal in auth.go, so assertions about "the CLI defaults to
+// the spec's token URL" read it from here.
+func configSrcForTokenPin(t *testing.T, outputDir string) string {
+	t.Helper()
+	src, err := os.ReadFile(filepath.Join(outputDir, "internal", "config", "config.go"))
+	require.NoError(t, err)
+	return string(src)
+}
+
+// Loopback is the self-hosted / local-OIDC escape hatch (upstream #952: point a
+// printed CLI at a non-default deployment without regenerating). It also matches
+// the spec-time rule, which permits http on localhost/127.0.0.1 only. A pin that
+// refused loopback would break both, and would break every generated runtime
+// test that points the token endpoint at an httptest server.
+func TestTokenURLPinAllowsLoopbackButNotForeignHosts(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := tokenPinSpec("looppin")
+	apiSpec.Auth.AuthorizationURL = "http://localhost:9001/oidc/auth"
+	apiSpec.Auth.TokenURL = "http://localhost:9001/oidc/token"
+
+	outputDir := filepath.Join(t.TempDir(), "looppin-pp-cli")
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+
+	probe := `package config
+
+import "testing"
+
+func TestLoopbackPin(t *testing.T) {
+	for _, ok := range []string{
+		"http://localhost:9002/oidc/token",
+		"http://127.0.0.1:9999/token",
+		"https://localhost:9001/oidc/token",
+	} {
+		if _, err := ResolveTokenURL(ok); err != nil {
+			t.Errorf("loopback override %q rejected: %v", ok, err)
+		}
+	}
+	// A loopback SPEC must not become a wildcard: the credential still may not
+	// leave the machine for a remote host just because the default is local.
+	for _, bad := range []string{
+		"http://evil.example/token",
+		"https://evil.example/token",
+	} {
+		if _, err := ResolveTokenURL(bad); err == nil {
+			t.Errorf("remote override %q accepted from a loopback spec; must be refused", bad)
+		}
+	}
+}
+`
+	probePath := filepath.Join(outputDir, "internal", "config", "zz_loopback_pin_probe_test.go")
+	require.NoError(t, os.WriteFile(probePath, []byte(probe), 0o644))
+	t.Cleanup(func() { _ = os.Remove(probePath) })
+
+	runGoCommandRequired(t, outputDir, "test", "./internal/config/", "-run", "TestLoopbackPin")
+}

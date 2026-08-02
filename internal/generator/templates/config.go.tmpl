@@ -1436,13 +1436,26 @@ func ResolveTokenURL(override string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("token_url %q is not a valid URL: %w", override, err)
 	}
+	// Loopback is the self-hosted / local-OIDC escape hatch, and it matches the
+	// spec-time rule (validateAuthURL permits http on localhost/127.0.0.1 only).
+	// A credential sent to loopback never leaves the machine, so the pin has
+	// nothing to protect there.
+	if isLoopbackHost(got.Hostname()) {
+		return override, nil
+	}
 	if got.Scheme != "https" {
-		return "", fmt.Errorf("token_url %q must use https (the token exchange carries client_secret and refresh_token)", override)
+		return "", fmt.Errorf("token_url %q must use https (the token exchange carries client_secret and refresh_token); http is allowed only on localhost/127.0.0.1", override)
 	}
 	if !strings.EqualFold(got.Host, spec.Host) {
 		return "", fmt.Errorf("token_url host %q is not allowed; this CLI only exchanges tokens with %q. Path and query may be overridden, the host may not", got.Host, spec.Host)
 	}
 	return override, nil
+}
+
+// isLoopbackHost reports whether host names this machine. Kept to the same set
+// validateAuthURL accepts at spec time so the two rules cannot drift.
+func isLoopbackHost(host string) bool {
+	return host == "localhost" || host == "127.0.0.1" || host == "::1"
 }
 {{- end}}
 

@@ -1618,8 +1618,8 @@ func TestGenerateOAuth2ClientCredentialsAuthTemplate(t *testing.T) {
 	// New login command with the right token URL hardcoded.
 	assert.Contains(t, body, `newAuthLoginCmd(flags)`,
 		"client_credentials template emits a login command")
-	assert.Contains(t, body, `"https://api.example.com/oauth/token"`,
-		"login command POSTs to the spec's TokenURL")
+	assert.Contains(t, configSrcForTokenPin(t, outputDir), `const specTokenURL = "https://api.example.com/oauth/token"`,
+		"login command POSTs to the spec's TokenURL (now the pinned default in config)")
 	assert.Contains(t, mintBlock, `"grant_type": {"client_credentials"}`,
 		"login command uses client_credentials grant")
 	assert.NotContains(t, mintBlock, `"client_id":`,
@@ -2041,8 +2041,8 @@ func TestGenerateOAuth2ClientCredentialsClientRefresh(t *testing.T) {
 		"refresh path authenticates the token request via HTTP Basic")
 	assert.Contains(t, mintBlock, "req.Header.Set(\"User-Agent\", resolveClientCredentialsUserAgent())",
 		"refresh path sets a descriptive user agent")
-	assert.Contains(t, body, `"https://api.example.com/oauth/token"`,
-		"mint POSTs to the spec's TokenURL")
+	assert.Contains(t, configSrcForTokenPin(t, outputDir), `const specTokenURL = "https://api.example.com/oauth/token"`,
+		"mint POSTs to the spec's TokenURL (now the pinned default in config)")
 	assert.Contains(t, body, "time.Until(cfg.TokenExpiry) < 60*time.Second",
 		"60-second proactive refresh window")
 	assert.Contains(t, body, `os.Getenv("CCCLIENT_API_KEY")`,
