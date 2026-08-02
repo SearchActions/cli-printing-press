@@ -265,7 +265,8 @@ func (s *mcpSniffer) listTools(ctx context.Context) ([]any, error) {
 	cursor := ""
 	// Follow nextCursor so a server that pages its catalog is captured whole
 	// rather than silently truncated to the first page.
-	for range 100 {
+	const maxPages = 100
+	for range maxPages {
 		params := map[string]any{}
 		if cursor != "" {
 			params["cursor"] = cursor
@@ -287,7 +288,9 @@ func (s *mcpSniffer) listTools(ctx context.Context) ([]any, error) {
 		}
 		cursor = body.NextCursor
 	}
-	return tools, nil
+	// A capture that silently stopped mid-catalog would print a CLI missing
+	// commands with no indication anything was dropped. Fail instead.
+	return nil, fmt.Errorf("tools/list still paging after %d pages (%d tools so far); refusing to write a silently truncated catalog", maxPages, len(tools))
 }
 
 func (s *mcpSniffer) call(ctx context.Context, method string, params any) (json.RawMessage, error) {
@@ -371,16 +374,19 @@ func extractSSEPayload(body []byte) []byte {
 	if trimmed == "" || strings.HasPrefix(trimmed, "{") || strings.HasPrefix(trimmed, "[") {
 		return body
 	}
-	var out strings.Builder
+	// Per the SSE spec a multi-line data field is rejoined with newlines;
+	// concatenating them bare would corrupt a JSON payload split across
+	// several data: lines.
+	var lines []string
 	for line := range strings.SplitSeq(trimmed, "\n") {
 		if data, ok := strings.CutPrefix(strings.TrimRight(line, "\r"), "data:"); ok {
-			out.WriteString(strings.TrimSpace(data))
+			lines = append(lines, strings.TrimPrefix(data, " "))
 		}
 	}
-	if out.Len() == 0 {
+	if len(lines) == 0 {
 		return body
 	}
-	return []byte(out.String())
+	return []byte(strings.Join(lines, "\n"))
 }
 
 func truncateForError(s string) string {

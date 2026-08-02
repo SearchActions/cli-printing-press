@@ -7,6 +7,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -103,15 +105,21 @@ var mcpSession struct {
 // servers may answer with either JSON or an SSE stream, so both are accepted
 // and the response unwrapper handles each.
 func mcpBaseHeaders() map[string]string {
+	mcpSession.Lock()
+	defer mcpSession.Unlock()
+	return mcpBaseHeadersLocked()
+}
+
+// mcpBaseHeadersLocked is mcpBaseHeaders for callers already holding the
+// session lock (the initialize handshake), which would otherwise deadlock.
+func mcpBaseHeadersLocked() map[string]string {
 	h := map[string]string{
 		"Accept":               "application/json, text/event-stream",
 		"MCP-Protocol-Version": mcpProtocolVersion,
 	}
-	mcpSession.Lock()
 	if mcpSession.id != "" {
 		h["Mcp-Session-Id"] = mcpSession.id
 	}
-	mcpSession.Unlock()
 	return h
 }
 
@@ -122,13 +130,15 @@ func mcpBaseHeaders() map[string]string {
 // real error. Failing here would turn a working stateless server into a dead
 // CLI.
 func (c *Client) ensureMCPSession(ctx context.Context) {
+	// Hold the lock across the handshake. Releasing it before initialize
+	// completes lets a concurrent caller proceed with no session id against a
+	// stateful server, which rejects the call.
 	mcpSession.Lock()
+	defer mcpSession.Unlock()
 	if mcpSession.initialized {
-		mcpSession.Unlock()
 		return
 	}
 	mcpSession.initialized = true
-	mcpSession.Unlock()
 
 	req := mcpRequest{
 		JSONRPC: "2.0",
@@ -144,7 +154,7 @@ func (c *Client) ensureMCPSession(ctx context.Context) {
 		},
 	}
 	// Initialize is a read: it must not trip the verify-mode mutation gate.
-	raw, _, err := c.PostQueryWithParamsAndHeaders(ctx, mcpEndpointPath, nil, req, mcpBaseHeaders())
+	raw, _, err := c.PostQueryWithParamsAndHeaders(ctx, mcpEndpointPath, nil, req, mcpBaseHeadersLocked())
 	if err != nil {
 		return
 	}
@@ -157,9 +167,7 @@ func (c *Client) ensureMCPSession(ctx context.Context) {
 			SessionID string `json:"sessionId"`
 		}
 		if json.Unmarshal(resp.Result, &init) == nil && init.SessionID != "" {
-			mcpSession.Lock()
 			mcpSession.id = init.SessionID
-			mcpSession.Unlock()
 		}
 	}
 }
@@ -177,10 +185,41 @@ var mcpToolByPath = map[string]string{
 	"/v1/tools/mcp/update_widget":      "update_widget",
 }
 
-// mcpToolForPath resolves a request path to its MCP tool.
-func mcpToolForPath(path string) (string, bool) {
-	tool, ok := mcpToolByPath[path]
-	return tool, ok
+// mcpToolForRequest resolves a request path to its MCP tool, tolerating a
+// query string that the pathWithQueryValues helpers fold into the path before
+// the request reaches the transport. An exact-match-only lookup would miss
+// those, and the call would escape as a plain HTTP request to a route the MCP
+// server does not serve. Query values become tool arguments, which is where
+// the JSON-RPC envelope carries them.
+func mcpToolForRequest(path string, params map[string]string) (string, map[string]string, bool) {
+	base, query, hasQuery := strings.Cut(path, "?")
+	tool, ok := mcpToolByPath[base]
+	if !ok {
+		return "", nil, false
+	}
+	if !hasQuery {
+		return tool, params, true
+	}
+	values, err := url.ParseQuery(query)
+	if err != nil {
+		return "", nil, false
+	}
+	merged := make(map[string]string, len(params)+len(values))
+	for k, v := range params {
+		merged[k] = v
+	}
+	for k := range values {
+		merged[k] = values.Get(k)
+	}
+	return tool, merged, true
+}
+
+// isMCPRoutePath reports whether a path targets the MCP endpoint. Used to turn
+// a codegen gap into an actionable client-side error instead of an opaque
+// remote 404, since every MCP-endpoint path must resolve to a tool.
+func isMCPRoutePath(path string) bool {
+	base, _, _ := strings.Cut(path, "?")
+	return base == mcpEndpointPath || strings.HasPrefix(base, mcpEndpointPath+"/")
 }
 
 // mcpDispatch rewrites an ordinary request into a JSON-RPC tools/call POST.
@@ -198,7 +237,7 @@ func (c *Client) mcpDispatch(ctx context.Context, tool, semanticMethod string, p
 		Method:  "tools/call",
 		Params: map[string]any{
 			"name":      tool,
-			"arguments": mcpArguments(params, body),
+			"arguments": mcpArguments(tool, params, body),
 		},
 	}
 
@@ -214,12 +253,87 @@ func (c *Client) mcpDispatch(ctx context.Context, tool, semanticMethod string, p
 	return unwrapped, status, nil
 }
 
+// mcpArgTypes records each tool's declared argument types. Query params reach
+// the transport as strings, but a tool's schema may declare integer, number,
+// boolean, or array — and a strict server rejects "10" where it wants 10.
+// Coercing against the declared type avoids guessing from the value's shape,
+// which would corrupt string fields that merely look numeric (a zero-padded
+// ID, a postcode).
+var mcpArgTypes = map[string]map[string]string{
+	"send_digest": {
+		"digestId": "string",
+	},
+	"acme_create_widget": {
+		"name":     "string",
+		"tags":     "array",
+		"viewport": "object",
+	},
+	"delete_widget": {
+		"widgetId": "string",
+	},
+	"get_widget": {
+		"widgetId": "string",
+	},
+	"widgets_list": {
+		"limit":  "integer",
+		"status": "string",
+	},
+	"update_widget": {
+		"widgetId": "string",
+		"name":     "string",
+	},
+}
+
+// coerceMCPArg restores a string-encoded param to its declared JSON type.
+// A value that does not parse is left as a string rather than dropped, so a
+// schema/actual mismatch surfaces as a server-side validation error naming the
+// field instead of silently vanishing.
+func coerceMCPArg(raw, declared string) any {
+	switch declared {
+	case "integer":
+		if n, err := strconv.ParseInt(raw, 10, 64); err == nil {
+			return n
+		}
+	case "number":
+		if f, err := strconv.ParseFloat(raw, 64); err == nil {
+			return f
+		}
+	case "boolean":
+		if b, err := strconv.ParseBool(raw); err == nil {
+			return b
+		}
+	case "array":
+		var arr []any
+		if json.Unmarshal([]byte(raw), &arr) == nil {
+			return arr
+		}
+		// Repeated query params collapse to a comma-joined string upstream.
+		parts := strings.Split(raw, ",")
+		out := make([]any, 0, len(parts))
+		for _, p := range parts {
+			out = append(out, strings.TrimSpace(p))
+		}
+		return out
+	case "object":
+		var obj map[string]any
+		if json.Unmarshal([]byte(raw), &obj) == nil {
+			return obj
+		}
+	}
+	return raw
+}
+
 // mcpArguments folds a request's query params and body into the single
 // arguments object a tools/call takes. Reads arrive as params (so they route
 // through the read transport) and writes as a body; both are tool arguments.
-func mcpArguments(params map[string]string, body any) map[string]any {
+func mcpArguments(tool string, params map[string]string, body any) map[string]any {
 	args := map[string]any{}
+	types := mcpArgTypes[tool]
 	for k, v := range params {
+		if declared, ok := types[k]; ok {
+			args[k] = coerceMCPArg(v, declared)
+			continue
+		}
 		args[k] = v
 	}
 	switch typed := body.(type) {
@@ -402,17 +516,20 @@ func extractSSEData(raw []byte) []byte {
 	if trimmed == "" || strings.HasPrefix(trimmed, "{") || strings.HasPrefix(trimmed, "[") {
 		return raw
 	}
-	var out strings.Builder
+	// Per the SSE spec a multi-line data field is rejoined with newlines;
+	// concatenating the lines bare would corrupt a JSON payload split across
+	// several data: lines.
+	var lines []string
 	for line := range strings.SplitSeq(trimmed, "\n") {
 		line = strings.TrimRight(line, "\r")
 		if data, ok := strings.CutPrefix(line, "data:"); ok {
-			out.WriteString(strings.TrimSpace(data))
+			lines = append(lines, strings.TrimPrefix(data, " "))
 		}
 	}
-	if out.Len() == 0 {
+	if len(lines) == 0 {
 		return raw
 	}
-	return []byte(out.String())
+	return []byte(strings.Join(lines, "\n"))
 }
 
 // mcpContentText concatenates the text blocks of a content array.
