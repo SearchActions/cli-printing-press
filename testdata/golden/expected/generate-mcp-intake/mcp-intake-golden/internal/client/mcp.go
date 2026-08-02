@@ -403,7 +403,7 @@ func extractSSEData(raw []byte) []byte {
 		return raw
 	}
 	var out strings.Builder
-	for _, line := range strings.Split(trimmed, "\n") {
+	for line := range strings.SplitSeq(trimmed, "\n") {
 		line = strings.TrimRight(line, "\r")
 		if data, ok := strings.CutPrefix(line, "data:"); ok {
 			out.WriteString(strings.TrimSpace(data))

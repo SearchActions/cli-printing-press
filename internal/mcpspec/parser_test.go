@@ -2,6 +2,7 @@ package mcpspec
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -532,11 +533,7 @@ func TestEnumStrings(t *testing.T) {
 
 func TestFirstSentenceTruncatesOnRuneBoundary(t *testing.T) {
 	// A long multi-byte description must not be split mid-character.
-	long := ""
-	for i := 0; i < 120; i++ {
-		long += "é"
-	}
-	got := firstSentence(long)
+	got := firstSentence(strings.Repeat("é", 120))
 	assert.True(t, len([]rune(got)) <= 201, "truncated to the rune budget plus ellipsis")
 	assert.True(t, json.Valid([]byte(`"`+got+`"`)), "result stays valid UTF-8")
 }

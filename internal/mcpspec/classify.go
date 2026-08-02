@@ -421,7 +421,7 @@ func deriveName(doc catalog, serverURL, source string) string {
 	if serverURL != "" {
 		if u, err := url.Parse(serverURL); err == nil {
 			segs := []string{}
-			for _, s := range strings.Split(u.Path, "/") {
+			for s := range strings.SplitSeq(u.Path, "/") {
 				s = strings.TrimSpace(s)
 				if s == "" || s == "mcp" || s == "sse" || isVersionSegment(s) {
 					continue

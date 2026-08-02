@@ -265,7 +265,7 @@ func (s *mcpSniffer) listTools(ctx context.Context) ([]any, error) {
 	cursor := ""
 	// Follow nextCursor so a server that pages its catalog is captured whole
 	// rather than silently truncated to the first page.
-	for page := 0; page < 100; page++ {
+	for range 100 {
 		params := map[string]any{}
 		if cursor != "" {
 			params["cursor"] = cursor
@@ -372,7 +372,7 @@ func extractSSEPayload(body []byte) []byte {
 		return body
 	}
 	var out strings.Builder
-	for _, line := range strings.Split(trimmed, "\n") {
+	for line := range strings.SplitSeq(trimmed, "\n") {
 		if data, ok := strings.CutPrefix(strings.TrimRight(line, "\r"), "data:"); ok {
 			out.WriteString(strings.TrimSpace(data))
 		}
