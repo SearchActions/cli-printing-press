@@ -315,13 +315,13 @@ func unwrapMCPToolResult(tool string, raw json.RawMessage) (json.RawMessage, err
 	}
 	// structuredContent is the machine-readable payload when present.
 	if len(res.StructuredContent) > 0 {
-		return res.StructuredContent, nil
+		return unwrapCollection(res.StructuredContent), nil
 	}
 	// Most servers return their payload as JSON inside a single text block.
 	if text := mcpContentText(res.Content); text != "" {
 		if trimmed := strings.TrimSpace(text); json.Valid([]byte(trimmed)) &&
 			(strings.HasPrefix(trimmed, "{") || strings.HasPrefix(trimmed, "[")) {
-			return json.RawMessage(trimmed), nil
+			return unwrapCollection(json.RawMessage(trimmed)), nil
 		}
 		wrapped, err := json.Marshal(map[string]string{"text": text})
 		if err != nil {
@@ -330,6 +330,42 @@ func unwrapMCPToolResult(tool string, raw json.RawMessage) (json.RawMessage, err
 		return wrapped, nil
 	}
 	return resp.Result, nil
+}
+
+// unwrapCollection lifts a wrapped collection to the top level.
+//
+// MCP tools routinely return a list under a named key —
+// {"method":"list_projects","projects":[...]} — rather than as a bare array.
+// Left wrapped, the whole response reads as a single opaque row: table output
+// degrades to raw JSON, --select cannot reach the fields, and sync finds no
+// extractable ID.
+//
+// Only an unambiguous wrapper is unwrapped: exactly one array-valued property.
+// Zero arrays means it is a single object (a get), and two or more means the
+// intended collection cannot be identified without guessing — both are
+// returned untouched, so this never silently discards a sibling collection.
+func unwrapCollection(raw json.RawMessage) json.RawMessage {
+	trimmed := strings.TrimSpace(string(raw))
+	if !strings.HasPrefix(trimmed, "{") {
+		return raw
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		return raw
+	}
+	var found json.RawMessage
+	for _, v := range fields {
+		if strings.HasPrefix(strings.TrimSpace(string(v)), "[") {
+			if found != nil {
+				return raw
+			}
+			found = v
+		}
+	}
+	if found == nil {
+		return raw
+	}
+	return found
 }
 
 // isVerifyNoopEnvelope reports whether raw is the transport's synthetic
