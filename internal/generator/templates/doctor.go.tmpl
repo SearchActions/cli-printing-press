@@ -271,17 +271,21 @@ func newDoctorCmd(flags *rootFlags) *cobra.Command {
 {{- end}}
 				}
 			}
-			// Check cookie tool availability
+			// Check cookie tool availability. python3 is executed because the
+			// probe is whether the pycookiecheat MODULE imports, which nothing
+			// but running it can answer; the rest are resolved, never run, so a
+			// PATH-shadowing binary named `cookies` cannot execute from doctor.
 			cookieToolFound := false
-			for _, check := range [][]string{
-				{"python3", "-c", "import pycookiecheat"},
-				{"cookies", "--help"},
-				{"cookie-scoop", "--help"},
-			} {
-				if err := exec.Command(check[0], check[1:]...).Run(); err == nil {
-					cookieToolFound = true
-					report["cookie_tool"] = check[0]
-					break
+			if err := exec.Command("python3", "-c", "import pycookiecheat").Run(); err == nil {
+				cookieToolFound = true
+				report["cookie_tool"] = "python3"
+			} else {
+				for _, name := range []string{"cookies", "cookie-scoop"} {
+					if _, err := exec.LookPath(name); err == nil {
+						cookieToolFound = true
+						report["cookie_tool"] = name
+						break
+					}
 				}
 			}
 			if !cookieToolFound {
