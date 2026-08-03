@@ -2,7 +2,9 @@ package generator
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -88,8 +90,20 @@ func TestGenerateMCPStdioGatesMutationsUnderVerify(t *testing.T) {
 	_, src := generateStdioMCPCLI(t)
 
 	assert.Contains(t, src, "cliutil.IsVerifyEnv()")
-	assert.Contains(t, src, "cliutil.VerifyLiveHTTPEnvVar")
 	assert.Contains(t, src, `"verify_noop":true`)
+	// The live-HTTP opt-out means "verify owns an httptest mock server, so let
+	// the real wire path run against it." There is no mock subprocess, and
+	// verify sets that var on every mock-mode subprocess — honoring it here
+	// makes the gate inert exactly where it is needed.
+	assert.Contains(t, src, "if !readOnly && cliutil.IsVerifyEnv() {",
+		"the gate must be exactly this condition")
+	for _, optOut := range []string{
+		"cliutil.IsVerifyEnv() && os.Getenv(cliutil.VerifyLiveHTTPEnvVar)",
+		"cliutil.IsVerifyEnv() && !cliutil.IsVerifyLiveHTTPEnv()",
+	} {
+		assert.NotContains(t, src, optOut,
+			"the stdio gate must not honor the live-HTTP opt-out")
+	}
 }
 
 // Both transports define mcpRoundTrip. Emitting both files would be a
@@ -162,4 +176,90 @@ func TestGenerateMCPHTTPDoctorKeepsTheBaseURLCheck(t *testing.T) {
 	doctorSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "doctor.go"))
 	require.NoError(t, err)
 	assert.Contains(t, string(doctorSrc), "not configured (set base_url in config file)")
+}
+
+// Behavioral counterpart to the source-grep test above: run the built binary
+// under the exact environment `cli-printing-press verify` sets on every
+// mock-mode subprocess, which is BOTH PRINTING_PRESS_VERIFY=1 and
+// PRINTING_PRESS_VERIFY_LIVE_HTTP=1 (internal/pipeline/runtime.go).
+//
+// A gate that also honors the live-HTTP opt-out reads as correct in the source
+// and is inert exactly here, sending a real mutation to the operator's own
+// machine. The launch command is pointed at a path that does not exist, so if
+// the gate ever stops firing the process spawn fails loudly instead of
+// silently passing.
+func TestGeneratedMCPStdioCLIShortCircuitsMutationsUnderVerify(t *testing.T) {
+	t.Parallel()
+	if testing.Short() {
+		t.Skip("builds a generated module")
+	}
+	outputDir, _ := generateStdioMCPCLI(t)
+	requireGeneratedCompiles(t, outputDir)
+
+	binary := filepath.Join(outputDir, "stdio-cli"+exeSuffix())
+	runGoCommand(t, outputDir, "build", "-o", binary, "./cmd/example-stdio-pp-cli")
+
+	missingServer := filepath.Join(t.TempDir(), "no-such-mcp-server")
+	env := append(os.Environ(),
+		"PRINTING_PRESS_VERIFY=1",
+		"PRINTING_PRESS_VERIFY_LIVE_HTTP=1",
+		"EXAMPLE_STDIO_MCP_COMMAND="+missingServer,
+	)
+
+	cmd := exec.Command(binary, "records", "delete", "--id", "some-record-id", "--json", "--yes")
+	cmd.Env = env
+	output, _ := cmd.CombinedOutput()
+	got := string(output)
+
+	assert.NotContains(t, got, "starting the MCP server",
+		"the gate must fire before the subprocess is spawned; verify sets LIVE_HTTP and there is no mock subprocess to point it at")
+	assert.NotContains(t, got, "no-such-mcp-server",
+		"nothing should have tried to launch the server")
+	assert.Contains(t, got, "verify_noop",
+		"a mutating tool call under verify must return the synthetic noop envelope")
+}
+
+func exeSuffix() string {
+	if runtime.GOOS == "windows" {
+		return ".exe"
+	}
+	return ""
+}
+
+// Windows does not reap the child when the parent exits, so a CLI that never
+// shuts the server down leaks one process per invocation.
+func TestGenerateMCPStdioShutsTheServerDown(t *testing.T) {
+	t.Parallel()
+	outputDir, _ := generateStdioMCPCLI(t)
+
+	mainSrc, err := os.ReadFile(filepath.Join(outputDir, "cmd", "example-stdio-pp-cli", "main.go"))
+	require.NoError(t, err)
+	main := string(mainSrc)
+
+	assert.Contains(t, main, "defer client.ShutdownMCP()")
+	// The error path calls os.Exit, which skips deferred calls.
+	assert.Contains(t, main, "client.ShutdownMCP()\n\t\tos.Exit(")
+}
+
+// An HTTP-backed CLI has no child process and must not import the client
+// package just to call a shutdown that does nothing.
+func TestGenerateMCPHTTPMainHasNoShutdown(t *testing.T) {
+	t.Parallel()
+	apiSpec, err := mcpspec.Parse("example-http-main", []byte(`{
+  "server_url": "https://mcp.example.com/mcp",
+  "tools": [{"name": "list_records", "description": "List.", "inputSchema": {"type": "object", "properties": {}}}]
+}`), mcpspec.ParseOptions{})
+	require.NoError(t, err)
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+
+	mains, err := filepath.Glob(filepath.Join(outputDir, "cmd", "*", "main.go"))
+	require.NoError(t, err)
+	require.NotEmpty(t, mains)
+	for _, path := range mains {
+		mainSrc, readErr := os.ReadFile(path)
+		require.NoError(t, readErr)
+		assert.NotContains(t, string(mainSrc), "ShutdownMCP", "in %s", path)
+	}
 }

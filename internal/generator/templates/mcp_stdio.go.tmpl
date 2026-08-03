@@ -176,7 +176,16 @@ func (c *Client) mcpRoundTrip(ctx context.Context, req any, _ map[string]string,
 	// which this transport bypasses, so it is applied here instead. Without
 	// it, a verify run would execute real mutations against the operator's
 	// own machine — the blast radius stdio makes larger, not smaller.
-	if !readOnly && cliutil.IsVerifyEnv() && os.Getenv(cliutil.VerifyLiveHTTPEnvVar) != "1" {
+	//
+	// Deliberately NOT gated on VerifyLiveHTTPEnvVar, which the HTTP client
+	// honors and which verify sets on every mock-mode subprocess. That var
+	// means "verify owns an httptest mock server, so let the real wire path
+	// run against it." There is no mock subprocess: honoring it here would
+	// send the mutation to the operator's own machine, which is precisely
+	// what this gate exists to prevent. Live runners (live_dogfood,
+	// workflow_verify) strip PRINTING_PRESS_VERIFY itself, so real-API
+	// dogfood still exercises mutations.
+	if !readOnly && cliutil.IsVerifyEnv() {
 		return json.RawMessage(`{"result":{"content":[],"verify_noop":true,"success":false}}`), 200, nil
 	}
 

@@ -1759,3 +1759,52 @@ Top-level (sibling of `auth`, not nested under it). Path for `doctor`'s
 credential validation above.
 
 Parsed field: `APISpec.HealthCheckPath`
+
+### `mcp_stdio` (internal YAML only)
+
+Declares that the MCP server backing this spec is a local subprocess rather
+than an HTTP endpoint. Its presence changes what `doctor` probes, because a
+subprocess has no URL to reach and no credential to validate.
+
+```yaml
+source: local-mcp-stdio
+mcp_endpoint_path: /mcp
+mcp_stdio:
+  command: uvx
+  args: ["--from", "example-mcp", "--with", "mcp<2", "example-mcp"]
+  env: ["EXAMPLE_CLI_PATH"]
+  ready_tool: check_environment
+```
+
+Parsed field: `APISpec.MCPStdio` (`internal/spec/spec.go`), type
+`spec.MCPStdioLaunch`. Produced by `cli-printing-press mcp-sniff --command`,
+which records the launch command into the capture; `internal/mcpspec` reads it
+back on `generate`.
+
+Fields:
+- `command` / `args` — the executable and its argument vector. Passed straight
+  to `exec.Command`, never a shell, so a value carrying a space or a semicolon
+  stays one argument. `args` carries per-server data the CLI cannot re-derive,
+  including a version pin working around a broken upstream dependency.
+- `env` — env var **names** the server reads, forwarded from the operator's
+  environment. Values are never recorded. An assignment (`NAME=value`) is
+  rejected at validation. `doctor` reports unset names as a WARN, since their
+  absence explains a server-side error that otherwise reads as a CLI bug.
+- `ready_tool` — a read-only tool `doctor` calls to prove the server starts and
+  its local prerequisites are present. This is the stdio analogue of
+  `auth.verify_path`; without it `doctor` reports only that the server launches
+  on first tool call.
+
+Rules:
+- `mcp_endpoint_path` is **required** alongside it — it stays the synthetic
+  route prefix every tool's path hangs off, exactly as over HTTP.
+- `base_url` is **forbidden** alongside it. A stdio transport never dials, so a
+  base URL would be silently ignored.
+- `auth` resolves to `type: none`. The server runs as the operator, on the
+  operator's machine.
+- `source` defaults to `local-mcp-stdio`, the archetype that (like
+  `local-sqlite`) exempts the spec from the `base_url is required` gate.
+
+The generated CLI reads `<ENV_PREFIX>_MCP_COMMAND` at runtime to override the
+launch command, which is the seam a test harness substitutes a scripted server
+through — the stdio counterpart to `<ENV_PREFIX>_BASE_URL`.
