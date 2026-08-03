@@ -18,3 +18,4 @@
 
 # Vendored build cache — leave its bytes exactly as committed.
 .gocache/** -text
+CHANGELOG.md text eol=lf
