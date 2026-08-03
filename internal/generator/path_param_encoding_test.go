@@ -212,11 +212,23 @@ func TestDependentPathParamStripsCompositeStorageID(t *testing.T) {
 	require.NoError(t, err)
 	src := string(syncGo)
 
+	// The value is bared once, then routed to either the path or the query
+	// string depending on whether the child path carries a {placeholder} — so
+	// this asserts the strip and the substitution as two statements rather than
+	// the single expression it used to be.
 	assert.Contains(t, src,
-		`path = replacePathParam(path, pathParam.Param, store.BareResourceID(parentRow[pathParam.Field]))`,
+		`value := store.BareResourceID(parentRow[pathParam.Field])`,
 		"the dependent fan-out must strip the NUL-composite parent storage id via "+
-			"store.BareResourceID before substituting it into the path, so a parent-keyed "+
-			"parent (composite id) never leaks a %00 into the request URL (nginx 400)")
+			"store.BareResourceID, so a parent-keyed parent (composite id) never leaks "+
+			"a %00 into the request URL (nginx 400)")
+	assert.Contains(t, src,
+		`path = replacePathParam(path, pathParam.Param, value)`,
+		"the bared value — not the raw composite storage id — is what gets substituted "+
+			"into the path")
+	assert.Contains(t, src,
+		`scopeParams[pathParam.Param] = value`,
+		"a walker whose child path has no {placeholder} must route the same bared value "+
+			"to the query string rather than silently dropping the parent scope")
 }
 
 // TestURLPathEscapeBehaviorPinsContract is a stdlib-behavior pin for each
