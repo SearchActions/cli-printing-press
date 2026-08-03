@@ -97,6 +97,14 @@ func runOAuthLogin(cmd *cobra.Command, flags *rootFlags, clientID, clientSecret 
 	if err != nil {
 		return err
 	}
+	tokenURL := ""
+	// Resolved up front, not after the callback: a rejected override is a
+	// configuration error, and discovering it only after the user has opened a
+	// browser and completed a login wastes the whole flow to report it.
+	tokenURL, err = config.ResolveTokenURL(cfg.TokenURL)
+	if err != nil {
+		return authErr(err)
+	}
 	// Resolved before every return path, including the credential-free probe
 	// below: a misconfigured redirect host is a configuration error whether or
 	// not credentials happen to be present, and validating it only on the path
@@ -265,11 +273,6 @@ func runOAuthLogin(cmd *cobra.Command, flags *rootFlags, clientID, clientSecret 
 
 	server.Shutdown(context.Background())
 
-	tokenURL := ""
-	tokenURL = cfg.TokenURL
-	if tokenURL == "" {
-		tokenURL = "https://accounts.authcode.example/oauth/token"
-	}
 	tokenParams := url.Values{
 		"grant_type":   {"authorization_code"},
 		"code":         {code},

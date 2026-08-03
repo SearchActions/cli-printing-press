@@ -2247,12 +2247,15 @@ func resolveClientCredentialsTokenURL(tokenURL, tenant string) (string, error) {
 func (c *Client) mintClientCredentials(ctx context.Context, clientID, clientSecret string) error {
 	tokenURL := ""
 {{- if .Auth.TokenURL}}
+	override := ""
 	if c.Config != nil {
-		tokenURL = c.Config.TokenURL
+		override = c.Config.TokenURL
 	}
-	if tokenURL == "" {
-		tokenURL = {{printf "%q" .Auth.TokenURL}}
+	resolved, err := config.ResolveTokenURL(override)
+	if err != nil {
+		return fmt.Errorf("minting client credentials: %w", err)
 	}
+	tokenURL = resolved
 {{- end}}
 	if tokenURL == "" {
 		return nil
@@ -2262,7 +2265,7 @@ func (c *Client) mintClientCredentials(ctx context.Context, clientID, clientSecr
 	if c.Config != nil {
 		tenant = c.Config.{{resolveEnvVarField $ccTenantEnvVar}}
 	}
-	tokenURL, err := resolveClientCredentialsTokenURL(tokenURL, tenant)
+	tokenURL, err = resolveClientCredentialsTokenURL(tokenURL, tenant)
 	if err != nil {
 		return err
 	}
@@ -2327,9 +2330,9 @@ func (c *Client) refreshAccessToken(ctx context.Context) error {
 		return fmt.Errorf("refreshing access token: OAuth2 client ID is required when a refresh token is configured; set client_id in config or the client ID environment variable")
 	}
 
-	tokenURL := c.Config.TokenURL
-	if tokenURL == "" {
-		tokenURL = {{printf "%q" .Auth.TokenURL}}
+	tokenURL, err := config.ResolveTokenURL(c.Config.TokenURL)
+	if err != nil {
+		return fmt.Errorf("refreshing access token: %w", err)
 	}
 
 	params := url.Values{
@@ -2338,12 +2341,13 @@ func (c *Client) refreshAccessToken(ctx context.Context) error {
 	}
 	// RFC 6749 §2.3.1 makes client_secret_basic the mechanism every
 	// authorization server must accept, while credentials in the request body
-	// are only optionally supported — providers such as Intuit reject a
-	// body-only exchange with invalid_client. §2.3 forbids presenting two
+	// are only optionally supported. §2.3 forbids presenting two
 	// authentication methods at once, so a confidential client sends the pair
 	// in the header and nothing in the body; a public client (no secret)
-	// identifies itself with client_id in the body per §3.2.1. Same split as
-	// the client_credentials mint above.
+	// identifies itself with client_id in the body per §3.2.1. The reason is
+	// credential hygiene plus that MUST/MAY asymmetry — a body param puts the
+	// OAuth application secret where proxies and access logs capture it most
+	// readily — not provider rejection. Same split as the mint above.
 	usesBasic := c.Config.ClientSecret != ""
 	if !usesBasic {
 		params.Set("client_id", c.Config.ClientID)

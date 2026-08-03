@@ -5,6 +5,7 @@ package config
 
 import (
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -509,6 +510,60 @@ func (c *Config) save() error {
 	// otherwise later mutations to c's maps leak into the on-disk snapshot.
 	c.fileConfig.Headers = cloneStringMap(c.fileConfig.Headers)
 	return nil
+}
+
+// ResolveTokenURL returns the OAuth2 token endpoint to POST to, accepting an
+// override only when it keeps the spec-declared host over https.
+//
+// The token exchange carries client_secret and refresh_token — offline,
+// re-mintable credentials, and in the confidential-client case the OAuth
+// application's own secret shared across every user of that client. An
+// unconstrained override turns "point this CLI at a config file" into
+// "hand over that credential", and a config file is reachable from anywhere:
+// resolveConfigPath accepts an arbitrary --config path or PRINTING_PRESS_OAUTH2_CONFIG,
+// while credentials still load from the pinned private credentials file.
+//
+// Only the authority is pinned. Path, query and tenant substitution stay free,
+// so provider-specific rewrites (a /common/ tenant segment, a regional path)
+// keep working.
+func ResolveTokenURL(override string) (string, error) {
+	const specTokenURL = "https://accounts.authcode.example/oauth/token"
+	override = strings.TrimSpace(override)
+	if override == "" {
+		return specTokenURL, nil
+	}
+	if override == specTokenURL {
+		return override, nil
+	}
+
+	spec, err := url.Parse(specTokenURL)
+	if err != nil {
+		return "", fmt.Errorf("parsing built-in token URL %q: %w", specTokenURL, err)
+	}
+	got, err := url.Parse(override)
+	if err != nil {
+		return "", fmt.Errorf("token_url %q is not a valid URL: %w", override, err)
+	}
+	// Loopback is the self-hosted / local-OIDC escape hatch, and it matches the
+	// spec-time rule (validateAuthURL permits http on localhost/127.0.0.1 only).
+	// A credential sent to loopback never leaves the machine, so the pin has
+	// nothing to protect there.
+	if isLoopbackHost(got.Hostname()) {
+		return override, nil
+	}
+	if got.Scheme != "https" {
+		return "", fmt.Errorf("token_url %q must use https (the token exchange carries client_secret and refresh_token); http is allowed only on localhost/127.0.0.1", override)
+	}
+	if !strings.EqualFold(got.Host, spec.Host) {
+		return "", fmt.Errorf("token_url host %q is not allowed; this CLI only exchanges tokens with %q. Path and query may be overridden, the host may not", got.Host, spec.Host)
+	}
+	return override, nil
+}
+
+// isLoopbackHost reports whether host names this machine. Kept to the same set
+// validateAuthURL accepts at spec time so the two rules cannot drift.
+func isLoopbackHost(host string) bool {
+	return host == "localhost" || host == "127.0.0.1" || host == "::1"
 }
 func (c *Config) scrubLegacyCredentials() {
 	if c.legacySourcePath == "" || c.legacySourcePath == c.Path {

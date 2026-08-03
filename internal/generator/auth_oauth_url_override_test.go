@@ -49,8 +49,8 @@ func TestOAuth2URLs_RuntimeOverrideEmittedForAuthCodeGrant(t *testing.T) {
 
 	require.Contains(t, auth, "authURL = cfg.AuthorizationURL",
 		"login flow must read cfg.AuthorizationURL before falling back to spec default")
-	require.Contains(t, auth, "tokenURL = cfg.TokenURL",
-		"login flow must read cfg.TokenURL before falling back to spec default")
+	require.Contains(t, auth, "config.ResolveTokenURL(cfg.TokenURL)",
+		"login flow must resolve cfg.TokenURL (host-pinned) rather than the spec literal")
 
 	// The expiry calc must guard against ExpiresIn==0 so a non-conformant
 	// server doesn't make every subsequent call think the token has expired.
@@ -63,8 +63,8 @@ func TestOAuth2URLs_RuntimeOverrideEmittedForAuthCodeGrant(t *testing.T) {
 	clientSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "client", "client.go"))
 	require.NoError(t, err)
 	client := string(clientSrc)
-	require.Contains(t, client, "tokenURL := c.Config.TokenURL",
-		"refreshAccessToken must read c.Config.TokenURL before falling back to spec default")
+	require.Contains(t, client, "config.ResolveTokenURL(c.Config.TokenURL)",
+		"refreshAccessToken must resolve c.Config.TokenURL (host-pinned) rather than the spec literal")
 	require.Contains(t, client, "func (c *Client) refreshAccessToken(ctx context.Context) error",
 		"refreshAccessToken must accept the caller context")
 	require.Contains(t, client, "http.NewRequestWithContext(ctx, http.MethodPost, tokenURL, strings.NewReader(params.Encode()))",
@@ -97,16 +97,16 @@ func TestOAuth2URLs_RuntimeOverrideEmittedForClientCredentialsGrant(t *testing.T
 	authSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "auth.go"))
 	require.NoError(t, err)
 	auth := string(authSrc)
-	require.Contains(t, auth, "tokenURL := cfg.TokenURL",
-		"client_credentials login must read cfg.TokenURL before mint")
+	require.Contains(t, auth, "config.ResolveTokenURL(cfg.TokenURL)",
+		"client_credentials login must resolve cfg.TokenURL (host-pinned) before mint")
 	require.Contains(t, auth, "if tok.ExpiresIn > 0 {",
 		"client_credentials login must guard expiry calc against ExpiresIn==0")
 
 	clientSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "client", "client.go"))
 	require.NoError(t, err)
 	client := string(clientSrc)
-	require.Contains(t, client, "tokenURL = c.Config.TokenURL",
-		"mintClientCredentials must read c.Config.TokenURL via the c.Config != nil guard")
+	require.Contains(t, client, "config.ResolveTokenURL(override)",
+		"mintClientCredentials must resolve the override (host-pinned) via the c.Config != nil guard")
 	require.Contains(t, client, "func (c *Client) mintClientCredentials(ctx context.Context, clientID, clientSecret string) error",
 		"mintClientCredentials must accept the caller context")
 	require.Contains(t, client, "http.NewRequestWithContext(ctx, http.MethodPost, tokenURL, strings.NewReader(form.Encode()))",

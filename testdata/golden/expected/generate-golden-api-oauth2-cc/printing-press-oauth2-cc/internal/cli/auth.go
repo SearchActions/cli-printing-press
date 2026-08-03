@@ -82,9 +82,9 @@ Credentials default to PRINTING_PRESS_OAUTH2_CLIENT_ID (Client ID) and PRINTING_
 				return configErr(err)
 			}
 
-			tokenURL := cfg.TokenURL
-			if tokenURL == "" {
-				tokenURL = "https://api.cc.example/oauth/token"
+			tokenURL, err := config.ResolveTokenURL(cfg.TokenURL)
+			if err != nil {
+				return authErr(err)
 			}
 			tok, err := mintClientCredentialsToken(http.DefaultClient, tokenURL, clientID, clientSecret)
 			if err != nil {
