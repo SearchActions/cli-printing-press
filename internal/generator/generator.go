@@ -796,7 +796,8 @@ func resourceWalkEndpoints(resourceName string, resource spec.Resource, visit fu
 // HelperFlags controls which helper functions are emitted in helpers.go.
 type HelperFlags struct {
 	HasDelete            bool // spec has DELETE endpoints → emit classifyDeleteError
-	HasPathParams        bool // spec has path parameters → emit replacePathParam
+	HasPathParams        bool // spec has path parameters
+	HasReplacePathParam  bool // some emitted file calls replacePathParam → emit its definition
 	HasMultiPositional   bool // spec has endpoints with 2+ positional params → emit usageErr
 	HasDataLayer         bool // CLI has a local store (sync/search) → emit provenance helpers
 	HasStorePath         bool // CLI has any local store, including a learn-only store
@@ -861,7 +862,26 @@ func computeHelperFlags(s *spec.APISpec) HelperFlags {
 		}
 		scan(r)
 	}
+	// Every spec path param produces a replacePathParam call site. Dependent
+	// (walker) sync adds call sites the spec scan above cannot see, so the
+	// generator overrides this after profiling — see setReplacePathParamFlag.
+	flags.HasReplacePathParam = flags.HasPathParams
 	return flags
+}
+
+// setReplacePathParamFlag widens the replacePathParam emission gate to cover
+// dependent-resource sync, whose call site in sync.go.tmpl is gated on a
+// dependent existing rather than on the spec carrying a path param. A walker
+// can target a placeholder-free path (the parent key rides in the query
+// string), in which case HasPathParams is false while the call site is still
+// emitted — the definition must follow the call sites, not the spec shape.
+func setReplacePathParamFlag(flags *HelperFlags, profile *profiler.APIProfile) {
+	if flags.HasPathParams {
+		return
+	}
+	if profile != nil && len(profile.DependentSyncResources) > 0 {
+		flags.HasReplacePathParam = true
+	}
 }
 
 func applyPartialFailureFlags(flags *HelperFlags, apiSpec *spec.APISpec, promotedCommands []PromotedCommand, promotedEndpointNames map[string]string, hasStore bool) {
@@ -2436,6 +2456,7 @@ func (g *Generator) renderSingleFiles() error {
 			hFlags.HasStorePath = g.VisionSet.Store
 			hFlags.HasSyncHelpers = g.hasGeneratedSyncImplementation()
 			hFlags.HasResponseUnwrap = g.hasDataLayer() && promotedCommandsCanUnwrapResponse(g.PromotedCommands, g.Spec.Types)
+			setReplacePathParamFlag(&hFlags, g.profile)
 			data = &helpersTemplateData{
 				APISpec:     g.Spec,
 				HelperFlags: hFlags,

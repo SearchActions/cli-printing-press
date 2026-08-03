@@ -1,0 +1,59 @@
+name: sync-walker-query-golden
+description: |
+  Golden fixture for a spec-declared walker whose child endpoint carries the
+  parent key in the QUERY STRING rather than in a path placeholder. This is
+  the shape used by method-style APIs (Slack Web API, older JSON-RPC-ish
+  surfaces) where every operation is a flat path and scoping is by query
+  param: /conversations.history?channel=<id>.
+
+  Two generator behaviors depend on this shape and are not exercised by
+  sync-walker-api.yaml, whose child path is /games/{game_key}/leagues:
+
+  1. replacePathParam's DEFINITION must be emitted. Its call site in
+     sync.go.tmpl is gated on a dependent resource existing, but the
+     definition was gated on the spec carrying a path param. No endpoint
+     here has a `{placeholder}`, so the definition was omitted while the
+     call site was emitted and the generated CLI did not compile.
+
+  2. The parent key must reach the request's query params. Path
+     substitution is a no-op when there is no placeholder to substitute,
+     so every child request went out UNSCOPED — fetching the whole
+     collection instead of one parent's slice, with no error.
+
+  Walker shape exercised: messages declares `walker.parent=channels` with
+  `key_field=id` and `key_param=channel`. `key_param` is explicit because
+  the child path has zero placeholders, which the profiler requires (the
+  single-placeholder default has no slot to pick).
+version: 1.0.0
+base_url: https://api.example.com
+auth:
+  type: bearer_token
+  env_vars: [WALKER_QUERY_GOLDEN_TOKEN]
+resources:
+  channels:
+    description: Top-level channels resource. The list endpoint populates the
+      generic resources table; the walker extracts each row's id for child
+      fan-out.
+    endpoints:
+      list:
+        method: GET
+        path: /conversations.list
+        description: List channels
+  messages:
+    description: Messages, fetched per-channel by walking channels and
+      passing each channel's id as the `channel` query param.
+    endpoints:
+      list:
+        method: GET
+        path: /conversations.history
+        description: List messages for a channel
+        syncable: true
+        walker:
+          parent: channels
+          key_field: id
+          key_param: channel
+        params:
+          - name: channel
+            type: string
+            required: true
+            description: Channel ID to fetch history for
