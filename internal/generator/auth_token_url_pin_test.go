@@ -5,6 +5,7 @@ package generator
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/mvanhorn/cli-printing-press/v4/internal/spec"
@@ -160,4 +161,30 @@ func TestLoopbackPin(t *testing.T) {
 	t.Cleanup(func() { _ = os.Remove(probePath) })
 
 	runGoCommandRequired(t, outputDir, "test", "./internal/config/", "-run", "TestLoopbackPin")
+}
+
+// A rejected token_url is a configuration error. Discovering it only after the
+// callback means the user has already opened a browser, authenticated, and
+// returned a live authorization code — all of it wasted to report a value that
+// was wrong before the flow began. Resolve must precede the listener.
+func TestAuthCodeLoginResolvesTokenURLBeforeBrowserLaunch(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := tokenPinSpec("earlypin")
+	apiSpec.Auth.Type = "oauth2"
+	apiSpec.Auth.Format = "Bearer {token}"
+
+	outputDir := filepath.Join(t.TempDir(), "earlypin-pp-cli")
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+
+	authGo := readGeneratedFile(t, outputDir, "internal", "cli", "auth.go")
+
+	resolveIdx := strings.Index(authGo, "config.ResolveTokenURL(cfg.TokenURL)")
+	listenIdx := strings.Index(authGo, `net.Listen("tcp"`)
+	require.NotEqual(t, -1, resolveIdx, "login flow must resolve the token URL")
+	require.NotEqual(t, -1, listenIdx, "login flow must start a callback listener")
+	assert.Less(t, resolveIdx, listenIdx,
+		"token URL must resolve before the callback listener starts, not after the user completes login")
+
+	requireGeneratedCompiles(t, outputDir)
 }
