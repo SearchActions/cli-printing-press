@@ -1,0 +1,54 @@
+{
+  "stdio": {
+    "command": "uvx",
+    "args": ["--from", "stdio-golden-mcp", "--with", "mcp<2", "stdio-golden-mcp"],
+    "env": ["STDIO_GOLDEN_CLI_PATH"],
+    "ready_tool": "check_environment"
+  },
+  "server_info": {
+    "name": "mcp-stdio-golden",
+    "title": "Purpose-built fixture for MCP stdio intake coverage.",
+    "version": "1.0.0"
+  },
+  "tools": [
+    {
+      "name": "check_environment",
+      "description": "Verify the local prerequisites are installed. Zero-parameter tool, the doctor probe for a server with no HTTP origin.",
+      "annotations": { "readOnlyHint": true, "openWorldHint": false },
+      "inputSchema": { "type": "object", "properties": {} }
+    },
+    {
+      "name": "list_records",
+      "description": "List stored records. Nullable unions are how Pydantic spells optional, so every one of these is a FastMCP-shaped anyOf.",
+      "annotations": { "readOnlyHint": true },
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "limit": { "title": "Limit", "type": "integer", "default": 100 },
+          "filter_column": { "anyOf": [{ "type": "string" }, { "type": "null" }], "default": null, "title": "Filter Column" },
+          "filter_value": {
+            "anyOf": [{ "type": "string" }, { "type": "integer" }, { "type": "number" }, { "type": "null" }],
+            "default": null,
+            "title": "Filter Value"
+          },
+          "columns": {
+            "anyOf": [{ "type": "array", "items": { "type": "string" } }, { "type": "null" }],
+            "default": null,
+            "title": "Columns"
+          }
+        },
+        "required": []
+      }
+    },
+    {
+      "name": "delete_record",
+      "description": "Delete a stored record. Destructive hint drives the semantic DELETE verb, which the stdio verify gate reads.",
+      "annotations": { "readOnlyHint": false, "destructiveHint": true, "idempotentHint": true },
+      "inputSchema": {
+        "type": "object",
+        "properties": { "record_id": { "type": "string", "title": "Record Id" } },
+        "required": ["record_id"]
+      }
+    }
+  ]
+}

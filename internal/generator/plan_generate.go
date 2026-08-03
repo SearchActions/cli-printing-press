@@ -158,8 +158,13 @@ func GenerateFromPlan(planSpec *PlanSpec, outputDir string) error {
 	topLevel, parents := partitionCommands(planSpec.Commands)
 
 	// Render main.go
+	// MCPStdio is carried explicitly, not omitted: main.go.tmpl gates the MCP
+	// subprocess shutdown on it, and a struct missing the field makes the
+	// template fail to execute rather than treating it as absent. A
+	// plan-driven CLI has no MCP transport, so it is always nil here.
 	mainData := struct {
-		Owner string
+		Owner    string
+		MCPStdio *spec.MCPStdioLaunch
 	}{Owner: owner}
 	if err := render("main.go.tmpl", filepath.Join("cmd", naming.CLI(cliName), "main.go"), mainData); err != nil {
 		return fmt.Errorf("rendering main.go: %w", err)

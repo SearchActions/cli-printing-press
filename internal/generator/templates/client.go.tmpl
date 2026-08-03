@@ -1263,6 +1263,14 @@ func sleepContext(ctx context.Context, wait time.Duration) error {
 // do executes an HTTP request. headerOverrides, when non-nil, override global
 // RequiredHeaders for this specific request (used for per-endpoint API versioning).
 func (c *Client) do(ctx context.Context, method, path string, params map[string]string, body any, headerOverrides map[string]string) (json.RawMessage, int, error) {
+{{- if .MCPEndpointPath}}
+	// The upstream API is an MCP server: an endpoint's path addresses a tool,
+	// not a route. Rewrite here so every generated command, sync pass, and
+	// orchestration path shares one JSON-RPC envelope.
+	if tool, mcpParams, ok := mcpToolForRequest(path, params); ok {
+		return c.mcpDispatch(ctx, tool, method, mcpParams, body, headerOverrides, false)
+	}
+{{- end}}
 	return c.doInternal(ctx, method, path, params, body, headerOverrides, false)
 }
 
@@ -1273,6 +1281,11 @@ func (c *Client) do(ctx context.Context, method, path string, params map[string]
 // but the verify-mode short-circuit does not fire because the operation
 // does not mutate remote state.
 func (c *Client) doRead(ctx context.Context, method, path string, params map[string]string, body any, headerOverrides map[string]string) (json.RawMessage, int, error) {
+{{- if .MCPEndpointPath}}
+	if tool, mcpParams, ok := mcpToolForRequest(path, params); ok {
+		return c.mcpDispatch(ctx, tool, method, mcpParams, body, headerOverrides, true)
+	}
+{{- end}}
 	return c.doInternal(ctx, method, path, params, body, headerOverrides, true)
 }
 
@@ -1281,6 +1294,17 @@ func (c *Client) doRead(ctx context.Context, method, path string, params map[str
 // operations like GraphQL queries) to skip the mutating-verb verify-mode
 // gate. Plain do() callers leave it false and get the usual short-circuit.
 func (c *Client) doInternal(ctx context.Context, method, path string, params map[string]string, body any, headerOverrides map[string]string, readOnlyIntent bool) (json.RawMessage, int, error) {
+{{- if .MCPEndpointPath}}
+	// Every MCP-endpoint path must resolve to a tool. Reaching here with an
+	// unmapped one means a codegen gap, and issuing the request anyway would
+	// surface it as an opaque remote 404 instead of a fixable client error.
+	// The bare endpoint is exempt: mcpDispatch itself posts there.
+	if path != mcpEndpointPath && isMCPRoutePath(path) {
+		if _, _, ok := mcpToolForRequest(path, params); !ok {
+			return nil, 0, fmt.Errorf("no MCP tool is mapped to path %q; this is a generator bug, not a usage error", path)
+		}
+	}
+{{- end}}
 	// Verify-mode transport-layer gate. When the verifier (or any consumer
 	// that sets PRINTING_PRESS_VERIFY=1) drives a mutating verb without
 	// the LIVE_HTTP=1 opt-in, return a synthetic envelope without dialing,
@@ -1681,7 +1705,12 @@ func (c *Client) doInternal(ctx context.Context, method, path string, params map
 			c.lastContentType = resp.Header.Get("Content-Type")
 {{- end}}
 			c.limiter.OnSuccess()
-			if method != http.MethodGet && !c.DryRun {
+			// readOnlyIntent covers reads that ride a mutating wire verb
+			// (GraphQL queries, MCP tools/call reads, POST search). Those
+			// change no remote state, so wiping the cache on them would
+			// delete the directory on every read — immediately before the
+			// caller writes the fresh entry, so the cache never serves a hit.
+			if method != http.MethodGet && !readOnlyIntent && !c.DryRun {
 				c.invalidateCache()
 			}
 			// Non-textual bodies (PDF, zip, image, octet-stream) must not be

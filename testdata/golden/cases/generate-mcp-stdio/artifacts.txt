@@ -1,0 +1,6 @@
+mcp-stdio-golden/internal/client/mcp.go
+mcp-stdio-golden/internal/client/mcp_stdio.go
+mcp-stdio-golden/internal/cli/records_list.go
+mcp-stdio-golden/internal/cli/records_delete.go
+mcp-stdio-golden/tools-manifest.json
+mcp-stdio-golden/internal/cli/doctor.go

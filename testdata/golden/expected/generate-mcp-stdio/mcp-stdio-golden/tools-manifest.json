@@ -1,0 +1,65 @@
+{
+  "api_name": "mcp-stdio-golden",
+  "auth": {
+    "type": "none"
+  },
+  "base_url": "",
+  "description": "Purpose-built fixture for MCP stdio intake coverage.",
+  "http_transport": "standard",
+  "mcp_ready": "full",
+  "required_headers": [],
+  "tools": [
+    {
+      "description": "Verify the local prerequisites are installed.",
+      "method": "GET",
+      "name": "environments_check",
+      "no_auth": true,
+      "params": [],
+      "path": "/mcp/check_environment"
+    },
+    {
+      "description": "Delete a stored record. Required: record_id. Destructive.",
+      "method": "DELETE",
+      "name": "records_delete",
+      "no_auth": true,
+      "params": [
+        {
+          "location": "body",
+          "name": "record_id",
+          "required": true,
+          "type": "string"
+        }
+      ],
+      "path": "/mcp/delete_record"
+    },
+    {
+      "description": "List stored records. Optional: columns, filter_column, filter_value (plus 1 more).",
+      "method": "GET",
+      "name": "records_list",
+      "no_auth": true,
+      "params": [
+        {
+          "location": "query",
+          "name": "columns",
+          "type": "array"
+        },
+        {
+          "location": "query",
+          "name": "filter_column",
+          "type": "string"
+        },
+        {
+          "location": "query",
+          "name": "filter_value",
+          "type": "string"
+        },
+        {
+          "location": "query",
+          "name": "limit",
+          "type": "integer"
+        }
+      ],
+      "path": "/mcp/list_records"
+    }
+  ]
+}

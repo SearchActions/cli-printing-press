@@ -19,7 +19,9 @@ import (
 {{- if .HasCacheReport}}
 	"database/sql"
 {{- end}}
+{{- if not .MCPStdio}}
 	"errors"
+{{- end}}
 	"fmt"
 	"io"
 {{- if .BearerRefresh.Enabled}}
@@ -516,6 +518,43 @@ func newDoctorCmd(flags *rootFlags) *cobra.Command {
 			// Cloudflare-fronted, Akamai-fronted, or otherwise bot-detected
 			// sites. By going through flags.newClient(), the doctor's
 			// reachability verdict matches what real commands experience.
+{{- if .MCPStdio}}
+			// The MCP server is a local subprocess, so there is no URL to
+			// reach and no credential to validate. The only real health
+			// signal is whether the server starts and answers a call, which
+			// also exercises the prerequisites it needs on this machine.
+			if c, clientErr := flags.newClient(); clientErr != nil {
+				report["api"] = fmt.Sprintf("client init error: %s", clientErr)
+			} else {
+{{- if .MCPStdio.Ready}}
+				probeStart := time.Now()
+				if _, probeErr := c.QueryTool(cmd.Context(), client.MCPStdioReadyTool, map[string]any{}); probeErr != nil {
+					report["api"] = fmt.Sprintf("MCP server unreachable: %s", probeErr)
+				} else {
+					report["api"] = fmt.Sprintf("ok — MCP server answered %s in %s", client.MCPStdioReadyTool, time.Since(probeStart).Round(time.Millisecond))
+				}
+{{- else}}
+				_ = c
+				report["api"] = "MCP server launches on first tool call (no read-only probe declared)"
+{{- end}}
+			}
+			if len(client.MCPStdioForwardEnv) > 0 {
+				missing := []string{}
+				for _, name := range client.MCPStdioForwardEnv {
+					if os.Getenv(name) == "" {
+						missing = append(missing, name)
+					}
+				}
+				if len(missing) == 0 {
+					report["mcp_server_env"] = fmt.Sprintf("all %d set", len(client.MCPStdioForwardEnv))
+				} else {
+					// A WARN, not a FAIL: these configure the server, and most
+					// have defaults. Their absence explains a server-side error
+					// that would otherwise look like a CLI bug.
+					report["mcp_server_env"] = fmt.Sprintf("WARN unset: %s (the MCP server may fall back to defaults)", strings.Join(missing, ", "))
+				}
+			}
+{{- else}}
 			if cfg != nil && cfg.BaseURL != "" {
 				c, clientErr := flags.newClient()
 				if clientErr != nil {
@@ -674,6 +713,7 @@ func newDoctorCmd(flags *rootFlags) *cobra.Command {
 			} else if cfg != nil && cfg.BaseURL == "" {
 				report["api"] = "not configured (set base_url in config file)"
 			}
+{{- end}}
 
 {{- if .HasCacheReport}}
 			// Cache health: only reported when this CLI has generated sync.

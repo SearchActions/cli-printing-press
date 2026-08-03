@@ -1,0 +1,142 @@
+{
+  "api_name": "mcp-intake-golden",
+  "auth": {
+    "env_var_specs": [
+      {
+        "inferred": true,
+        "kind": "per_call",
+        "name": "MCP_INTAKE_GOLDEN_TOKEN",
+        "required": true,
+        "sensitive": true
+      }
+    ],
+    "env_vars": [
+      "MCP_INTAKE_GOLDEN_TOKEN"
+    ],
+    "header": "Authorization",
+    "type": "bearer_token"
+  },
+  "base_url": "https://mcp.golden.example",
+  "description": "Purpose-built fixture for MCP tools/list intake coverage.",
+  "http_transport": "standard",
+  "mcp_ready": "full",
+  "required_headers": [],
+  "tools": [
+    {
+      "description": "A write-shaped verb the server declares read-only; the annotation must win over the name. Required: digestId.",
+      "method": "GET",
+      "name": "digests_send",
+      "params": [
+        {
+          "location": "query",
+          "name": "digestId",
+          "required": true,
+          "type": "string"
+        }
+      ],
+      "path": "/v1/tools/mcp/send_digest"
+    },
+    {
+      "description": "Create a widget. Required: name. Optional: tags, viewport.",
+      "method": "POST",
+      "name": "widgets_create",
+      "params": [
+        {
+          "description": "Display name.",
+          "location": "body",
+          "name": "name",
+          "required": true,
+          "type": "string"
+        },
+        {
+          "description": "Free-form labels.",
+          "location": "body",
+          "name": "tags",
+          "type": "array"
+        },
+        {
+          "location": "body",
+          "name": "viewport-width",
+          "required": true,
+          "type": "integer",
+          "wire_name": "viewport.width"
+        },
+        {
+          "location": "body",
+          "name": "viewport-height",
+          "type": "integer",
+          "wire_name": "viewport.height"
+        }
+      ],
+      "path": "/v1/tools/mcp/acme_create_widget"
+    },
+    {
+      "description": "Delete a widget. Required: widgetId. Destructive.",
+      "method": "DELETE",
+      "name": "widgets_delete",
+      "params": [
+        {
+          "location": "body",
+          "name": "widgetId",
+          "required": true,
+          "type": "string"
+        }
+      ],
+      "path": "/v1/tools/mcp/delete_widget"
+    },
+    {
+      "description": "Read a single widget. Required: widgetId.",
+      "method": "GET",
+      "name": "widgets_get",
+      "params": [
+        {
+          "description": "Widget to read.",
+          "location": "query",
+          "name": "widgetId",
+          "required": true,
+          "type": "string"
+        }
+      ],
+      "path": "/v1/tools/mcp/get_widget"
+    },
+    {
+      "description": "List widgets. Optional: limit, status.",
+      "method": "GET",
+      "name": "widgets_list",
+      "params": [
+        {
+          "description": "Page size.",
+          "location": "query",
+          "name": "limit",
+          "type": "integer"
+        },
+        {
+          "description": "Filter by status.",
+          "location": "query",
+          "name": "status",
+          "type": "string"
+        }
+      ],
+      "path": "/v1/tools/mcp/widgets_list"
+    },
+    {
+      "description": "Update a widget. Required: widgetId. Optional: name. Partial update.",
+      "method": "PATCH",
+      "name": "widgets_update",
+      "params": [
+        {
+          "location": "body",
+          "name": "widgetId",
+          "required": true,
+          "type": "string"
+        },
+        {
+          "location": "body",
+          "name": "name",
+          "type": "string"
+        }
+      ],
+      "path": "/v1/tools/mcp/update_widget"
+    }
+  ]
+}

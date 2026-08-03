@@ -697,7 +697,12 @@ func (c *Client) doInternal(ctx context.Context, method, path string, params map
 		// Success
 		if resp.StatusCode < 400 {
 			c.limiter.OnSuccess()
-			if method != http.MethodGet && !c.DryRun {
+			// readOnlyIntent covers reads that ride a mutating wire verb
+			// (GraphQL queries, MCP tools/call reads, POST search). Those
+			// change no remote state, so wiping the cache on them would
+			// delete the directory on every read — immediately before the
+			// caller writes the fresh entry, so the cache never serves a hit.
+			if method != http.MethodGet && !readOnlyIntent && !c.DryRun {
 				c.invalidateCache()
 			}
 			// Non-textual bodies (PDF, zip, image, octet-stream) must not be

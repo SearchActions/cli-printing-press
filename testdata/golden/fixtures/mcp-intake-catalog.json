@@ -1,0 +1,84 @@
+{
+  "server_url": "https://mcp.golden.example/v1/tools/mcp",
+  "server_info": {
+    "name": "mcp-intake-golden",
+    "title": "Purpose-built fixture for MCP tools/list intake coverage.",
+    "version": "1.0.0"
+  },
+  "tools": [
+    {
+      "name": "widgets_list",
+      "description": "List widgets. Trailing-verb name shape, and an explicit read-only hint.",
+      "annotations": { "readOnlyHint": true },
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "limit": { "type": "integer", "description": "Page size.", "maximum": 100 },
+          "status": { "type": "string", "description": "Filter by status.", "enum": ["active", "archived"] }
+        }
+      }
+    },
+    {
+      "name": "get_widget",
+      "description": "Read a single widget. Leading read verb with no annotation, so the name heuristic classifies it.",
+      "inputSchema": {
+        "type": "object",
+        "properties": { "widgetId": { "type": "string", "description": "Widget to read." } },
+        "required": ["widgetId"]
+      }
+    },
+    {
+      "name": "acme_create_widget",
+      "description": "Create a widget. The verb sits mid-name behind a service qualifier, which must not become the resource.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "name": { "type": "string", "description": "Display name." },
+          "tags": { "type": "array", "items": { "type": "string" }, "description": "Free-form labels." },
+          "viewport": {
+            "type": "object",
+            "description": "Nested object flattened to sub-fields.",
+            "properties": {
+              "width": { "type": "integer" },
+              "height": { "type": "integer" }
+            },
+            "required": ["width"]
+          }
+        },
+        "required": ["name"]
+      }
+    },
+    {
+      "name": "update_widget",
+      "description": "Update a widget. Update verbs map to a semantic PATCH.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "widgetId": { "type": "string" },
+          "name": { "type": "string" }
+        },
+        "required": ["widgetId"]
+      }
+    },
+    {
+      "name": "delete_widget",
+      "description": "Delete a widget. Destructive hint plus a delete verb.",
+      "annotations": { "destructiveHint": true },
+      "inputSchema": {
+        "type": "object",
+        "properties": { "widgetId": { "type": "string" } },
+        "required": ["widgetId"]
+      }
+    },
+    {
+      "name": "send_digest",
+      "description": "A write-shaped verb the server declares read-only; the annotation must win over the name.",
+      "annotations": { "readOnlyHint": true },
+      "inputSchema": {
+        "type": "object",
+        "properties": { "digestId": { "type": "string" } },
+        "required": ["digestId"]
+      }
+    }
+  ]
+}

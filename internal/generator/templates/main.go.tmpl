@@ -7,10 +7,23 @@ import (
 	"os"
 
 	"{{modulePath}}/internal/cli"
+{{- if .MCPStdio}}
+	"{{modulePath}}/internal/client"
+{{- end}}
 )
 
 func main() {
+{{- if .MCPStdio}}
+	// The MCP server runs as a child process. Windows does not reap it when
+	// this process exits, so a CLI that skipped shutdown would leak one server
+	// per invocation. Deferred rather than placed after Execute because the
+	// error path calls os.Exit.
+	defer client.ShutdownMCP()
+{{- end}}
 	if err := cli.Execute(); err != nil {
+{{- if .MCPStdio}}
+		client.ShutdownMCP()
+{{- end}}
 		os.Exit(cli.ExitCode(err))
 	}
 }
