@@ -31,15 +31,27 @@ type ParseOptions struct {
 	ServerURL string
 	// Name overrides the derived API slug.
 	Name string
+	// Stdio, when set, declares the server a local subprocess. It wins over
+	// ServerURL: a stdio server has no HTTP origin, so the resulting spec
+	// carries no BaseURL and MCPEndpointPath is a synthetic route prefix.
+	Stdio *spec.MCPStdioLaunch
 }
 
 // catalog is the on-disk envelope `mcp-sniff` writes, and also accepts a
 // raw JSON-RPC tools/list response so a catalog captured by any other MCP
 // client can be fed in directly.
 type catalog struct {
-	ServerURL  string      `json:"server_url"`
-	ServerInfo *serverInfo `json:"server_info"`
-	Tools      []mcpTool   `json:"tools"`
+	ServerURL string `json:"server_url"`
+	// Name is the operator's chosen slug, recorded by mcp-sniff --name. Without
+	// it, `generate` re-derives from serverInfo and silently discards the
+	// choice: an MCP server whose advertised name is a sentence
+	// ("Example SEO Tool MCP Server (headless)") yields an unwieldy CLI slug.
+	// Distinct from api_name, which is a tools-manifest marker detection uses
+	// to REJECT a printed CLI's manifest.
+	Name       string               `json:"name"`
+	Stdio      *spec.MCPStdioLaunch `json:"stdio"`
+	ServerInfo *serverInfo          `json:"server_info"`
+	Tools      []mcpTool            `json:"tools"`
 
 	// Result is the JSON-RPC wrapper: {"result":{"tools":[...]}}.
 	Result *struct {
@@ -75,6 +87,44 @@ type mcpTool struct {
 	Path   string `json:"path"`
 }
 
+// resolved collapses a union schema to the branch a CLI flag can carry.
+//
+// The first non-null branch wins: a flag is one typed value, so
+// anyOf[string,integer,number,null] is a string flag the server coerces. Fields
+// declared on the union itself (description, default) survive, since Pydantic
+// puts them there rather than on the branch.
+func (s *jsonSchema) resolved() *jsonSchema {
+	if s == nil {
+		return nil
+	}
+	branches := s.AnyOf
+	if len(branches) == 0 {
+		branches = s.OneOf
+	}
+	if len(branches) == 0 || s.Type != "" {
+		return s
+	}
+	for _, b := range branches {
+		if b == nil || strings.EqualFold(strings.TrimSpace(b.Type), "null") {
+			continue
+		}
+		merged := *b.resolved()
+		if merged.Description == "" {
+			merged.Description = s.Description
+		}
+		if merged.Default == nil {
+			merged.Default = s.Default
+		}
+		if len(merged.Enum) == 0 {
+			merged.Enum = s.Enum
+		}
+		return &merged
+	}
+	// Every branch was null. Nothing typed to carry; degrade to the union so
+	// the caller's absent-type fallback applies.
+	return s
+}
+
 func (t mcpTool) schema() *jsonSchema {
 	if t.InputSchema != nil {
 		return t.InputSchema
@@ -93,6 +143,13 @@ type toolAnnotations struct {
 }
 
 type jsonSchema struct {
+	// AnyOf/OneOf carry the type when a property is a union. Pydantic — and
+	// therefore every FastMCP server — emits each Optional[T] as
+	// {"anyOf":[{"type":T},{"type":"null"}]} with no top-level type, so a
+	// parser that only reads Type sees most Python MCP params as untyped.
+	AnyOf []*jsonSchema `json:"anyOf"`
+	OneOf []*jsonSchema `json:"oneOf"`
+
 	Type        string                 `json:"type"`
 	Description string                 `json:"description"`
 	Properties  map[string]*jsonSchema `json:"properties"`
@@ -165,6 +222,14 @@ func Parse(source string, data []byte, opts ParseOptions) (*spec.APISpec, error)
 		return nil, fmt.Errorf("MCP tool catalog %s advertises no tools", source)
 	}
 
+	stdio := opts.Stdio
+	if stdio == nil {
+		stdio = doc.Stdio
+	}
+	if stdio != nil && strings.TrimSpace(stdio.Command) == "" {
+		stdio = nil
+	}
+
 	serverURL := opts.ServerURL
 	if serverURL == "" {
 		serverURL = doc.ServerURL
@@ -172,20 +237,32 @@ func Parse(source string, data []byte, opts ParseOptions) (*spec.APISpec, error)
 
 	name := opts.Name
 	if name == "" {
+		name = strings.TrimSpace(doc.Name)
+	}
+	if name == "" {
 		name = deriveName(doc, serverURL, source)
 	}
 
-	baseURL, endpointPath, err := splitServerURL(serverURL)
-	if err != nil {
-		return nil, err
-	}
-	baseURLIsPlaceholder := false
-	if baseURL == "" {
-		baseURL = spec.PlaceholderBaseURL
-		baseURLIsPlaceholder = true
-	}
-	if endpointPath == "" {
+	var baseURL, endpointPath string
+	var baseURLIsPlaceholder bool
+	if stdio != nil {
+		// A subprocess has no origin. The endpoint path stays as the route
+		// prefix each tool's synthetic path hangs off, because the transport
+		// resolves path -> tool the same way it does over HTTP.
 		endpointPath = "/mcp"
+	} else {
+		var err error
+		baseURL, endpointPath, err = splitServerURL(serverURL)
+		if err != nil {
+			return nil, err
+		}
+		if baseURL == "" {
+			baseURL = spec.PlaceholderBaseURL
+			baseURLIsPlaceholder = true
+		}
+		if endpointPath == "" {
+			endpointPath = "/mcp"
+		}
 	}
 
 	apiSpec := &spec.APISpec{
@@ -194,7 +271,8 @@ func Parse(source string, data []byte, opts ParseOptions) (*spec.APISpec, error)
 		BaseURL:              baseURL,
 		BaseURLIsPlaceholder: baseURLIsPlaceholder,
 		MCPEndpointPath:      endpointPath,
-		Auth:                 defaultAuth(name),
+		MCPStdio:             stdio,
+		Auth:                 authForTransport(name, stdio),
 		Config: spec.ConfigSpec{
 			Format: "toml",
 			Path:   fmt.Sprintf("~/.config/%s-pp-cli/config.toml", name),

@@ -1,0 +1,2 @@
+set -euo pipefail
+"$BINARY" generate --spec testdata/golden/fixtures/mcp-stdio-catalog.json --output "$CASE_ACTUAL_DIR/mcp-stdio-golden" --force --validate=false

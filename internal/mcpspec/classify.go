@@ -257,6 +257,7 @@ func paramFromSchema(name string, s *jsonSchema, required bool) spec.Param {
 	if s == nil {
 		return p
 	}
+	s = s.resolved()
 	p.Type = mapJSONType(s.Type)
 	p.Description = strings.TrimSpace(s.Description)
 	p.Format = s.Format
@@ -268,7 +269,7 @@ func paramFromSchema(name string, s *jsonSchema, required bool) spec.Param {
 	case "array":
 		p.ItemType = "string"
 		if s.Items != nil {
-			p.ItemType = mapJSONType(s.Items.Type)
+			p.ItemType = mapJSONType(s.Items.resolved().Type)
 		}
 	case "object":
 		// Nested object properties become sub-fields so the generator can
@@ -493,6 +494,19 @@ func describeServer(doc catalog, name string) string {
 // defaultAuth assumes a bearer token. Most remote MCP servers are OAuth
 // bearer-protected; a spec author retargets this when the server takes an API
 // key or the CLI needs the full authorization-code flow.
+// authForTransport picks the credential shape the transport actually needs.
+// A stdio server is a subprocess on the operator's own machine: there is no
+// request to authenticate, so declaring a token would make doctor demand an
+// env var that can never be satisfied.
+func authForTransport(name string, stdio *spec.MCPStdioLaunch) spec.AuthConfig {
+	if stdio != nil {
+		return spec.AuthConfig{Type: "none"}
+	}
+	return defaultAuth(name)
+}
+
+// defaultAuth is the bearer-token shape remote MCP servers use. A stdio server
+// is a local subprocess, so it authenticates with nothing: see authForTransport.
 func defaultAuth(name string) spec.AuthConfig {
 	return spec.AuthConfig{
 		Type:    "bearer_token",

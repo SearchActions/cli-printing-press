@@ -60,7 +60,23 @@ const (
 
 const (
 	SourceLocalSQLite = "local-sqlite"
+	// SourceLocalMCPStdio declares an operator-local MCP server launched as a
+	// subprocess. Like local-sqlite it has no HTTP origin, so base_url is not
+	// required and doctor probes the process instead of a URL.
+	SourceLocalMCPStdio = "local-mcp-stdio"
 )
+
+// MCPStdioLaunch is the command a printed CLI runs to start its MCP server.
+//
+// Recorded rather than hardcoded because the launcher is per-server data: one
+// server ships as `uvx <pkg>`, another as `node dist/server.js`, and a server
+// with a broken upstream dependency pin needs that pin on the command line.
+type MCPStdioLaunch struct {
+	Command string   `yaml:"command" json:"command"`                           // executable to run (e.g. "uvx", "npx", "node")
+	Args    []string `yaml:"args,omitempty" json:"args,omitempty"`             // arguments passed verbatim; never shell-interpreted
+	Env     []string `yaml:"env,omitempty" json:"env,omitempty"`               // NAMES of env vars to forward from the operator's environment; values are never recorded
+	Ready   string   `yaml:"ready_tool,omitempty" json:"ready_tool,omitempty"` // read-only tool doctor calls to prove the server and its local prerequisites work
+}
 
 const (
 	StreamingTransportWebSocket = "websocket"
@@ -241,6 +257,11 @@ type APISpec struct {
 	// transport rewrites the call to a POST of a tools/call envelope at this
 	// path. Mutually exclusive with GraphQLEndpointPath.
 	MCPEndpointPath string `yaml:"mcp_endpoint_path,omitempty" json:"mcp_endpoint_path,omitempty"`
+	// MCPStdio declares that the MCP server is a local subprocess spoken to
+	// over stdin/stdout rather than an HTTP endpoint. When set, MCPEndpointPath
+	// is a synthetic route prefix only — nothing is ever dialed — and BaseURL
+	// is absent. Mutually exclusive with an http(s) BaseURL.
+	MCPStdio *MCPStdioLaunch `yaml:"mcp_stdio,omitempty" json:"mcp_stdio,omitempty"`
 	// EndpointTemplateVars lists placeholder names embedded in BaseURL,
 	// GraphQLEndpointPath, or per-tenant request paths as {var}
 	// (e.g., ["shop", "version"], or ["tenant"] for per-tenant SaaS APIs
@@ -843,6 +864,52 @@ func (s *APISpec) IsSynthetic() bool {
 // SQLite data source rather than an HTTP API origin.
 func (s *APISpec) IsLocalSQLiteSource() bool {
 	return s != nil && strings.ToLower(strings.TrimSpace(s.Source)) == SourceLocalSQLite
+}
+
+// normalizeMCPStdio trims the launch command and rejects the combinations that
+// would emit a CLI with two transports or none.
+func (s *APISpec) normalizeMCPStdio() error {
+	if s.MCPStdio == nil {
+		return nil
+	}
+	s.MCPStdio.Command = strings.TrimSpace(s.MCPStdio.Command)
+	s.MCPStdio.Ready = strings.TrimSpace(s.MCPStdio.Ready)
+	if s.MCPStdio.Command == "" {
+		// A zero-value block would otherwise mark the spec MCP-stdio-backed by
+		// its presence alone while emitting a client with nothing to launch.
+		s.MCPStdio = nil
+		return nil
+	}
+	if s.MCPEndpointPath == "" {
+		return fmt.Errorf("mcp_stdio requires mcp_endpoint_path; it is the synthetic route prefix every tool's path hangs off")
+	}
+	// The stdio transport never dials, so an HTTP origin alongside it would be
+	// a base URL the CLI silently ignores.
+	if s.BaseURL != "" {
+		return fmt.Errorf("mcp_stdio and base_url are mutually exclusive; a stdio MCP server has no HTTP origin")
+	}
+	for _, name := range s.MCPStdio.Env {
+		if strings.Contains(name, "=") {
+			return fmt.Errorf("mcp_stdio.env holds env var NAMES to forward, not assignments; got %q", name)
+		}
+	}
+	if s.Source == "" {
+		s.Source = SourceLocalMCPStdio
+	}
+	return nil
+}
+
+// IsMCPStdioSource reports whether the upstream MCP server is a local
+// subprocess rather than an HTTP endpoint.
+func (s *APISpec) IsMCPStdioSource() bool {
+	return s != nil && s.MCPStdio != nil && strings.TrimSpace(s.MCPStdio.Command) != ""
+}
+
+// IsLocalSource reports whether the spec's origin is operator-local rather than
+// an HTTP API, in which case base_url carries no meaning. Every gate that would
+// otherwise demand a base URL consults this.
+func (s *APISpec) IsLocalSource() bool {
+	return s.IsLocalSQLiteSource() || s.IsMCPStdioSource()
 }
 
 // EffectiveDisplayName returns the human-readable brand name for this CLI.
@@ -4020,12 +4087,12 @@ func (s *APISpec) Validate() error {
 	// The CLI version is always hardcoded to "1.0.0" in the generated root.go
 	// template — it is independent of the API version.
 	switch strings.ToLower(strings.TrimSpace(s.Source)) {
-	case "", SourceLocalSQLite:
+	case "", SourceLocalSQLite, SourceLocalMCPStdio:
 	default:
-		return fmt.Errorf("source %q is not supported; valid values: local-sqlite", s.Source)
+		return fmt.Errorf("source %q is not supported; valid values: local-sqlite, local-mcp-stdio", s.Source)
 	}
 	// Parser fallback may supply a placeholder base_url when the source spec omits servers.
-	if s.BaseURL == "" && s.BasePath == "" && !s.IsLocalSQLiteSource() {
+	if s.BaseURL == "" && s.BasePath == "" && !s.IsLocalSource() {
 		return fmt.Errorf("base_url is required")
 	}
 	if err := validateReservedPlaceholderHost("base_url", s.BaseURL); err != nil {
@@ -4041,6 +4108,9 @@ func (s *APISpec) Validate() error {
 	// transports racing to own the same POST.
 	if strings.TrimSpace(s.GraphQLEndpointPath) != "" && s.MCPEndpointPath != "" {
 		return fmt.Errorf("graphql_endpoint_path and mcp_endpoint_path are mutually exclusive; a spec targets one transport")
+	}
+	if err := s.normalizeMCPStdio(); err != nil {
+		return err
 	}
 	if len(s.Resources) == 0 {
 		return fmt.Errorf("at least one resource is required")

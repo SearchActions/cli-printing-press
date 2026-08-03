@@ -2838,6 +2838,13 @@ func (g *Generator) renderOptionalSupportFiles() error {
 		if err := g.renderTemplate("mcp_client.go.tmpl", filepath.Join("internal", "client", "mcp.go"), g.Spec); err != nil {
 			return fmt.Errorf("rendering mcp client: %w", err)
 		}
+		// A stdio server is a subprocess, not an endpoint: it swaps the one
+		// round-trip function mcp.go routes every call through.
+		if g.Spec.IsMCPStdioSource() {
+			if err := g.renderTemplate("mcp_stdio.go.tmpl", filepath.Join("internal", "client", "mcp_stdio.go"), g.Spec); err != nil {
+				return fmt.Errorf("rendering mcp stdio transport: %w", err)
+			}
+		}
 	}
 
 	// For GraphQL specs, emit additional client files (GraphQL transport + query constants)

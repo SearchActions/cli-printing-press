@@ -15,6 +15,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/mvanhorn/cli-printing-press/v4/internal/mcpspec"
+	"github.com/mvanhorn/cli-printing-press/v4/internal/spec"
 )
 
 type mcpSniffOptions struct {
@@ -34,24 +35,36 @@ func newMCPSniffCmdWithOptions(opts mcpSniffOptions) *cobra.Command {
 	var token string
 	var headers []string
 	var apiName string
+	var command string
+	var commandArgs []string
+	var forwardEnv []string
+	var readyTool string
 
 	cmd := &cobra.Command{
 		Use:   "mcp-sniff",
 		Short: "Fetch an MCP server's tool catalog and emit a spec-ready capture",
-		Long: `Connect to a remote MCP server, negotiate initialize, call tools/list, and
-write the advertised tool catalog to disk.
+		Long: `Connect to an MCP server, negotiate initialize, call tools/list, and write
+the advertised tool catalog to disk.
+
+Two transports. --url captures a remote server over streamable HTTP. --command
+captures a local server launched as a subprocess and spoken to over stdin and
+stdout — the way most MCP servers ship, as a pip or npm package.
 
 The capture is consumed directly by 'cli-printing-press generate', which turns
-each MCP tool into a command. Every tool call becomes a JSON-RPC POST to the
-server's single endpoint; read tools keep semantic GET methods so the generated
-MCP surface gets correct safety annotations.
+each MCP tool into a command. Read tools keep semantic GET methods so the
+generated MCP surface gets correct safety annotations.
 
 Auth: most remote MCP servers are OAuth bearer-protected. Pass --token, or set
 the bearer via --header "Authorization: Bearer <token>". Servers behind an
 interactive OAuth flow cannot be captured here; obtain a token with that
-server's own login flow first.`,
-		Example: `  # Capture a bearer-protected server's catalog
+server's own login flow first. A stdio server needs no token — it runs as the
+operator, on the operator's machine — but may need env vars forwarded to it,
+which --forward-env names.`,
+		Example: `  # Capture a bearer-protected remote server's catalog
   cli-printing-press mcp-sniff --url https://mcp.example.com/mcp --token "$MCP_TOKEN" -o example-mcp.json
+
+  # Capture a local stdio server, forwarding the env var it reads
+  cli-printing-press mcp-sniff --command uvx --arg example-mcp --forward-env EXAMPLE_CLI_PATH
 
   # Generate a CLI from the capture
   cli-printing-press generate example-mcp.json`,
@@ -62,16 +75,28 @@ server's own login flow first.`,
 				Token:      token,
 				Headers:    headers,
 				APIName:    apiName,
+				Command:    command,
+				Args:       commandArgs,
+				ForwardEnv: forwardEnv,
+				ReadyTool:  readyTool,
 			}, opts)
 		},
 	}
 
-	cmd.Flags().StringVar(&serverURL, "url", "", "MCP server endpoint (e.g. https://mcp.example.com/mcp)")
+	cmd.Flags().StringVar(&serverURL, "url", "", "Remote MCP server endpoint (e.g. https://mcp.example.com/mcp)")
 	cmd.Flags().StringVarP(&outputPath, "output", "o", "", "Path to write the tool catalog (default: <name>-mcp.json)")
 	cmd.Flags().StringVar(&token, "token", "", "Bearer token for the MCP server")
 	cmd.Flags().StringArrayVar(&headers, "header", nil, "Extra request header as 'Name: value' (repeatable)")
 	cmd.Flags().StringVar(&apiName, "name", "", "Override the derived API slug")
-	_ = cmd.MarkFlagRequired("url")
+	cmd.Flags().StringVar(&command, "command", "", "Launch a local stdio MCP server with this executable (e.g. uvx, npx, node)")
+	// Repeatable rather than one shell string: the argument vector is passed to
+	// exec directly, so a value containing a space or a semicolon stays one
+	// argument instead of becoming another command.
+	cmd.Flags().StringArrayVar(&commandArgs, "arg", nil, "Argument for --command, in order (repeatable)")
+	cmd.Flags().StringArrayVar(&forwardEnv, "forward-env", nil, "Env var NAME the printed CLI forwards to the server (repeatable); values are never recorded")
+	cmd.Flags().StringVar(&readyTool, "ready-tool", "", "Read-only tool name doctor calls to prove the local server works")
+	cmd.MarkFlagsMutuallyExclusive("url", "command")
+	cmd.MarkFlagsOneRequired("url", "command")
 
 	return cmd
 }
@@ -82,15 +107,29 @@ type mcpSniffRequest struct {
 	Token      string
 	Headers    []string
 	APIName    string
+
+	// Command/Args launch a local stdio server instead of dialing ServerURL.
+	Command    string
+	Args       []string
+	ForwardEnv []string
+	ReadyTool  string
 }
 
 // mcpSniffCapture is the on-disk envelope. It records the server URL alongside
 // the catalog so `generate` can resolve the base URL and endpoint path without
 // the operator re-supplying them.
 type mcpSniffCapture struct {
-	ServerURL  string          `json:"server_url"`
-	ServerInfo json.RawMessage `json:"server_info,omitempty"`
-	Tools      []any           `json:"tools"`
+	ServerURL string `json:"server_url,omitempty"`
+	// Name persists --name so `generate` uses the operator's slug rather than
+	// re-deriving one from the server's advertised name.
+	Name string `json:"name,omitempty"`
+	// Stdio records the launch command for a local server, which is per-server
+	// data the generated transport replays: one server is `uvx <pkg>`, another
+	// `node dist/server.js`, and one with a broken upstream dependency pin
+	// needs that pin on the command line.
+	Stdio      *spec.MCPStdioLaunch `json:"stdio,omitempty"`
+	ServerInfo json.RawMessage      `json:"server_info,omitempty"`
+	Tools      []any                `json:"tools"`
 }
 
 func runMCPSniff(ctx context.Context, req mcpSniffRequest, opts mcpSniffOptions) error {
@@ -103,47 +142,31 @@ func runMCPSniff(ctx context.Context, req mcpSniffRequest, opts mcpSniffOptions)
 		stderr = os.Stderr
 	}
 
-	if err := validateMCPServerURL(req.ServerURL); err != nil {
-		return &ExitError{Code: ExitSpecError, Err: err}
-	}
-	extraHeaders, err := parseHeaderFlags(req.Headers)
+	transport, stdioLaunch, origin, err := openMCPTransport(ctx, req, opts)
 	if err != nil {
-		return &ExitError{Code: ExitSpecError, Err: err}
+		return err
 	}
-	if req.Token != "" {
-		if _, taken := extraHeaders["Authorization"]; taken {
-			return &ExitError{Code: ExitSpecError, Err: fmt.Errorf("--token and an Authorization --header are mutually exclusive; pass one")}
-		}
-		extraHeaders["Authorization"] = "Bearer " + req.Token
-	}
-
-	httpClient := opts.client
-	if httpClient == nil {
-		httpClient = &http.Client{Timeout: 30 * time.Second}
-	}
-	sniffer := &mcpSniffer{
-		url:     req.ServerURL,
-		headers: extraHeaders,
-		client:  httpClient,
-	}
+	defer func() { _ = transport.close() }()
 
 	// initialize is advisory: stateless servers answer tools/list directly, so
 	// a handshake failure must not abort the capture.
-	serverInfo, err := sniffer.initialize(ctx)
+	serverInfo, err := mcpInitialize(ctx, transport)
 	if err != nil {
 		fmt.Fprintf(stderr, "warning: initialize failed (%v); attempting tools/list anyway\n", err)
 	}
 
-	tools, err := sniffer.listTools(ctx)
+	tools, err := mcpListTools(ctx, transport)
 	if err != nil {
 		return &ExitError{Code: ExitInputError, Err: err}
 	}
 	if len(tools) == 0 {
-		return &ExitError{Code: ExitInputError, Err: fmt.Errorf("%s advertises no tools; nothing to generate from", req.ServerURL)}
+		return &ExitError{Code: ExitInputError, Err: fmt.Errorf("%s advertises no tools; nothing to generate from", origin)}
 	}
 
 	capture := mcpSniffCapture{
 		ServerURL:  req.ServerURL,
+		Name:       strings.TrimSpace(req.APIName),
+		Stdio:      stdioLaunch,
 		ServerInfo: serverInfo,
 		Tools:      tools,
 	}
@@ -156,9 +179,10 @@ func runMCPSniff(ctx context.Context, req mcpSniffRequest, opts mcpSniffOptions)
 	// Re-parse through the real parser so a capture that cannot produce a spec
 	// fails here, at capture time, rather than surfacing later as a confusing
 	// generate error.
-	parsed, err := mcpspec.Parse(req.ServerURL, encoded, mcpspec.ParseOptions{
+	parsed, err := mcpspec.Parse(origin, encoded, mcpspec.ParseOptions{
 		ServerURL: req.ServerURL,
 		Name:      req.APIName,
+		Stdio:     stdioLaunch,
 	})
 	if err != nil {
 		return &ExitError{Code: ExitSpecError, Err: fmt.Errorf("captured catalog is not generatable: %w", err)}
@@ -177,14 +201,65 @@ func runMCPSniff(ctx context.Context, req mcpSniffRequest, opts mcpSniffOptions)
 	for _, res := range parsed.Resources {
 		endpointCount += len(res.Endpoints)
 	}
-	fmt.Fprintf(stdout, "Captured %d tools from %s\n", len(tools), req.ServerURL)
+	fmt.Fprintf(stdout, "Captured %d tools from %s\n", len(tools), origin)
 	fmt.Fprintf(stdout, "  spec name:  %s\n", parsed.Name)
-	fmt.Fprintf(stdout, "  base URL:   %s\n", parsed.BaseURL)
-	fmt.Fprintf(stdout, "  MCP path:   %s\n", parsed.MCPEndpointPath)
+	if parsed.IsMCPStdioSource() {
+		fmt.Fprintf(stdout, "  transport:  stdio (%s)\n", origin)
+	} else {
+		fmt.Fprintf(stdout, "  base URL:   %s\n", parsed.BaseURL)
+		fmt.Fprintf(stdout, "  MCP path:   %s\n", parsed.MCPEndpointPath)
+	}
 	fmt.Fprintf(stdout, "  maps to:    %d resources, %d endpoints\n", resourceCount, endpointCount)
 	fmt.Fprintf(stdout, "  wrote:      %s\n", outputPath)
 	fmt.Fprintf(stdout, "\nNext: cli-printing-press generate %s\n", outputPath)
 	return nil
+}
+
+// openMCPTransport builds the transport the request selects and returns the
+// stdio launch to record (nil over HTTP) plus a human-readable origin for
+// messages.
+func openMCPTransport(ctx context.Context, req mcpSniffRequest, opts mcpSniffOptions) (mcpCatalogTransport, *spec.MCPStdioLaunch, string, error) {
+	if strings.TrimSpace(req.Command) != "" {
+		if req.Token != "" || len(req.Headers) > 0 {
+			return nil, nil, "", &ExitError{Code: ExitSpecError, Err: fmt.Errorf("--token and --header apply to a remote server; a stdio server runs as you and authenticates with nothing")}
+		}
+		launch := &spec.MCPStdioLaunch{
+			Command: strings.TrimSpace(req.Command),
+			Args:    req.Args,
+			Env:     req.ForwardEnv,
+			Ready:   strings.TrimSpace(req.ReadyTool),
+		}
+		for _, name := range launch.Env {
+			if strings.Contains(name, "=") {
+				return nil, nil, "", &ExitError{Code: ExitSpecError, Err: fmt.Errorf("--forward-env takes an env var NAME, not an assignment; got %q", name)}
+			}
+		}
+		transport, err := startMCPStdio(ctx, mcpStdioLaunch{Command: launch.Command, Args: launch.Args})
+		if err != nil {
+			return nil, nil, "", &ExitError{Code: ExitInputError, Err: err}
+		}
+		origin := strings.TrimSpace(launch.Command + " " + strings.Join(launch.Args, " "))
+		return transport, launch, origin, nil
+	}
+
+	if err := validateMCPServerURL(req.ServerURL); err != nil {
+		return nil, nil, "", &ExitError{Code: ExitSpecError, Err: err}
+	}
+	extraHeaders, err := parseHeaderFlags(req.Headers)
+	if err != nil {
+		return nil, nil, "", &ExitError{Code: ExitSpecError, Err: err}
+	}
+	if req.Token != "" {
+		if _, taken := extraHeaders["Authorization"]; taken {
+			return nil, nil, "", &ExitError{Code: ExitSpecError, Err: fmt.Errorf("--token and an Authorization --header are mutually exclusive; pass one")}
+		}
+		extraHeaders["Authorization"] = "Bearer " + req.Token
+	}
+	httpClient := opts.client
+	if httpClient == nil {
+		httpClient = &http.Client{Timeout: 30 * time.Second}
+	}
+	return &mcpSniffer{url: req.ServerURL, headers: extraHeaders, client: httpClient}, nil, req.ServerURL, nil
 }
 
 func validateMCPServerURL(raw string) error {
@@ -247,8 +322,20 @@ type mcpSniffer struct {
 	nextID    int64
 }
 
-func (s *mcpSniffer) initialize(ctx context.Context) (json.RawMessage, error) {
-	result, err := s.call(ctx, "initialize", map[string]any{
+// mcpCatalogTransport is the JSON-RPC channel a catalog fetch rides. HTTP
+// (mcpSniffer) and stdio (mcpStdioTransport) differ only in how bytes move; the
+// lifecycle and pagination above are identical, so they are written once.
+type mcpCatalogTransport interface {
+	call(ctx context.Context, method string, params any) (json.RawMessage, error)
+	notify(ctx context.Context, method string)
+	close() error
+}
+
+// close satisfies mcpCatalogTransport. An HTTP capture holds no process.
+func (s *mcpSniffer) close() error { return nil }
+
+func mcpInitialize(ctx context.Context, t mcpCatalogTransport) (json.RawMessage, error) {
+	result, err := t.call(ctx, "initialize", map[string]any{
 		"protocolVersion": "2025-06-18",
 		"capabilities":    map[string]any{},
 		"clientInfo":      map[string]any{"name": "cli-printing-press", "version": "mcp-sniff"},
@@ -260,7 +347,7 @@ func (s *mcpSniffer) initialize(ctx context.Context) (json.RawMessage, error) {
 	// request; a strict server rejects tools/list until it arrives. It is a
 	// notification, so it carries no id and expects no response, and its
 	// failure is not fatal for permissive servers that never needed it.
-	s.notify(ctx, "notifications/initialized")
+	t.notify(ctx, "notifications/initialized")
 
 	var info struct {
 		ServerInfo json.RawMessage `json:"serverInfo"`
@@ -298,7 +385,7 @@ func (s *mcpSniffer) notify(ctx context.Context, method string) {
 	_ = resp.Body.Close()
 }
 
-func (s *mcpSniffer) listTools(ctx context.Context) ([]any, error) {
+func mcpListTools(ctx context.Context, t mcpCatalogTransport) ([]any, error) {
 	var tools []any
 	cursor := ""
 	// Follow nextCursor so a server that pages its catalog is captured whole
@@ -309,7 +396,7 @@ func (s *mcpSniffer) listTools(ctx context.Context) ([]any, error) {
 		if cursor != "" {
 			params["cursor"] = cursor
 		}
-		result, err := s.call(ctx, "tools/list", params)
+		result, err := t.call(ctx, "tools/list", params)
 		if err != nil {
 			return nil, err
 		}

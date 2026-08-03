@@ -154,7 +154,7 @@ func (c *Client) ensureMCPSession(ctx context.Context) {
 		},
 	}
 	// Initialize is a read: it must not trip the verify-mode mutation gate.
-	raw, _, err := c.PostQueryWithParamsAndHeaders(ctx, mcpEndpointPath, nil, req, mcpBaseHeadersLocked())
+	raw, _, err := c.mcpRoundTrip(ctx, req, mcpBaseHeadersLocked(), true)
 	if err != nil {
 		return
 	}
@@ -179,7 +179,20 @@ func (c *Client) ensureMCPSession(ctx context.Context) {
 		"jsonrpc": "2.0",
 		"method":  "notifications/initialized",
 	}
-	_, _, _ = c.PostQueryWithParamsAndHeaders(ctx, mcpEndpointPath, nil, notify, mcpBaseHeadersLocked())
+	c.mcpNotify(ctx, notify, mcpBaseHeadersLocked())
+}
+
+// mcpRoundTrip sends one JSON-RPC request over streamable HTTP and returns the
+// raw envelope. It is the only place the MCP transport touches the wire, so the
+// stdio build swaps this one function (see mcp_stdio.go) and everything above
+// — lifecycle, tool routing, argument coercion, result unwrapping — is shared.
+func (c *Client) mcpRoundTrip(ctx context.Context, req any, headers map[string]string, readOnly bool) (json.RawMessage, int, error) {
+	return c.doInternal(ctx, "POST", mcpEndpointPath, nil, req, headers, readOnly)
+}
+
+// mcpNotify sends a JSON-RPC notification: no id, no response, failure ignored.
+func (c *Client) mcpNotify(ctx context.Context, payload any, headers map[string]string) {
+	_, _, _ = c.mcpRoundTrip(ctx, payload, headers, true)
 }
 
 // mcpToolByPath maps each endpoint's synthetic path to the MCP tool it
@@ -252,7 +265,7 @@ func (c *Client) mcpDispatch(ctx context.Context, tool, semanticMethod string, p
 	}
 
 	readOnly := callerReadOnly || !isMutatingVerb(semanticMethod)
-	raw, status, err := c.doInternal(ctx, "POST", mcpEndpointPath, nil, req, mcpMergeHeaders(headerOverrides), readOnly)
+	raw, status, err := c.mcpRoundTrip(ctx, req, mcpMergeHeaders(headerOverrides), readOnly)
 	if err != nil {
 		return raw, status, err
 	}
