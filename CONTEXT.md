@@ -13,7 +13,7 @@ A "printing press" that prints token-efficient Go CLIs, Claude Code skills, and 
 - **The machine** — Internal shorthand for the generator, templates, parser, and skills. Producing surface. Distinct from a printed CLI.
 - **Printed CLI** — A generated binary + skill + MCP server for one API or website. Lives under `~/printing-press/library/<api-slug>/`. Wraps an API; never replaces one.
 - **API spec / spec** — Source of truth for generation. Internal YAML under `catalog/specs/` or external OpenAPI 3.0+. Parsed in `internal/openapi/` and `internal/spec/`.
-- **Catalog** — Embedded `catalog/*.yaml` entries listing supported APIs (slug, display name, category, tier, spec_url). `catalog.FS` is a Go embed; rebuild required after edits.
+- **Catalog** — Embedded `catalog/*.yaml` entries listing supported APIs. Each entry carries `name`, `display_name`, `description`, `category`, `tier`, `spec_url`, `spec_format`, `openapi_version`, `verified_date`, `homepage`, `notes`, `known_alternatives` and `sandbox_endpoint`. `catalog.FS` is a Go embed; rebuild required after edits.
 - **Manuscript** — Pre-publish staging of a printed CLI under `~/printing-press/manuscripts/<api-slug>/`. Distinct from the local library.
 - **Local library** — `~/printing-press/library/<api-slug>/`. The user's installed printed CLIs.
 - **Public library** — The `printing-press-library` GitHub repo / printingpress.dev. Curated public catalog. Distinct from the embedded catalog.
