@@ -101,9 +101,14 @@ func classify(t mcpTool, stripPrefix string) classifiedTool {
 
 	resource := object
 	if resource == "" {
-		resource = defaultResourceName(stripPrefix, t.Name)
+		// The server namespace is a proper noun, not a countable object, so it
+		// stays singular. Pluralizing it also breaks an all-caps brand token:
+		// "COMPOSIO" -> "COMPOSIOs", which splitWords then cuts at the tail of
+		// the uppercase run into "composi-os".
+		resource = toKebab(defaultResourceName(stripPrefix, t.Name))
+	} else {
+		resource = toKebab(pluralize(resource))
 	}
-	resource = toKebab(pluralize(resource))
 
 	readOnly := readByName
 	if t.Annotations != nil && t.Annotations.ReadOnlyHint != nil {
