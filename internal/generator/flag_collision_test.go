@@ -5,6 +5,7 @@ import (
 	"go/parser"
 	"go/token"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -348,8 +349,9 @@ func TestGlobalReservedFlagsMatchTemplate(t *testing.T) {
 	templateFlags := map[string]struct{}{}
 	for _, m := range matches {
 		name := m[1]
-		// Skip the dynamic per-spec path-template flag ("{{kebab .}}"); it is a
-		// separate shadow class tracked in TODO.md, not a fixed global name.
+		// Skip the dynamic per-spec path-template flag ("{{kebab .}}"); it is
+		// reserved per-spec from GlobalPathTemplateVars via
+		// flagDedupe.globalTemplateFlags, not a fixed global name.
 		if strings.Contains(name, "{{") {
 			continue
 		}
@@ -410,6 +412,201 @@ func TestGenerateRenamesBodyFieldCollidingWithGlobalDryRun(t *testing.T) {
 	require.NoError(t, err)
 	assert.Contains(t, string(src), `bodyMap["dry_run"]`,
 		"the wire-side body key must remain dry_run in the body map even though the public flag is renamed")
+}
+
+// templateCollisionSpec builds a spec whose promoted path-template var
+// "tenant" (set directly, the pass-through path PromoteGlobalPathTemplateVars
+// preserves) collides with a query param and a body field on one endpoint.
+func templateCollisionSpec(name string) *spec.APISpec {
+	apiSpec := minimalSpec(name)
+	apiSpec.EndpointTemplateVars = []string{"tenant"}
+	apiSpec.EndpointTemplateEnvOverrides = map[string]string{"tenant": "MYAPI_TENANT"}
+	apiSpec.GlobalPathTemplateVars = []string{"tenant"}
+	apiSpec.Resources["tenants"] = spec.Resource{
+		Description: "Tenants",
+		Endpoints: map[string]spec.Endpoint{
+			"search": {
+				Method:      "POST",
+				Path:        "/tenants/search",
+				Description: "Search tenants",
+				Params: []spec.Param{
+					{Name: "tenant", Type: "string", Description: "Filter by tenant slug"},
+				},
+				Body: []spec.Param{
+					{Name: "name", Type: "string", Description: "Display name"},
+					{Name: "tenant", Type: "string", Description: "Tenant slug in the body"},
+				},
+			},
+			"get": {
+				Method:      "GET",
+				Path:        "/tenants/{id}",
+				Description: "Get one tenant",
+			},
+		},
+	}
+	return apiSpec
+}
+
+// TestGenerateRenamesFlagsCollidingWithPromotedPathTemplateVar proves the
+// spec-derived half of the root-flag shadow class: root.go.tmpl registers one
+// root persistent flag per GlobalPathTemplateVars entry, and a query param or
+// body field whose public flag name matches it would register a local flag
+// cobra resolves in preference to the inherited one — leaving
+// flags.templateVarTenant empty and the {tenant} path unresolved. Both
+// collisions must auto-rename while wire keys stay put.
+func TestGenerateRenamesFlagsCollidingWithPromotedPathTemplateVar(t *testing.T) {
+	t.Parallel()
+
+	outputDir := filepath.Join(t.TempDir(), "collide-template-pp-cli")
+	require.NoError(t, New(templateCollisionSpec("collide-template"), outputDir).Generate())
+
+	commandPath := filepath.Join(outputDir, "internal", "cli", "tenants_search.go")
+	flagVars, flagBindings := parseFlagDeclarations(t, commandPath)
+	assertNoDuplicates(t, flagVars, "each entry must produce a distinct Go identifier")
+	assertNoDuplicates(t, flagBindings, "each entry must register a distinct cobra flag name")
+	assert.NotContains(t, flagBindings, "tenant",
+		"neither the query param nor the body field may register a local --tenant shadowing the root template flag")
+	assert.Contains(t, flagBindings, "tenant-2",
+		"the query param tenant must auto-rename to --tenant-2")
+	assert.Contains(t, flagBindings, "tenant-3",
+		"the body field tenant must auto-rename to --tenant-3 past the param's tenant-2")
+
+	// The root side of the namespace: the template var is still registered
+	// exactly once as a root persistent flag, which is what makes the reserved
+	// name real rather than self-consistent.
+	_, rootBindings := parseFlagDeclarations(t,
+		filepath.Join(outputDir, "internal", "cli", "root.go"))
+	assert.Equal(t, 1, countString(rootBindings, "tenant"),
+		"root.go must register --tenant exactly once for the promoted template var")
+
+	src, err := os.ReadFile(commandPath)
+	require.NoError(t, err)
+	assert.Contains(t, string(src), `params["tenant"]`,
+		"the wire-side query key must remain tenant even though the public flag is renamed")
+	assert.Contains(t, string(src), `bodyMap["tenant"]`,
+		"the wire-side body key must remain tenant even though the public flag is renamed")
+
+	requireGeneratedCompiles(t, outputDir)
+}
+
+// TestPromotedPathTemplateVarFlagHelpRuns closes the loop the AST cannot:
+// pflag panics at runtime on duplicate FlagSet registration, so a rename that
+// only looks right in source still kills the printed CLI on every invocation.
+// Run the generated binary's --help and require the root --tenant and the
+// renamed local --tenant-2 to coexist on it.
+func TestPromotedPathTemplateVarFlagHelpRuns(t *testing.T) {
+	if testing.Short() {
+		t.Skip("generated CLI run tests run in the full generated-test CI lane")
+	}
+	t.Parallel()
+
+	outputDir := filepath.Join(t.TempDir(), "collide-template-run-pp-cli")
+	require.NoError(t, New(templateCollisionSpec("collide-template-run"), outputDir).Generate())
+
+	cmd := exec.Command("go", "run", "-mod=mod", "./cmd/collide-template-run-pp-cli", "tenants", "search", "--help")
+	cmd.Dir = outputDir
+	cacheDir, err := goBuildCacheDir(outputDir)
+	require.NoError(t, err)
+	cmd.Env = append(os.Environ(), "GOCACHE="+cacheDir)
+	out, err := cmd.CombinedOutput()
+	require.NoError(t, err, string(out))
+
+	help := string(out)
+	assert.Contains(t, help, "--tenant string",
+		"the promoted template var must surface as the root --tenant flag on help")
+	assert.Contains(t, help, "--tenant-2 string",
+		"the colliding query param must surface as the renamed local --tenant-2 flag on help")
+}
+
+// TestPromotedPathTemplateVarReservationUsesTemplateKebab pins the derivation:
+// the reserved entry must be toKebab(varName) — what root.go.tmpl passes
+// pflag — not naming.FlagName(varName). For v2Tenant the two disagree
+// (v2tenant vs v2-tenant), so a param named v2tenant only renames when the
+// reservation used toKebab. A tenant-only test passes under either derivation.
+func TestPromotedPathTemplateVarReservationUsesTemplateKebab(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("collide-template-kebab")
+	apiSpec.EndpointTemplateVars = []string{"v2Tenant"}
+	apiSpec.EndpointTemplateEnvOverrides = map[string]string{"v2Tenant": "MYAPI_V2_TENANT"}
+	apiSpec.GlobalPathTemplateVars = []string{"v2Tenant"}
+	apiSpec.Resources["tenants"] = spec.Resource{
+		Description: "Tenants",
+		Endpoints: map[string]spec.Endpoint{
+			"list": {
+				Method:      "GET",
+				Path:        "/tenants",
+				Description: "List tenants",
+				Params: []spec.Param{
+					{Name: "v2tenant", Type: "string", Description: "Filter by tenant"},
+				},
+			},
+			"get": {
+				Method:      "GET",
+				Path:        "/tenants/{id}",
+				Description: "Get one tenant",
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), "collide-template-kebab-pp-cli")
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+
+	_, rootBindings := parseFlagDeclarations(t,
+		filepath.Join(outputDir, "internal", "cli", "root.go"))
+	assert.Contains(t, rootBindings, "v2tenant",
+		"root.go registers the promoted var via toKebab, which does not hyphenate after a digit")
+
+	_, flagBindings := parseFlagDeclarations(t,
+		filepath.Join(outputDir, "internal", "cli", "tenants_list.go"))
+	assert.Contains(t, flagBindings, "v2tenant-2",
+		"the reservation must use toKebab too; naming.FlagName would reserve v2-tenant and miss this collision")
+}
+
+// TestGenerateRejectsAuthoredFlagCollidingWithPromotedPathTemplateVar covers
+// the explicit flag_name path against the dynamic set: authoring
+// flag_name: tenant where tenant is a promoted template var must hard-error
+// with the message naming the promoted flag, not the generic reserved-flag
+// text, so the author is pointed at the spec-derived cause.
+func TestGenerateRejectsAuthoredFlagCollidingWithPromotedPathTemplateVar(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := templateCollisionSpec("authored-template")
+	endpoint := apiSpec.Resources["tenants"].Endpoints["search"]
+	endpoint.Params = []spec.Param{
+		{Name: "workspace", Type: "string", FlagName: "tenant"},
+	}
+	endpoint.Body = nil
+	apiSpec.Resources["tenants"].Endpoints["search"] = endpoint
+
+	err := New(apiSpec, filepath.Join(t.TempDir(), "out")).Generate()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "collides with the promoted path-template flag --tenant")
+	assert.NotContains(t, err.Error(), "collides with reserved flag --tenant",
+		"the dynamic and fixed policies must stay distinguishable in the error text")
+}
+
+// TestPromotedPathTemplateVarWithoutCollisionIsUnchanged is the negative
+// control: a promoted var that nothing collides with must not trigger any
+// spurious -2 renames.
+func TestPromotedPathTemplateVarWithoutCollisionIsUnchanged(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := templateCollisionSpec("collide-template-clean")
+	search := apiSpec.Resources["tenants"].Endpoints["search"]
+	search.Params = nil
+	search.Body = []spec.Param{{Name: "name", Type: "string", Description: "Display name"}}
+	apiSpec.Resources["tenants"].Endpoints["search"] = search
+
+	outputDir := filepath.Join(t.TempDir(), "collide-template-clean-pp-cli")
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+
+	_, flagBindings := parseFlagDeclarations(t,
+		filepath.Join(outputDir, "internal", "cli", "tenants_search.go"))
+	for _, binding := range flagBindings {
+		assert.NotContains(t, binding, "-2",
+			"no flag may be renamed when nothing collides with the promoted var")
+	}
 }
 
 // TestGenerateRejectsAuthoredFlagCollidingWithGlobal covers the explicit
@@ -496,4 +693,14 @@ func assertNoDuplicates(t *testing.T, names []string, msg string) {
 	for n, count := range seen {
 		assert.Equal(t, 1, count, "%s: %q appears %d times", msg, n, count)
 	}
+}
+
+func countString(names []string, want string) int {
+	count := 0
+	for _, n := range names {
+		if n == want {
+			count++
+		}
+	}
+	return count
 }

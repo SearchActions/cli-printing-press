@@ -12,7 +12,9 @@ import (
 // fields on a single endpoint share a Go identifier (flag<Camel> /
 // body<Camel>) or cobra flag name after camelization or kebab-casing, and
 // that no entry collides with a reserved generator-introduced identifier
-// (pagination's flagAll, async's flagWait*, mutating endpoints' --stdin).
+// (pagination's flagAll, async's flagWait*, mutating endpoints' --stdin) or
+// with a root persistent flag name (the fixed globals plus the spec's
+// promoted path-template vars).
 //
 // Conflicting entries have IdentName populated to Name with _2, _3, ...
 // suffixed until the Go identifier and cobra flag name are both unique
@@ -28,9 +30,24 @@ func (g *Generator) dedupeFlagIdentifiers() error {
 	if g.Spec == nil {
 		return nil
 	}
+	d := flagDedupe{asyncJobs: g.AsyncJobs}
+	// PromoteGlobalPathTemplateVars ran in New() (generator.go:172) and nothing
+	// mutates GlobalPathTemplateVars between there and Generate(), so this is
+	// exactly the set root.go.tmpl will register. kebab, not naming.FlagName:
+	// the reserved entry must be byte-identical to the flag string the root
+	// template hands pflag, and the two derivations disagree on edge inputs
+	// (e.g. v2Tenant -> v2tenant here, v2-tenant there).
+	d.globalTemplateFlags = make(map[string]struct{}, len(g.Spec.GlobalPathTemplateVars))
+	for _, v := range g.Spec.GlobalPathTemplateVars {
+		k := toKebab(v)
+		if k == "" {
+			continue
+		}
+		d.globalTemplateFlags[k] = struct{}{}
+	}
 	for resName, res := range g.Spec.Resources {
 		for epName, ep := range res.Endpoints {
-			deduped, err := dedupeEndpointIdentifiers(resName, epName, ep, g.AsyncJobs, g.Spec.UsesBrowserHTTPTransport())
+			deduped, err := d.endpoint(resName, epName, ep)
 			if err != nil {
 				return err
 			}
@@ -44,7 +61,7 @@ func (g *Generator) dedupeFlagIdentifiers() error {
 			// correctly. DetectAsyncJobs does not currently walk
 			// sub-resources, so this lookup is a no-op today.
 			for epName, ep := range sub.Endpoints {
-				deduped, err := dedupeEndpointIdentifiers(subName, epName, ep, g.AsyncJobs, g.Spec.UsesBrowserHTTPTransport())
+				deduped, err := d.endpoint(subName, epName, ep)
 				if err != nil {
 					return err
 				}
@@ -57,27 +74,44 @@ func (g *Generator) dedupeFlagIdentifiers() error {
 	return nil
 }
 
-// dedupeEndpointIdentifiers runs the param-then-body uniquification for one
-// endpoint, sharing the cobra flag-name namespace across both passes. Body
-// fields and query/path params each emit `cmd.Flags().*Var(..., flagName, ...)`
-// against the same cobra command, so collisions across the two lists must be
-// detected together.
-func dedupeEndpointIdentifiers(resKey, epName string, ep spec.Endpoint, asyncJobs map[string]AsyncJobInfo, usesBrowserHTTPTransport bool) (spec.Endpoint, error) {
-	flagIdents, flagNames := reservedFlagNamesForEndpoint(resKey, epName, ep, asyncJobs, usesBrowserHTTPTransport)
-	if err := validateAuthoredPublicFlags(resKey, epName, ep, flagNames); err != nil {
+// flagDedupe carries the per-generation state every endpoint dedupe pass
+// reads: the async-job table and the cobra flag names registered as root
+// persistent flags for the spec's promoted path-template vars.
+type flagDedupe struct {
+	asyncJobs           map[string]AsyncJobInfo
+	globalTemplateFlags map[string]struct{}
+}
+
+// endpoint runs the param-then-body uniquification for one endpoint, sharing
+// the cobra flag-name namespace across both passes. Body fields and
+// query/path params each emit `cmd.Flags().*Var(..., flagName, ...)` against
+// the same cobra command, so collisions across the two lists must be detected
+// together.
+func (d flagDedupe) endpoint(resKey, epName string, ep spec.Endpoint) (spec.Endpoint, error) {
+	flagIdents, flagNames, templateFlags := d.reservedFlagNames(resKey, epName, ep)
+	if err := validateAuthoredPublicFlags(resKey, epName, ep, flagNames, templateFlags); err != nil {
 		return ep, err
 	}
 
-	// Pass 1: query/path params populate the flag<Camel> namespace.
-	ep.Params = uniquifyIdentifiers(ep.Params, "flag", flagIdents, flagNames)
+	// Pass 1: query/path params populate the flag<Camel> namespace. The
+	// promoted template-var flags shadow exactly like the fixed globals, so
+	// they join the reserved set for renaming.
+	reservedFlags := make(map[string]struct{}, len(flagNames)+len(templateFlags))
+	for k := range flagNames {
+		reservedFlags[k] = struct{}{}
+	}
+	for k := range templateFlags {
+		reservedFlags[k] = struct{}{}
+	}
+	ep.Params = uniquifyIdentifiers(ep.Params, "flag", flagIdents, reservedFlags)
 
 	// Pass 2: body fields populate the body<Camel> namespace, but their public
 	// input names share the namespace with every endpoint param. Positional path
 	// params do not register cobra flags, but they do register MCP inputs, so a
 	// body field named the same as a path param still needs a distinct public
 	// name while keeping its wire-side body key unchanged.
-	bodyFlagNames := make(map[string]struct{}, len(flagNames)+len(ep.Params))
-	for k := range flagNames {
+	bodyFlagNames := make(map[string]struct{}, len(reservedFlags)+len(ep.Params))
+	for k := range reservedFlags {
 		bodyFlagNames[k] = struct{}{}
 	}
 	for _, p := range ep.Params {
@@ -180,9 +214,10 @@ func uniquifyBodyTree(body []spec.Param, identPrefix, flagPrefix string, usedIde
 // guards (--ignore-missing, --no-learn, --allow-partial-failure, --max-age,
 // --throttle-mode) so a printed CLI's flag namespace stays stable regardless
 // of which optional features a spec enables. The dynamic per-spec path
-// template flags (GlobalPathTemplateVars) are a separate shadow class tracked
-// in TODO.md. TestGlobalReservedFlagsMatchTemplate keeps this set in sync with
-// the template's PersistentFlags() block.
+// template flags (GlobalPathTemplateVars) are reserved per generation via
+// flagDedupe.globalTemplateFlags, derived with toKebab to match the name
+// root.go.tmpl registers. TestGlobalReservedFlagsMatchTemplate keeps this set
+// in sync with the template's PersistentFlags() block.
 var globalPersistentFlagNames = map[string]struct{}{
 	"json":                  {},
 	"compact":               {},
@@ -213,34 +248,43 @@ var globalPersistentFlagNames = map[string]struct{}{
 	"insecure":              {},
 }
 
-// reservedFlagNamesForEndpoint returns identifiers and cobra flag names that
-// the command templates emit themselves and that user params or body fields
-// therefore must not shadow. The returned `idents` set is in the flag<Camel>
-// namespace (params); body<Camel> body-namespace identifiers carry no
-// reserved entries because the generator-introduced helpers (stdinBody) use
-// a different naming pattern. The `flags` set covers cobra flag names, which
-// params and body fields share, and is seeded with every root persistent
-// (global) flag name so local flags can never shadow an inherited global.
+// reservedFlagNames returns identifiers and cobra flag names that the command
+// templates emit themselves and that user params or body fields therefore must
+// not shadow. The returned `idents` set is in the flag<Camel> namespace
+// (params); body<Camel> body-namespace identifiers carry no reserved entries
+// because the generator-introduced helpers (stdinBody) use a different naming
+// pattern. The `flags` set covers cobra flag names, which params and body
+// fields share, and is seeded with the fixed root persistent (global) flag
+// names so local flags can never shadow an inherited global. `templateFlags`
+// returns the promoted path-template flag names separately — a copy, not the
+// shared map — because the two sets feed different policies: `flags` drives
+// both auto-rename and the authored-flag hard error, while `templateFlags`
+// unions into renaming but errors with its own message so the author is
+// pointed at the actual (spec-derived, threshold-dependent) cause.
 //
-// usesBrowserHTTPTransport is accepted for call-site compatibility but is not
-// consulted: --insecure is reserved unconditionally via globalPersistentFlagNames.
-// Gating a reservation on a spec-dependent feature would rename an unrelated
-// user-facing flag as soon as browser transport is toggled, and the drift guard
-// (TestGlobalReservedFlagsMatchTemplate) reads root.go.tmpl as raw bytes and
-// cannot see the template's {{if}}, so a conditional entry cannot be verified.
-// Every other guard-emitted flag is reserved unconditionally for the same reason.
-func reservedFlagNamesForEndpoint(resKey, epName string, ep spec.Endpoint, asyncJobs map[string]AsyncJobInfo, usesBrowserHTTPTransport bool) (idents, flags map[string]struct{}) {
-	_ = usesBrowserHTTPTransport
+// Every entry in globalPersistentFlagNames is reserved unconditionally, and
+// that includes flags root.go.tmpl emits behind template guards
+// (--ignore-missing, --no-learn, --allow-partial-failure, --max-age,
+// --throttle-mode): gating a reservation on a spec-dependent feature would
+// rename an unrelated user-facing flag as soon as the feature is toggled, and
+// the drift guard (TestGlobalReservedFlagsMatchTemplate) reads root.go.tmpl as
+// raw bytes and cannot see the template's {{if}}, so a conditional entry cannot
+// be verified.
+func (d flagDedupe) reservedFlagNames(resKey, epName string, ep spec.Endpoint) (idents, flags, templateFlags map[string]struct{}) {
 	idents = map[string]struct{}{}
 	flags = map[string]struct{}{}
+	templateFlags = make(map[string]struct{}, len(d.globalTemplateFlags))
 	for name := range globalPersistentFlagNames {
 		flags[name] = struct{}{}
+	}
+	for name := range d.globalTemplateFlags {
+		templateFlags[name] = struct{}{}
 	}
 	if ep.Pagination != nil {
 		idents["flagAll"] = struct{}{}
 		flags["all"] = struct{}{}
 	}
-	if _, isAsync := asyncJobs[resKey+"/"+epName]; isAsync {
+	if _, isAsync := d.asyncJobs[resKey+"/"+epName]; isAsync {
 		idents["flagWait"] = struct{}{}
 		idents["flagWaitTimeout"] = struct{}{}
 		idents["flagWaitInterval"] = struct{}{}
@@ -256,7 +300,7 @@ func reservedFlagNamesForEndpoint(resKey, epName string, ep spec.Endpoint, async
 		// is needed; only the cobra flag name is shared.
 		flags["stdin"] = struct{}{}
 	}
-	return idents, flags
+	return idents, flags, templateFlags
 }
 
 // uniquifyIdentifiers returns params with IdentName populated whenever an
@@ -319,15 +363,15 @@ func uniquifyIdentifiers(params []spec.Param, identPrefix string, reservedIdents
 	return out
 }
 
-func validateAuthoredPublicFlags(resKey, epName string, ep spec.Endpoint, reservedFlags map[string]struct{}) error {
+func validateAuthoredPublicFlags(resKey, epName string, ep spec.Endpoint, reservedFlags, templateFlags map[string]struct{}) error {
 	seen := map[string]publicFlagUse{}
 	for _, entry := range publicFlagEntries(ep.Params, "param") {
-		if err := validatePublicFlagEntry(resKey, epName, entry, reservedFlags, seen); err != nil {
+		if err := validatePublicFlagEntry(resKey, epName, entry, reservedFlags, templateFlags, seen); err != nil {
 			return err
 		}
 	}
 	for _, entry := range publicFlagEntries(ep.Body, "body") {
-		if err := validatePublicFlagEntry(resKey, epName, entry, reservedFlags, seen); err != nil {
+		if err := validatePublicFlagEntry(resKey, epName, entry, reservedFlags, templateFlags, seen); err != nil {
 			return err
 		}
 	}
@@ -366,10 +410,13 @@ func publicFlagEntries(params []spec.Param, kind string) []publicFlagEntry {
 	return entries
 }
 
-func validatePublicFlagEntry(resKey, epName string, entry publicFlagEntry, reservedFlags map[string]struct{}, seen map[string]publicFlagUse) error {
+func validatePublicFlagEntry(resKey, epName string, entry publicFlagEntry, reservedFlags, templateFlags map[string]struct{}, seen map[string]publicFlagUse) error {
 	if entry.explicit {
 		if _, ok := reservedFlags[entry.name]; ok {
 			return fmt.Errorf("resource %q endpoint %q: %s %q collides with reserved flag --%s", resKey, epName, entry.label, entry.name, entry.name)
+		}
+		if _, ok := templateFlags[entry.name]; ok {
+			return fmt.Errorf("resource %q endpoint %q: %s %q collides with the promoted path-template flag --%s; rename the param or remove the placeholder from the path-template env overrides", resKey, epName, entry.label, entry.name, entry.name)
 		}
 	}
 	if previous, ok := seen[entry.name]; ok {
