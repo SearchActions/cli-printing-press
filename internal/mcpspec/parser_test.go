@@ -579,3 +579,39 @@ func findParam(t *testing.T, params []spec.Param, name string) spec.Param {
 	t.Fatalf("param %q not found in %v", name, paramNames(params))
 	return spec.Param{}
 }
+
+func TestParseNamespaceFallbackKeepsBrandTokenIntact(t *testing.T) {
+	// A tool whose name carries no known verb falls back to the server
+	// namespace. Pluralizing that namespace used to turn the all-caps brand
+	// token COMPOSIO into "COMPOSIOs", which the word splitter then cut at the
+	// tail of the uppercase run, yielding the resource "composi-os".
+	data := `{
+	  "server_url": "https://connect.composio.dev/mcp",
+	  "tools": [
+	    {"name":"COMPOSIO_REMOTE_WORKBENCH","description":"d",
+	     "inputSchema":{"type":"object","properties":{}}},
+	    {"name":"COMPOSIO_USE_SKILL","description":"d",
+	     "inputSchema":{"type":"object","properties":{}}}
+	  ]
+	}`
+	s, err := Parse("composio.json", []byte(data), ParseOptions{})
+	require.NoError(t, err)
+
+	require.Contains(t, s.Resources, "composio",
+		"namespace fallback must stay a single readable brand token")
+	assert.NotContains(t, s.Resources, "composi-os")
+	assert.NotContains(t, s.Resources, "composios",
+		"a proper-noun namespace is not a countable collection")
+
+	// A verb-bearing tool still pluralizes its object as before.
+	withObject := `{
+	  "server_url": "https://mcp.test/mcp",
+	  "tools": [
+	    {"name":"ACME_LIST_PROJECT","description":"d",
+	     "inputSchema":{"type":"object","properties":{}}}
+	  ]
+	}`
+	s2, err := Parse("acme.json", []byte(withObject), ParseOptions{})
+	require.NoError(t, err)
+	assert.Contains(t, s2.Resources, "projects")
+}
