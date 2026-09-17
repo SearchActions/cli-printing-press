@@ -1,9 +1,13 @@
 package generator
 
 import (
+	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
+	"strings"
 	"testing"
 
 	"github.com/mvanhorn/cli-printing-press/v4/internal/naming"
@@ -157,4 +161,47 @@ func TestWhitespaceOnlyMCPEndpointPathIsNormalized(t *testing.T) {
 // not depend on gofmt's column alignment.
 func collapseSpaces(s string) string {
 	return regexp.MustCompile(` +`).ReplaceAllString(s, " ")
+}
+
+// TestGeneratedMCPDryRunExitsZero proves the behavior, not the template text:
+// --dry-run never sends the request, so there is no JSON-RPC envelope for
+// unwrapMCPToolResult to decode. Before the dry-run carve-out, every MCP
+// command's dry run ended in "server returned no result" and a non-zero exit,
+// which silently broke every example in the generated README and SKILL.md.
+func TestGeneratedMCPDryRunExitsZero(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := mcpBackedSpec("mcpdry")
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+	runGoCommand(t, outputDir, "mod", "tidy")
+	// Windows refuses to exec a file with no .exe suffix, and `go build -o`
+	// honors the name it is given verbatim.
+	binaryName := naming.CLI(apiSpec.Name)
+	if runtime.GOOS == "windows" {
+		binaryName += ".exe"
+	}
+	binaryPath := filepath.Join(outputDir, binaryName)
+	runGoCommand(t, outputDir, "build", "-o", binaryPath, "./cmd/"+naming.CLI(apiSpec.Name))
+
+	for _, args := range [][]string{
+		{"widgets", "list", "--dry-run", "--json"},
+		{"widgets", "delete", "w1", "--dry-run", "--json", "--yes"},
+	} {
+		cmd := exec.Command(binaryPath, args...)
+		var stdout, stderr strings.Builder
+		cmd.Stdout = &stdout
+		cmd.Stderr = &stderr
+		err := cmd.Run()
+		require.NoError(t, err, "args %v must exit 0\nstdout:\n%s\nstderr:\n%s",
+			args, stdout.String(), stderr.String())
+		assert.NotContains(t, stderr.String(), "server returned no result")
+
+		var envelope map[string]any
+		require.NoError(t, json.Unmarshal([]byte(stdout.String()), &envelope), stdout.String())
+		if envelope["dry_run"] != true {
+			results, _ := envelope["results"].(map[string]any)
+			assert.Equal(t, true, results["dry_run"], "dry-run envelope must survive the MCP unwrap: %s", stdout.String())
+		}
+	}
 }

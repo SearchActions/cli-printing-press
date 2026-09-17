@@ -425,6 +425,12 @@ func unwrapMCPToolResult(tool string, raw json.RawMessage) (json.RawMessage, err
 	if isVerifyNoopEnvelope(raw) {
 		return raw, nil
 	}
+	// --dry-run never sends the request, so there is no JSON-RPC envelope to
+	// unwrap. Without this, every dry run ends in "server returned no result"
+	// and a non-zero exit, which breaks every documented example.
+	if isDryRunEnvelope(raw) {
+		return raw, nil
+	}
 
 	resp, err := decodeMCPEnvelope(raw)
 	if err != nil {
@@ -518,6 +524,19 @@ func isVerifyNoopEnvelope(raw json.RawMessage) bool {
 		return false
 	}
 	return probe.Synthetic != nil && *probe.Synthetic
+}
+
+// isDryRunEnvelope reports whether raw is the transport's synthetic --dry-run
+// response rather than a server reply. The marker must match the envelope
+// dryRun returns in client.go.
+func isDryRunEnvelope(raw json.RawMessage) bool {
+	var probe struct {
+		DryRun *bool `json:"dry_run"`
+	}
+	if err := json.Unmarshal(raw, &probe); err != nil {
+		return false
+	}
+	return probe.DryRun != nil && *probe.DryRun
 }
 
 // decodeMCPEnvelope parses a JSON-RPC response, unwrapping an SSE frame first
