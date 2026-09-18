@@ -40,6 +40,8 @@ in the same change as any new `Extensions["x-*"]` lookup in that file.
 | `x-auth-companion` | `components.securitySchemes.<name>` or `info` | `APISpec.Auth.LoginURL`, `LoginCompleteSelector`, `JWTCarrierCookie` | No |
 | `x-oauth-device-flow` | `components.securitySchemes.<name>` | `APISpec.Auth.OAuth2Grant`, `DeviceAuthorizationURL`, `TokenURL`, `Scopes`, `DefaultClientID` | No |
 | `x-oauth-refresh-token-mechanism` | `components.securitySchemes.<name>` | `APISpec.Auth.RefreshTokenMechanism` | No |
+| `x-auth-verify-path` | `components.securitySchemes.<name>`, root, or `info` | `APISpec.Auth.VerifyPath` | No |
+| `x-auth-verify-query` | `components.securitySchemes.<name>`, root, or `info` | `APISpec.Auth.VerifyQuery` | No |
 | `x-resource-id` | path item | `Endpoint.IDField` | No |
 | `x-critical` | path item | `Endpoint.Critical` | No |
 | `x-tier` | path item or operation | `Endpoint.Tier` | No |
@@ -1063,6 +1065,74 @@ info:
     jwt_carrier_cookie: guestsession
 ```
 
+### `x-auth-verify-path` / `x-auth-verify-query`
+
+Let an OpenAPI-sourced spec declare the `doctor` credential probe directly,
+instead of relying only on the me-shaped path heuristic described under
+[Doctor Probe Fields](#doctor-probe-fields) below. Parsed fields:
+`APISpec.Auth.VerifyPath` and `APISpec.Auth.VerifyQuery` — the same fields the
+internal-YAML `auth.verify_path` / `auth.verify_query` keys set.
+
+Placement and precedence:
+
+- Allowed on the selected `components.securitySchemes.<name>`, on root, or on
+  `info`. The selected security scheme wins, then root, then `info` — the
+  same order `x-auth-companion` uses. Path and query resolve independently:
+  a scheme can supply the path while root or `info` supplies the query, or
+  vice versa.
+- Because the lookup reads from the scheme `selectSecurityScheme` returns,
+  the probe follows the same scheme-selection precedence
+  (`ParseOptions.AuthPreference`) as the rest of the auth mapping.
+- Ignored entirely, with a warning if declared, when the mapped
+  `auth.type` resolves to `none` — there is no credential to probe.
+
+Validation (values are warned-and-ignored, never a hard parse error, since
+the value comes from a third-party vendor document):
+
+- `x-auth-verify-path` must be a non-blank string after trimming, must not
+  contain `://` (an absolute URL — see the security note below), must not
+  contain whitespace/control characters, and must not contain `{` (`doctor`
+  cannot fill a path template). A missing leading `/` is prepended. A
+  trailing `?query` suffix passes through unchanged.
+- `x-auth-verify-query` must be a non-blank string after trimming; otherwise
+  it is kept verbatim (opaque, like `auth.verify_query`).
+- A malformed value is dropped with a `warnf` naming the site
+  (`components.securitySchemes.<scheme>.x-auth-verify-path` or
+  `info.x-auth-verify-path`), and the me-shaped heuristic still runs as if
+  the extension had never been set.
+
+Security note: `x-auth-verify-path` also backs `HealthCheckPath` (via
+`deriveHealthCheckPath`), which the Auth0-SPA browser-capture flow loads
+unchanged as the page used to capture the bearer token. An absolute URL here
+would let a vendor spec steer token capture to a foreign origin, which is why
+`://` is rejected outright rather than merely warned about.
+
+**Set this explicitly on any OpenAPI-sourced API with a partner or app tier
+alongside customer keys** (Aircall, Stripe, Slack, HubSpot) — see the Aircall
+example under [Doctor Probe Fields](#doctor-probe-fields).
+
+```yaml
+components:
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: Authorization
+      x-auth-verify-path: /users/self
+    OAuthClient:
+      type: oauth2
+      x-auth-verify-path: /oauth/whoami
+      flows:
+        clientCredentials:
+          tokenUrl: https://api.example.com/oauth/token
+          scopes: {}
+security:
+  - ApiKeyAuth: []
+```
+
+In this example `doctor` probes `/users/self` for API-key credentials; a spec
+that selected `OAuthClient` instead would probe `/oauth/whoami`.
+
 ### `x-oauth-device-flow`
 
 Declares OAuth 2.0 device authorization grant metadata for CLI-first OAuth
@@ -1709,12 +1779,14 @@ x-streaming:
     primary_key: event_id
 ```
 
-## Doctor Probe Fields (internal YAML only — not `x-*` extensions)
+## Doctor Probe Fields
 
-These are **not** OpenAPI extensions. They live on the internal YAML spec and
-are documented here because this is the only spec-field reference in the repo.
-`internal/openapi/parser.go` never reads them, so a spec sourced from OpenAPI
-cannot declare them and always gets the derived value described below.
+`auth.verify_path`, `auth.verify_query`, and `health_check_path` are internal
+YAML spec fields, not `x-*` extensions — they are documented here because this
+is the only spec-field reference in the repo. An OpenAPI-sourced spec sets the
+same underlying fields (`APISpec.Auth.VerifyPath` / `VerifyQuery`) via the
+[`x-auth-verify-path` / `x-auth-verify-query`](#x-auth-verify-path--x-auth-verify-query)
+extensions documented above, under `Security Scheme Extensions`.
 
 They control which endpoint the generated `doctor` command probes to decide
 whether credentials are valid.
@@ -1745,7 +1817,8 @@ shape, not about who is allowed to call it: on Aircall it selected
 `doctor` reported `WARN Credentials: scope-limited (HTTP 403)` forever against
 perfectly valid customer credentials. The symptom reads as a credential
 problem, so the wrong response is to re-check the credentials — set
-`verify_path` to a path the configured auth mode can actually reach.
+`verify_path` (internal YAML) or `x-auth-verify-path` (OpenAPI) to a path the
+configured auth mode can actually reach.
 
 ```yaml
 auth:
@@ -1764,8 +1837,11 @@ Parsed field: `APISpec.Auth.VerifyQuery`
 Rules:
 - Optional. Opaque to the generator — any query that returns 2xx and no
   `errors` for a valid token works; `{ viewer { id } }` is the convention.
-- If both this and `auth.verify_path` are set, `verify_path` wins (the REST
-  probe is cheaper).
+- If both this and `auth.verify_path` are authored, the authored
+  `verify_path` wins (the REST probe is cheaper). The generator's me-shaped
+  heuristic never derives a `verify_path` when a `verify_query` is authored,
+  so an authored GraphQL probe is never silently replaced by a guessed REST
+  one.
 
 ### `health_check_path`
 

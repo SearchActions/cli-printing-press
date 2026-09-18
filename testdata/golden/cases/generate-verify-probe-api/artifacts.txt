@@ -1,0 +1,4 @@
+# Locks the x-auth-verify-path scheme-level extension winning over the
+# me-shaped heuristic (/integrations/me) in the emitted doctor.go probe.
+printing-press-verify-probe/internal/cli/doctor.go
+printing-press-verify-probe/internal/config/config.go

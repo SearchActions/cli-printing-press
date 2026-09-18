@@ -663,7 +663,7 @@ func BenchmarkLargeSpec(b *testing.B) {
 
 	b.ReportAllocs()
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		parsed, err := Parse(data)
 		if err != nil {
 			b.Fatalf("parse AIC spec: %v", err)
@@ -12519,4 +12519,466 @@ func TestSetParamMaximumNormalizesBounds(t *testing.T) {
 		assert.Nil(t, p.Maximum)
 		assert.Nil(t, p.ExclusiveMaximum)
 	})
+}
+
+// TestOpenAPIAuthVerifyProbe_SchemeLevel covers a scheme-level
+// x-auth-verify-path and x-auth-verify-query are both read.
+func TestOpenAPIAuthVerifyProbe_SchemeLevel(t *testing.T) {
+	t.Parallel()
+
+	yamlSpec := []byte(`openapi: "3.0.3"
+info:
+  title: Verify Probe API
+  version: "1.0.0"
+servers:
+  - url: https://api.example.com
+components:
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: Authorization
+      x-auth-verify-path: /users/self
+      x-auth-verify-query: "{ viewer { id } }"
+security:
+  - ApiKeyAuth: []
+paths:
+  /items:
+    get:
+      responses:
+        "200":
+          description: OK
+`)
+	parsed, err := Parse(yamlSpec)
+	require.NoError(t, err)
+
+	assert.Equal(t, "/users/self", parsed.Auth.VerifyPath)
+	assert.Equal(t, "{ viewer { id } }", parsed.Auth.VerifyQuery)
+}
+
+// TestOpenAPIAuthVerifyProbe_AuthPreferenceSelectsScheme covers two schemes each carry their own path, AuthPreference selects one,
+// and that scheme's value wins.
+func TestOpenAPIAuthVerifyProbe_AuthPreferenceSelectsScheme(t *testing.T) {
+	t.Parallel()
+
+	specBytes := []byte(`openapi: "3.0.3"
+info:
+  title: Two Scheme API
+  version: "1.0"
+servers:
+  - url: https://api.example.com
+components:
+  securitySchemes:
+    OAuth2:
+      type: oauth2
+      x-auth-verify-path: /oauth/me
+      flows:
+        clientCredentials:
+          tokenUrl: https://api.example.com/token
+          scopes: {}
+    basicAuth:
+      type: http
+      scheme: basic
+      x-auth-verify-path: /basic/me
+paths:
+  /v1/things:
+    get:
+      operationId: list things
+      security:
+        - basicAuth: []
+        - OAuth2: []
+      responses: {"200": {description: ok}}
+`)
+
+	defaultParsed, err := Parse(specBytes)
+	require.NoError(t, err)
+	assert.Equal(t, "OAuth2", defaultParsed.Auth.Scheme)
+	assert.Equal(t, "/oauth/me", defaultParsed.Auth.VerifyPath)
+
+	preferred, err := ParseWithOptions(specBytes, ParseOptions{AuthPreference: "basicAuth"})
+	require.NoError(t, err)
+	assert.Equal(t, "basicAuth", preferred.Auth.Scheme)
+	assert.Equal(t, "/basic/me", preferred.Auth.VerifyPath)
+}
+
+// TestOpenAPIAuthVerifyProbe_SchemeBeatsRootBeatsInfo covers the selected scheme's value wins over root, and root wins over info.
+func TestOpenAPIAuthVerifyProbe_SchemeBeatsRootBeatsInfo(t *testing.T) {
+	t.Parallel()
+
+	t.Run("scheme beats info", func(t *testing.T) {
+		t.Parallel()
+		yamlSpec := []byte(`openapi: "3.0.3"
+info:
+  title: Scheme Wins API
+  version: "1.0.0"
+  x-auth-verify-path: /from-info
+servers:
+  - url: https://api.example.com
+components:
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: Authorization
+      x-auth-verify-path: /from-scheme
+security:
+  - ApiKeyAuth: []
+paths:
+  /items:
+    get:
+      responses: {"200": {description: OK}}
+`)
+		parsed, err := Parse(yamlSpec)
+		require.NoError(t, err)
+		assert.Equal(t, "/from-scheme", parsed.Auth.VerifyPath)
+	})
+}
+
+// TestOpenAPIAuthVerifyProbe_RootOrInfoFillsGap covers root
+// or info fills the gap when the selected scheme doesn't declare the key,
+// including the mixed case where the scheme supplies the path and info
+// supplies the query.
+func TestOpenAPIAuthVerifyProbe_RootOrInfoFillsGap(t *testing.T) {
+	t.Parallel()
+
+	yamlSpec := []byte(`openapi: "3.0.3"
+info:
+  title: Mixed Fill API
+  version: "1.0.0"
+  x-auth-verify-query: "{ viewer { id } }"
+servers:
+  - url: https://api.example.com
+components:
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: Authorization
+      x-auth-verify-path: /from-scheme
+security:
+  - ApiKeyAuth: []
+paths:
+  /items:
+    get:
+      responses: {"200": {description: OK}}
+`)
+	parsed, err := Parse(yamlSpec)
+	require.NoError(t, err)
+	assert.Equal(t, "/from-scheme", parsed.Auth.VerifyPath)
+	assert.Equal(t, "{ viewer { id } }", parsed.Auth.VerifyQuery)
+}
+
+// TestOpenAPIAuthVerifyProbe_InferredArmHonorsInfo covers with
+// no components.securitySchemes, auth is inferred from a query parameter,
+// and info.x-auth-verify-path still applies via the root/info fallback.
+func TestOpenAPIAuthVerifyProbe_InferredArmHonorsInfo(t *testing.T) {
+	t.Parallel()
+
+	yamlSpec := []byte(`openapi: "3.0.3"
+info:
+  title: Inferred Auth API
+  version: "1.0.0"
+  x-auth-verify-path: /me
+servers:
+  - url: https://api.example.com
+paths:
+  /items:
+    get:
+      parameters:
+        - name: api_key
+          in: query
+          required: true
+          schema:
+            type: string
+      responses: {"200": {description: OK}}
+`)
+	parsed, err := Parse(yamlSpec)
+	require.NoError(t, err)
+	require.Equal(t, "api_key", parsed.Auth.Type)
+	assert.Equal(t, "/me", parsed.Auth.VerifyPath)
+}
+
+// TestOpenAPIAuthVerifyProbe_PathNormalization covers a
+// missing leading slash is prepended, an embedded query string survives, and
+// surrounding whitespace is trimmed.
+func TestOpenAPIAuthVerifyProbe_PathNormalization(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name string
+		raw  string
+		want string
+	}{
+		{name: "missing leading slash", raw: "me", want: "/me"},
+		{name: "query string preserved", raw: "/me?fields=id", want: "/me?fields=id"},
+		{name: "surrounding whitespace trimmed", raw: " /me ", want: "/me"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			yamlSpec := fmt.Appendf(nil, `openapi: "3.0.3"
+info:
+  title: Normalize API
+  version: "1.0.0"
+servers:
+  - url: https://api.example.com
+components:
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: Authorization
+      x-auth-verify-path: %q
+security:
+  - ApiKeyAuth: []
+paths:
+  /items:
+    get:
+      responses: {"200": {description: OK}}
+`, tc.raw)
+			parsed, err := Parse(yamlSpec)
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, parsed.Auth.VerifyPath)
+		})
+	}
+}
+
+// TestOpenAPIAuthVerifyProbe_PathRejections covers each of
+// these is rejected and leaves VerifyPath empty, with a warning naming the
+// site. Uses captureWarnings, which swaps a package-global, so this test
+// cannot run in parallel with others that also use it.
+func TestOpenAPIAuthVerifyProbe_PathRejections(t *testing.T) {
+	cases := []struct {
+		name string
+		spec string
+	}{
+		{
+			name: "absolute URL",
+			spec: "x-auth-verify-path: https://evil.example/x",
+		},
+		{
+			name: "internal whitespace",
+			spec: "x-auth-verify-path: /a b",
+		},
+		{
+			name: "path template placeholder",
+			spec: "x-auth-verify-path: /users/{id}",
+		},
+		{
+			name: "control character",
+			spec: "x-auth-verify-path: \"/a\\tb\"",
+		},
+		{
+			name: "non-string value",
+			spec: "x-auth-verify-path: 42",
+		},
+		{
+			name: "whitespace-only value",
+			spec: "x-auth-verify-path: \"   \"",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			yamlSpec := fmt.Appendf(nil, `openapi: "3.0.3"
+info:
+  title: Rejection API
+  version: "1.0.0"
+servers:
+  - url: https://api.example.com
+components:
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: Authorization
+      %s
+security:
+  - ApiKeyAuth: []
+paths:
+  /items:
+    get:
+      responses: {"200": {description: OK}}
+`, tc.spec)
+
+			var parsed *spec.APISpec
+			var err error
+			warnings := captureWarnings(t, func() {
+				parsed, err = Parse(yamlSpec)
+			})
+			require.NoError(t, err)
+			assert.Empty(t, parsed.Auth.VerifyPath)
+			assert.Contains(t, warnings, "x-auth-verify-path")
+		})
+	}
+}
+
+// TestOpenAPIAuthVerifyProbe_QueryRejections covers a
+// non-string or blank x-auth-verify-query is ignored with a warning.
+func TestOpenAPIAuthVerifyProbe_QueryRejections(t *testing.T) {
+	cases := []struct {
+		name string
+		spec string
+	}{
+		{name: "non-string value", spec: "x-auth-verify-query: 7"},
+		{name: "blank value", spec: "x-auth-verify-query: \"   \""},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			yamlSpec := fmt.Appendf(nil, `openapi: "3.0.3"
+info:
+  title: Query Rejection API
+  version: "1.0.0"
+servers:
+  - url: https://api.example.com
+components:
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: Authorization
+      %s
+security:
+  - ApiKeyAuth: []
+paths:
+  /items:
+    get:
+      responses: {"200": {description: OK}}
+`, tc.spec)
+
+			var parsed *spec.APISpec
+			var err error
+			warnings := captureWarnings(t, func() {
+				parsed, err = Parse(yamlSpec)
+			})
+			require.NoError(t, err)
+			assert.Empty(t, parsed.Auth.VerifyQuery)
+			assert.Contains(t, warnings, "x-auth-verify-query")
+		})
+	}
+}
+
+// TestOpenAPIAuthVerifyProbe_NoneTypeIgnoresExtension covers when auth resolves to none, both the scheme arm (an unhandled scheme type
+// like openIdConnect) and the inferred arm leave the fields empty and warn.
+func TestOpenAPIAuthVerifyProbe_NoneTypeIgnoresExtension(t *testing.T) {
+	t.Run("scheme arm", func(t *testing.T) {
+		yamlSpec := []byte(`openapi: "3.0.3"
+info:
+  title: OIDC API
+  version: "1.0.0"
+servers:
+  - url: https://api.example.com
+components:
+  securitySchemes:
+    OIDC:
+      type: openIdConnect
+      openIdConnectUrl: https://api.example.com/.well-known/openid-configuration
+      x-auth-verify-path: /me
+security:
+  - OIDC: []
+paths:
+  /items:
+    get:
+      responses: {"200": {description: OK}}
+`)
+		var parsed *spec.APISpec
+		var err error
+		warnings := captureWarnings(t, func() {
+			parsed, err = Parse(yamlSpec)
+		})
+		require.NoError(t, err)
+		assert.Equal(t, "none", parsed.Auth.Type)
+		assert.Empty(t, parsed.Auth.VerifyPath)
+		assert.Contains(t, warnings, "x-auth-verify-path")
+	})
+
+	t.Run("inferred arm", func(t *testing.T) {
+		yamlSpec := []byte(`openapi: "3.0.3"
+info:
+  title: No Auth API
+  version: "1.0.0"
+  x-auth-verify-path: /me
+servers:
+  - url: https://api.example.com
+paths:
+  /items:
+    get:
+      responses: {"200": {description: OK}}
+`)
+		var parsed *spec.APISpec
+		var err error
+		warnings := captureWarnings(t, func() {
+			parsed, err = Parse(yamlSpec)
+		})
+		require.NoError(t, err)
+		assert.Equal(t, "none", parsed.Auth.Type)
+		assert.Empty(t, parsed.Auth.VerifyPath)
+		assert.Contains(t, warnings, "x-auth-verify-path")
+	})
+}
+
+// TestOpenAPIAuthVerifyProbe_AnonymousResetDropsFields covers the allOperationsAllowAnonymous collapse drops the fields, guarding
+// against a HealthCheckPath leak.
+func TestOpenAPIAuthVerifyProbe_AnonymousResetDropsFields(t *testing.T) {
+	yamlSpec := []byte(`openapi: "3.0.3"
+info:
+  title: All Anonymous API
+  version: "1.0.0"
+servers:
+  - url: https://api.example.com
+components:
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: Authorization
+      x-auth-verify-path: /me
+security:
+  - ApiKeyAuth: []
+paths:
+  /items:
+    get:
+      security: []
+      responses: {"200": {description: OK}}
+`)
+	var parsed *spec.APISpec
+	var err error
+	warnings := captureWarnings(t, func() {
+		parsed, err = Parse(yamlSpec)
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "none", parsed.Auth.Type)
+	assert.Empty(t, parsed.Auth.VerifyPath)
+	assert.Contains(t, warnings, "discarding x-auth-verify-path")
+}
+
+// TestOpenAPIAuthVerifyProbe_AbsentExtensionLeavesEmpty covers default behavior is unchanged when the extension is absent.
+func TestOpenAPIAuthVerifyProbe_AbsentExtensionLeavesEmpty(t *testing.T) {
+	t.Parallel()
+
+	yamlSpec := []byte(`openapi: "3.0.3"
+info:
+  title: No Extension API
+  version: "1.0.0"
+servers:
+  - url: https://api.example.com
+components:
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: Authorization
+security:
+  - ApiKeyAuth: []
+paths:
+  /items:
+    get:
+      responses: {"200": {description: OK}}
+`)
+	parsed, err := Parse(yamlSpec)
+	require.NoError(t, err)
+	assert.Empty(t, parsed.Auth.VerifyPath)
+	assert.Empty(t, parsed.Auth.VerifyQuery)
 }

@@ -622,7 +622,7 @@ when the CDP path is not available (other machine, headless server, etc.).`,
 // the outbound header is the SDK's own injection point and is stable.
 func auth0SPACaptureURL() string {
 	baseURL := strings.TrimRight("{{.BaseURL}}", "/")
-	path := strings.TrimSpace("{{.HealthCheckPath}}")
+	path := strings.TrimSpace({{printf "%q" .HealthCheckPath}})
 	if path == "" {
 		return baseURL
 	}

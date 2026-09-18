@@ -49,6 +49,8 @@ const (
 	extensionAuthTitle             = "x-auth-title"
 	extensionAuthDescription       = "x-auth-description"
 	extensionAuthCompanion         = "x-auth-companion"
+	extensionAuthVerifyPath        = "x-auth-verify-path"
+	extensionAuthVerifyQuery       = "x-auth-verify-query"
 	extensionAuthSubtype           = "x-auth-subtype"
 	extensionAuthBasicUsername     = "x-auth-basic-username"
 	extensionAuthBasicPassword     = "x-auth-basic-password"
@@ -617,6 +619,9 @@ func parseWithLocation(data []byte, lenient bool, strictRefs bool, location *url
 	injectGoogleDiscoveryAPIKeyAuth(doc, name)
 	auth := mapAuthWithDescriptionInference(doc, name, !metadata.explicitEmptySecuritySchemes, authPreference)
 	if auth.Type != "none" && allOperationsAllowAnonymous(doc) {
+		if auth.VerifyPath != "" || auth.VerifyQuery != "" {
+			warnf("all operations allow anonymous access; discarding x-auth-verify-path/x-auth-verify-query")
+		}
 		auth = spec.AuthConfig{Type: "none"}
 	}
 	if auth.Type != "none" && auth.KeyURL == "" {
@@ -1189,6 +1194,7 @@ func mapAuthWithDescriptionInference(doc *openapi3.T, name string, allowDescript
 			result = inferOperationLevelBearer(doc, name, result)
 		}
 		applyAuthCompanionFromInfo(&result, doc)
+		applyAuthVerifyProbe(&result, nil, doc)
 		return result
 	}
 
@@ -1304,6 +1310,7 @@ func mapAuthWithDescriptionInference(doc *openapi3.T, name string, allowDescript
 	applyAuthEnvVarDefaults(&auth, envPrefix)
 	applyAuthVarsRichOverride(&auth, scheme.Extensions, fmt.Sprintf("components.securitySchemes.%s.%s", schemeName, extensionAuthVars))
 	applyAuthCompanionFromInfo(&auth, doc)
+	applyAuthVerifyProbe(&auth, scheme.Extensions, doc)
 	auth.AdditionalHeaders = collectAdditionalAuthHeaders(doc, schemeName, envPrefix)
 	return auth
 }
@@ -1989,6 +1996,110 @@ func applyAuthCompanionFromInfo(auth *spec.AuthConfig, doc *openapi3.T) {
 	if auth.JWTCarrierCookie == "" {
 		if v, ok := obj["jwt_carrier_cookie"].(string); ok && strings.TrimSpace(v) != "" {
 			auth.JWTCarrierCookie = strings.TrimSpace(v)
+		}
+	}
+}
+
+// lookupAuthVerifyExtension checks the selected security scheme first, then
+// falls back to the document root/info (the same precedence x-auth-companion
+// uses), and reports where the value was found so warnings can name the site.
+func lookupAuthVerifyExtension(doc *openapi3.T, schemeExt map[string]any, schemeName, key string) (any, string, bool) {
+	if schemeExt != nil {
+		if raw, ok := schemeExt[key]; ok {
+			return raw, fmt.Sprintf("components.securitySchemes.%s.%s", schemeName, key), true
+		}
+	}
+	if raw, ok := lookupOpenAPIExtension(doc, key); ok {
+		return raw, fmt.Sprintf("info.%s", key), true
+	}
+	return nil, "", false
+}
+
+// normalizeAuthVerifyPathValue validates and normalizes a raw
+// x-auth-verify-path value, returning the empty string and a rejection
+// reason when the value is unusable. An absolute URL is rejected because
+// HealthCheckPath falls back to VerifyPath and auth0SPACaptureURL
+// (auth_browser.go.tmpl) returns an http(s):// HealthCheckPath unchanged as
+// the page used to capture an Auth0 bearer token — a vendor-supplied
+// absolute URL could steer that capture to a foreign origin. A path
+// template is rejected because doctor has no value to fill it with. A
+// missing leading slash is prepended so the value composes with base_url
+// the same way Endpoint.Path does.
+func normalizeAuthVerifyPathValue(raw any) (string, string) {
+	s, ok := raw.(string)
+	if !ok {
+		return "", "not a string"
+	}
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return "", "blank"
+	}
+	if strings.Contains(s, "://") {
+		return "", "absolute URLs are not allowed"
+	}
+	if strings.ContainsRune(s, '{') {
+		return "", "path templates are not supported (doctor cannot fill placeholders)"
+	}
+	for _, r := range s {
+		if unicode.IsSpace(r) || unicode.IsControl(r) {
+			return "", "contains whitespace or a control character"
+		}
+	}
+	if !strings.HasPrefix(s, "/") {
+		s = "/" + s
+	}
+	return s, ""
+}
+
+// normalizeAuthVerifyQueryValue validates a raw x-auth-verify-query value.
+// It is an opaque GraphQL document, so beyond trimming and requiring a
+// non-blank string, no further shape is enforced.
+func normalizeAuthVerifyQueryValue(raw any) (string, string) {
+	s, ok := raw.(string)
+	if !ok {
+		return "", "not a string"
+	}
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return "", "blank"
+	}
+	return s, ""
+}
+
+// applyAuthVerifyProbe reads x-auth-verify-path / x-auth-verify-query so
+// OpenAPI-sourced specs can declare the doctor credential probe the same way
+// internal YAML does via auth.verify_path / auth.verify_query. Without it,
+// the me-shaped path heuristic (deriveAuthVerifyPath) is the only source for
+// every OpenAPI spec, and it can pick an OAuth-partner-only endpoint on
+// partner-tier APIs, making doctor report a false scope-limited warning
+// against valid customer keys. Path and query resolve independently: a spec
+// may supply one from the scheme and the other from root/info.
+func applyAuthVerifyProbe(auth *spec.AuthConfig, schemeExt map[string]any, doc *openapi3.T) {
+	if auth == nil {
+		return
+	}
+	if raw, loc, ok := lookupAuthVerifyExtension(doc, schemeExt, auth.Scheme, extensionAuthVerifyPath); ok {
+		switch auth.Type {
+		case "none":
+			warnf("%s is set but auth resolved to none; ignoring", loc)
+		default:
+			if normalized, reason := normalizeAuthVerifyPathValue(raw); reason != "" {
+				warnf("%s is invalid (%s); ignoring", loc, reason)
+			} else {
+				auth.VerifyPath = normalized
+			}
+		}
+	}
+	if raw, loc, ok := lookupAuthVerifyExtension(doc, schemeExt, auth.Scheme, extensionAuthVerifyQuery); ok {
+		switch auth.Type {
+		case "none":
+			warnf("%s is set but auth resolved to none; ignoring", loc)
+		default:
+			if normalized, reason := normalizeAuthVerifyQueryValue(raw); reason != "" {
+				warnf("%s is invalid (%s); ignoring", loc, reason)
+			} else {
+				auth.VerifyQuery = normalized
+			}
 		}
 	}
 }

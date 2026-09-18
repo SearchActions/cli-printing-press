@@ -1,0 +1,2 @@
+set -euo pipefail
+"$BINARY" generate --spec testdata/golden/fixtures/golden-api-verify-probe.yaml --output "$CASE_ACTUAL_DIR/printing-press-verify-probe" --force --spec-url file://testdata/golden/fixtures/golden-api-verify-probe.yaml --validate=false

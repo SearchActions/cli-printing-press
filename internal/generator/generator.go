@@ -3024,7 +3024,13 @@ func (g *Generator) Generate() error {
 	// flows through). Without this, specs that ship a me-shaped endpoint but
 	// no explicit auth.verify_path generate a doctor that reports credentials
 	// as merely "present (not verified)" instead of probing the API.
-	if g.Spec.Auth.VerifyPath == "" {
+	//
+	// Only derive when VerifyQuery is also empty: an authored GraphQL probe
+	// (from YAML verify_query, or the OpenAPI x-auth-verify-query extension)
+	// is a deliberate choice of the cheaper REST probe's opposite, and
+	// doctor.go.tmpl prefers VerifyPath over VerifyQuery, so deriving here
+	// would silently discard it.
+	if g.Spec.Auth.VerifyPath == "" && g.Spec.Auth.VerifyQuery == "" {
 		g.Spec.Auth.VerifyPath = deriveAuthVerifyPath(g.Spec)
 	}
 	if g.Spec.HealthCheckPath == "" {

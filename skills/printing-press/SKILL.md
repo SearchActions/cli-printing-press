@@ -2062,7 +2062,7 @@ Then proceed to Phase 2. Do not write a freeform manual proof for this case, do 
 
 ### The Check
 
-Prefer the spec's `auth.verify_path` when it is set; otherwise pick the simplest GET endpoint from the resolved spec (no required params, no auth if possible). If no such endpoint exists, use the spec's base URL. Run one HTTP request and preserve the response body when the server returns a 4xx:
+Prefer the spec's `auth.verify_path` (OpenAPI: `x-auth-verify-path`) when it is set; otherwise pick the simplest GET endpoint from the resolved spec (no required params, no auth if possible). If no such endpoint exists, use the spec's base URL. Run one HTTP request and preserve the response body when the server returns a 4xx:
 
 ```bash
 body_file="$(mktemp "${TMPDIR:-/tmp}/pp-reachability-body.XXXXXX")"

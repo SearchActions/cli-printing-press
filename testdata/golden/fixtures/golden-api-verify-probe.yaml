@@ -1,0 +1,58 @@
+openapi: "3.0.3"
+info:
+  title: Printing Press Verify Probe API
+  version: "1.0.0"
+  description: Purpose-built fixture for the x-auth-verify-path/x-auth-verify-query doctor probe extensions.
+servers:
+  - url: https://api.verify-probe.example/v1
+security:
+  - ApiKeyAuth: []
+components:
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: Authorization
+      x-auth-verify-path: /users/self
+    OAuthClient:
+      type: oauth2
+      x-auth-verify-path: /oauth/whoami
+      flows:
+        clientCredentials:
+          tokenUrl: https://api.verify-probe.example/oauth/token
+          scopes: {}
+  schemas:
+    Item:
+      type: object
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+paths:
+  /items:
+    get:
+      tags: [items]
+      operationId: listItems
+      summary: List items
+      security:
+        - ApiKeyAuth: []
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Item"
+  /integrations/me:
+    get:
+      tags: [integrations]
+      operationId: getIntegrationsMe
+      summary: Get the current integration identity
+      security:
+        - ApiKeyAuth: []
+      responses:
+        "200":
+          description: OK

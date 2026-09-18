@@ -562,7 +562,7 @@ func newDoctorCmd(flags *rootFlags) *cobra.Command {
 				} else {
 					// Step 1: Basic reachability via the configured transport.
 {{- if .HealthCheckPath}}
-					healthPath := "{{.HealthCheckPath}}"
+					healthPath := {{printf "%q" .HealthCheckPath}}
 					if !strings.HasPrefix(healthPath, "/") {
 						healthPath = "/" + healthPath
 					}
@@ -645,7 +645,7 @@ func newDoctorCmd(flags *rootFlags) *cobra.Command {
 {{- end}}
 {{- end}}
 {{- if .Auth.VerifyPath}}
-						verifyPath := "{{.Auth.VerifyPath}}"
+						verifyPath := {{printf "%q" .Auth.VerifyPath}}
 						if !strings.HasPrefix(verifyPath, "/") {
 							verifyPath = "/" + verifyPath
 						}
