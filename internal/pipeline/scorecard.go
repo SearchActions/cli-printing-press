@@ -56,6 +56,7 @@ type Scorecard struct {
 
 	verifyCalibrationFloor   int
 	browserSessionUnverified bool
+	storeUnderDetection      bool
 }
 
 // SteinerScore breaks down the Steinberger bar into 11 dimensions, each 0-10.
@@ -282,7 +283,11 @@ func scoreDomainDimensions(sc *Scorecard, outputDir string, spec *openAPISpecInf
 		// pipeline and sync checks don't apply. Mark N/A rather than scoring 0.
 		sc.UnscoredDimensions = append(sc.UnscoredDimensions, DimDataPipelineIntegrity, DimSyncCorrectness)
 	} else if !hasScorecardLocalStore(outputDir) {
-		sc.UnscoredDimensions = append(sc.UnscoredDimensions, DimDataPipelineIntegrity, DimSyncCorrectness)
+		if spec != nil && storeUnderDetected(outputDir, spec.GETPaths, spec.Kind, spec.IsGraphQL) {
+			sc.storeUnderDetection = true
+		} else {
+			sc.UnscoredDimensions = append(sc.UnscoredDimensions, DimDataPipelineIntegrity, DimSyncCorrectness)
+		}
 	} else {
 		sc.Steinberger.DataPipelineIntegrity = scoreDataPipelineIntegrity(outputDir)
 		if isLocalDatastoreCLIDir(outputDir) {
@@ -346,6 +351,7 @@ func finalizeScorecard(sc *Scorecard, outputDir, pipelineDir string, verifyRepor
 	sc.GapReport = buildGapReport(sc.Steinberger, sc.UnscoredDimensions)
 	sc.NovelFeatureDepthMismatches = scorecardNovelFeatureDepthMismatches(outputDir, pipelineDir)
 	appendNovelFeatureDepthGaps(sc)
+	appendStoreUnderDetectionGap(sc)
 
 	// MCP tool split from manifest (informational, does not affect score)
 	if manifest, err := loadCLIManifestForScorecard(outputDir); err == nil && manifest.MCPBinary != "" {
@@ -1275,6 +1281,7 @@ func ApplyLiveCheckToScorecard(sc *Scorecard, live *LiveCheckResult) {
 	sc.OverallGrade = computeGrade(sc.Steinberger.Percentage)
 	sc.GapReport = buildGapReport(sc.Steinberger, sc.UnscoredDimensions)
 	appendNovelFeatureDepthGaps(sc)
+	appendStoreUnderDetectionGap(sc)
 }
 
 func scorecardNovelFeatureDepthMismatches(outputDir, pipelineDir string) []NovelFeatureDepthMismatch {
@@ -1304,6 +1311,14 @@ func appendNovelFeatureDepthGaps(sc *Scorecard) {
 			"novel feature command-depth mismatch: %s advertised as %s but registered as %s",
 			mismatch.Command, mismatch.Advertised, mismatch.Actual))
 	}
+}
+
+func appendStoreUnderDetectionGap(sc *Scorecard) {
+	if sc == nil || !sc.storeUnderDetection {
+		return
+	}
+	sc.GapReport = append(sc.GapReport,
+		"data_pipeline_integrity: spec declares collection resources (GET list + detail) but no local store was emitted - generator profiler under-detection; fix the generator, not this CLI")
 }
 
 func applyScorecardCalibration(sc *Scorecard) {
@@ -2201,6 +2216,7 @@ type oauthScopeAlternative struct {
 
 type openAPISpecInfo struct {
 	Paths                  []string
+	GETPaths               []string
 	SecuritySchemes        map[string]openAPISecurityScheme
 	SecurityRequirements   []securityRequirementSet
 	OAuthScopeRequirements []oauthScopeRequirement
@@ -2264,11 +2280,47 @@ func loadOpenAPISpecData(data []byte, specPath string) (*openAPISpecInfo, error)
 		IsGraphQL:       hasGraphQLEndpointExtension(raw),
 	}
 	if paths, ok := raw["paths"].(map[string]any); ok {
-		for path := range paths {
+		for path, item := range paths {
 			info.Paths = append(info.Paths, path)
 			info.PositionalParamCount += countPathTemplateParams(path)
+			// Method data matters for collection detection: the list+detail
+			// pairing only counts when both legs are readable (GET). The raw
+			// paths map keeps per-method operations as keys on the path item,
+			// except when the item is itself a $ref (OpenAPI 3.1 reusable Path
+			// Item Object) - that indirection has to resolve before "get" is
+			// visible, or a spec using shared path items reads as having no
+			// GET at all.
+			pathItem, ok := item.(map[string]any)
+			if !ok {
+				continue
+			}
+			if ref := asString(pathItem["$ref"]); ref != "" {
+				if resolved := resolveRawPointer(ref, raw); resolved != nil {
+					pathItem = resolved
+				}
+			}
+			op, ok := pathItem["get"].(map[string]any)
+			if !ok {
+				if getValue, exists := pathItem["get"]; !exists || getValue == nil {
+					continue
+				}
+				// "get" exists but isn't an object (malformed spec); keep the
+				// prior conservative behavior of counting it rather than
+				// silently dropping a path over a shape we can't parse.
+				info.GETPaths = append(info.GETPaths, path)
+				continue
+			}
+			// A GET response that is an array of scalars (no extractable
+			// primary key) can never back a syncable resource - the
+			// generator's profiler excludes it too (profiler.IsScalarItemArray)
+			// - so it must not count as the "list" leg of a collection pairing.
+			if getOperationReturnsScalarArray(op, raw) {
+				continue
+			}
+			info.GETPaths = append(info.GETPaths, path)
 		}
 		slices.Sort(info.Paths)
+		slices.Sort(info.GETPaths)
 	}
 
 	if components, ok := raw["components"].(map[string]any); ok {
@@ -2390,6 +2442,72 @@ func loadOpenAPISpecData(data []byte, specPath string) (*openAPISpecInfo, error)
 	}
 
 	return info, nil
+}
+
+// getOperationReturnsScalarArray mirrors profiler.IsScalarItemArray for raw
+// OpenAPI JSON: a GET response that is an array of primitives has no
+// extractable primary key, so the profiler never selects it as a syncable
+// list either. Without this check, a spec whose list endpoint returns bare
+// scalar IDs would misreport a correctly store-less CLI as a generator bug.
+// raw is threaded through for $ref resolution: the OpenAPI parser resolves a
+// referenced item schema before the profiler's own check runs, so this must
+// resolve it too, or a named scalar item type (items: {$ref: ".../ItemID"})
+// reads as an unresolved, non-scalar ref and the path wrongly stays readable.
+func getOperationReturnsScalarArray(op map[string]any, raw map[string]any) bool {
+	responses, ok := op["responses"].(map[string]any)
+	if !ok {
+		return false
+	}
+	for status, v := range responses {
+		if status == "" || status[0] != '2' {
+			continue
+		}
+		resp, ok := v.(map[string]any)
+		if !ok {
+			continue
+		}
+		content, ok := resp["content"].(map[string]any)
+		if !ok {
+			continue
+		}
+		for _, c := range content {
+			ct, ok := c.(map[string]any)
+			if !ok {
+				continue
+			}
+			schema, ok := ct["schema"].(map[string]any)
+			if !ok {
+				continue
+			}
+			if isScalarArraySchema(schema, raw) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// isScalarArraySchema reports whether a raw JSON Schema node is an array
+// whose items resolve to a primitive type. Reuses resolveRawSchemaRef (the
+// same $ref/composition resolver dogfood.go's nested-envelope detection
+// uses) rather than a narrower ref lookup, so a $ref item type is
+// dereferenced the same way the OpenAPI parser dereferences it before the
+// profiler's own scalar-array check runs.
+func isScalarArraySchema(schema map[string]any, raw map[string]any) bool {
+	if asString(schema["type"]) != "array" {
+		return false
+	}
+	items, ok := schema["items"].(map[string]any)
+	if !ok {
+		return false
+	}
+	items = resolveRawSchemaRef(items, raw)
+	switch asString(items["type"]) {
+	case "string", "integer", "number", "boolean":
+		return true
+	default:
+		return false
+	}
 }
 
 func hasGraphQLEndpointExtension(raw map[string]any) bool {
@@ -3800,6 +3918,48 @@ func isStatelessHTTPCLIDir(dir string, specPaths []string) bool {
 		return false
 	}
 	return true
+}
+
+// A readable REST collection (GET P + GET P/{param}) is exactly what the
+// profiler should turn into a store; a store-less tree for that spec means
+// the profiler dropped it, so verify must FAIL it and the scorecard must
+// score it 0 rather than SKIP/N-A it into silence.
+//
+// specGETPaths/specKind/specIsGraphQL are primitives because verify's
+// openAPISpec and the scorecard's openAPISpecInfo are different types; nil or
+// empty GET paths mean no method data is available and the guard stays silent.
+// Every exclusion below is a shape the generator deliberately emits without a
+// store, so none of them can be an under-detection.
+func storeUnderDetected(dir string, specGETPaths []string, specKind string, specIsGraphQL bool) bool {
+	if len(specGETPaths) == 0 {
+		return false
+	}
+	if specKind == apispec.KindSynthetic || specIsGraphQL {
+		return false
+	}
+	if isDeviceCLIDir(dir) || isDeviceBackedCLIDir(dir) {
+		return false
+	}
+	if isLocalDatastoreCLIDir(dir) {
+		return false
+	}
+	if cliIsGraphQLCLIDir(dir) {
+		return false
+	}
+	if cliHasHTMLSyncStub(dir) {
+		return false
+	}
+	if hasScorecardLocalStore(dir) {
+		return false
+	}
+	return specHasCollectionShapedResource(specGETPaths)
+}
+
+// The sync_stub.go.tmpl substitution for predominantly HTML page-mode specs
+// always errors by design, so a learn-store-promoted page-mode tree can lack
+// store.go without that being an under-detection.
+func cliHasHTMLSyncStub(dir string) bool {
+	return strings.Contains(readFileContent(filepath.Join(dir, "internal", "cli", "sync.go")), "sync is not implemented for this CLI")
 }
 
 func isDeviceBackedCLIDir(dir string) bool {
