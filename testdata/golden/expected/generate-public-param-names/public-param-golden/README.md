@@ -251,7 +251,7 @@ Verifies configuration and connectivity to the API.
 
 ## Configuration
 
-Run `public-param-golden-pp-cli doctor` to see the resolved config, data, state, and cache directories. The platform-default config path is ``; `--home`, `PUBLIC_PARAM_GOLDEN_HOME`, and per-kind env vars can relocate it.
+Run `public-param-golden-pp-cli doctor` to see the resolved config, data, state, and cache directories. The platform-default config path is `~/.config/public-param-golden-pp-cli/config.json`; `--home`, `PUBLIC_PARAM_GOLDEN_HOME`, and per-kind env vars can relocate it.
 
 Static request headers can be configured under `headers`; per-command header overrides take precedence.
 

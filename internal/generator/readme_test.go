@@ -720,3 +720,47 @@ func TestGeneratedREADMEPathsSectionFollowsAuthSurface(t *testing.T) {
 			"no-auth migration paragraph keeps the doctor automation hint")
 	})
 }
+
+// TestReadmeConfigPathUsesBinarySlug asserts the README's platform-default
+// config path is derived from the binary slug (spec.Name), the same source
+// the generated cliutil appName uses. The OpenAPI parser bakes config.path
+// from the title-derived name at parse time, and a later rename (spec name
+// override, --name, mcp-sync) leaves that field stale. The generated CLI
+// never reads config.path, so rendering it verbatim told users to create a
+// file the binary silently ignores.
+func TestReadmeConfigPathUsesBinarySlug(t *testing.T) {
+	t.Parallel()
+
+	t.Run("stale title-derived config path is not rendered", func(t *testing.T) {
+		t.Parallel()
+		apiSpec := minimalSpec("cube")
+		apiSpec.Config.Path = "~/.config/cube-js-pp-cli/config.toml"
+
+		outputDir := filepath.Join(t.TempDir(), "cube-pp-cli")
+		require.NoError(t, New(apiSpec, outputDir).Generate())
+
+		readme, err := os.ReadFile(filepath.Join(outputDir, "README.md"))
+		require.NoError(t, err)
+		content := string(readme)
+
+		assert.Contains(t, content, "~/.config/cube-pp-cli/config.toml",
+			"README config path must match the binary's cliutil appName slug")
+		assert.NotContains(t, content, "cube-js-pp-cli",
+			"README must not echo a stale title-derived config.path the binary never reads")
+	})
+
+	t.Run("empty config spec falls back to the same format default as config.go", func(t *testing.T) {
+		t.Parallel()
+		apiSpec := minimalSpec("formatless")
+		apiSpec.Config = spec.ConfigSpec{}
+
+		outputDir := filepath.Join(t.TempDir(), "formatless-pp-cli")
+		require.NoError(t, New(apiSpec, outputDir).Generate())
+
+		readme, err := os.ReadFile(filepath.Join(outputDir, "README.md"))
+		require.NoError(t, err)
+
+		assert.Contains(t, string(readme), "~/.config/formatless-pp-cli/config.json",
+			"README must use the same {{or .Config.Format \"json\"}} default as resolveConfigPath")
+	})
+}

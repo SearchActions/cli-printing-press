@@ -283,7 +283,7 @@ Verifies configuration, credentials, and connectivity to the API.
 
 ## Configuration
 
-Run `learn-loop-example-pp-cli doctor` to see the resolved config, data, state, and cache directories. The platform-default config path is ``; `--home`, `LEARN_LOOP_EXAMPLE_HOME`, and per-kind env vars can relocate it.
+Run `learn-loop-example-pp-cli doctor` to see the resolved config, data, state, and cache directories. The platform-default config path is `~/.config/learn-loop-example-pp-cli/config.json`; `--home`, `LEARN_LOOP_EXAMPLE_HOME`, and per-kind env vars can relocate it.
 
 Static request headers can be configured under `headers`; per-command header overrides take precedence.
 
