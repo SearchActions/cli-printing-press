@@ -5105,15 +5105,17 @@ func (g *Generator) renderTemplate(tmplName, outPath string, data any) error {
 	return os.WriteFile(fullPath, normalizeRendered(buf.Bytes(), tmplName, outPath), 0o644)
 }
 
-// normalizeRendered prepares template-rendered bytes for disk: trims trailing
-// whitespace and re-appends a single newline, then runs go/format.Source on
-// `.go` outputs so printed CLIs ship formatting-clean. Template authors
-// hand-align struct fields inconsistently, and without this pass every fresh
-// print surfaces hundreds of phantom diffs on the first `gofmt -w`. Falls
-// through with a stderr warning rather than fail-hard so a malformed template
-// surfaces as a compile error downstream instead of an opaque emit failure.
+// normalizeRendered prepares template-rendered bytes for disk: collapses
+// CRLF/CR to LF, trims trailing whitespace and re-appends a single newline,
+// then runs go/format.Source on `.go` outputs so printed CLIs ship
+// formatting-clean. Template authors hand-align struct fields inconsistently,
+// and without this pass every fresh print surfaces hundreds of phantom diffs
+// on the first `gofmt -w`. Falls through with a stderr warning rather than
+// fail-hard so a malformed template surfaces as a compile error downstream
+// instead of an opaque emit failure.
 func normalizeRendered(raw []byte, tmplName, outPath string) []byte {
-	rendered := bytes.TrimRight(raw, " \t\r\n")
+	rendered := normalizeEOL(raw)
+	rendered = bytes.TrimRight(rendered, " \t\r\n")
 	rendered = append(rendered, '\n')
 	if tmplName == "command_endpoint.go.tmpl" {
 		rendered = pruneUnusedClientImport(rendered)
@@ -5127,6 +5129,22 @@ func normalizeRendered(raw []byte, tmplName, outPath string) []byte {
 		return rendered
 	}
 	return formatted
+}
+
+// normalizeEOL collapses CRLF and lone CR into LF so every emitted artifact is
+// byte-identical no matter which host printed it. Templates and spec-authored
+// content preserve whatever newlines the local checkout or spec file carried,
+// so a Windows host with a CRLF-smudged tree emits text artifacts (SKILL.md,
+// README.md, .goreleaser.yaml) that differ byte-for-byte from a Linux print
+// and false-fail byte-sensitive consumers like verify-skill. go/format.Source
+// already enforces LF on `.go` outputs; this runs first so the gofmt-failure
+// fallback path and every non-Go artifact get the same guarantee.
+func normalizeEOL(raw []byte) []byte {
+	if !bytes.ContainsRune(raw, '\r') {
+		return raw
+	}
+	out := bytes.ReplaceAll(raw, []byte("\r\n"), []byte("\n"))
+	return bytes.ReplaceAll(out, []byte("\r"), []byte("\n"))
 }
 
 // pruneUnusedClientImport drops the `<module>/internal/client` import line

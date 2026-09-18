@@ -68,6 +68,12 @@ def main() -> int:
         return 2
 
     actual_abs, actual_root, repo_root, home = sys.argv[1:]
+    # stdout's default text mode translates "\n" to os.linesep, so on Windows
+    # every normalized line gains a CR and the byte-compare against the LF
+    # expected fixtures fails on all lines. newline="" disables translation;
+    # the perl fallback in golden.sh never translated, so this also restores
+    # byte-equivalence between the two normalizers on Windows.
+    sys.stdout.reconfigure(newline="")
     text = sys.stdin.read()
 
     for variant in windows_variants(actual_abs):
