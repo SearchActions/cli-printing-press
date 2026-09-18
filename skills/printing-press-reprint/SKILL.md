@@ -403,7 +403,9 @@ promotion through `regen-merge --apply` so still-unique hand-authored novels
 survive the reprint and genuine `NOVEL-COLLISION` / missing-referent cases halt
 for review. This honors the prefer-`regen-merge` guidance under the
 **Hand-edits must be regen-mergeable.** section of
-`skills/printing-press/SKILL.md` (anchor `hand-edit-durability`). If a future
+`skills/printing-press/SKILL.md` (anchor `hand-edit-durability`). See that
+section's Windows note — `regen-merge --apply` refuses on Windows unless
+`--force`; the dry-run works everywhere. If a future
 edit to that phase changes the routing rule, update this paragraph in the same
 PR -- the reprint skill is the dominant entry point that fires it.
 

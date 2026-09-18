@@ -32,7 +32,7 @@ This playbook captures the order, mechanics, and known foot-guns so a maintainer
 ## Prerequisites
 
 1. **A new `printing-press` binary that includes commit `5701f692` (U1+U2+U4), `7b9bbbf1` (U3), and the rest of the verify-mode-plan chain.** Easiest path: pull `cli-printing-press` `fix/verify-mode-http-gate` post-merge, then `go install ./cmd/printing-press@<tag>`.
-2. **macOS or Linux.** `printing-press regen-merge --help` currently warns that Windows is not supported (signed-attribute path semantics + the `os.Symlink` calls in the merge layer). A Windows-based maintainer will need WSL, a Linux VM, or to hand the sweep to a Linux-capable colleague.
+2. **macOS or Linux for `--apply`.** `printing-press regen-merge --apply` refuses on Windows: the rename-swap fails when files are held open, and copying the tree recreates symlinks via `os.Symlink` in the merge layer, which Windows restricts. The dry-run classification still works on Windows. A Windows-based maintainer running `--apply` will need WSL, a Linux VM, or to hand the sweep to a Linux-capable colleague (or pass `--force` knowingly).
 3. **A local clone of `mvanhorn/printing-press-library` with `main` up to date.** The sweep runs per-CLI from this clone's root.
 4. **Verify env CLEAN.** Before running the sweep, confirm `echo "$PRINTING_PRESS_VERIFY $PRINTING_PRESS_VERIFY_LIVE_HTTP"` prints two empty strings. The live verifiers landed in U10 strip both vars from subprocess env, so an inherited value cannot silently noop the destructive paths — but the operator-visible behavior of `printing-press verify` and `printing-press regen-merge` still depends on these being unset.
 

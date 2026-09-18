@@ -534,7 +534,7 @@ Each newly published CLI ships a root `AGENTS.md` operating guide, a research ma
 - **Browser-sniff requires manual capture.** You point a browser at the site (or import a HAR); the press doesn't crawl autonomously.
 - **Live verify is read-only.** Phase 5 runs GET only and never mutates. Real write-path coverage lives in unit tests and the dogfood structural checks.
 - **Scoring is structural, not end-user QA.** A Grade A scorecard means the CLI follows the patterns; it doesn't replace using the CLI in anger for an afternoon.
-- **`regen-merge` is macOS+Linux only.** Windows isn't supported for the regen-merge subcommand today.
+- **`regen-merge --apply` refuses on Windows unless `--force`; the dry-run report works everywhere.**
 
 ## FAQ
 

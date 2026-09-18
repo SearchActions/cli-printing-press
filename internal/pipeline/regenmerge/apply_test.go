@@ -166,7 +166,10 @@ func newFreshCmd() {}
 
 	report, err := Classify(stagedPubDir, freshDir, Options{})
 	require.NoError(t, err)
-	require.NoError(t, Apply(report, Options{}))
+	// Uses apply(..., "linux") rather than Apply: this test's tree is clean by
+	// construction and checks git-metadata preservation, a platform-independent
+	// concern, so it must not depend on the host GOOS running the suite.
+	require.NoError(t, apply(report, Options{}, "linux"))
 
 	assert.DirExists(t, filepath.Join(stagedPubDir, ".git"))
 	assert.FileExists(t, filepath.Join(stagedPubDir, ".gitmodules"))
@@ -210,6 +213,73 @@ func newFreshCmd() {}
 	assert.NoDirExists(t, filepath.Join(stagedPubDir, ".git"))
 	assert.NoFileExists(t, filepath.Join(stagedPubDir, ".git"))
 	assert.Contains(t, readFileString(t, filepath.Join(stagedPubDir, "internal", "cli", "root.go")), "newFreshCmd")
+}
+
+// TestApplyRefusesWindowsWithoutForce locks the Windows pre-flight: it fires
+// before the git-clean check (so the error names Windows, not uncommitted
+// changes) and leaves no tempdir sibling behind.
+func TestApplyRefusesWindowsWithoutForce(t *testing.T) {
+	t.Parallel()
+
+	cliDir := dirtyGitFixture(t)
+	report := &MergeReport{CLIDir: cliDir, FreshDir: t.TempDir()}
+
+	err := apply(report, Options{Force: false}, "windows")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "Windows")
+	assert.Contains(t, err.Error(), "--force")
+	assert.NotContains(t, err.Error(), "uncommitted changes")
+
+	matches, globErr := filepath.Glob(filepath.Join(filepath.Dir(cliDir), filepath.Base(cliDir)+".regen-merge-*"))
+	require.NoError(t, globErr)
+	assert.Empty(t, matches, "Windows refusal must leave no tempdir sibling")
+}
+
+// TestApplyGOOSGuardIsKeyedOnWindows proves the pre-flight only fires for
+// goos == "windows": on linux the same dirty fixture instead surfaces the
+// existing git-clean refusal.
+func TestApplyGOOSGuardIsKeyedOnWindows(t *testing.T) {
+	t.Parallel()
+
+	cliDir := dirtyGitFixture(t)
+	report := &MergeReport{CLIDir: cliDir, FreshDir: t.TempDir()}
+
+	err := apply(report, Options{Force: false}, "linux")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "uncommitted changes")
+	// Checks the canonical refusal phrase, not the bare word "Windows": the
+	// temp-dir path passed to git embeds this test's own name (which
+	// contains "Windows"), so a bare substring check would self-collide.
+	assert.NotContains(t, err.Error(), "not supported on Windows")
+}
+
+// TestApplyForceBypassesWindowsGuard confirms --force gets a "windows" run
+// past the pre-flight and into the real Apply flow.
+func TestApplyForceBypassesWindowsGuard(t *testing.T) {
+	t.Parallel()
+
+	stagedPubDir := stageFixture(t, "testdata/postman-explore/published")
+	freshDir := absFixturePath(t, "testdata/postman-explore/fresh")
+
+	report, err := Classify(stagedPubDir, freshDir, Options{Force: true})
+	require.NoError(t, err)
+
+	require.NoError(t, apply(report, Options{Force: true}, "windows"))
+	assert.True(t, report.Applied)
+}
+
+// dirtyGitFixture creates a real git repo (so `git status` is deterministic,
+// unlike a bare non-git temp dir which can inherit an enclosing repo's
+// ignore rules or GIT_DIR) with an untracked file, so assertGitClean fails.
+func dirtyGitFixture(t *testing.T) string {
+	t.Helper()
+	cliDir := filepath.Join(t.TempDir(), "cli")
+	require.NoError(t, os.MkdirAll(cliDir, 0o755))
+	runGit(t, cliDir, "init")
+	runGit(t, cliDir, "config", "user.email", "regen-merge@example.invalid")
+	runGit(t, cliDir, "config", "user.name", "Regen Merge Test")
+	require.NoError(t, os.WriteFile(filepath.Join(cliDir, "untracked.txt"), []byte("dirty\n"), 0o644))
+	return cliDir
 }
 
 // --- helpers ---

@@ -186,8 +186,8 @@ type MergeReport struct {
 
 // Options configure Classify, Apply, and MergeIntoFreshTree behavior.
 type Options struct {
-	// Force allows operating outside CWD prefix and on dirty git trees.
-	// Off by default.
+	// Force allows operating outside CWD prefix, on dirty git trees, and
+	// running Apply on Windows. Off by default.
 	Force bool
 
 	// BaseDir optionally points at the original template emission for the

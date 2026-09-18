@@ -68,7 +68,9 @@ func TestApplyRejectsDirtyGitTreeWithoutForce(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(pubDir, "uncommitted.go"), []byte("package x\n"), 0o644))
 
 	report := &MergeReport{CLIDir: pubDir}
-	err := Apply(report, Options{Force: false})
+	// Uses apply(..., "linux") rather than Apply so this platform-independent
+	// guard's assertion holds regardless of the host GOOS running the suite.
+	err := apply(report, Options{Force: false}, "linux")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "uncommitted changes",
 		"dirty git tree must be rejected without --force")
@@ -83,7 +85,9 @@ func TestApplyRejectsNonRepoWithoutForce(t *testing.T) {
 	pubDir := t.TempDir() // not a git repo
 
 	report := &MergeReport{CLIDir: pubDir}
-	err := Apply(report, Options{Force: false})
+	// Uses apply(..., "linux") rather than Apply so this platform-independent
+	// guard's assertion holds regardless of the host GOOS running the suite.
+	err := apply(report, Options{Force: false}, "linux")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "git status failed",
 		"non-repo dir must fail the assertGitClean precondition without --force")
