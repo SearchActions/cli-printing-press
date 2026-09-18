@@ -22,6 +22,7 @@ import (
 	"github.com/mvanhorn/cli-printing-press/v4/internal/naming"
 	openapiparser "github.com/mvanhorn/cli-printing-press/v4/internal/openapi"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/platform"
+	"github.com/mvanhorn/cli-printing-press/v4/internal/profiler"
 	apispec "github.com/mvanhorn/cli-printing-press/v4/internal/spec"
 	"gopkg.in/yaml.v3"
 )
@@ -1216,9 +1217,8 @@ func collectDogfoodSpecPaths(resources map[string]apispec.Resource) []string {
 	return uniqueSorted(paths)
 }
 
-// collectDogfoodSpecGETPaths keeps only GET endpoints. The store
-// under-detection guard needs method data: a POST /items + DELETE /items/{id}
-// pair is not a readable collection and must not look like one.
+// The store under-detection guard needs method data: a POST /items + DELETE
+// /items/{id} pair is not a readable collection and must not look like one.
 func collectDogfoodSpecGETPaths(resources map[string]apispec.Resource) []string {
 	var paths []string
 	for _, resource := range resources {
@@ -1229,7 +1229,12 @@ func collectDogfoodSpecGETPaths(resources map[string]apispec.Resource) []string 
 
 func collectDogfoodResourcePathsForMethod(resource apispec.Resource, method string, paths *[]string) {
 	for _, endpoint := range resource.Endpoints {
-		if strings.TrimSpace(endpoint.Path) != "" && strings.EqualFold(endpoint.Method, method) {
+		// A scalar-item array response (e.g. a bare list of string IDs) has no
+		// extractable primary key, so the generator's profiler never selects it
+		// as a syncable list either (profiler.IsScalarItemArray); the guard must
+		// agree or a legitimately store-less spec reads as a generator bug.
+		if strings.TrimSpace(endpoint.Path) != "" && strings.EqualFold(endpoint.Method, method) &&
+			!profiler.IsScalarItemArray(endpoint.Response) {
 			*paths = append(*paths, endpoint.Path)
 		}
 	}

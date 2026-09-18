@@ -6,6 +6,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/mvanhorn/cli-printing-press/v4/internal/profiler"
 	apispec "github.com/mvanhorn/cli-printing-press/v4/internal/spec"
 )
 
@@ -196,10 +197,9 @@ func collectInternalSpecPaths(s *apispec.APISpec) []string {
 	return slices.Compact(paths)
 }
 
-// collectInternalSpecGETPaths extracts only GET endpoint paths, mirroring
-// collectInternalSpecPaths for the store under-detection guard, which needs
-// method-filtered paths to avoid mistaking write-only collections for
-// readable ones.
+// Mirrors collectInternalSpecPaths, but method-filtered: the store
+// under-detection guard needs GET-only paths so a write-only collection
+// doesn't look readable.
 func collectInternalSpecGETPaths(s *apispec.APISpec) []string {
 	var paths []string
 	for _, resource := range s.Resources {
@@ -211,7 +211,12 @@ func collectInternalSpecGETPaths(s *apispec.APISpec) []string {
 
 func collectInternalResourcePathsForMethod(r apispec.Resource, method string, paths *[]string) {
 	for _, endpoint := range r.Endpoints {
-		if endpoint.Path != "" && strings.EqualFold(endpoint.Method, method) {
+		// A scalar-item array response (e.g. a bare list of string IDs) has no
+		// extractable primary key, so the generator's profiler never selects it
+		// as a syncable list either (profiler.IsScalarItemArray); the guard must
+		// agree or a legitimately store-less spec reads as a generator bug.
+		if endpoint.Path != "" && strings.EqualFold(endpoint.Method, method) &&
+			!profiler.IsScalarItemArray(endpoint.Response) {
 			*paths = append(*paths, endpoint.Path)
 		}
 	}

@@ -2280,17 +2280,45 @@ func loadOpenAPISpecData(data []byte, specPath string) (*openAPISpecInfo, error)
 		IsGraphQL:       hasGraphQLEndpointExtension(raw),
 	}
 	if paths, ok := raw["paths"].(map[string]any); ok {
+		pathItems := rawComponentPathItems(raw)
 		for path, item := range paths {
 			info.Paths = append(info.Paths, path)
 			info.PositionalParamCount += countPathTemplateParams(path)
 			// Method data matters for collection detection: the list+detail
 			// pairing only counts when both legs are readable (GET). The raw
-			// paths map keeps per-method operations as keys on the path item.
-			if pathItem, ok := item.(map[string]any); ok {
-				if op, ok := pathItem["get"]; ok && op != nil {
-					info.GETPaths = append(info.GETPaths, path)
+			// paths map keeps per-method operations as keys on the path item,
+			// except when the item is itself a $ref (OpenAPI 3.1 reusable Path
+			// Item Object) - that indirection has to resolve before "get" is
+			// visible, or a spec using shared path items reads as having no
+			// GET at all.
+			pathItem, ok := item.(map[string]any)
+			if !ok {
+				continue
+			}
+			if ref := asString(pathItem["$ref"]); ref != "" {
+				if resolved, ok := pathItems[componentRefName(ref)]; ok {
+					pathItem = resolved
 				}
 			}
+			op, ok := pathItem["get"].(map[string]any)
+			if !ok {
+				if raw, exists := pathItem["get"]; !exists || raw == nil {
+					continue
+				}
+				// "get" exists but isn't an object (malformed spec); keep the
+				// prior conservative behavior of counting it rather than
+				// silently dropping a path over a shape we can't parse.
+				info.GETPaths = append(info.GETPaths, path)
+				continue
+			}
+			// A GET response that is an array of scalars (no extractable
+			// primary key) can never back a syncable resource - the
+			// generator's profiler excludes it too (profiler.IsScalarItemArray)
+			// - so it must not count as the "list" leg of a collection pairing.
+			if getOperationReturnsScalarArray(op) {
+				continue
+			}
+			info.GETPaths = append(info.GETPaths, path)
 		}
 		slices.Sort(info.Paths)
 		slices.Sort(info.GETPaths)
@@ -2415,6 +2443,98 @@ func loadOpenAPISpecData(data []byte, specPath string) (*openAPISpecInfo, error)
 	}
 
 	return info, nil
+}
+
+// rawComponentPathItems resolves OpenAPI 3.1's reusable Path Item Objects
+// (components.pathItems), keyed by name, so a $ref-based paths entry can be
+// dereferenced before its "get" key is checked.
+func rawComponentPathItems(raw map[string]any) map[string]map[string]any {
+	components, ok := raw["components"].(map[string]any)
+	if !ok {
+		return nil
+	}
+	rawItems, ok := components["pathItems"].(map[string]any)
+	if !ok {
+		return nil
+	}
+	items := make(map[string]map[string]any, len(rawItems))
+	for name, v := range rawItems {
+		if m, ok := v.(map[string]any); ok {
+			items[name] = m
+		}
+	}
+	return items
+}
+
+// componentRefName extracts the trailing name from a local component $ref
+// such as "#/components/pathItems/Items" -> "Items".
+func componentRefName(ref string) string {
+	i := strings.LastIndex(ref, "/")
+	if i == -1 || i+1 >= len(ref) {
+		return ""
+	}
+	return ref[i+1:]
+}
+
+// getOperationReturnsScalarArray mirrors profiler.IsScalarItemArray for raw
+// OpenAPI JSON: a GET response that is an array of primitives has no
+// extractable primary key, so the profiler never selects it as a syncable
+// list either. Without this check, a spec whose list endpoint returns bare
+// scalar IDs would misreport a correctly store-less CLI as a generator bug.
+func getOperationReturnsScalarArray(op map[string]any) bool {
+	responses, ok := op["responses"].(map[string]any)
+	if !ok {
+		return false
+	}
+	for status, v := range responses {
+		if status == "" || status[0] != '2' {
+			continue
+		}
+		resp, ok := v.(map[string]any)
+		if !ok {
+			continue
+		}
+		content, ok := resp["content"].(map[string]any)
+		if !ok {
+			continue
+		}
+		for _, c := range content {
+			ct, ok := c.(map[string]any)
+			if !ok {
+				continue
+			}
+			schema, ok := ct["schema"].(map[string]any)
+			if !ok {
+				continue
+			}
+			if isScalarArraySchema(schema) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// isScalarArraySchema reports whether a raw JSON Schema node is an array
+// whose items are a primitive type (no $ref, no object) - see
+// getOperationReturnsScalarArray.
+func isScalarArraySchema(schema map[string]any) bool {
+	if asString(schema["type"]) != "array" {
+		return false
+	}
+	items, ok := schema["items"].(map[string]any)
+	if !ok {
+		return false
+	}
+	if _, hasRef := items["$ref"]; hasRef {
+		return false
+	}
+	switch asString(items["type"]) {
+	case "string", "integer", "number", "boolean":
+		return true
+	default:
+		return false
+	}
 }
 
 func hasGraphQLEndpointExtension(raw map[string]any) bool {
@@ -3827,12 +3947,10 @@ func isStatelessHTTPCLIDir(dir string, specPaths []string) bool {
 	return true
 }
 
-// storeUnderDetected reports the generator-side bug this tool exists to catch:
-// the spec declares a readable REST collection (GET P + GET P/{param}) that the
-// profiler should have turned into a syncable store, yet the printed CLI has no
-// internal/store/store.go. That CLI's data pipeline is broken by omission, not
-// by design, so verify must FAIL it and the scorecard must score it 0 rather
-// than SKIP/N-A it into silence.
+// A readable REST collection (GET P + GET P/{param}) is exactly what the
+// profiler should turn into a store; a store-less tree for that spec means
+// the profiler dropped it, so verify must FAIL it and the scorecard must
+// score it 0 rather than SKIP/N-A it into silence.
 //
 // specGETPaths/specKind/specIsGraphQL are primitives because verify's
 // openAPISpec and the scorecard's openAPISpecInfo are different types; nil or
@@ -3864,10 +3982,9 @@ func storeUnderDetected(dir string, specGETPaths []string, specKind string, spec
 	return specHasCollectionShapedResource(specGETPaths)
 }
 
-// cliHasHTMLSyncStub detects the sync_stub.go.tmpl substitution the generator
-// makes for predominantly HTML page-mode specs. Such CLIs have no spec-driven
-// sync by design (the stub always errors), and a learn-store-promoted page-mode
-// tree can lack store.go without that being an under-detection.
+// The sync_stub.go.tmpl substitution for predominantly HTML page-mode specs
+// always errors by design, so a learn-store-promoted page-mode tree can lack
+// store.go without that being an under-detection.
 func cliHasHTMLSyncStub(dir string) bool {
 	return strings.Contains(readFileContent(filepath.Join(dir, "internal", "cli", "sync.go")), "sync is not implemented for this CLI")
 }
