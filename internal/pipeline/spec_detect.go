@@ -43,6 +43,7 @@ func isInternalYAMLSpec(data []byte) bool {
 func internalSpecToDogfoodSpec(s *apispec.APISpec) *openAPISpec {
 	return &openAPISpec{
 		Paths:          collectInternalSpecPaths(s),
+		GETPaths:       collectInternalSpecGETPaths(s),
 		Auth:           s.Auth,
 		Kind:           s.Kind,
 		HTTPTransport:  s.EffectiveHTTPTransport(),
@@ -118,6 +119,7 @@ func stringifyParamDefault(v any) string {
 func internalSpecToOpenAPISpecInfo(s *apispec.APISpec) *openAPISpecInfo {
 	info := &openAPISpecInfo{
 		Paths:                collectInternalSpecPaths(s),
+		GETPaths:             collectInternalSpecGETPaths(s),
 		SecuritySchemes:      make(map[string]openAPISecurityScheme),
 		PositionalParamCount: countInternalSpecPositionals(s),
 		Kind:                 s.Kind,
@@ -192,6 +194,30 @@ func collectInternalSpecPaths(s *apispec.APISpec) []string {
 	}
 	slices.Sort(paths)
 	return slices.Compact(paths)
+}
+
+// collectInternalSpecGETPaths extracts only GET endpoint paths, mirroring
+// collectInternalSpecPaths for the store under-detection guard, which needs
+// method-filtered paths to avoid mistaking write-only collections for
+// readable ones.
+func collectInternalSpecGETPaths(s *apispec.APISpec) []string {
+	var paths []string
+	for _, resource := range s.Resources {
+		collectInternalResourcePathsForMethod(resource, "GET", &paths)
+	}
+	slices.Sort(paths)
+	return slices.Compact(paths)
+}
+
+func collectInternalResourcePathsForMethod(r apispec.Resource, method string, paths *[]string) {
+	for _, endpoint := range r.Endpoints {
+		if endpoint.Path != "" && strings.EqualFold(endpoint.Method, method) {
+			*paths = append(*paths, endpoint.Path)
+		}
+	}
+	for _, sub := range r.SubResources {
+		collectInternalResourcePathsForMethod(sub, method, paths)
+	}
 }
 
 func collectInternalResourcePaths(r apispec.Resource, paths *[]string) {

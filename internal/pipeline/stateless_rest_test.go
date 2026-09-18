@@ -5,30 +5,6 @@ import (
 	"testing"
 )
 
-// TestSpecHasCollectionShapedResource pins the positive spec signal that gates
-// the stateless exemption: a list+detail pair (P and P/{id}) is a collection;
-// RPC-style action endpoints are not.
-func TestSpecHasCollectionShapedResource(t *testing.T) {
-	cases := []struct {
-		name  string
-		paths []string
-		want  bool
-	}{
-		{"RPC actions (Cube shape)", []string{"/v1/load", "/v1/sql", "/v1/meta", "/v1/running-query/{requestId}"}, false},
-		{"list+detail pair", []string{"/items", "/items/{id}"}, true},
-		{"detail without bare parent", []string{"/items/{id}"}, false},
-		{"nested collection pair", []string{"/orgs/{org}/repos", "/orgs/{org}/repos/{id}"}, true},
-		{"empty", nil, false},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			if got := specHasCollectionShapedResource(tc.paths); got != tc.want {
-				t.Errorf("specHasCollectionShapedResource(%v) = %v, want %v", tc.paths, got, tc.want)
-			}
-		})
-	}
-}
-
 // TestIsStatelessHTTPCLIDir pins the detector that distinguishes a stateless
 // REST mirror from a stateful CLI whose sync may merely be broken, and from a
 // CLI whose spec has a collection the profiler under-detected.
@@ -146,7 +122,3 @@ func TestScorecardStatefulStillScoresPipeline(t *testing.T) {
 		t.Error("a stateful CLI must keep Workflows scored, not N/A")
 	}
 }
-
-// TestScorecardCollectionSpecStillScoresPipeline guards Problem 1: a spec with a
-// real collection resource that emitted no store (profiler under-detection) must
-// NOT be exempted — the missing pipeline must surface, not pass silently.

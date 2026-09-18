@@ -56,6 +56,7 @@ type Scorecard struct {
 
 	verifyCalibrationFloor   int
 	browserSessionUnverified bool
+	storeUnderDetection      bool
 }
 
 // SteinerScore breaks down the Steinberger bar into 11 dimensions, each 0-10.
@@ -282,7 +283,11 @@ func scoreDomainDimensions(sc *Scorecard, outputDir string, spec *openAPISpecInf
 		// pipeline and sync checks don't apply. Mark N/A rather than scoring 0.
 		sc.UnscoredDimensions = append(sc.UnscoredDimensions, DimDataPipelineIntegrity, DimSyncCorrectness)
 	} else if !hasScorecardLocalStore(outputDir) {
-		sc.UnscoredDimensions = append(sc.UnscoredDimensions, DimDataPipelineIntegrity, DimSyncCorrectness)
+		if spec != nil && storeUnderDetected(outputDir, spec.GETPaths, spec.Kind, spec.IsGraphQL) {
+			sc.storeUnderDetection = true
+		} else {
+			sc.UnscoredDimensions = append(sc.UnscoredDimensions, DimDataPipelineIntegrity, DimSyncCorrectness)
+		}
 	} else {
 		sc.Steinberger.DataPipelineIntegrity = scoreDataPipelineIntegrity(outputDir)
 		if isLocalDatastoreCLIDir(outputDir) {
@@ -346,6 +351,7 @@ func finalizeScorecard(sc *Scorecard, outputDir, pipelineDir string, verifyRepor
 	sc.GapReport = buildGapReport(sc.Steinberger, sc.UnscoredDimensions)
 	sc.NovelFeatureDepthMismatches = scorecardNovelFeatureDepthMismatches(outputDir, pipelineDir)
 	appendNovelFeatureDepthGaps(sc)
+	appendStoreUnderDetectionGap(sc)
 
 	// MCP tool split from manifest (informational, does not affect score)
 	if manifest, err := loadCLIManifestForScorecard(outputDir); err == nil && manifest.MCPBinary != "" {
@@ -1275,6 +1281,7 @@ func ApplyLiveCheckToScorecard(sc *Scorecard, live *LiveCheckResult) {
 	sc.OverallGrade = computeGrade(sc.Steinberger.Percentage)
 	sc.GapReport = buildGapReport(sc.Steinberger, sc.UnscoredDimensions)
 	appendNovelFeatureDepthGaps(sc)
+	appendStoreUnderDetectionGap(sc)
 }
 
 func scorecardNovelFeatureDepthMismatches(outputDir, pipelineDir string) []NovelFeatureDepthMismatch {
@@ -1304,6 +1311,14 @@ func appendNovelFeatureDepthGaps(sc *Scorecard) {
 			"novel feature command-depth mismatch: %s advertised as %s but registered as %s",
 			mismatch.Command, mismatch.Advertised, mismatch.Actual))
 	}
+}
+
+func appendStoreUnderDetectionGap(sc *Scorecard) {
+	if sc == nil || !sc.storeUnderDetection {
+		return
+	}
+	sc.GapReport = append(sc.GapReport,
+		"data_pipeline_integrity: spec declares collection resources (GET list + detail) but no local store was emitted - generator profiler under-detection; fix the generator, not this CLI")
 }
 
 func applyScorecardCalibration(sc *Scorecard) {
@@ -2201,6 +2216,7 @@ type oauthScopeAlternative struct {
 
 type openAPISpecInfo struct {
 	Paths                  []string
+	GETPaths               []string
 	SecuritySchemes        map[string]openAPISecurityScheme
 	SecurityRequirements   []securityRequirementSet
 	OAuthScopeRequirements []oauthScopeRequirement
@@ -2264,11 +2280,20 @@ func loadOpenAPISpecData(data []byte, specPath string) (*openAPISpecInfo, error)
 		IsGraphQL:       hasGraphQLEndpointExtension(raw),
 	}
 	if paths, ok := raw["paths"].(map[string]any); ok {
-		for path := range paths {
+		for path, item := range paths {
 			info.Paths = append(info.Paths, path)
 			info.PositionalParamCount += countPathTemplateParams(path)
+			// Method data matters for collection detection: the list+detail
+			// pairing only counts when both legs are readable (GET). The raw
+			// paths map keeps per-method operations as keys on the path item.
+			if pathItem, ok := item.(map[string]any); ok {
+				if op, ok := pathItem["get"]; ok && op != nil {
+					info.GETPaths = append(info.GETPaths, path)
+				}
+			}
 		}
 		slices.Sort(info.Paths)
+		slices.Sort(info.GETPaths)
 	}
 
 	if components, ok := raw["components"].(map[string]any); ok {
@@ -3800,6 +3825,51 @@ func isStatelessHTTPCLIDir(dir string, specPaths []string) bool {
 		return false
 	}
 	return true
+}
+
+// storeUnderDetected reports the generator-side bug this tool exists to catch:
+// the spec declares a readable REST collection (GET P + GET P/{param}) that the
+// profiler should have turned into a syncable store, yet the printed CLI has no
+// internal/store/store.go. That CLI's data pipeline is broken by omission, not
+// by design, so verify must FAIL it and the scorecard must score it 0 rather
+// than SKIP/N-A it into silence.
+//
+// specGETPaths/specKind/specIsGraphQL are primitives because verify's
+// openAPISpec and the scorecard's openAPISpecInfo are different types; nil or
+// empty GET paths mean no method data is available and the guard stays silent.
+// Every exclusion below is a shape the generator deliberately emits without a
+// store, so none of them can be an under-detection.
+func storeUnderDetected(dir string, specGETPaths []string, specKind string, specIsGraphQL bool) bool {
+	if len(specGETPaths) == 0 {
+		return false
+	}
+	if specKind == apispec.KindSynthetic || specIsGraphQL {
+		return false
+	}
+	if isDeviceCLIDir(dir) || isDeviceBackedCLIDir(dir) {
+		return false
+	}
+	if isLocalDatastoreCLIDir(dir) {
+		return false
+	}
+	if cliIsGraphQLCLIDir(dir) {
+		return false
+	}
+	if cliHasHTMLSyncStub(dir) {
+		return false
+	}
+	if hasScorecardLocalStore(dir) {
+		return false
+	}
+	return specHasCollectionShapedResource(specGETPaths)
+}
+
+// cliHasHTMLSyncStub detects the sync_stub.go.tmpl substitution the generator
+// makes for predominantly HTML page-mode specs. Such CLIs have no spec-driven
+// sync by design (the stub always errors), and a learn-store-promoted page-mode
+// tree can lack store.go without that being an under-detection.
+func cliHasHTMLSyncStub(dir string) bool {
+	return strings.Contains(readFileContent(filepath.Join(dir, "internal", "cli", "sync.go")), "sync is not implemented for this CLI")
 }
 
 func isDeviceBackedCLIDir(dir string) bool {

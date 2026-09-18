@@ -238,6 +238,7 @@ type WorkflowCompleteResult struct {
 
 type openAPISpec struct {
 	Paths                  []string
+	GETPaths               []string
 	Auth                   apispec.AuthConfig
 	Kind                   string // see apispec.KindREST / apispec.KindSynthetic
 	HTTPTransport          string
@@ -1187,6 +1188,7 @@ func loadDogfoodOpenAPISpec(specPath string, authPreference string) (*openAPISpe
 		}
 		return &openAPISpec{
 			Paths:                  collectDogfoodSpecPaths(parsed.Resources),
+			GETPaths:               collectDogfoodSpecGETPaths(parsed.Resources),
 			Auth:                   parsed.Auth,
 			OAuthScopeRequirements: scopeRequirements,
 			NestedDataEnvelopes:    nestedDataEnvelopes,
@@ -1199,6 +1201,7 @@ func loadDogfoodOpenAPISpec(specPath string, authPreference string) (*openAPISpe
 
 	return &openAPISpec{
 		Paths:                  summary.Paths,
+		GETPaths:               summary.GETPaths,
 		Auth:                   deriveDogfoodAuth(summary, authPreference),
 		OAuthScopeRequirements: summary.OAuthScopeRequirements,
 		NestedDataEnvelopes:    nestedDataEnvelopes,
@@ -1211,6 +1214,28 @@ func collectDogfoodSpecPaths(resources map[string]apispec.Resource) []string {
 		collectDogfoodResourcePaths(resource, &paths)
 	}
 	return uniqueSorted(paths)
+}
+
+// collectDogfoodSpecGETPaths keeps only GET endpoints. The store
+// under-detection guard needs method data: a POST /items + DELETE /items/{id}
+// pair is not a readable collection and must not look like one.
+func collectDogfoodSpecGETPaths(resources map[string]apispec.Resource) []string {
+	var paths []string
+	for _, resource := range resources {
+		collectDogfoodResourcePathsForMethod(resource, "GET", &paths)
+	}
+	return uniqueSorted(paths)
+}
+
+func collectDogfoodResourcePathsForMethod(resource apispec.Resource, method string, paths *[]string) {
+	for _, endpoint := range resource.Endpoints {
+		if strings.TrimSpace(endpoint.Path) != "" && strings.EqualFold(endpoint.Method, method) {
+			*paths = append(*paths, endpoint.Path)
+		}
+	}
+	for _, subresource := range resource.SubResources {
+		collectDogfoodResourcePathsForMethod(subresource, method, paths)
+	}
 }
 
 func collectDogfoodResourcePaths(resource apispec.Resource, paths *[]string) {
