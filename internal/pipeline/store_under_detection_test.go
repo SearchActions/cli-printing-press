@@ -288,3 +288,48 @@ func TestCollectGETPathLoadersExcludeScalarArrayResponses(t *testing.T) {
 	assert.NotContains(t, internalPaths, "/items")
 	assert.Contains(t, internalPaths, "/items/{id}")
 }
+
+// TestLoadOpenAPISpecDataGETPathsExcludeReferencedScalarArrayResponses pins a
+// second Greptile finding on the upstream PR (posted after the first fix
+// landed): a list response whose items schema is a $ref to a named scalar
+// type (items: {$ref: ".../ItemID"}) still has no extractable primary key,
+// but the raw-map check only rejected an INLINE scalar type - it never
+// dereferenced the $ref before checking "type". The OpenAPI parser resolves
+// that same ref before the profiler's own exclusion runs, so this check must
+// match or a referenced scalar item type reads as a syncable collection.
+func TestLoadOpenAPISpecDataGETPathsExcludeReferencedScalarArrayResponses(t *testing.T) {
+	specJSON := []byte(`{
+  "openapi": "3.0.3",
+  "info": {"title": "IDs", "version": "1.0.0"},
+  "paths": {
+    "/items": {
+      "get": {
+        "operationId": "listItemIDs",
+        "responses": {
+          "200": {
+            "description": "ok",
+            "content": {"application/json": {"schema": {"type": "array", "items": {"$ref": "#/components/schemas/ItemID"}}}}
+          }
+        }
+      }
+    },
+    "/items/{id}": {
+      "get": {
+        "operationId": "getItem",
+        "parameters": [{"name": "id", "in": "path", "required": true, "schema": {"type": "string"}}],
+        "responses": {"200": {"description": "ok"}}
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "ItemID": {"type": "string"}
+    }
+  }
+}`)
+	info, err := loadOpenAPISpecData(specJSON, "spec.json")
+	require.NoError(t, err)
+	assert.NotContains(t, info.GETPaths, "/items",
+		"a $ref to a named scalar type must resolve and still count as a scalar-item array")
+	assert.Contains(t, info.GETPaths, "/items/{id}")
+}

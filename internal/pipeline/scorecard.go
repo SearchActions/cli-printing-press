@@ -2280,7 +2280,6 @@ func loadOpenAPISpecData(data []byte, specPath string) (*openAPISpecInfo, error)
 		IsGraphQL:       hasGraphQLEndpointExtension(raw),
 	}
 	if paths, ok := raw["paths"].(map[string]any); ok {
-		pathItems := rawComponentPathItems(raw)
 		for path, item := range paths {
 			info.Paths = append(info.Paths, path)
 			info.PositionalParamCount += countPathTemplateParams(path)
@@ -2296,13 +2295,13 @@ func loadOpenAPISpecData(data []byte, specPath string) (*openAPISpecInfo, error)
 				continue
 			}
 			if ref := asString(pathItem["$ref"]); ref != "" {
-				if resolved, ok := pathItems[componentRefName(ref)]; ok {
+				if resolved := resolveRawPointer(ref, raw); resolved != nil {
 					pathItem = resolved
 				}
 			}
 			op, ok := pathItem["get"].(map[string]any)
 			if !ok {
-				if raw, exists := pathItem["get"]; !exists || raw == nil {
+				if getValue, exists := pathItem["get"]; !exists || getValue == nil {
 					continue
 				}
 				// "get" exists but isn't an object (malformed spec); keep the
@@ -2315,7 +2314,7 @@ func loadOpenAPISpecData(data []byte, specPath string) (*openAPISpecInfo, error)
 			// primary key) can never back a syncable resource - the
 			// generator's profiler excludes it too (profiler.IsScalarItemArray)
 			// - so it must not count as the "list" leg of a collection pairing.
-			if getOperationReturnsScalarArray(op) {
+			if getOperationReturnsScalarArray(op, raw) {
 				continue
 			}
 			info.GETPaths = append(info.GETPaths, path)
@@ -2445,43 +2444,16 @@ func loadOpenAPISpecData(data []byte, specPath string) (*openAPISpecInfo, error)
 	return info, nil
 }
 
-// rawComponentPathItems resolves OpenAPI 3.1's reusable Path Item Objects
-// (components.pathItems), keyed by name, so a $ref-based paths entry can be
-// dereferenced before its "get" key is checked.
-func rawComponentPathItems(raw map[string]any) map[string]map[string]any {
-	components, ok := raw["components"].(map[string]any)
-	if !ok {
-		return nil
-	}
-	rawItems, ok := components["pathItems"].(map[string]any)
-	if !ok {
-		return nil
-	}
-	items := make(map[string]map[string]any, len(rawItems))
-	for name, v := range rawItems {
-		if m, ok := v.(map[string]any); ok {
-			items[name] = m
-		}
-	}
-	return items
-}
-
-// componentRefName extracts the trailing name from a local component $ref
-// such as "#/components/pathItems/Items" -> "Items".
-func componentRefName(ref string) string {
-	i := strings.LastIndex(ref, "/")
-	if i == -1 || i+1 >= len(ref) {
-		return ""
-	}
-	return ref[i+1:]
-}
-
 // getOperationReturnsScalarArray mirrors profiler.IsScalarItemArray for raw
 // OpenAPI JSON: a GET response that is an array of primitives has no
 // extractable primary key, so the profiler never selects it as a syncable
 // list either. Without this check, a spec whose list endpoint returns bare
 // scalar IDs would misreport a correctly store-less CLI as a generator bug.
-func getOperationReturnsScalarArray(op map[string]any) bool {
+// raw is threaded through for $ref resolution: the OpenAPI parser resolves a
+// referenced item schema before the profiler's own check runs, so this must
+// resolve it too, or a named scalar item type (items: {$ref: ".../ItemID"})
+// reads as an unresolved, non-scalar ref and the path wrongly stays readable.
+func getOperationReturnsScalarArray(op map[string]any, raw map[string]any) bool {
 	responses, ok := op["responses"].(map[string]any)
 	if !ok {
 		return false
@@ -2507,7 +2479,7 @@ func getOperationReturnsScalarArray(op map[string]any) bool {
 			if !ok {
 				continue
 			}
-			if isScalarArraySchema(schema) {
+			if isScalarArraySchema(schema, raw) {
 				return true
 			}
 		}
@@ -2516,9 +2488,12 @@ func getOperationReturnsScalarArray(op map[string]any) bool {
 }
 
 // isScalarArraySchema reports whether a raw JSON Schema node is an array
-// whose items are a primitive type (no $ref, no object) - see
-// getOperationReturnsScalarArray.
-func isScalarArraySchema(schema map[string]any) bool {
+// whose items resolve to a primitive type. Reuses resolveRawSchemaRef (the
+// same $ref/composition resolver dogfood.go's nested-envelope detection
+// uses) rather than a narrower ref lookup, so a $ref item type is
+// dereferenced the same way the OpenAPI parser dereferences it before the
+// profiler's own scalar-array check runs.
+func isScalarArraySchema(schema map[string]any, raw map[string]any) bool {
 	if asString(schema["type"]) != "array" {
 		return false
 	}
@@ -2526,9 +2501,7 @@ func isScalarArraySchema(schema map[string]any) bool {
 	if !ok {
 		return false
 	}
-	if _, hasRef := items["$ref"]; hasRef {
-		return false
-	}
+	items = resolveRawSchemaRef(items, raw)
 	switch asString(items["type"]) {
 	case "string", "integer", "number", "boolean":
 		return true
