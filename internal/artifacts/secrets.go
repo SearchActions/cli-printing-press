@@ -128,6 +128,10 @@ var opaqueCredentialPatterns = []vendorPrefixSecretPattern{
 	opaqueCredentialPattern("opaque-credential:session", `session|session[_-]?id|session[_-]?token`),
 }
 
+// OpenAPI $ref and discriminator mapping targets live in the same charset as
+// opaque credential values, so a file reference needs an explicit shape gate.
+var referenceFileExtensions = []string{".yaml", ".yml", ".json", ".md"}
+
 const structuredCookieLineWindow = 5
 
 var structuredCookieValueLineRE = regexp.MustCompile(`(?i)["']value["']\s*:\s*["']([^"']{8,})["']`)
@@ -393,6 +397,9 @@ func looksLikeOpaqueCredentialValue(candidate string) bool {
 	if strings.HasPrefix(lower, "http://") || strings.HasPrefix(lower, "https://") {
 		return false
 	}
+	if isPathShapedValue(candidate) {
+		return false
+	}
 	if uuidCredentialValueRE.MatchString(candidate) {
 		return true
 	}
@@ -413,6 +420,23 @@ func looksLikeOpaqueCredentialValue(candidate string) bool {
 		classes++
 	}
 	return classes >= 2
+}
+
+// isPathShapedValue reports whether a candidate that matched the opaque
+// credential charset is an OpenAPI file reference rather than a secret. Shape
+// only: it never touches the filesystem, because staging copies manuscripts
+// through a publishable filter and file existence is not a stable signal.
+func isPathShapedValue(candidate string) bool {
+	if strings.HasPrefix(candidate, "./") || strings.HasPrefix(candidate, "../") {
+		return true
+	}
+	lowered := strings.ToLower(strings.TrimRight(candidate, "."))
+	for _, extension := range referenceFileExtensions {
+		if strings.HasSuffix(lowered, extension) {
+			return true
+		}
+	}
+	return false
 }
 
 func publicSecretSuppressionReason(line string) (string, bool) {

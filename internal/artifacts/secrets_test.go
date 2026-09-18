@@ -139,6 +139,114 @@ func TestFindPackageSecretsDetectsCredentialNamedOpaqueValues(t *testing.T) {
 	require.Equal(t, 2, findings[1].Line)
 }
 
+func TestFindPackageSecretsIgnoresPathShapedOpaqueValues(t *testing.T) {
+	cases := []struct {
+		name     string
+		filename string
+		line     string
+		kind     string // expected finding kind; empty means no finding
+	}{
+		{
+			name:     "discriminator mapping to sibling schema file",
+			filename: "discriminator.json",
+			line:     `"TOKEN": "../verification-data/TokenVerificationData.yaml"`,
+		},
+		{
+			name:     "unquoted yaml ref with leading dot slash",
+			filename: "schema.yaml",
+			line:     `token: ./verification/TokenVerificationDataModel`,
+		},
+		{
+			name:     "same-directory sibling ref without a slash",
+			filename: "sibling.json",
+			line:     `"SESSION_TOKEN": "SessionTokenVerificationDataModel.yaml"`,
+		},
+		{
+			name:     "ref with trailing punctuation captured before the caller trim",
+			filename: "trailing-dot.yaml",
+			line:     `token: verification-data/TokenVerificationData.yaml.`,
+		},
+		{
+			name:     "ref cut at a json-pointer fragment",
+			filename: "fragment.json",
+			line:     `"TOKEN": "verification-data/TokenVerificationData.yaml#/components/schemas/X"`,
+		},
+		{
+			name:     "path embedding a uuid",
+			filename: "uuid-path.json",
+			line:     `"token": "./550e8400-e29b-41d4-a716-446655440000.json"`,
+		},
+		{
+			name:     "base64 credential containing slashes still flags",
+			filename: "base64.json",
+			line:     `"secret": "Qm9vbXNoYWthbGFrYS/Zm9vYmFy/UHJpbnRQcmVzcw1"`,
+			kind:     "opaque-credential:secret",
+		},
+		{
+			name:     "dotted jwt-shaped credential still flags",
+			filename: "jwt.json",
+			line:     `"token": "` + testSecret("eyJhbGciOiJIUzI1NiJ9", ".eyJzdWIiOiJwcCJ9.", "c2lnbmF0dXJlU3ludGhldGljVmFsdWUx") + `"`,
+			kind:     "opaque-credential:token",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			require.NoError(t, os.WriteFile(filepath.Join(root, tc.filename), []byte(tc.line+"\n"), 0o644))
+
+			findings, err := FindPackageSecrets(root, nil)
+			require.NoError(t, err)
+			if tc.kind == "" {
+				require.Empty(t, findings, "expected no findings, got %+v", findings)
+				return
+			}
+			require.Len(t, findings, 1)
+			require.Equal(t, tc.kind, findings[0].Kind)
+			require.Equal(t, 1, findings[0].Line)
+		})
+	}
+
+	t.Run("credential line next to a path ref still flags alone", func(t *testing.T) {
+		root := t.TempDir()
+		content := strings.Join([]string{
+			`"TOKEN": "../verification-data/TokenVerificationData.yaml",`,
+			`"secret": "Qm9vbXNoYWthbGFrYS/Zm9vYmFy/UHJpbnRQcmVzcw1"`,
+		}, "\n")
+		require.NoError(t, os.WriteFile(filepath.Join(root, "mixed.json"), []byte(content+"\n"), 0o644))
+
+		findings, err := FindPackageSecrets(root, nil)
+		require.NoError(t, err)
+		require.Len(t, findings, 1)
+		require.Equal(t, "opaque-credential:secret", findings[0].Kind)
+		require.Equal(t, 2, findings[0].Line)
+	})
+}
+
+func TestIsPathShapedValue(t *testing.T) {
+	cases := []struct {
+		name      string
+		candidate string
+		want      bool
+	}{
+		{name: "parent-relative ref", candidate: "../verification-data/TokenVerificationData.yaml", want: true},
+		{name: "dot-relative ref", candidate: "./verification/TokenVerificationDataModel", want: true},
+		{name: "sibling ref without a slash", candidate: "SessionTokenVerificationDataModel.yaml", want: true},
+		{name: "sibling ref with trailing dot", candidate: "SessionTokenVerificationDataModel.yaml.", want: true},
+		{name: "uppercase extension", candidate: "schemas/DATA.YAML", want: true},
+		{name: "markdown ref", candidate: "notes.md", want: true},
+		{name: "yml ref", candidate: "bundle.yml", want: true},
+		{name: "base64 with slashes", candidate: "Qm9vbXNoYWthbGFrYS/Zm9vYmFy/UHJpbnRQcmVzcw1", want: false},
+		{name: "pem path is not a doc ref", candidate: "certs/server.pem", want: false},
+		{name: "camelcase schema name without extension", candidate: "TokenVerificationDataModelSchema", want: false},
+		{name: "jwt-shaped value", candidate: testSecret("eyJhbGciOiJIUzI1NiJ9", ".eyJzdWIiOiJwcCJ9.", "c2lnbmF0dXJlU3ludGhldGljVmFsdWUx"), want: false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			require.Equal(t, tc.want, isPathShapedValue(tc.candidate))
+		})
+	}
+}
+
 func TestFindPackageSecretsAllowsAnnotatedPublicVendorPrefixSecret(t *testing.T) {
 	root := t.TempDir()
 	publicKey := testSecret("AI", "za", "ABCDEFGHIJKLMNOPQRSTUVWXYZ1234")
