@@ -412,6 +412,134 @@ func TestGenerateRenamesBodyFieldCollidingWithGlobalDryRun(t *testing.T) {
 		"the wire-side body key must remain dry_run in the body map even though the public flag is renamed")
 }
 
+// TestGenerateRenamesObjectBodyFieldCollidingWithGlobalDryRun covers the
+// object-parent branch of uniquifyBodyTree (flag_collision.go:116-133),
+// distinct from the scalar-leaf path above. A top-level body object named
+// dry_run recurses: each leaf field becomes its own parent-prefixed flag, so
+// the parent identifier itself must rename (dry_run -> dry_run_2) for every
+// descendant flag and MCP binding to come out non-shadowing. A fieldless
+// object falls through to the same leaf path as the scalar case and is kept
+// here only as a control showing that path is unaffected by the object-parent
+// rename. The third case proves the rename participates in the shared
+// usedIdents/usedFlags accumulation across tree levels: a sibling scalar whose
+// name collides with the renamed child's derived flag must itself rename
+// again.
+func TestGenerateRenamesObjectBodyFieldCollidingWithGlobalDryRun(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name          string
+		body          []spec.Param
+		wantBindings  []string
+		wantCLISource []string
+		wantMCPSource []string
+	}{
+		{
+			name: "object_with_fields",
+			body: []spec.Param{
+				{Name: "name", Type: "string", Description: "Campaign name"},
+				{Name: "dry_run", Type: "object", Description: "Nested preview options", Fields: []spec.Param{
+					{Name: "enabled", Type: "boolean", Description: "Enable preview"},
+					{Name: "message", Type: "string", Description: "Preview note"},
+				}},
+			},
+			wantBindings: []string{"name", "dry-run-2-enabled", "dry-run-2-message", "stdin"},
+			wantCLISource: []string{
+				`bodyMap["dry_run"] = nestedDryRun2`,
+				`cmd.Flags().BoolVar(&bodyDryRun2Enabled, "dry-run-2-enabled", false, "Enable preview")`,
+				`cmd.Flags().StringVar(&bodyDryRun2Message, "dry-run-2-message", "", "Preview note")`,
+			},
+			wantMCPSource: []string{
+				`mcplib.WithBoolean("dry-run-2-enabled", mcplib.Description("Enable preview"))`,
+				`{PublicName: "dry-run-2-enabled", WireName: "enabled", Location: "body", BodyPath: []string{"dry_run", "enabled"}}`,
+				`{PublicName: "dry-run-2-message", WireName: "message", Location: "body", BodyPath: []string{"dry_run", "message"}}`,
+			},
+		},
+		{
+			name: "fieldless_object_leaf_control",
+			body: []spec.Param{
+				{Name: "name", Type: "string", Description: "Campaign name"},
+				{Name: "dry_run", Type: "object", Description: "Opaque options blob"},
+			},
+			wantBindings: []string{"name", "dry-run-2", "stdin"},
+			wantCLISource: []string{
+				`bodyMap["dry_run"] = asMap`,
+				`cmd.Flags().StringVar(&bodyDryRun2, "dry-run-2", "", "Opaque options blob")`,
+			},
+			wantMCPSource: []string{
+				`{PublicName: "dry-run-2", WireName: "dry_run", Location: "body"}`,
+			},
+		},
+		{
+			name: "object_sibling_ident_collision",
+			body: []spec.Param{
+				{Name: "dry_run", Type: "object", Description: "Nested preview options", Fields: []spec.Param{
+					{Name: "enabled", Type: "boolean", Description: "Enable preview"},
+				}},
+				{Name: "dry_run_2_enabled", Type: "boolean", Description: "Sibling scalar colliding with renamed child ident"},
+			},
+			wantBindings: []string{"dry-run-2-enabled", "dry-run-2-enabled-2", "stdin"},
+			wantCLISource: []string{
+				`bodyMap["dry_run"] = nestedDryRun2`,
+				`bodyMap["dry_run_2_enabled"] = bodyDryRun2Enabled2`,
+				`cmd.Flags().BoolVar(&bodyDryRun2Enabled, "dry-run-2-enabled", false, "Enable preview")`,
+				`cmd.Flags().BoolVar(&bodyDryRun2Enabled2, "dry-run-2-enabled-2", false, "Sibling scalar colliding with renamed child ident")`,
+			},
+			wantMCPSource: []string{
+				`{PublicName: "dry-run-2-enabled", WireName: "enabled", Location: "body", BodyPath: []string{"dry_run", "enabled"}}`,
+				`{PublicName: "dry-run-2-enabled-2", WireName: "dry_run_2_enabled", Location: "body"}`,
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			apiSpec := minimalSpec("collide-global-object-" + tc.name)
+			apiSpec.Resources["campaigns"] = spec.Resource{
+				Description: "Campaigns",
+				Endpoints: map[string]spec.Endpoint{
+					"create": {
+						Method:      "POST",
+						Path:        "/campaigns",
+						Description: "Create a campaign",
+						Body:        tc.body,
+					},
+					"get": {
+						Method:      "GET",
+						Path:        "/campaigns/{id}",
+						Description: "Get one campaign",
+					},
+				},
+			}
+
+			outputDir := filepath.Join(t.TempDir(), "collide-global-object-pp-cli")
+			require.NoError(t, New(apiSpec, outputDir).Generate())
+
+			cliPath := filepath.Join(outputDir, "internal", "cli", "campaigns_create.go")
+			_, flagBindings := parseFlagDeclarations(t, cliPath)
+
+			assert.ElementsMatch(t, tc.wantBindings, flagBindings,
+				"the object-parent rename must produce exactly the expected non-shadowing flags")
+			assert.NotContains(t, flagBindings, "dry-run",
+				"a body field under dry_run must not register a local --dry-run shadowing the global preview flag (INC-2026-166)")
+
+			cliSrc, err := os.ReadFile(cliPath)
+			require.NoError(t, err)
+			for _, want := range tc.wantCLISource {
+				assert.Contains(t, string(cliSrc), want)
+			}
+
+			mcpSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "mcp", "tools.go"))
+			require.NoError(t, err)
+			for _, want := range tc.wantMCPSource {
+				assert.Contains(t, string(mcpSrc), want)
+			}
+
+			requireGeneratedCompiles(t, outputDir)
+		})
+	}
+}
+
 // TestGenerateRejectsAuthoredFlagCollidingWithGlobal covers the explicit
 // flag_name path: authoring flag_name: dry-run on a param is unambiguous intent
 // to claim a reserved global name and must hard-error rather than silently
