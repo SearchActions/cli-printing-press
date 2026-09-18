@@ -583,9 +583,17 @@ Rules:
 - Env-backed placeholders that appear in at least 80% of endpoint paths
   are promoted to optional root persistent flags (for example
   `{workspace}` -> `--workspace`) when the derived flag and Go field
-  names do not collide with existing root command flags. Matching
-  per-command path positionals are removed, while same-named
-  non-path positionals and sparse path params remain command inputs.
+  names do not collide with existing root command flags. The check also
+  covers the kebab-case flag name `root.go.tmpl` actually registers
+  (`naming.TemplateKebab`, not `naming.FlagName` — the two can disagree,
+  e.g. `ISelect` FlagName-checks as `i-select` but registers as
+  `--select`): a placeholder is rejected from promotion when its
+  registered flag name collides with a reserved root flag or with
+  another placeholder promoted earlier in `EndpointTemplateVars` order.
+  On such a collision the first-listed placeholder wins promotion and
+  the other stays a per-command positional. Matching per-command path
+  positionals are removed, while same-named non-path positionals and
+  sparse path params remain command inputs.
 - Typed MCP endpoint tools for promoted env-backed path placeholders
   expose optional per-call inputs that override env/config values before
   URL substitution.

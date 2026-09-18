@@ -67,6 +67,54 @@ func TestCLI(t *testing.T) {
 	}
 }
 
+func TestTemplateKebab(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{name: "interface prefix strip", in: "ISteamUser", want: "steam-user"},
+		{name: "interface prefix collapses to reserved flag", in: "ISelect", want: "select"},
+		{name: "two-letter interface prefix", in: "IO", want: "o"},
+		{name: "bare I is not stripped as a prefix", in: "I", want: "i"},
+		{name: "plain lowercase", in: "tenant", want: "tenant"},
+		{name: "snake case", in: "customer_feedback", want: "customer-feedback"},
+		{name: "acronym run", in: "APIKey", want: "api-key"},
+		{name: "digit before uppercase does not split", in: "page2Size", want: "page2size"},
+		{name: "double underscore", in: "a__b", want: "a--b"},
+		{name: "trailing underscore", in: "tenant_", want: "tenant-"},
+		{name: "leading underscore", in: "_select", want: "-select"},
+		{name: "dollar sign is not stripped", in: "$foo", want: "$foo"},
+		{name: "empty", in: "", want: ""},
+		{
+			// Known quirk, not fixed here: the uppercase look-back indexes the
+			// input by byte offset, not by rune. When a multi-byte rune (é)
+			// immediately precedes an uppercase letter, the look-back reads a
+			// UTF-8 continuation byte instead of the actual preceding rune, so
+			// the letter-before-uppercase hyphen never gets inserted. Byte-correct
+			// behavior would hyphenate before "B"; this pins what the function
+			// actually does today.
+			name: "non-ASCII input before uppercase is pinned as-is",
+			in:   "aéBc",
+			want: "aébc",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := TemplateKebab(tt.in); got != tt.want {
+				t.Fatalf("TemplateKebab(%q) = %q, want %q", tt.in, got, tt.want)
+			}
+		})
+	}
+
+	// FlagName and TemplateKebab exist as two separate functions because they
+	// can disagree on the same input; ISelect is the case a promotion guard
+	// must check both derivations for.
+	if got := FlagName("ISelect"); got == TemplateKebab("ISelect") {
+		t.Fatalf("expected FlagName and TemplateKebab to disagree on %q, both gave %q", "ISelect", got)
+	}
+}
+
 func TestIsThinCommandShort(t *testing.T) {
 	tests := []struct {
 		name string

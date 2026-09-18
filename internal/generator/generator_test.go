@@ -14,6 +14,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -17314,6 +17315,61 @@ func TestGenerateMCPCodeOrchestrationEmitsSearchExecute(t *testing.T) {
 	// End-to-end: the generated project must compile.
 	runGoCommand(t, outputDir, "mod", "tidy")
 	runGoCommand(t, outputDir, "build", "./...")
+}
+
+// TestGeneratePromotionRejectsKebabCollision is a generated-output proof for
+// the promotion guard in spec.go's addGlobal: root.go.tmpl registers a
+// promoted var's flag as naming.TemplateKebab(name), not naming.FlagName(name),
+// so a placeholder whose kebab form collides with a reserved root flag or
+// another promoted var must not be promoted, or pflag panics at runtime on
+// every invocation including --help. ISelect kebabs to the reserved "select"
+// flag; page2Size and page2size both kebab to "page2size".
+func TestGeneratePromotionRejectsKebabCollision(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("template-kebab-promo")
+	apiSpec.EndpointTemplateVars = []string{"ISelect", "page2Size", "page2size"}
+	apiSpec.EndpointTemplateEnvOverrides = map[string]string{
+		"ISelect":   "TEMPLATE_KEBAB_PROMO_I_SELECT",
+		"page2Size": "TEMPLATE_KEBAB_PROMO_PAGE2_SIZE_A",
+		"page2size": "TEMPLATE_KEBAB_PROMO_PAGE2_SIZE_B",
+	}
+	itemsList := apiSpec.Resources["items"].Endpoints["list"]
+	itemsList.Path = "/items/{ISelect}/{page2Size}/{page2size}"
+	apiSpec.Resources["items"].Endpoints["list"] = itemsList
+	apiSpec.EnrichPathParams()
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+
+	rootSrc := readGeneratedFile(t, outputDir, "internal", "cli", "root.go")
+
+	selectFlagRe := regexp.MustCompile(`PersistentFlags\(\)\.\w+Var\([^,]+,\s*"select"`)
+	assert.Len(t, selectFlagRe.FindAllString(rootSrc, -1), 1,
+		"ISelect kebabs to the reserved \"select\" flag and must not register a second one:\n%s", rootSrc)
+
+	page2sizeFlagRe := regexp.MustCompile(`PersistentFlags\(\)\.\w+Var\([^,]+,\s*"page2size"`)
+	assert.Len(t, page2sizeFlagRe.FindAllString(rootSrc, -1), 1,
+		"page2Size and page2size both kebab to \"page2size\"; only the first-listed winner may register it:\n%s", rootSrc)
+
+	assert.Contains(t, rootSrc, "templateVarPage2Size string", "the first-listed page2Size must win the kebab collision")
+	assert.NotContains(t, rootSrc, "templateVarISelect", "ISelect must not be promoted")
+	assert.NotContains(t, rootSrc, "templateVarPage2size ", "the losing page2size must not be promoted")
+
+	promotedSrc := readPromotedCommandFile(t, outputDir)
+	assert.Contains(t, promotedSrc, `Use:   "items <ISelect> <page2size>"`,
+		"the refused placeholders must fall back to per-command positionals in path order:\n%s", promotedSrc)
+
+	requireGeneratedCompiles(t, outputDir)
+
+	exe := ""
+	if runtime.GOOS == "windows" {
+		exe = ".exe"
+	}
+	binaryPath := filepath.Join(outputDir, naming.CLI(apiSpec.Name)+exe)
+	runGoCommand(t, outputDir, "build", "-o", binaryPath, "./cmd/"+naming.CLI(apiSpec.Name))
+	stdout, _ := runGeneratedBinary(t, binaryPath, "--help")
+	assert.Contains(t, stdout, "--page2size", "the binary must start and expose the winning promoted flag")
 }
 
 func TestGenerateMCPCodeOrchestrationGlobalPathTemplateVars(t *testing.T) {

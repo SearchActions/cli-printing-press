@@ -4874,8 +4874,360 @@ resources:
 		assert.Empty(t, s.GlobalPathTemplateVars)
 		assert.Contains(t, paramNames(s.Resources["accounts"].Endpoints["list"].Params), "insecure")
 	})
+
+	t.Run("leading I placeholder that kebabs to a reserved flag stays positional", func(t *testing.T) {
+		t.Parallel()
+		input := `name: testapi
+base_url: https://api.example.com
+endpoint_template_vars: [ISelect]
+endpoint_template_env_overrides:
+  ISelect: TESTAPI_I_SELECT
+auth:
+  type: bearer_token
+  env_vars: [TESTAPI_TOKEN]
+resources:
+  accounts:
+    description: Accounts
+    endpoints:
+      list:
+        method: GET
+        path: /modes/{ISelect}/accounts
+      get:
+        method: GET
+        path: /modes/{ISelect}/accounts/{account_id}
+`
+		s, err := ParseBytes([]byte(input))
+		require.NoError(t, err)
+
+		// naming.FlagName("ISelect") is "i-select" (not reserved), but
+		// root.go.tmpl registers naming.TemplateKebab("ISelect"), which is
+		// "select" -- a reserved root flag. The FlagName-only check would
+		// wrongly admit this and panic the printed CLI at startup.
+		assert.Empty(t, s.GlobalPathTemplateVars)
+		assert.Contains(t, paramNames(s.Resources["accounts"].Endpoints["list"].Params), "ISelect")
+	})
+
+	t.Run("leading I placeholder that kebabs to dry-run stays positional", func(t *testing.T) {
+		t.Parallel()
+		input := `name: testapi
+base_url: https://api.example.com
+endpoint_template_vars: [IDryRun]
+endpoint_template_env_overrides:
+  IDryRun: TESTAPI_I_DRY_RUN
+auth:
+  type: bearer_token
+  env_vars: [TESTAPI_TOKEN]
+resources:
+  accounts:
+    description: Accounts
+    endpoints:
+      list:
+        method: GET
+        path: /modes/{IDryRun}/accounts
+      get:
+        method: GET
+        path: /modes/{IDryRun}/accounts/{account_id}
+`
+		s, err := ParseBytes([]byte(input))
+		require.NoError(t, err)
+
+		assert.Empty(t, s.GlobalPathTemplateVars)
+		assert.Contains(t, paramNames(s.Resources["accounts"].Endpoints["list"].Params), "IDryRun")
+	})
+
+	t.Run("leading I placeholder collides on kebab with a plain sibling, first-listed wins", func(t *testing.T) {
+		t.Parallel()
+		input := `name: testapi
+base_url: https://api.example.com
+endpoint_template_vars: [ITenant, tenant]
+endpoint_template_env_overrides:
+  ITenant: TESTAPI_ITENANT
+  tenant: TESTAPI_TENANT
+auth:
+  type: bearer_token
+  env_vars: [TESTAPI_TOKEN]
+resources:
+  accounts:
+    description: Accounts
+    endpoints:
+      list:
+        method: GET
+        path: /orgs/{ITenant}/spaces/{tenant}/accounts
+      get:
+        method: GET
+        path: /orgs/{ITenant}/spaces/{tenant}/accounts/{account_id}
+`
+		s, err := ParseBytes([]byte(input))
+		require.NoError(t, err)
+
+		// Both are distinct by naming.FlagName ("i-tenant" vs "tenant") but
+		// collide once the template kebabs them ("tenant" vs "tenant"). The
+		// first-listed name wins, matching how FlagName collisions resolve.
+		assert.Equal(t, []string{"ITenant"}, s.GlobalPathTemplateVars)
+		assert.Contains(t, paramNames(s.Resources["accounts"].Endpoints["list"].Params), "tenant")
+	})
+
+	t.Run("mirrored order: plain sibling listed first wins the kebab collision", func(t *testing.T) {
+		t.Parallel()
+		input := `name: testapi
+base_url: https://api.example.com
+endpoint_template_vars: [tenant, ITenant]
+endpoint_template_env_overrides:
+  tenant: TESTAPI_TENANT
+  ITenant: TESTAPI_ITENANT
+auth:
+  type: bearer_token
+  env_vars: [TESTAPI_TOKEN]
+resources:
+  accounts:
+    description: Accounts
+    endpoints:
+      list:
+        method: GET
+        path: /orgs/{ITenant}/spaces/{tenant}/accounts
+      get:
+        method: GET
+        path: /orgs/{ITenant}/spaces/{tenant}/accounts/{account_id}
+`
+		s, err := ParseBytes([]byte(input))
+		require.NoError(t, err)
+
+		assert.Equal(t, []string{"tenant"}, s.GlobalPathTemplateVars)
+		assert.Contains(t, paramNames(s.Resources["accounts"].Endpoints["list"].Params), "ITenant")
+	})
+
+	t.Run("digit-before-uppercase placeholder collides on kebab, first-listed wins", func(t *testing.T) {
+		t.Parallel()
+		input := `name: testapi
+base_url: https://api.example.com
+endpoint_template_vars: [page2Size, page2size]
+endpoint_template_env_overrides:
+  page2Size: TESTAPI_PAGE2_SIZE_A
+  page2size: TESTAPI_PAGE2_SIZE_B
+auth:
+  type: bearer_token
+  env_vars: [TESTAPI_TOKEN]
+resources:
+  accounts:
+    description: Accounts
+    endpoints:
+      list:
+        method: GET
+        path: /accounts/{page2Size}/{page2size}
+      get:
+        method: GET
+        path: /accounts/{page2Size}/{page2size}/{account_id}
+`
+		s, err := ParseBytes([]byte(input))
+		require.NoError(t, err)
+
+		// naming.FlagName gives "page2-size" vs "page2size" (distinct), but
+		// naming.TemplateKebab gives "page2size" for both, since a digit
+		// before an uppercase letter doesn't split there.
+		assert.Equal(t, []string{"page2Size"}, s.GlobalPathTemplateVars)
+		assert.Contains(t, paramNames(s.Resources["accounts"].Endpoints["list"].Params), "page2size")
+	})
+
+	t.Run("leading underscore placeholder still not promoted (regression guard)", func(t *testing.T) {
+		t.Parallel()
+		input := `name: testapi
+base_url: https://api.example.com
+endpoint_template_vars: [_select]
+endpoint_template_env_overrides:
+  _select: TESTAPI_SELECT
+auth:
+  type: bearer_token
+  env_vars: [TESTAPI_TOKEN]
+resources:
+  accounts:
+    description: Accounts
+    endpoints:
+      list:
+        method: GET
+        path: /modes/{_select}/accounts
+      get:
+        method: GET
+        path: /modes/{_select}/accounts/{account_id}
+`
+		s, err := ParseBytes([]byte(input))
+		require.NoError(t, err)
+
+		// naming.FlagName("_select") is already "select" (a reserved root
+		// flag), so this was rejected before the kebab guard existed. It
+		// pins that the new usedKebabNames set doesn't change that outcome.
+		assert.Empty(t, s.GlobalPathTemplateVars)
+		assert.Contains(t, paramNames(s.Resources["accounts"].Endpoints["list"].Params), "_select")
+	})
+
+	t.Run("trailing underscore and leading I placeholders both promote (separate kebab set)", func(t *testing.T) {
+		t.Parallel()
+		input := `name: testapi
+base_url: https://api.example.com
+endpoint_template_vars: [tenant_, ITenant]
+endpoint_template_env_overrides:
+  tenant_: TESTAPI_TENANT_
+  ITenant: TESTAPI_ITENANT
+auth:
+  type: bearer_token
+  env_vars: [TESTAPI_TOKEN]
+resources:
+  accounts:
+    description: Accounts
+    endpoints:
+      list:
+        method: GET
+        path: /orgs/{tenant_}/spaces/{ITenant}/accounts
+      get:
+        method: GET
+        path: /orgs/{tenant_}/spaces/{ITenant}/accounts/{account_id}
+`
+		s, err := ParseBytes([]byte(input))
+		require.NoError(t, err)
+
+		// naming.FlagName("tenant_") is "tenant" and naming.TemplateKebab("ITenant")
+		// is also "tenant". If usedKebabNames were merged into usedFlagNames,
+		// this pair would wrongly collide. Keeping the sets separate is what
+		// lets both boot today ("--tenant-" and "--tenant").
+		assert.ElementsMatch(t, []string{"tenant_", "ITenant"}, s.GlobalPathTemplateVars)
+	})
+
+	t.Run("kebab checks run after the threshold, not before", func(t *testing.T) {
+		t.Parallel()
+		var paths strings.Builder
+		for i := 1; i <= 9; i++ {
+			fmt.Fprintf(&paths, "      e%d:\n        method: GET\n        path: /a/{tenant}/%d\n", i, i)
+		}
+		paths.WriteString("      e10:\n        method: GET\n        path: /a/{ITenant}/10\n")
+		input := fmt.Sprintf(`name: testapi
+base_url: https://api.example.com
+endpoint_template_vars: [ITenant, tenant]
+endpoint_template_env_overrides:
+  ITenant: TESTAPI_ITENANT
+  tenant: TESTAPI_TENANT
+auth:
+  type: bearer_token
+  env_vars: [TESTAPI_TOKEN]
+resources:
+  accounts:
+    description: Accounts
+    endpoints:
+%s`, paths.String())
+		s, err := ParseBytes([]byte(input))
+		require.NoError(t, err)
+
+		// ITenant appears on 1/10 endpoints (below the 80%% threshold) so it
+		// never reaches the kebab guard at all; tenant appears on 9/10 and is
+		// promoted alone. A guard that ran before the threshold could
+		// wrongly drop tenant for sharing ITenant's kebab and leave nothing
+		// promoted.
+		assert.Equal(t, []string{"tenant"}, s.GlobalPathTemplateVars)
+		assert.Contains(t, paramNames(s.Resources["accounts"].Endpoints["e10"].Params), "ITenant")
+	})
+
+	t.Run("explicit GlobalPathTemplateVars also goes through the kebab guard", func(t *testing.T) {
+		t.Parallel()
+		s := &APISpec{
+			Name:                   "testapi",
+			BaseURL:                "https://api.example.com",
+			GlobalPathTemplateVars: []string{"ISelect"},
+			Resources: map[string]Resource{
+				"items": {Endpoints: map[string]Endpoint{"list": {Method: "GET", Path: "/items"}}},
+			},
+		}
+
+		s.PromoteGlobalPathTemplateVars()
+
+		assert.Empty(t, s.GlobalPathTemplateVars)
+	})
 }
 
+// TestPromoteGlobalPathTemplateVarsIdempotent runs the real production
+// sequence (EnrichPathParams -> Promote -> InferEndpointTemplateVarsFromBaseURLs
+// -> EnrichPathParams -> Promote, matching spec.go:3051-3052,
+// openapi/parser.go:740, and generator.go:172) on a kebab-collision spec and
+// asserts the second pass changes nothing: the same var stays promoted and
+// its loser stays positional.
+func TestPromoteGlobalPathTemplateVarsIdempotent(t *testing.T) {
+	t.Parallel()
+	input := `name: testapi
+base_url: https://api.example.com
+endpoint_template_vars: [ITenant, tenant]
+endpoint_template_env_overrides:
+  ITenant: TESTAPI_ITENANT
+  tenant: TESTAPI_TENANT
+auth:
+  type: bearer_token
+  env_vars: [TESTAPI_TOKEN]
+resources:
+  accounts:
+    description: Accounts
+    endpoints:
+      list:
+        method: GET
+        path: /orgs/{ITenant}/spaces/{tenant}/accounts
+      get:
+        method: GET
+        path: /orgs/{ITenant}/spaces/{tenant}/accounts/{account_id}
+`
+	s, err := ParseBytes([]byte(input))
+	require.NoError(t, err)
+
+	firstGlobals := append([]string(nil), s.GlobalPathTemplateVars...)
+	firstListParams := paramNames(s.Resources["accounts"].Endpoints["list"].Params)
+	firstGetParams := paramNames(s.Resources["accounts"].Endpoints["get"].Params)
+	require.Equal(t, []string{"ITenant"}, firstGlobals)
+	require.Contains(t, firstListParams, "tenant")
+
+	s.EnrichPathParams()
+	s.PromoteGlobalPathTemplateVars()
+	s.InferEndpointTemplateVarsFromBaseURLs()
+	s.EnrichPathParams()
+	s.PromoteGlobalPathTemplateVars()
+
+	assert.Equal(t, firstGlobals, s.GlobalPathTemplateVars, "promotion must be idempotent across repeated pipeline passes")
+	assert.Equal(t, firstListParams, paramNames(s.Resources["accounts"].Endpoints["list"].Params))
+	assert.Equal(t, firstGetParams, paramNames(s.Resources["accounts"].Endpoints["get"].Params))
+	assert.Contains(t, paramNames(s.Resources["accounts"].Endpoints["list"].Params), "tenant", "the loser must stay positional across passes")
+}
+
+// TestPromoteGlobalPathTemplateVarsDeterministicOrder guards the move from
+// map-order iteration (`for name := range global`) to a slice-ordered walk:
+// the same kebab-colliding pair must resolve to the same winner every run.
+func TestPromoteGlobalPathTemplateVarsDeterministicOrder(t *testing.T) {
+	t.Parallel()
+	input := `name: testapi
+base_url: https://api.example.com
+endpoint_template_vars: [ITenant, tenant]
+endpoint_template_env_overrides:
+  ITenant: TESTAPI_ITENANT
+  tenant: TESTAPI_TENANT
+auth:
+  type: bearer_token
+  env_vars: [TESTAPI_TOKEN]
+resources:
+  accounts:
+    description: Accounts
+    endpoints:
+      list:
+        method: GET
+        path: /orgs/{ITenant}/spaces/{tenant}/accounts
+      get:
+        method: GET
+        path: /orgs/{ITenant}/spaces/{tenant}/accounts/{account_id}
+`
+	for i := range 20 {
+		s, err := ParseBytes([]byte(input))
+		require.NoError(t, err)
+		require.Equal(t, []string{"ITenant"}, s.GlobalPathTemplateVars, "iteration %d", i)
+	}
+}
+
+// TestReservedRootFlagsMatchRootTemplate keeps reservedRootFlagNames and
+// reservedRootFlagFieldNames a superset of every literal root persistent
+// flag/field root.go.tmpl registers. PromoteGlobalPathTemplateVars's kebab
+// guard (addGlobal in spec.go) depends on that superset property: it only
+// refuses a promotion that would collide with a name this test confirms is
+// actually reserved.
 func TestReservedRootFlagsMatchRootTemplate(t *testing.T) {
 	t.Parallel()
 

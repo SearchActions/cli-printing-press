@@ -8313,32 +8313,12 @@ func goDurationExpr(d time.Duration) string {
 
 // toKebab converts PascalCase, camelCase, or mixed names to kebab-case.
 // It also strips a leading "I" if it looks like an interface prefix (e.g., ISteamUser → steam-user).
+// toKebab is an alias for naming.TemplateKebab, the kebab-case form the
+// generator's templates emit for command Use: strings and promoted root
+// flags. Any guard that decides what a template will register must use the
+// same derivation; see naming.TemplateKebab's doc comment.
 func toKebab(s string) string {
-	// Strip leading "I" when followed by an uppercase letter (interface prefix convention)
-	if len(s) > 1 && s[0] == 'I' && unicode.IsUpper(rune(s[1])) {
-		s = s[1:]
-	}
-	var result strings.Builder
-	for i, r := range s {
-		// Snake-case underscores convert to dashes. Lets spec keys like
-		// `customer_feedback` and `slot_list_for_date` flow through to
-		// user-facing cobra `Use:` strings as `customer-feedback` and
-		// `slot-list-for-date` instead of preserving the snake form.
-		if r == '_' {
-			result.WriteByte('-')
-			continue
-		}
-		if unicode.IsUpper(r) && i > 0 {
-			prev := rune(s[i-1])
-			// Insert hyphen before uppercase letter if preceded by lowercase,
-			// or if preceding char is uppercase AND next char is lowercase (e.g., "APIKey" → "api-key")
-			if unicode.IsLower(prev) || (unicode.IsUpper(prev) && i+1 < len(s) && unicode.IsLower(rune(s[i+1]))) {
-				result.WriteByte('-')
-			}
-		}
-		result.WriteRune(unicode.ToLower(r))
-	}
-	return result.String()
+	return naming.TemplateKebab(s)
 }
 
 // PromotedCommand represents a top-level user-friendly command that wraps a nested API endpoint.

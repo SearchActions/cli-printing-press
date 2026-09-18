@@ -3613,6 +3613,14 @@ func (s *APISpec) EnrichPathParams() {
 // Those placeholders stay in endpoint paths for client buildURL substitution,
 // but are removed from individual command params so generated CLIs expose a
 // single root flag/env value instead of repeating a positional on every leaf.
+//
+// A placeholder is promoted only when both the endpoint-flag name
+// (naming.FlagName) and the name root.go.tmpl actually registers
+// (naming.TemplateKebab) stay clear of reserved root flags and of every
+// other promoted var. The two derivations can disagree (a leading "I", a
+// digit before an uppercase letter, stray underscores); when they do and the
+// kebab form collides, promoting the placeholder would make the template
+// register a duplicate root flag and panic at runtime on every invocation.
 func (s *APISpec) PromoteGlobalPathTemplateVars() {
 	if s == nil || len(s.Resources) == 0 {
 		return
@@ -3682,6 +3690,7 @@ func (s *APISpec) PromoteGlobalPathTemplateVars() {
 	existing := make(map[string]struct{}, len(s.GlobalPathTemplateVars)+len(global))
 	usedFlagNames := map[string]struct{}{}
 	usedFieldNames := map[string]struct{}{}
+	usedKebabNames := map[string]struct{}{}
 	addGlobal := func(name string) {
 		if strings.TrimSpace(name) == "" {
 			return
@@ -3697,15 +3706,36 @@ func (s *APISpec) PromoteGlobalPathTemplateVars() {
 		if _, dup := usedFieldNames[fieldName]; dup {
 			return
 		}
+		// root.go.tmpl registers the promoted flag as naming.TemplateKebab(name),
+		// not naming.FlagName(name). The two can disagree (a leading "I", a digit
+		// before an uppercase letter, stray underscores), so a name that clears
+		// the FlagName checks above can still make the template register a
+		// duplicate root flag and panic at runtime. Check the template's own
+		// derivation in a separate set: merging it with usedFlagNames would
+		// reject legitimate pairs like "tenant_" + "ITenant" ("--tenant-" and
+		// "--tenant"), which boot fine today.
+		kebabName := naming.TemplateKebab(name)
+		if kebabName == "" {
+			return
+		}
+		if _, reserved := reservedRootFlagNames[kebabName]; reserved {
+			return
+		}
+		if _, dup := usedKebabNames[kebabName]; dup {
+			return
+		}
 		usedFlagNames[flagName] = struct{}{}
 		usedFieldNames[fieldName] = struct{}{}
+		usedKebabNames[kebabName] = struct{}{}
 		existing[name] = struct{}{}
 	}
 	for _, name := range s.GlobalPathTemplateVars {
 		addGlobal(name)
 	}
-	for name := range global {
-		addGlobal(name)
+	for _, name := range s.EndpointTemplateVars {
+		if _, ok := global[name]; ok {
+			addGlobal(name)
+		}
 	}
 	s.GlobalPathTemplateVars = sortedStringKeys(existing)
 

@@ -250,6 +250,45 @@ func FlagName(name string) string {
 	return strings.Trim(result, "-")
 }
 
+// TemplateKebab converts an identifier-ish input into the kebab-case shape
+// the generator's templates emit for command Use: strings and promoted root
+// flags. It differs from FlagName: it strips an interface-style leading "I"
+// (ISelect -> select) and uses a byte-indexed look-back rather than FlagName's
+// rune-indexed one, so the two functions can disagree on the same input.
+// Anything that decides what a template will register as a flag or Use:
+// string must call TemplateKebab, not FlagName, or the two can admit a name
+// that collides only once the template actually renders it.
+func TemplateKebab(s string) string {
+	// Strip leading "I" when followed by an uppercase letter (interface prefix convention)
+	if len(s) > 1 && s[0] == 'I' && unicode.IsUpper(rune(s[1])) {
+		s = s[1:]
+	}
+	var result strings.Builder
+	for i, r := range s {
+		// Snake-case underscores convert to dashes. Lets spec keys like
+		// `customer_feedback` and `slot_list_for_date` flow through to
+		// user-facing cobra `Use:` strings as `customer-feedback` and
+		// `slot-list-for-date` instead of preserving the snake form.
+		if r == '_' {
+			result.WriteByte('-')
+			continue
+		}
+		if unicode.IsUpper(r) && i > 0 {
+			// Known quirk: this look-back indexes s by byte offset i, not by
+			// rune index, so it misreads multi-byte runes preceding r. Not
+			// fixed here; TemplateKebab pins toKebab's existing behavior.
+			prev := rune(s[i-1])
+			// Insert hyphen before uppercase letter if preceded by lowercase,
+			// or if preceding char is uppercase AND next char is lowercase (e.g., "APIKey" → "api-key")
+			if unicode.IsLower(prev) || (unicode.IsUpper(prev) && i+1 < len(s) && unicode.IsLower(rune(s[i+1]))) {
+				result.WriteByte('-')
+			}
+		}
+		result.WriteRune(unicode.ToLower(r))
+	}
+	return result.String()
+}
+
 // EnvVarPlaceholder derives the placeholder name from an environment variable.
 // DUB_TOKEN -> token, STYTCH_PROJECT_ID -> project_id.
 func EnvVarPlaceholder(envVar string) string {
