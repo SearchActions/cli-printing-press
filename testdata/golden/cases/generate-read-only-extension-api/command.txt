@@ -1,0 +1,2 @@
+set -euo pipefail
+"$BINARY" generate --spec testdata/golden/fixtures/read-only-extension-api.yaml --output "$CASE_ACTUAL_DIR/read-only-extension-golden" --force --spec-url file://testdata/golden/fixtures/read-only-extension-api.yaml --validate=false

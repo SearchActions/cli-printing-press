@@ -1,0 +1,19 @@
+# Locks the OpenAPI x-pp-read-only operation extension contract end-to-end
+# through generation. POST /v1/load carries x-pp-read-only: true on a body
+# the classifier heuristics alone would call a write (operationId leading
+# token "load" is not in readOperationIDPrefixes, and its body field isn't
+# filter-shaped). Without parser support for x-pp-read-only, this command
+# would lose the mcp:read-only annotation and the PostQuery* client routing,
+# and the MCP tool would lose its readOnlyHint.
+
+# The read-only-marked command: carries Annotations["mcp:read-only"]="true"
+# and routes through c.PostQueryWithParams (doRead), not the mutating path.
+read-only-extension-golden/internal/cli/promoted_queries.go
+
+# The control write command (no x-pp-read-only): proves the heuristics still
+# classify a genuinely write-shaped POST as a write without the extension.
+read-only-extension-golden/internal/cli/promoted_reports.go
+
+# Typed MCP tools: queries_load-v1 must carry WithReadOnlyHintAnnotation(true);
+# reports_create must not.
+read-only-extension-golden/internal/mcp/tools.go

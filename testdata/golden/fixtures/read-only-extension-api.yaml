@@ -1,0 +1,94 @@
+openapi: "3.0.3"
+info:
+  title: Read Only Extension API
+  version: "1.0.0"
+  description: |
+    Golden fixture exercising the x-pp-read-only operation extension: a
+    Cube-shaped POST /v1/load endpoint whose body the classifier heuristics
+    alone would call a write (operationId leading token "load" is not in
+    readOperationIDPrefixes, and its body field isn't filter-shaped) is
+    marked read-only explicitly. A control write POST with a genuinely
+    write-shaped body proves the heuristics still classify normally when
+    the extension is absent.
+servers:
+  - url: https://api.example.com/v1
+security:
+  - ApiKeyAuth: []
+components:
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-API-Key
+paths:
+  /meta:
+    get:
+      tags: [meta]
+      operationId: getMeta
+      summary: Get schema metadata
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  cubes:
+                    type: array
+                    items:
+                      type: object
+  /v1/load:
+    post:
+      tags: [queries]
+      operationId: loadV1
+      x-pp-resource: queries
+      x-pp-read-only: true
+      summary: Execute a query and load results
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                queryDefinition:
+                  type: object
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      type: object
+  /reports:
+    post:
+      tags: [reports]
+      operationId: createReport
+      summary: Create a saved report
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+                definition:
+                  type: object
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id:
+                    type: string

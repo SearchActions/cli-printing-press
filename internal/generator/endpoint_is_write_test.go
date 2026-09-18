@@ -224,6 +224,84 @@ func TestEndpointIsWriteCommand(t *testing.T) {
 			endpoint: spec.Endpoint{Method: "POST", Path: "/getter"},
 			want:     true, // single-token "getter" — not the literal "get" verb, fail-closed
 		},
+		// Cube-shaped read-via-POST operations: "load", "convert" and
+		// "cubesql" are not in readOperationIDPrefixes and their bodies are
+		// not filter-shaped, so the heuristics alone classify them as
+		// writes (precondition). The x-pp-read-only extension sets Meta,
+		// which the classifier checks first, flipping them to reads.
+		{
+			name:   "Cube loadV1 without Meta is write (heuristic precondition)",
+			opName: "loadV1",
+			endpoint: spec.Endpoint{
+				Method: "POST",
+				Path:   "/v1/load",
+				Body:   []spec.Param{{Name: "queryDefinition", Type: "object"}},
+			},
+			want: true,
+		},
+		{
+			name:   "Cube loadV1 with mcp:read-only Meta is read",
+			opName: "loadV1",
+			endpoint: spec.Endpoint{
+				Method: "POST",
+				Path:   "/v1/load",
+				Body:   []spec.Param{{Name: "queryDefinition", Type: "object"}},
+				Meta:   map[string]string{"mcp:read-only": "true"},
+			},
+			want: false,
+		},
+		{
+			name:   "Cube convertQueryV1 without Meta is write (heuristic precondition)",
+			opName: "convertQueryV1",
+			endpoint: spec.Endpoint{
+				Method: "POST",
+				Path:   "/v1/convert-query",
+				Body:   []spec.Param{{Name: "queryDefinition", Type: "object"}},
+			},
+			want: true,
+		},
+		{
+			name:   "Cube convertQueryV1 with mcp:read-only Meta is read",
+			opName: "convertQueryV1",
+			endpoint: spec.Endpoint{
+				Method: "POST",
+				Path:   "/v1/convert-query",
+				Body:   []spec.Param{{Name: "queryDefinition", Type: "object"}},
+				Meta:   map[string]string{"mcp:read-only": "true"},
+			},
+			want: false,
+		},
+		{
+			name:   "Cube cubesqlV1 without Meta is write (heuristic precondition)",
+			opName: "cubesqlV1",
+			endpoint: spec.Endpoint{
+				Method: "POST",
+				Path:   "/v1/cubesql",
+				Body:   []spec.Param{{Name: "sql", Type: "string"}},
+			},
+			want: true,
+		},
+		{
+			name:   "Cube cubesqlV1 with mcp:read-only Meta is read",
+			opName: "cubesqlV1",
+			endpoint: spec.Endpoint{
+				Method: "POST",
+				Path:   "/v1/cubesql",
+				Body:   []spec.Param{{Name: "sql", Type: "string"}},
+				Meta:   map[string]string{"mcp:read-only": "true"},
+			},
+			want: false,
+		},
+		{
+			name:   "GET endpoint with mcp:read-only Meta stays read",
+			opName: "listWidgets",
+			endpoint: spec.Endpoint{
+				Method: "GET",
+				Path:   "/widgets",
+				Meta:   map[string]string{"mcp:read-only": "true"},
+			},
+			want: false,
+		},
 	}
 
 	for _, tc := range cases {

@@ -663,7 +663,7 @@ func BenchmarkLargeSpec(b *testing.B) {
 
 	b.ReportAllocs()
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		parsed, err := Parse(data)
 		if err != nil {
 			b.Fatalf("parse AIC spec: %v", err)
@@ -7711,6 +7711,108 @@ paths:
 			assert.Equal(t, tt.wantIDField, ep.IDField, "IDField")
 			assert.Equal(t, tt.wantCritical, ep.Critical, "Critical")
 			assert.Equal(t, tt.wantSyncable, ep.Syncable, "Syncable")
+		})
+	}
+}
+
+// TestParseReadsXPPReadOnly covers the `x-pp-read-only` operation extension:
+// true sets Endpoint.Meta["mcp:read-only"], false and absent are no-ops,
+// non-boolean values warn and are ignored, and DELETE warns and is ignored
+// because its client template has no read-routing branch to honor the hint.
+func TestParseReadsXPPReadOnly(t *testing.T) {
+	yamlSpec := []byte(`openapi: "3.0.3"
+info:
+  title: Test
+  version: "1.0"
+servers:
+  - url: https://api.example.com
+paths:
+  /read-only-true:
+    post:
+      operationId: loadTrue
+      x-pp-read-only: true
+      responses:
+        "200":
+          description: OK
+  /read-only-false:
+    post:
+      operationId: loadFalse
+      x-pp-read-only: false
+      responses:
+        "200":
+          description: OK
+  /read-only-string:
+    post:
+      operationId: loadString
+      x-pp-read-only: "true"
+      responses:
+        "200":
+          description: OK
+  /read-only-absent:
+    post:
+      operationId: loadAbsent
+      responses:
+        "200":
+          description: OK
+  /read-only-delete:
+    delete:
+      operationId: deleteReadOnly
+      x-pp-read-only: true
+      responses:
+        "204":
+          description: deleted
+  /read-only-get:
+    get:
+      operationId: getReadOnly
+      x-pp-read-only: true
+      responses:
+        "200":
+          description: OK
+  /read-only-put:
+    put:
+      operationId: putReadOnly
+      x-pp-read-only: true
+      responses:
+        "200":
+          description: OK
+  /read-only-patch:
+    patch:
+      operationId: patchReadOnly
+      x-pp-read-only: true
+      responses:
+        "200":
+          description: OK
+`)
+
+	var parsed *spec.APISpec
+	warnings := captureWarnings(t, func() {
+		var err error
+		parsed, err = Parse(yamlSpec)
+		require.NoError(t, err)
+	})
+
+	tests := []struct {
+		path        string
+		wantMeta    map[string]string
+		wantWarning string // substring, empty means no warning expected for this path
+	}{
+		{path: "/read-only-true", wantMeta: map[string]string{"mcp:read-only": "true"}},
+		{path: "/read-only-false", wantMeta: nil},
+		{path: "/read-only-string", wantMeta: nil, wantWarning: "must be a boolean"},
+		{path: "/read-only-absent", wantMeta: nil},
+		{path: "/read-only-delete", wantMeta: nil, wantWarning: "not supported on DELETE"},
+		{path: "/read-only-get", wantMeta: map[string]string{"mcp:read-only": "true"}},
+		{path: "/read-only-put", wantMeta: map[string]string{"mcp:read-only": "true"}},
+		{path: "/read-only-patch", wantMeta: map[string]string{"mcp:read-only": "true"}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.path, func(t *testing.T) {
+			ep := findEndpoint(t, parsed, tt.path)
+			assert.Equal(t, tt.wantMeta, ep.Meta, "Meta for %s", tt.path)
+			if tt.wantWarning != "" {
+				assert.Contains(t, warnings, tt.wantWarning, "expected a warning mentioning %q for %s", tt.wantWarning, tt.path)
+			}
 		})
 	}
 }

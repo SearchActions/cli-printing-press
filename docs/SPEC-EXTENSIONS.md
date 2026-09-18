@@ -49,6 +49,7 @@ in the same change as any new `Extensions["x-*"]` lookup in that file.
 | `x-happy-args` | operation | `Endpoint.HappyArgs` | No |
 | `x-pp-example` | operation | `Endpoint.Example` (verbatim Cobra example override) | No |
 | `x-pp-resource` | operation | resource name override | No |
+| `x-pp-read-only` | operation | `Endpoint.Meta["mcp:read-only"]` | No |
 | `x-pp-pagination` | operation | `Endpoint.Pagination` | No |
 | `x-pp-safe-probe` | operation | *skill guidance only; not parsed in parser.go* | No |
 | `x-pp-sync-walker` | operation | `Endpoint.Walker` | No |
@@ -1333,6 +1334,81 @@ paths:
           required: true
           schema:
             type: string
+      responses:
+        "200":
+          description: OK
+```
+
+### `x-pp-read-only`
+
+Marks an operation whose HTTP verb is mutating (POST/PUT/PATCH) as a pure
+read, for endpoints the classifier's verb/operation-id/body-shape heuristics
+can't infer on their own — query languages, format conversions, and
+search-over-POST. The motivating case is Cube's `POST /v1/load`: its
+operation-id leading token ("load") isn't in the read-prefix heuristic and
+its body isn't filter-shaped, so without this extension the endpoint is
+classified as a write.
+
+Parsed field: `Endpoint.Meta["mcp:read-only"]`
+
+Rules:
+- Optional. Operation level only (no path-item form).
+- Only `true` does anything. `false` and an absent extension are both
+  no-ops — the existing heuristics still decide. `false` is NOT a
+  force-write override of a heuristic that would otherwise call the
+  endpoint a read.
+- Non-boolean values emit a warning and are ignored.
+- Not honored on `DELETE`: the generated client's DELETE branch has no
+  read-routing path, so honoring the extension there would emit a
+  `readOnlyHint` on a command that still mutates. A read-only DELETE is
+  almost certainly a spec error; the parser warns and ignores it.
+- On GET the extension is a harmless no-op — GET is already classified read.
+
+Effects of `true` on a POST/PUT/PATCH operation:
+- The generated command's Cobra annotation includes `"mcp:read-only": "true"`.
+- The generated client call routes through the `PostQuery*`/`PutQuery*`
+  helpers (`doRead()`), the same path a GET uses, instead of the mutating
+  `do()` path — this also bypasses the `PRINTING_PRESS_VERIFY` mutating-verb
+  noop gate, so the command dials for real under verify.
+- The typed MCP tool and the runtime cobratree-walker tool both get
+  `readOnlyHint: true`, so MCP hosts auto-approve the call without a
+  permission prompt.
+- The resource may flip `HasWriteCommands` to `false` if this was its only
+  write-shaped endpoint, changing README/SKILL wording.
+- Live dogfood runs the operation against the real API as a happy-path read.
+
+A false `x-pp-read-only: true` on a genuinely mutating operation carries the
+same trust as the spec's own HTTP verb — the extension only relabels an
+operation the spec already declares; it adds no write capability the verb
+didn't already have. But get it wrong and MCP hosts will auto-approve a real
+mutation, so only set it where the operation is verifiably read-only against
+the live API.
+
+The internal-YAML equivalent is setting `meta: {"mcp:read-only": "true"}`
+directly on the endpoint; the OpenAPI extension is sugar over the same field.
+
+`tools-manifest.json`'s `ManifestTool` does not carry a read-only field, so a
+consumer that judges safety from the manifest alone (rather than the
+generated command's annotation or the MCP tool's `readOnlyHint`) still sees a
+`POST` endpoint marked `x-pp-read-only` as a write.
+
+Example:
+
+```yaml
+paths:
+  /v1/load:
+    post:
+      operationId: loadV1
+      x-pp-read-only: true
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                query:
+                  type: object
       responses:
         "200":
           description: OK

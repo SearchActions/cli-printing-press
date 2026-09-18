@@ -69,6 +69,7 @@ const (
 	extensionStreaming             = "x-streaming"
 	extensionPPQuery               = "x-pp-query"
 	extensionPPSyncable            = "x-pp-syncable"
+	extensionPPReadOnly            = "x-pp-read-only"
 	extensionPPPagination          = "x-pp-pagination"
 	extensionSyncWalker            = "x-pp-sync-walker"
 	extensionHappyArgs             = "x-happy-args"
@@ -3685,6 +3686,7 @@ func mapResources(doc *openapi3.T, out *spec.APISpec, basePath string) error {
 			opSyncable, _ := boolExtension(op.Extensions, extensionPPSyncable)
 			endpoint.Syncable = pathSyncable || opSyncable
 			endpoint.Walker = readWalkerExtension(op.Extensions, fmt.Sprintf("%s %q", strings.ToUpper(method), path))
+			applyReadOnlyExtension(&endpoint, op, method, path)
 
 			// Binary-only success responses (e.g. PDF/octet-stream downloads)
 			// would otherwise receive the default Accept: application/json and
@@ -5696,6 +5698,46 @@ func readPathItemMembershipField(pathItem *openapi3.PathItem, path string) strin
 		warnf("path %q: x-pp-membership-field must be a string, got %T; ignoring", path, raw)
 		return ""
 	}
+}
+
+// mcpReadOnlyMetaKey is the cross-package Endpoint.Meta key the generator's
+// classifier, command template, and MCP tool emission already key off (see
+// internal/generator/generator.go, internal/mcpspec/classify.go).
+const mcpReadOnlyMetaKey = "mcp:read-only"
+
+// applyReadOnlyExtension reads `x-pp-read-only` from an operation and, when
+// true, marks the endpoint as read-only so the classifier can see a read
+// that rides a mutating verb (query languages, conversions, search-over-POST)
+// which body-shape and operation-id heuristics can't infer on their own.
+// Only `true` does anything: `false` is a no-op, not a force-write override,
+// and non-boolean values warn and are ignored. DELETE is never honored here
+// because its client template has no read-routing branch, so honoring the
+// extension there would emit a read-only hint on a command that still
+// mutates; a read-only DELETE is almost certainly a spec error.
+func applyReadOnlyExtension(endpoint *spec.Endpoint, op *openapi3.Operation, method, path string) {
+	if op == nil || op.Extensions == nil {
+		return
+	}
+	raw, ok := op.Extensions[extensionPPReadOnly]
+	if !ok {
+		return
+	}
+	v, ok := raw.(bool)
+	if !ok {
+		warnf("path %q: %s must be a boolean, got %T; ignoring", path, extensionPPReadOnly, raw)
+		return
+	}
+	if !v {
+		return
+	}
+	if strings.ToUpper(method) == "DELETE" {
+		warnf("%s %q: %s is not supported on DELETE operations; ignoring", strings.ToUpper(method), path, extensionPPReadOnly)
+		return
+	}
+	if endpoint.Meta == nil {
+		endpoint.Meta = map[string]string{}
+	}
+	endpoint.Meta[mcpReadOnlyMetaKey] = "true"
 }
 
 // readPathItemCritical reads the `x-critical` extension from a path item.
