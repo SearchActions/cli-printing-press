@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"time"
@@ -22,6 +23,8 @@ import (
 // using stage-and-swap-with-recovery transactional semantics.
 //
 // Steps:
+//  0. Pre-flight: refuse on Windows unless opts.Force (rename-swap and
+//     symlink recreation are unreliable there)
 //  1. Pre-flight: refuse non-clean git tree unless opts.Force
 //  2. Stage to sibling tempdir <parent>/<basename>.regen-merge-<ts>/
 //  3. Deep-copy published → tempdir (preserves novels, additions, collisions)
@@ -40,9 +43,21 @@ import (
 // On both renames failing, returns an error with absolute bak path so the
 // user can recover manually.
 func Apply(report *MergeReport, opts Options) error {
+	return apply(report, opts, runtime.GOOS)
+}
+
+// apply is Apply's implementation with goos as an explicit parameter so
+// tests can exercise the Windows refusal deterministically without relying
+// on the host they run on (CI is ubuntu-only).
+func apply(report *MergeReport, opts Options, goos string) error {
 	if report == nil {
 		return errors.New("nil report")
 	}
+
+	if goos == "windows" && !opts.Force {
+		return errors.New("regen-merge --apply is not supported on Windows: the rename-swap fails when files are held open, and copying the tree recreates symlinks, which Windows restricts. Run without --apply to see the classification, rerun on macOS/Linux, or pass --force (which also skips the clean-tree and path-containment checks)")
+	}
+
 	cliDir := report.CLIDir
 	freshDir := report.FreshDir
 

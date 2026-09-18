@@ -38,9 +38,15 @@ sibling tempdir, then a two-step rename atomically replaces the published
 tree. Failure mid-rename surfaces a recovery path so original data is
 never lost.
 
-Supported on macOS and Linux. Windows is not supported (rename semantics
-differ when files are held by editors). --apply requires a clean git
-tree at <cli-dir> by default; --force overrides.`,
+The dry-run classification works on every platform, including Windows.
+--apply refuses on Windows, because the rename-swap fails when files are
+held open and copying the tree recreates symlinks, which Windows
+restricts. --apply also refuses a dirty git tree at <cli-dir> by default.
+
+A single --force overrides the Windows refusal, the clean-tree check, and
+the CWD-containment check together. On Windows, the CWD-containment check
+is case-sensitive about the drive letter, so a "d:\" vs "D:\" mismatch
+will also push you toward --force.`,
 		Example: `  # Dry-run classification report against a fresh-generated tree:
   cli-printing-press regen-merge ~/library/postman-explore --fresh /tmp/fresh-postman
 
@@ -86,7 +92,7 @@ tree at <cli-dir> by default; --force overrides.`,
 	cmd.Flags().StringVar(&freshDir, "fresh", "", "Path to the fresh-generated CLI tree (required)")
 	cmd.Flags().BoolVar(&apply, "apply", false, "Apply safe changes (default: dry-run)")
 	cmd.Flags().BoolVar(&asJSON, "json", false, "Emit machine-readable JSON instead of the human report")
-	cmd.Flags().BoolVar(&force, "force", false, "Override path-containment and dirty-tree safety checks")
+	cmd.Flags().BoolVar(&force, "force", false, "Override path-containment, dirty-tree, and Windows --apply safety checks")
 	return cmd
 }
 

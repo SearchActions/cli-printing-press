@@ -4648,6 +4648,8 @@ The `promote` command handles the full sequence: refreshes stale host CLI/MCP bi
 
 `regen-merge --apply` exits 0 even when it leaves `TEMPLATED-WITH-ADDITIONS` files (the human-review verdicts are reported, not raised as errors). The halt condition must be checked explicitly against the report — capture `--json` and inspect the verdict counts:
 
+**Windows note:** `regen-merge --apply` refuses on Windows by default — you'll see `regen-merge --apply is not supported on Windows: ...` and the command exits with `ExitPublishError`. The dry-run (omit `--apply`) still works there. Rerun the sweep on macOS/Linux/WSL, or pass `--force` knowingly (which also disables the clean-tree and path-containment checks).
+
 ```bash
 REGEN_REPORT="$PROOFS_DIR/regen-merge-report.json"
 if ! "$PRINTING_PRESS_BIN" regen-merge "$LIB_TARGET" \
