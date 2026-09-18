@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/mvanhorn/cli-printing-press/v4/internal/naming"
+	"github.com/mvanhorn/cli-printing-press/v4/internal/platform"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/spec"
 	"github.com/stretchr/testify/require"
 )
@@ -58,7 +59,7 @@ func TestGeneratedPaginatedReadHonorsResponseFormat(t *testing.T) {
 	require.NoError(t, gen.Generate())
 	requireGeneratedCompiles(t, outputDir)
 
-	binaryPath := filepath.Join(outputDir, naming.CLI(apiSpec.Name))
+	binaryPath := platform.ExecutablePath(filepath.Join(outputDir, naming.CLI(apiSpec.Name)))
 	runGoCommand(t, outputDir, "build", "-o", binaryPath, "./cmd/"+naming.CLI(apiSpec.Name))
 
 	baseEnv := append(os.Environ(), strings.ToUpper(strings.ReplaceAll(apiSpec.Name, "-", "_"))+"_BASE_URL="+server.URL)
@@ -114,7 +115,7 @@ func TestGeneratedPaginatedReadHonorsResponseFormat(t *testing.T) {
 	storelessGen.VisionSet = VisionTemplateSet{MCP: true}
 	require.NoError(t, storelessGen.Generate())
 	requireGeneratedCompiles(t, storelessDir)
-	storelessBinary := filepath.Join(storelessDir, naming.CLI(storelessSpec.Name))
+	storelessBinary := platform.ExecutablePath(filepath.Join(storelessDir, naming.CLI(storelessSpec.Name)))
 	runGoCommand(t, storelessDir, "build", "-o", storelessBinary, "./cmd/"+naming.CLI(storelessSpec.Name))
 	for _, args := range [][]string{
 		{"html-posts", "list", "--json", "--all"},

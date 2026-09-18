@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/mvanhorn/cli-printing-press/v4/internal/naming"
+	"github.com/mvanhorn/cli-printing-press/v4/internal/platform"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/spec"
 	"github.com/stretchr/testify/require"
 )
@@ -102,7 +103,7 @@ func TestCredentialAliasFieldsRoundTripIndependently(t *testing.T) {
 			requireGeneratedCompiles(t, outputDir)
 			runGoCommandRequired(t, outputDir, "test", "./internal/cliutil", "./internal/config", "./internal/cli")
 
-			binPath := filepath.Join(outputDir, naming.CLI(apiSpec.Name))
+			binPath := platform.ExecutablePath(filepath.Join(outputDir, naming.CLI(apiSpec.Name)))
 			runGoCommandRequired(t, outputDir, "build", "-o", binPath, "./cmd/"+naming.CLI(apiSpec.Name))
 			home := t.TempDir()
 			dataHome := filepath.Join(home, "data")

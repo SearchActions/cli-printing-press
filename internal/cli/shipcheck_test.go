@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/mvanhorn/cli-printing-press/v4/internal/pipeline"
+	"github.com/mvanhorn/cli-printing-press/v4/internal/platform"
 )
 
 // buildShipcheckStub compiles the shipcheck stub once per test run and
@@ -19,7 +20,7 @@ import (
 // configurable via env vars: see internal/cli/testdata/shipcheck-stub/main.go.
 func buildShipcheckStub(t *testing.T) string {
 	t.Helper()
-	out := filepath.Join(t.TempDir(), "shipcheck-stub")
+	out := platform.ExecutablePath(filepath.Join(t.TempDir(), "shipcheck-stub"))
 	cmd := exec.Command("go", "build", "-o", out, "./testdata/shipcheck-stub")
 	if buildOut, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("building shipcheck stub: %v\n%s", err, string(buildOut))
@@ -443,7 +444,7 @@ func TestShipcheck_ValidateNarrativeUsesResearchAndBuiltBinary(t *testing.T) {
 
 	args := findInvocation(readStubLog(t, h.logFile), "validate-narrative")
 	wantResearch := filepath.Join(researchDir, "research.json")
-	wantBinary := filepath.Join(h.dir, filepath.Base(h.dir))
+	wantBinary := platform.ExecutablePath(filepath.Join(h.dir, filepath.Base(h.dir)))
 	for _, want := range []string{"--strict", "--full-examples", "--research", wantResearch, "--binary", wantBinary} {
 		if !argvHas(args, want) {
 			t.Errorf("validate-narrative argv missing %q: %v", want, args)

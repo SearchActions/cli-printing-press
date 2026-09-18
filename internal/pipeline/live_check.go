@@ -415,16 +415,22 @@ func liveCheckFreshRunnableBinaryPath(cliDir, name string, newestSource time.Tim
 }
 
 func liveCheckExistingStageBinaryPath(cliDir, name string) (string, string) {
+	return liveCheckExistingStageBinaryPathForGOOS(cliDir, name, runtime.GOOS)
+}
+
+func liveCheckExistingStageBinaryPathForGOOS(cliDir, name, goos string) (string, string) {
 	stagedDir := filepath.Join(cliDir, "build", "stage", "bin")
 	for _, candidate := range liveCheckBinaryNames(cliDir, name) {
-		for _, path := range liveCheckBinaryCandidatePathsForName(cliDir, candidate, runtime.GOOS) {
+		for _, path := range liveCheckBinaryCandidatePathsForName(cliDir, candidate, goos) {
 			cleanPath := filepath.Clean(path)
 			if filepath.Dir(cleanPath) != filepath.Clean(stagedDir) {
 				continue
 			}
-			if _, err := os.Stat(cleanPath); err == nil {
-				return cleanPath, candidate
+			info, err := os.Stat(cleanPath)
+			if err != nil || !isLiveCheckExecutableForGOOS(cleanPath, info.Mode(), goos) {
+				continue
 			}
+			return cleanPath, candidate
 		}
 	}
 	return "", ""
@@ -639,6 +645,9 @@ func resolveBinaryPathForGOOS(cliDir, name, goos string) (string, error) {
 		}
 	}
 	if nonExecutablePath != "" {
+		if goos == "windows" {
+			return "", fmt.Errorf("binary %q is not runnable on Windows (missing .exe); rebuild with `go build -o <name>.exe`", nonExecutablePath)
+		}
 		return "", fmt.Errorf("binary %q is not executable", nonExecutablePath)
 	}
 	return "", fmt.Errorf("no runnable binary found in %q (tried %v)", cliDir, candidates)
@@ -649,7 +658,7 @@ func isLiveCheckExecutableForGOOS(path string, mode os.FileMode, goos string) bo
 		return false
 	}
 	if goos == "windows" {
-		return true
+		return strings.EqualFold(filepath.Ext(path), ".exe")
 	}
 	return mode&0o111 != 0
 }

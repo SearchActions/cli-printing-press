@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/mvanhorn/cli-printing-press/v4/internal/naming"
+	"github.com/mvanhorn/cli-printing-press/v4/internal/platform"
 )
 
 func TestApplyScopedConfigHomeRewritesHomeVars(t *testing.T) {
@@ -313,7 +314,7 @@ func TestSubprocessWriteDoesNotEscapeScopedHome(t *testing.T) {
 	if err := os.WriteFile(probeSrc, []byte(probeProgram), 0o600); err != nil {
 		t.Fatalf("write probe source: %v", err)
 	}
-	probeBin := filepath.Join(probeDir, "probe")
+	probeBin := platform.ExecutablePath(filepath.Join(probeDir, "probe"))
 	buildCtx, buildCancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer buildCancel()
 	build := exec.CommandContext(buildCtx, "go", "build", "-o", probeBin, probeSrc)

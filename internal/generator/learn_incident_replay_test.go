@@ -15,6 +15,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/mvanhorn/cli-printing-press/v4/internal/naming"
+	"github.com/mvanhorn/cli-printing-press/v4/internal/platform"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/spec"
 )
 
@@ -39,14 +40,15 @@ func TestIncidentReplay(t *testing.T) {
 	require.NoError(t, gen.Generate())
 
 	binName := naming.CLI(apiSpec.Name)
-	runGoCommand(t, outputDir, "build", "-o", binName, "./cmd/"+binName)
+	binOutputName := platform.ExecutablePath(binName)
+	runGoCommand(t, outputDir, "build", "-o", binOutputName, "./cmd/"+binName)
 
 	server := httptest.NewServer(http.HandlerFunc(incidentReplayAPI))
 	defer server.Close()
 
 	h := &incidentHarness{
 		t:         t,
-		binary:    filepath.Join(outputDir, binName),
+		binary:    filepath.Join(outputDir, binOutputName),
 		binName:   binName,
 		envPrefix: naming.EnvPrefix(apiSpec.Name),
 		baseURL:   server.URL,

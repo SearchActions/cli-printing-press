@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/mvanhorn/cli-printing-press/v4/internal/naming"
+	"github.com/mvanhorn/cli-printing-press/v4/internal/platform"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/spec"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -124,7 +125,7 @@ func TestQueryEndpointSyncPagesAndUnwraps(t *testing.T) {
 	outputDir := filepath.Join(t.TempDir(), slug)
 	require.NoError(t, New(apiSpec, outputDir).Generate())
 
-	binaryPath := filepath.Join(outputDir, slug)
+	binaryPath := platform.ExecutablePath(filepath.Join(outputDir, slug))
 	runGoCommand(t, outputDir, "build", "-o", binaryPath, "./cmd/"+slug)
 
 	dbPath := filepath.Join(t.TempDir(), "sync.db")

@@ -12,6 +12,7 @@ import (
 
 	"github.com/mvanhorn/cli-printing-press/v4/internal/devicespec"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/naming"
+	"github.com/mvanhorn/cli-printing-press/v4/internal/platform"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -492,7 +493,7 @@ func TestGeneratedBLEDeviceEmitsParameterizedCommand(t *testing.T) {
 
 	// End-to-end: the built command must accept its positional arg (replay mode),
 	// not reject it with "accepts 0 arg(s)".
-	bin := filepath.Join(outputDir, "ble-param-device-pp-cli")
+	bin := platform.ExecutablePath(filepath.Join(outputDir, "ble-param-device-pp-cli"))
 	runGoCommandRequired(t, outputDir, "build", "-o", bin, "./cmd/ble-param-device-pp-cli")
 	stdout, _ := runGeneratedBinary(t, bin, "set-level", "5", "--dry-run", "--json")
 	assert.Contains(t, stdout, "set-level")

@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/mvanhorn/cli-printing-press/v4/internal/platform"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/spec"
 	"github.com/stretchr/testify/require"
 )
@@ -50,7 +51,7 @@ func TestGeneratedNumericPathAndQueryParamsUsePlainDecimalFormatting(t *testing.
 
 	requireGeneratedCompiles(t, outputDir)
 
-	binaryPath := filepath.Join(outputDir, "numeric-param-format-pp-cli")
+	binaryPath := platform.ExecutablePath(filepath.Join(outputDir, "numeric-param-format-pp-cli"))
 	runGoCommand(t, outputDir, "build", "-o", binaryPath, "./cmd/numeric-param-format-pp-cli")
 
 	stdout, stderr := runGeneratedBinary(t, binaryPath, "tasks", "get", "CS-27102", "--team-id", "4653482", "--dry-run")

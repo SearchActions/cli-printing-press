@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/mvanhorn/cli-printing-press/v4/internal/platform"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/spec"
 	"github.com/stretchr/testify/require"
 )
@@ -53,7 +54,7 @@ func TestGeneratedArrayQueryParamUsesRepeatedKeysByDefault(t *testing.T) {
 	require.Contains(t, mcpSrc, `appendMCPArrayQueryParam(path, binding.WireName, v, binding.QueryStyle, binding.QueryExplode)`)
 	requireGeneratedCompiles(t, outputDir)
 
-	binaryPath := filepath.Join(outputDir, "array-query-param-pp-cli")
+	binaryPath := platform.ExecutablePath(filepath.Join(outputDir, "array-query-param-pp-cli"))
 	runGoCommand(t, outputDir, "build", "-o", binaryPath, "./cmd/array-query-param-pp-cli")
 	runGeneratedBinary(t, binaryPath, "foods", "get", "--fdc-ids", "534358,373052")
 	require.Equal(t, []string{"534358", "373052"}, <-requests)
@@ -137,7 +138,7 @@ func TestArrayQuerySerialization(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "internal", "mcp", "array_query_test.go"), []byte(runtimeTest), 0o600))
 	runGoCommand(t, outputDir, "test", "./internal/mcp", "-run", "^TestArrayQuerySerialization$")
 
-	binaryPath := filepath.Join(outputDir, "array-query-mcp-pp-cli")
+	binaryPath := platform.ExecutablePath(filepath.Join(outputDir, "array-query-mcp-pp-cli"))
 	runGoCommand(t, outputDir, "build", "-o", binaryPath, "./cmd/array-query-mcp-pp-cli")
 	runGeneratedBinary(t, binaryPath, "foods", "get")
 	require.Equal(t, []string{"534358", "373052"}, <-requests)
@@ -182,7 +183,7 @@ func TestGeneratedArrayQueryParamHonorsFormExplodeFalse(t *testing.T) {
 	require.NoError(t, New(apiSpec, outputDir).Generate())
 	requireGeneratedCompiles(t, outputDir)
 
-	binaryPath := filepath.Join(outputDir, "compact-array-query-param-pp-cli")
+	binaryPath := platform.ExecutablePath(filepath.Join(outputDir, "compact-array-query-param-pp-cli"))
 	runGoCommand(t, outputDir, "build", "-o", binaryPath, "./cmd/compact-array-query-param-pp-cli")
 	runGeneratedBinary(t, binaryPath, "foods", "get", "--fdc-ids", "534358,373052")
 

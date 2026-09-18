@@ -10,6 +10,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/mvanhorn/cli-printing-press/v4/internal/platform"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/spec"
 )
 
@@ -80,7 +81,7 @@ func TestGenerateAuth0SPAEmitsCDPLoginCmd(t *testing.T) {
 		t.Skip("skipping build check in -short mode (downloads chromedp)")
 	}
 	runGoCommand(t, outputDir, "mod", "tidy")
-	binPath := filepath.Join(outputDir, "factor75-pp-cli")
+	binPath := platform.ExecutablePath(filepath.Join(outputDir, "factor75-pp-cli"))
 	runGoCommand(t, outputDir, "build", "-o", binPath, "./cmd/factor75-pp-cli")
 	out, err := exec.Command(binPath, "auth", "login", "--chrome", "--auth0-spa", "--help").CombinedOutput()
 	require.NoError(t, err, "`auth login --chrome --auth0-spa --help` failed: %s", string(out))

@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/mvanhorn/cli-printing-press/v4/internal/generator"
+	"github.com/mvanhorn/cli-printing-press/v4/internal/platform"
 	"github.com/stretchr/testify/require"
 )
 
@@ -963,7 +964,7 @@ func buildPrintingPressBinary(t *testing.T) string {
 			return
 		}
 
-		out := filepath.Join(dir, "printing-press")
+		out := platform.ExecutablePath(filepath.Join(dir, "printing-press"))
 		cmd := exec.Command("go", "build", "-o", out, "./cmd/cli-printing-press")
 		// The test runs from internal/cli; go up to repo root.
 		cmd.Dir = "../.."

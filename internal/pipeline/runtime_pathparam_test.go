@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/mvanhorn/cli-printing-press/v4/internal/platform"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -255,7 +256,7 @@ Flags:
 `+"`"+`)
 }
 `)
-	binaryPath := filepath.Join(dir, "test-cli")
+	binaryPath := platform.ExecutablePath(filepath.Join(dir, "test-cli"))
 	out, err := exec.Command("go", "build", "-o", binaryPath, mainFile).CombinedOutput()
 	require.NoError(t, err, "building probe fixture: %s", string(out))
 	return binaryPath
@@ -363,7 +364,7 @@ Flags:
 	}
 }
 `)
-	binaryPath := filepath.Join(dir, "cli")
+	binaryPath := platform.ExecutablePath(filepath.Join(dir, "cli"))
 	out, err := exec.Command("go", "build", "-o", binaryPath, mainFile).CombinedOutput()
 	require.NoError(t, err, "build fixture: %s", string(out))
 	return binaryPath

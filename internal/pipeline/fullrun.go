@@ -13,6 +13,7 @@ import (
 	"github.com/mvanhorn/cli-printing-press/v4/internal/llmpolish"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/naming"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/openapi"
+	"github.com/mvanhorn/cli-printing-press/v4/internal/platform"
 	"gopkg.in/yaml.v3"
 )
 
@@ -202,7 +203,7 @@ func MakeBestCLI(apiName, level, specFlag, specURL, outputDir, pressBinary strin
 	}
 
 	// Step 5: Dogfood
-	cliBinaryPath := filepath.Join(workingDir, naming.CLI(apiName))
+	cliBinaryPath := platform.ExecutablePath(filepath.Join(workingDir, naming.CLI(apiName)))
 	buildCmd := exec.Command("go", "build", "-o", cliBinaryPath, "./cmd/...")
 	buildCmd.Dir = workingDir
 	if buildErr := buildCmd.Run(); buildErr != nil {

@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/mvanhorn/cli-printing-press/v4/internal/naming"
+	"github.com/mvanhorn/cli-printing-press/v4/internal/platform"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/spec"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -171,7 +172,7 @@ func TestGenerateReadOnlyFormHTMLTableEndpoint(t *testing.T) {
 	assert.Contains(t, mcpSrc, `data, _, err = c.PostQueryFormWithParams(ctx, path, params, formFields)`)
 
 	runGoCommand(t, outputDir, "mod", "tidy")
-	binaryPath := filepath.Join(outputDir, "formhtml-pp-cli")
+	binaryPath := platform.ExecutablePath(filepath.Join(outputDir, "formhtml-pp-cli"))
 	runGoCommand(t, outputDir, "build", "-o", binaryPath, "./cmd/formhtml-pp-cli")
 
 	cmd := exec.Command(binaryPath, "contracts", "list", "--json")

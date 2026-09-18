@@ -12,6 +12,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/mvanhorn/cli-printing-press/v4/internal/platform"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/spec"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -141,7 +142,7 @@ func TestClientBasePathLiveRequest(t *testing.T) {
 	require.NoError(t, New(apiSpec, outputDir).Generate())
 
 	runGoCommand(t, outputDir, "mod", "tidy")
-	binaryPath := filepath.Join(outputDir, "bplive-pp-cli")
+	binaryPath := platform.ExecutablePath(filepath.Join(outputDir, "bplive-pp-cli"))
 	runGoCommand(t, outputDir, "build", "-o", binaryPath, "./cmd/bplive-pp-cli")
 
 	cmd := exec.Command(binaryPath, "things", "list", "--json")
@@ -245,7 +246,7 @@ func TestClientAbsoluteEndpointPathLiveRequest(t *testing.T) {
 		"sibling relative endpoint should stay relative")
 
 	runGoCommand(t, outputDir, "mod", "tidy")
-	binaryPath := filepath.Join(outputDir, "abspathlive-pp-cli")
+	binaryPath := platform.ExecutablePath(filepath.Join(outputDir, "abspathlive-pp-cli"))
 	runGoCommand(t, outputDir, "build", "-o", binaryPath, "./cmd/abspathlive-pp-cli")
 
 	cmd := exec.Command(binaryPath, "markets", "book", "--json")

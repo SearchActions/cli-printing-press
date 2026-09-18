@@ -835,7 +835,7 @@ func TestLiveCheckResolveBinaryPathSkipsNonExecutableCandidate(t *testing.T) {
 	require.Equal(t, filepath.Clean(rootPath), got)
 }
 
-func TestLiveCheckResolveBinaryPathAcceptsWindowsExtensionlessCandidate(t *testing.T) {
+func TestLiveCheckResolveBinaryPathRejectsWindowsExtensionlessCandidate(t *testing.T) {
 	t.Parallel()
 
 	dir := t.TempDir()
@@ -845,9 +845,31 @@ func TestLiveCheckResolveBinaryPathAcceptsWindowsExtensionlessCandidate(t *testi
 	stagedPath := filepath.Join(stagedDir, "stub")
 	require.NoError(t, os.WriteFile(stagedPath, []byte("windows binary"), 0o644))
 
+	_, err := resolveBinaryPathForGOOS(dir, "stub", "windows")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), ".exe")
+}
+
+func TestLiveCheckResolveBinaryPathPrefersExeOverNewerExtensionlessCandidate(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	stagedDir := filepath.Join(dir, "build", "stage", "bin")
+	require.NoError(t, os.MkdirAll(stagedDir, 0o755))
+
+	exePath := filepath.Join(stagedDir, "stub.exe")
+	require.NoError(t, os.WriteFile(exePath, []byte("windows binary"), 0o644))
+	extensionlessPath := filepath.Join(stagedDir, "stub")
+	require.NoError(t, os.WriteFile(extensionlessPath, []byte("stale windows binary"), 0o644))
+
+	oldTime := time.Now().Add(-time.Hour)
+	newTime := time.Now()
+	require.NoError(t, os.Chtimes(exePath, oldTime, oldTime))
+	require.NoError(t, os.Chtimes(extensionlessPath, newTime, newTime))
+
 	got, err := resolveBinaryPathForGOOS(dir, "stub", "windows")
 	require.NoError(t, err)
-	require.Equal(t, filepath.Clean(stagedPath), got)
+	require.Equal(t, filepath.Clean(exePath), got)
 }
 
 func TestLiveCheckExecutableUsesHostExecutableRules(t *testing.T) {
@@ -856,9 +878,9 @@ func TestLiveCheckExecutableUsesHostExecutableRules(t *testing.T) {
 	assert.True(t,
 		isLiveCheckExecutableForGOOS(`C:\tmp\petstore-pp-cli.exe`, 0o644, "windows"),
 		"Windows executability is path-based, not POSIX mode-bit-based")
-	assert.True(t,
+	assert.False(t,
 		isLiveCheckExecutableForGOOS(`C:\tmp\petstore-pp-cli`, 0o755, "windows"),
-		"Windows live-check should skip POSIX executable-bit checks")
+		"Windows live-check must reject extensionless candidates; Windows can never exec them")
 	assert.False(t,
 		isLiveCheckExecutableForGOOS(`C:\tmp\petstore-pp-cli`, os.ModeDir|0o755, "windows"),
 		"Windows live-check should still reject directories")
@@ -868,6 +890,28 @@ func TestLiveCheckExecutableUsesHostExecutableRules(t *testing.T) {
 	assert.False(t,
 		isLiveCheckExecutableForGOOS("/tmp/petstore-pp-cli", 0o644, "linux"),
 		"Unix non-executable files must still be rejected")
+}
+
+func TestLiveCheckExistingStageBinaryPathForGOOS(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	stagedDir := filepath.Join(dir, "build", "stage", "bin")
+	require.NoError(t, os.MkdirAll(stagedDir, 0o755))
+
+	extensionlessPath := filepath.Join(stagedDir, "stub-pp-cli")
+	require.NoError(t, os.WriteFile(extensionlessPath, []byte("stale windows binary"), 0o644))
+
+	gotPath, gotCandidate := liveCheckExistingStageBinaryPathForGOOS(dir, "stub-pp-cli", "windows")
+	assert.Empty(t, gotPath, "a stale extensionless-only stage binary must not be selected on Windows")
+	assert.Empty(t, gotCandidate)
+
+	exePath := filepath.Join(stagedDir, "stub-pp-cli.exe")
+	require.NoError(t, os.WriteFile(exePath, []byte("windows binary"), 0o644))
+
+	gotPath, gotCandidate = liveCheckExistingStageBinaryPathForGOOS(dir, "stub-pp-cli", "windows")
+	assert.Equal(t, filepath.Clean(exePath), gotPath)
+	assert.Equal(t, "stub-pp-cli", gotCandidate)
 }
 
 func TestLiveCheck_FindsBinaryInBuildStageBin(t *testing.T) {

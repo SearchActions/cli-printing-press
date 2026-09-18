@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/mvanhorn/cli-printing-press/v4/internal/platform"
 	apispec "github.com/mvanhorn/cli-printing-press/v4/internal/spec"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -629,7 +630,7 @@ func main() {
 	os.Exit(1)
 }
 `)
-	binaryPath := filepath.Join(dir, "test-cli")
+	binaryPath := platform.ExecutablePath(filepath.Join(dir, "test-cli"))
 	buildCmd := exec.Command("go", "build", "-o", binaryPath, mainFile)
 	out, err := buildCmd.CombinedOutput()
 	require.NoError(t, err, "building test binary: %s", string(out))
@@ -656,7 +657,7 @@ func main() {
 	os.Exit(1)
 }
 `)
-	binaryPath := filepath.Join(dir, "test-cli")
+	binaryPath := platform.ExecutablePath(filepath.Join(dir, "test-cli"))
 	buildCmd := exec.Command("go", "build", "-o", binaryPath, mainFile)
 	out, err := buildCmd.CombinedOutput()
 	require.NoError(t, err, "building test binary: %s", string(out))
@@ -683,7 +684,7 @@ func main() {
 	os.Exit(1)
 }
 `)
-	binaryPath := filepath.Join(dir, "test-cli")
+	binaryPath := platform.ExecutablePath(filepath.Join(dir, "test-cli"))
 	buildCmd := exec.Command("go", "build", "-o", binaryPath, mainFile)
 	out, err := buildCmd.CombinedOutput()
 	require.NoError(t, err, "building test binary: %s", string(out))
@@ -728,7 +729,7 @@ func main() {
 	}
 }
 `)
-	binaryPath := filepath.Join(dir, "test-cli")
+	binaryPath := platform.ExecutablePath(filepath.Join(dir, "test-cli"))
 	buildCmd := exec.Command("go", "build", "-o", binaryPath, mainFile)
 	out, err := buildCmd.CombinedOutput()
 	require.NoError(t, err, "building test binary: %s", string(out))
@@ -794,7 +795,7 @@ func dbArg(args []string) string {
 	return ""
 }
 `, rowCount))
-	binaryPath := filepath.Join(dir, "test-cli")
+	binaryPath := platform.ExecutablePath(filepath.Join(dir, "test-cli"))
 	buildCmd := exec.Command("go", "build", "-o", binaryPath, mainFile)
 	out, err := buildCmd.CombinedOutput()
 	require.NoError(t, err, "building test binary: %s", string(out))
@@ -866,7 +867,7 @@ func dbArg(args []string) string {
 	return ""
 }
 `, rowCount))
-	binaryPath := filepath.Join(dir, "test-cli")
+	binaryPath := platform.ExecutablePath(filepath.Join(dir, "test-cli"))
 	buildCmd := exec.Command("go", "build", "-o", binaryPath, mainFile)
 	out, err := buildCmd.CombinedOutput()
 	require.NoError(t, err, "building test binary: %s", string(out))
@@ -900,7 +901,7 @@ func main() {
 	os.Exit(1)
 }
 `)
-	binaryPath := filepath.Join(dir, "test-cli")
+	binaryPath := platform.ExecutablePath(filepath.Join(dir, "test-cli"))
 	buildCmd := exec.Command("go", "build", "-o", binaryPath, mainFile)
 	out, err := buildCmd.CombinedOutput()
 	require.NoError(t, err, "building test binary: %s", string(out))
@@ -1023,7 +1024,7 @@ func dbArg(args []string) string {
 	return ""
 }
 `, settingsRows, itemRows))
-	binaryPath := filepath.Join(dir, "test-cli")
+	binaryPath := platform.ExecutablePath(filepath.Join(dir, "test-cli"))
 	buildCmd := exec.Command("go", "build", "-o", binaryPath, mainFile)
 	out, err := buildCmd.CombinedOutput()
 	require.NoError(t, err, "building test binary: %s", string(out))
@@ -1051,7 +1052,7 @@ func main() {
 	os.Exit(1)
 }
 `)
-	binaryPath := filepath.Join(dir, "test-cli")
+	binaryPath := platform.ExecutablePath(filepath.Join(dir, "test-cli"))
 	buildCmd := exec.Command("go", "build", "-o", binaryPath, mainFile)
 	out, err := buildCmd.CombinedOutput()
 	require.NoError(t, err, "building test binary: %s", string(out))
@@ -1079,7 +1080,7 @@ func main() {
 	os.Exit(1)
 }
 `)
-	binaryPath := filepath.Join(dir, "test-cli")
+	binaryPath := platform.ExecutablePath(filepath.Join(dir, "test-cli"))
 	buildCmd := exec.Command("go", "build", "-o", binaryPath, mainFile)
 	out, err := buildCmd.CombinedOutput()
 	require.NoError(t, err, "building test binary: %s", string(out))
@@ -1117,7 +1118,7 @@ func main() {
 	fmt.Println("  -h, --help   help for test-cli")
 }
 `)
-	binaryPath := filepath.Join(binDir, "test-cli")
+	binaryPath := platform.ExecutablePath(filepath.Join(binDir, "test-cli"))
 	buildCmd := exec.Command("go", "build", "-o", binaryPath, mainFile)
 	out, err := buildCmd.CombinedOutput()
 	require.NoError(t, err, "building test binary: %s", string(out))

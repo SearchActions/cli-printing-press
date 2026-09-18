@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/mvanhorn/cli-printing-press/v4/internal/platform"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/spec"
 	"github.com/stretchr/testify/require"
 )
@@ -51,7 +52,7 @@ func TestOAuthLoginUsesPKCEWhenNoClientSecret(t *testing.T) {
 	require.Contains(t, auth, `redirectURI := fmt.Sprintf("http://%s:%d/callback", redirectHost,`)
 	require.NotContains(t, auth, `redirectHost := "localhost"`)
 
-	binPath := filepath.Join(outputDir, "oauth-pkce-login-pp-cli")
+	binPath := platform.ExecutablePath(filepath.Join(outputDir, "oauth-pkce-login-pp-cli"))
 	runGoCommand(t, outputDir, "build", "-o", binPath, "./cmd/oauth-pkce-login-pp-cli")
 
 	// Under verify-env the command prints the authorize URL it would launch;

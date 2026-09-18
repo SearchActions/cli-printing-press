@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/mvanhorn/cli-printing-press/v4/internal/llmpolish"
+	"github.com/mvanhorn/cli-printing-press/v4/internal/platform"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -20,7 +21,7 @@ func TestFullRun(t *testing.T) {
 	}
 
 	// Build the press binary first
-	pressBinary := filepath.Join(t.TempDir(), "printing-press")
+	pressBinary := platform.ExecutablePath(filepath.Join(t.TempDir(), "printing-press"))
 	repoRoot := findRepoRoot()
 	cmd := exec.Command("go", "build", "-o", pressBinary, "./cmd/cli-printing-press")
 	cmd.Dir = repoRoot

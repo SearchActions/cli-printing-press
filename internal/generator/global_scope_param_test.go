@@ -11,6 +11,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/mvanhorn/cli-printing-press/v4/internal/platform"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/spec"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -141,7 +142,7 @@ func TestSyncGlobalScopeEnvDefaultsUseFlatGlobal(t *testing.T) {
 
 	runGoCommandRequired(t, outputDir, "test", "-v", "-run", "^TestSyncGlobalScopeEnvDefaultsUseFlatGlobal$", "./internal/cli")
 
-	binaryPath := filepath.Join(outputDir, "cipp-pp-cli")
+	binaryPath := platform.ExecutablePath(filepath.Join(outputDir, "cipp-pp-cli"))
 	runGoCommand(t, outputDir, "build", "-o", binaryPath, "./cmd/cipp-pp-cli")
 
 	cmd := exec.Command(binaryPath, "users", "list", "--json", "--limit", "10")

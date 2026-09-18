@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/mvanhorn/cli-printing-press/v4/internal/naming"
+	"github.com/mvanhorn/cli-printing-press/v4/internal/platform"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/spec"
 	"github.com/stretchr/testify/require"
 )
@@ -176,7 +177,7 @@ func buildGeneratedBinary(t *testing.T, apiSpec *spec.APISpec) (string, string) 
 	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
 	require.NoError(t, New(apiSpec, outputDir).Generate())
 	runGoCommand(t, outputDir, "mod", "tidy")
-	binaryPath := filepath.Join(outputDir, naming.CLI(apiSpec.Name))
+	binaryPath := platform.ExecutablePath(filepath.Join(outputDir, naming.CLI(apiSpec.Name)))
 	runGoCommand(t, outputDir, "build", "-o", binaryPath, "./cmd/"+naming.CLI(apiSpec.Name))
 	return outputDir, binaryPath
 }

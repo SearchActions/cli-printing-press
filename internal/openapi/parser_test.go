@@ -15,6 +15,7 @@ import (
 	"github.com/getkin/kin-openapi/openapi3"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/generator"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/naming"
+	"github.com/mvanhorn/cli-printing-press/v4/internal/platform"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/spec"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -1540,7 +1541,7 @@ func TestGenerateDataEnvelopeAllOfBodyFlags(t *testing.T) {
 	gen.VisionSet = generator.VisionTemplateSet{Store: true, Sync: true}
 	require.NoError(t, gen.Generate())
 
-	binaryPath := filepath.Join(outputDir, naming.CLI(parsed.Name))
+	binaryPath := platform.ExecutablePath(filepath.Join(outputDir, naming.CLI(parsed.Name)))
 	runGo(t, outputDir, "mod", "tidy")
 	runGo(t, outputDir, "build", "-o", binaryPath, "./cmd/"+naming.CLI(parsed.Name))
 

@@ -12,6 +12,8 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	"github.com/mvanhorn/cli-printing-press/v4/internal/platform"
 )
 
 // TestExtractSubcommandWords pins the wordlist rule against the bash
@@ -1028,7 +1030,7 @@ func main() {
 			stubErr = err
 			return
 		}
-		stubPath = filepath.Join(dir, "stub")
+		stubPath = platform.ExecutablePath(filepath.Join(dir, "stub"))
 		if out, err := exec.Command("go", "build", "-o", stubPath, srcPath).CombinedOutput(); err != nil {
 			stubErr = fmt.Errorf("building stub: %v\n%s", err, out)
 		}
@@ -1083,7 +1085,7 @@ func main() {
 	if err := os.WriteFile(srcPath, []byte(src), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	binaryPath := filepath.Join(dir, "stub")
+	binaryPath := platform.ExecutablePath(filepath.Join(dir, "stub"))
 	if out, err := exec.Command("go", "build", "-o", binaryPath, srcPath).CombinedOutput(); err != nil {
 		t.Fatalf("building template-var stub: %v\n%s", err, out)
 	}

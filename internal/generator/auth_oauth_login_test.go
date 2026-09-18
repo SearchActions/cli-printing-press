@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/mvanhorn/cli-printing-press/v4/internal/platform"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/spec"
 	"github.com/stretchr/testify/require"
 )
@@ -55,7 +56,7 @@ func TestOAuthLoginTopLevelCommandAndCredentialFallback(t *testing.T) {
 	require.NoError(t, err)
 	require.Contains(t, string(doctorSrc), `report["auth_hint"] = "oauth-login-prompts-pp-cli login"`)
 
-	binPath := filepath.Join(outputDir, "oauth-login-prompts-pp-cli")
+	binPath := platform.ExecutablePath(filepath.Join(outputDir, "oauth-login-prompts-pp-cli"))
 	runGoCommand(t, outputDir, "build", "-o", binPath, "./cmd/oauth-login-prompts-pp-cli")
 	helpOut, err := exec.Command(binPath, "login", "--help").CombinedOutput()
 	require.NoError(t, err, "top-level login --help failed: %s", string(helpOut))
