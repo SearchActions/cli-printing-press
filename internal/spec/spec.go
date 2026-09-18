@@ -4410,6 +4410,14 @@ func cookieDomainFromBaseURL(raw string) string {
 
 var publicParamNameRe = regexp.MustCompile(`^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$`)
 
+// IsPublicParamName reports whether name is a valid public CLI/MCP flag name
+// (lowercase kebab-case). Exported because the generator enforces the same
+// rule on in-memory specs and merged overlays that never pass through
+// Validate, so the two layers must share one predicate instead of drifting.
+func IsPublicParamName(name string) bool {
+	return publicParamNameRe.MatchString(name)
+}
+
 func validateEndpointPublicParamNames(endpoint Endpoint) error {
 	if err := validatePublicParamNameList("params", endpoint.Params); err != nil {
 		return err
@@ -4456,7 +4464,7 @@ func validatePublicParamNameList(context string, params []Param) error {
 			return fmt.Errorf("%s: flag_name must not be empty", label)
 		}
 		if p.FlagName != "" {
-			if !publicParamNameRe.MatchString(p.FlagName) {
+			if !IsPublicParamName(p.FlagName) {
 				return fmt.Errorf("%s: flag_name %q must be lowercase kebab-case", label, p.FlagName)
 			}
 			if previous, ok := seen[p.FlagName]; ok {
@@ -4465,7 +4473,7 @@ func validatePublicParamNameList(context string, params []Param) error {
 			seen[p.FlagName] = label + " flag_name"
 		}
 		publicName := p.FlagName
-		if publicName == "" && publicParamNameRe.MatchString(p.Name) {
+		if publicName == "" && IsPublicParamName(p.Name) {
 			publicName = p.Name
 		}
 		for ai, alias := range p.Aliases {
@@ -4473,7 +4481,7 @@ func validatePublicParamNameList(context string, params []Param) error {
 			if alias == "" {
 				return fmt.Errorf("%s: alias must not be empty", aliasLabel)
 			}
-			if !publicParamNameRe.MatchString(alias) {
+			if !IsPublicParamName(alias) {
 				return fmt.Errorf("%s: alias %q must be lowercase kebab-case", aliasLabel, alias)
 			}
 			if publicName != "" && alias == publicName {

@@ -1,6 +1,7 @@
 package generator
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 
@@ -366,8 +367,24 @@ func publicFlagEntries(params []spec.Param, kind string) []publicFlagEntry {
 	return entries
 }
 
+// validatePublicFlagEntry rejects one authored public name. Explicit names
+// must be canonical lowercase kebab-case before the reserved lookup runs: a
+// variant spelling (dry_run, Dry-Run) is not a runtime shadow (cobra is
+// case-sensitive and does not fold underscores), but accepting it would emit
+// a confusing lookalike flag and put arbitrary characters into the generated
+// string literal. Derived names come from naming.FlagName and are canonical
+// by construction, so they skip this check.
 func validatePublicFlagEntry(resKey, epName string, entry publicFlagEntry, reservedFlags map[string]struct{}, seen map[string]publicFlagUse) error {
 	if entry.explicit {
+		if !spec.IsPublicParamName(entry.name) {
+			msg := fmt.Sprintf("resource %q endpoint %q: %s %q must be lowercase kebab-case", resKey, epName, entry.label, entry.name)
+			if canonical := flagName(entry.name); canonical != entry.name {
+				if _, reserved := reservedFlags[canonical]; reserved {
+					msg += fmt.Sprintf(" (it would shadow-spell reserved flag --%s)", canonical)
+				}
+			}
+			return errors.New(msg)
+		}
 		if _, ok := reservedFlags[entry.name]; ok {
 			return fmt.Errorf("resource %q endpoint %q: %s %q collides with reserved flag --%s", resKey, epName, entry.label, entry.name, entry.name)
 		}

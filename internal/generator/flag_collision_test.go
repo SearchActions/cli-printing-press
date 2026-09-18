@@ -63,12 +63,13 @@ func TestGenerateDeduplicatesCamelCollidingParams(t *testing.T) {
 
 func TestGenerateRejectsAuthoredPublicFlagCollisions(t *testing.T) {
 	cases := []struct {
-		name    string
-		params  []spec.Param
-		body    []spec.Param
-		paging  *spec.Pagination
-		method  string
-		wantErr string
+		name       string
+		params     []spec.Param
+		body       []spec.Param
+		paging     *spec.Pagination
+		method     string
+		wantErrs   []string
+		wantNotErr string
 	}{
 		{
 			name: "alias equals fallback public name",
@@ -76,8 +77,8 @@ func TestGenerateRejectsAuthoredPublicFlagCollisions(t *testing.T) {
 				{Name: "s", Type: "string", FlagName: "address", Aliases: []string{"city"}},
 				{Name: "city", Type: "string"},
 			},
-			method:  "GET",
-			wantErr: `public name "city" collides with param "s" alias`,
+			method:   "GET",
+			wantErrs: []string{`public name "city" collides with param "s" alias`},
 		},
 		{
 			name: "duplicate authored flag name",
@@ -85,8 +86,8 @@ func TestGenerateRejectsAuthoredPublicFlagCollisions(t *testing.T) {
 				{Name: "s", Type: "string", FlagName: "address"},
 				{Name: "street", Type: "string", FlagName: "address"},
 			},
-			method:  "GET",
-			wantErr: `public name "address" collides with param "s" public name`,
+			method:   "GET",
+			wantErrs: []string{`public name "address" collides with param "s" public name`},
 		},
 		{
 			name: "body collision",
@@ -96,25 +97,103 @@ func TestGenerateRejectsAuthoredPublicFlagCollisions(t *testing.T) {
 			body: []spec.Param{
 				{Name: "address", Type: "string"},
 			},
-			method:  "POST",
-			wantErr: `body "address" public name "address" collides with param "s" public name`,
+			method:   "POST",
+			wantErrs: []string{`body "address" public name "address" collides with param "s" public name`},
 		},
 		{
 			name: "reserved pagination flag",
 			params: []spec.Param{
 				{Name: "includeAll", Type: "boolean", FlagName: "all"},
 			},
-			paging:  &spec.Pagination{Type: "cursor"},
-			method:  "GET",
-			wantErr: `collides with reserved flag --all`,
+			paging:   &spec.Pagination{Type: "cursor"},
+			method:   "GET",
+			wantErrs: []string{`collides with reserved flag --all`},
 		},
 		{
 			name: "reserved mutating stdin flag",
 			params: []spec.Param{
 				{Name: "source", Type: "string", FlagName: "stdin"},
 			},
-			method:  "POST",
-			wantErr: `collides with reserved flag --stdin`,
+			method:   "POST",
+			wantErrs: []string{`collides with reserved flag --stdin`},
+		},
+		{
+			// A spelling variant of a reserved name must be rejected as a
+			// malformed public name, not accepted as a lookalike inert flag.
+			name: "authored underscore spelling of reserved flag",
+			params: []spec.Param{
+				{Name: "preview", Type: "boolean", FlagName: "dry_run"},
+			},
+			method:   "GET",
+			wantErrs: []string{`"dry_run" must be lowercase kebab-case`, `it would shadow-spell reserved flag --dry-run`},
+		},
+		{
+			name: "authored mixed-case spelling of reserved flag",
+			params: []spec.Param{
+				{Name: "preview", Type: "boolean", FlagName: "Dry-Run"},
+			},
+			method:   "GET",
+			wantErrs: []string{`"Dry-Run" must be lowercase kebab-case`, `it would shadow-spell reserved flag --dry-run`},
+		},
+		{
+			name: "authored camel spelling of reserved flag",
+			params: []spec.Param{
+				{Name: "preview", Type: "boolean", FlagName: "DryRun"},
+			},
+			method:   "GET",
+			wantErrs: []string{`"DryRun" must be lowercase kebab-case`, `it would shadow-spell reserved flag --dry-run`},
+		},
+		{
+			name: "authored dollar-prefixed spelling of reserved flag",
+			params: []spec.Param{
+				{Name: "preview", Type: "boolean", FlagName: "$dry-run"},
+			},
+			method:   "GET",
+			wantErrs: []string{`"$dry-run" must be lowercase kebab-case`, `it would shadow-spell reserved flag --dry-run`},
+		},
+		{
+			name: "alias with non-kebab spelling of reserved flag",
+			params: []spec.Param{
+				{Name: "preview", Type: "boolean", Aliases: []string{"dry_run"}},
+			},
+			method:   "GET",
+			wantErrs: []string{`alias "dry_run" must be lowercase kebab-case`, `it would shadow-spell reserved flag --dry-run`},
+		},
+		{
+			name: "body field with non-kebab spelling of reserved flag",
+			body: []spec.Param{
+				{Name: "notify", Type: "boolean", FlagName: "no_input"},
+			},
+			method:   "POST",
+			wantErrs: []string{`"no_input" must be lowercase kebab-case`, `it would shadow-spell reserved flag --no-input`},
+		},
+		{
+			name: "endpoint-scoped reserved name via non-kebab spelling",
+			params: []spec.Param{
+				{Name: "everything", Type: "boolean", FlagName: "ALL"},
+			},
+			paging:   &spec.Pagination{Type: "cursor"},
+			method:   "GET",
+			wantErrs: []string{`"ALL" must be lowercase kebab-case`, `it would shadow-spell reserved flag --all`},
+		},
+		{
+			name: "non-kebab name unrelated to any reserved flag",
+			params: []spec.Param{
+				{Name: "store", Type: "string", FlagName: "store_id"},
+			},
+			method:     "GET",
+			wantErrs:   []string{`"store_id" must be lowercase kebab-case`},
+			wantNotErr: "reserved",
+		},
+		{
+			// A quote-bearing authored name must not reach the generated
+			// string literal.
+			name: "quote-bearing authored name",
+			params: []spec.Param{
+				{Name: "weird", Type: "string", FlagName: `x"y`},
+			},
+			method:   "GET",
+			wantErrs: []string{`must be lowercase kebab-case`},
 		},
 	}
 
@@ -137,7 +216,12 @@ func TestGenerateRejectsAuthoredPublicFlagCollisions(t *testing.T) {
 
 			err := New(apiSpec, filepath.Join(t.TempDir(), "out")).Generate()
 			require.Error(t, err)
-			assert.Contains(t, err.Error(), tt.wantErr)
+			for _, want := range tt.wantErrs {
+				assert.Contains(t, err.Error(), want)
+			}
+			if tt.wantNotErr != "" {
+				assert.NotContains(t, err.Error(), tt.wantNotErr)
+			}
 		})
 	}
 }

@@ -153,6 +153,18 @@ resources:
 	assert.True(t, param.DispatchParamSet)
 }
 
+// TestIsPublicParamName pins the shared public-name rule: ParseBytes
+// enforces it on intake, and the generator re-checks in-memory specs that
+// bypass Validate through the same predicate.
+func TestIsPublicParamName(t *testing.T) {
+	for _, name := range []string{"dry-run", "a", "a1-b2"} {
+		assert.True(t, IsPublicParamName(name), "%q should be accepted", name)
+	}
+	for _, name := range []string{"dry_run", "Dry-Run", "DryRun", "-a", "a-", "a--b", "1a", "", "$a"} {
+		assert.False(t, IsPublicParamName(name), "%q should be rejected", name)
+	}
+}
+
 func TestParsePagePagination(t *testing.T) {
 	t.Parallel()
 
