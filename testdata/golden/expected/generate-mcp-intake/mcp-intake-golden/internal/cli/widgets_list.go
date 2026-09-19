@@ -40,10 +40,10 @@ func newWidgetsListCmd(flags *rootFlags) *cobra.Command {
 				return err
 			}
 			params := map[string]string{}
-			if flagLimit != 0 {
+			if cmd.Flags().Changed("limit") || flagLimit != 0 {
 				params["limit"] = formatCLIParamValue(flagLimit)
 			}
-			if flagStatus != "" {
+			if cmd.Flags().Changed("status") || flagStatus != "" {
 				params["status"] = formatCLIParamValue(flagStatus)
 			}
 			data, prov, err := resolveReadWithStrategyAndResponsePath(cmd.Context(), c, flags, "auto", "widgets", true, path, params, nil, "", cmd.ErrOrStderr())

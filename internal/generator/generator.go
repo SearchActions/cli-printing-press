@@ -317,13 +317,16 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 		"flagName":                            flagName,
 		"paramIdent":                          paramIdent,
 		"paramWireName":                       paramWireName,
-		"isArrayQueryParam":                   isArrayQueryParam,
-		"queryParamStyle":                     queryParamStyle,
-		"queryParamExplodes":                  queryParamExplodes,
-		"hasArrayQueryParams":                 hasArrayQueryParams,
-		"typeFieldIdent":                      typeFieldIdent,
-		"typeFieldJSONTagComment":             typeFieldJSONTagComment,
-		"safeTypeName":                        safeTypeName,
+		"paramPresence": func(p spec.Param, valueExpr string) string {
+			return paramPresenceExpr(p, valueExpr, flagChangedExpr(p), presenceSiteQuery)
+		},
+		"isArrayQueryParam":       isArrayQueryParam,
+		"queryParamStyle":         queryParamStyle,
+		"queryParamExplodes":      queryParamExplodes,
+		"hasArrayQueryParams":     hasArrayQueryParams,
+		"typeFieldIdent":          typeFieldIdent,
+		"typeFieldJSONTagComment": typeFieldJSONTagComment,
+		"safeTypeName":            safeTypeName,
 		"hasNonScalarType": func(types map[string]spec.TypeDef) bool {
 			for _, td := range types {
 				for _, f := range td.Fields {
@@ -5958,6 +5961,52 @@ func flagChangedExpr(p spec.Param) string {
 	return "(" + strings.Join(parts, " || ") + ")"
 }
 
+// presenceSite distinguishes where a param presence gate is emitted, since
+// the bool CHANGED shape (D2) applies only to body leaves: query and HTML
+// bools stay SUPERSET so an untouched default-true bool is still sent.
+type presenceSite int
+
+const (
+	presenceSiteBody presenceSite = iota
+	presenceSiteQuery
+)
+
+// presenceChangedExpr returns the Changed() half of a presence gate. Top-level
+// flags OR across their hidden aliases (flagChangedExpr); nested body fields
+// have no alias flag registered (renderFlatBodyFlagReg guards on topLevel), so
+// they test a single Changed() on the joined flag name instead. Shared with
+// renderFlatBodyRequiredCheck so the two derivations cannot drift (K-1046).
+func presenceChangedExpr(p spec.Param, joinedFlag string, topLevel bool) string {
+	if topLevel {
+		return flagChangedExpr(p)
+	}
+	return fmt.Sprintf("cmd.Flags().Changed(%q)", joinedFlag)
+}
+
+// paramPresenceExpr decides whether a param reaches the wire: not just
+// whether its value differs from the type zero, but whether the user
+// actually supplied it. A pure Changed() would stop sending untouched
+// defaulted params (e.g. limit=50), so the general case is a superset of
+// today's behavior: Changed() OR a non-zero value. Two site-specific
+// shapes are narrower: an env-default global-scope param sends its value
+// as-is, because an explicit empty clears the scope rather than sending it.
+// And an optional/defaulted body-leaf bool stays pure Changed(): the
+// zero-guard it replaces (body != false) dropped user-set false values,
+// letting the server's default (often true) silently invert intent, while
+// unconditionally sending would flip the bug the other way and carry
+// "field: false" into every untouched PATCH. Changed() is the only shape
+// that distinguishes "user set false" from "user did not touch the flag".
+func paramPresenceExpr(p spec.Param, valueExpr, changedExpr string, site presenceSite) string {
+	if paramHasEnvDefault(p) {
+		return fmt.Sprintf("%s != \"\"", valueExpr)
+	}
+	if site == presenceSiteBody && (p.Type == "boolean" || p.Type == "bool") && (!p.Required || p.Default != nil) {
+		return changedExpr
+	}
+	zero := zeroValForParamRequired(p.Name, p.Type, p.Required, paramHasDefault(p))
+	return fmt.Sprintf("(%s || %s != %s)", changedExpr, valueExpr, zero)
+}
+
 func mcpParamBindings(endpoint spec.Endpoint, pathTemplate string) []mcpParamBinding {
 	bindings := make([]mcpParamBinding, 0, len(endpoint.Params)+len(endpoint.Body))
 	requestContentType := ""
@@ -6616,7 +6665,7 @@ func renderBodyMap(b *strings.Builder, body []spec.Param, depth int, indent, map
 			continue
 		}
 		if isJSONOrScalarParam(p) {
-			fmt.Fprintf(b, "%sif %s {\n", indent, bodyLeafPresenceExpr(p, ident, flag))
+			fmt.Fprintf(b, "%sif %s {\n", indent, bodyLeafPresenceExpr(p, ident, flag, depth == 0))
 			fmt.Fprintf(b, "%s\tif looksLikeJSONComposite(body%s) {\n", indent, ident)
 			fmt.Fprintf(b, "%s\t\tvar parsed%s any\n", indent, ident)
 			fmt.Fprintf(b, "%s\t\tif err := json.Unmarshal([]byte(body%s), &parsed%s); err != nil {\n", indent, ident, ident)
@@ -6639,7 +6688,7 @@ func renderBodyMap(b *strings.Builder, body []spec.Param, depth int, indent, map
 			if isComplex {
 				rhs = "parsed" + ident
 			}
-			fmt.Fprintf(b, "%sif %s {\n", indent, bodyLeafPresenceExpr(p, ident, flag))
+			fmt.Fprintf(b, "%sif %s {\n", indent, bodyLeafPresenceExpr(p, ident, flag, depth == 0))
 			fmt.Fprintf(b, "%s\tvar parsed%s any\n", indent, ident)
 			fmt.Fprintf(b, "%s\tif err := json.Unmarshal([]byte(body%s), &parsed%s); err != nil {\n", indent, ident, ident)
 			fmt.Fprintf(b, "%s\t\treturn fmt.Errorf(\"parsing --%s JSON: %%w\", err)\n", indent, flag)
@@ -6660,21 +6709,14 @@ func renderBodyMap(b *strings.Builder, body []spec.Param, depth int, indent, map
 			continue
 		}
 		if (p.Type == "boolean" || p.Type == "bool") && (!p.Required || p.Default != nil) {
-			// Booleans gate on cmd.Flags().Changed instead of a zero-guard.
-			// The zero-guard (body != false) drops user-set false values,
-			// letting the server's default (often true) silently invert
-			// intent. Unconditionally emitting flips the bug: PATCH bodies
-			// would carry "field: false" for every untouched flag and
-			// overwrite server state. Changed distinguishes "user set
-			// false" from "user did not touch the flag" and is correct
-			// for POST, PUT, and PATCH. Internal YAML specs use "boolean";
-			// the OpenAPI parser normalizes to "bool".
-			fmt.Fprintf(b, "%sif %s {\n", indent, bodyLeafPresenceExpr(p, ident, flag))
+			// Optional/defaulted bools gate on Changed rather than SUPERSET;
+			// see the CHANGED case in paramPresenceExpr for why.
+			fmt.Fprintf(b, "%sif %s {\n", indent, bodyLeafPresenceExpr(p, ident, flag, depth == 0))
 			fmt.Fprintf(b, "%s\t%s[%q] = body%s\n", indent, mapVar, p.BodyWireName(), ident)
 			fmt.Fprintf(b, "%s}\n", indent)
 			continue
 		}
-		fmt.Fprintf(b, "%sif %s {\n", indent, bodyLeafPresenceExpr(p, ident, flag))
+		fmt.Fprintf(b, "%sif %s {\n", indent, bodyLeafPresenceExpr(p, ident, flag, depth == 0))
 		if isStringBackedBoolParam(p) {
 			fmt.Fprintf(b, "%s\tparsed%s, err := strconv.ParseBool(body%s)\n", indent, ident, ident)
 			fmt.Fprintf(b, "%s\tif err != nil {\n", indent)
@@ -6688,11 +6730,20 @@ func renderBodyMap(b *strings.Builder, body []spec.Param, depth int, indent, map
 	}
 }
 
-func bodyLeafPresenceExpr(p spec.Param, ident, flag string) string {
-	if (p.Type == "boolean" || p.Type == "bool") && (!p.Required || p.Default != nil) {
-		return fmt.Sprintf("cmd.Flags().Changed(%q)", flag)
+// bodyLeafPresenceExpr is the single place a JSON body leaf's presence gate
+// is chosen, so bodyFieldsChangedExpr's nested-required gate cannot drift
+// from renderBodyMap's own gate (K-1046). Complex/array and JSON-string
+// leaves stay VALUE (D4): an empty string has no wire meaning for them, and
+// SUPERSET would turn --metadata "" into a JSON parse error instead of an
+// omit. Everything else routes to paramPresenceExpr, which applies D2's
+// bool-stays-CHANGED rule for body leaves internally.
+func bodyLeafPresenceExpr(p spec.Param, ident, flag string, topLevel bool) string {
+	valueExpr := "body" + ident
+	if isComplexBodyField(p) || isJSONStringParam(p) {
+		return fmt.Sprintf("%s != \"\"", valueExpr)
 	}
-	return fmt.Sprintf("body%s != %s", ident, zeroValForParamRequired(p.Name, p.Type, p.Required, paramHasDefault(p)))
+	changedExpr := presenceChangedExpr(p, flag, topLevel)
+	return paramPresenceExpr(p, valueExpr, changedExpr, presenceSiteBody)
 }
 
 func bodyHasStringBackedBool(endpoint spec.Endpoint) bool {
@@ -6913,7 +6964,7 @@ func bodyFieldsChangedExpr(body []spec.Param, depth int, flagPrefix, identPrefix
 			}
 			continue
 		}
-		expressions = append(expressions, bodyLeafPresenceExpr(p, ident, flag))
+		expressions = append(expressions, bodyLeafPresenceExpr(p, ident, flag, depth == 0))
 	}
 	return strings.Join(expressions, " || ")
 }
@@ -6961,12 +7012,7 @@ func renderFlatBodyRequiredCheck(b *strings.Builder, p spec.Param, indent, flagP
 		return
 	}
 	flag := joinFlag(flagPrefix, publicFlagName(p))
-	var changedExpr string
-	if topLevel {
-		changedExpr = flagChangedExpr(p)
-	} else {
-		changedExpr = fmt.Sprintf("cmd.Flags().Changed(\"%s\")", flag)
-	}
+	changedExpr := presenceChangedExpr(p, flag, topLevel)
 	fmt.Fprintf(b, "\n%sif !%s && !flags.dryRun {", indent, changedExpr)
 	fmt.Fprintf(b, "\n%s\treturn fmt.Errorf(\"required flag \\\"%%s\\\" not set\", \"%s\")", indent, flag)
 	fmt.Fprintf(b, "\n%s}", indent)
@@ -6998,12 +7044,12 @@ func multipartBodyMaps(body []spec.Param, indent string) string {
 			continue
 		}
 		if p.Type == "string" {
-			fmt.Fprintf(&b, "%sif body%s != \"\" {\n", indent, ident)
+			fmt.Fprintf(&b, "%sif %s {\n", indent, paramPresenceExpr(p, "body"+ident, flagChangedExpr(p), presenceSiteQuery))
 			fmt.Fprintf(&b, "%s\tfields[%q] = body%s\n", indent, p.BodyWireName(), ident)
 			fmt.Fprintf(&b, "%s}\n", indent)
 			continue
 		}
-		fmt.Fprintf(&b, "%sif body%s != %s {\n", indent, ident, zeroValForParamRequired(p.Name, p.Type, p.Required, paramHasDefault(p)))
+		fmt.Fprintf(&b, "%sif %s {\n", indent, paramPresenceExpr(p, "body"+ident, flagChangedExpr(p), presenceSiteQuery))
 		fmt.Fprintf(&b, "%s\tfields[%q] = fmt.Sprintf(\"%%v\", body%s)\n", indent, p.BodyWireName(), ident)
 		fmt.Fprintf(&b, "%s}\n", indent)
 	}
@@ -7250,12 +7296,12 @@ func formBodyMaps(body []spec.Param, indent string) string {
 			continue
 		}
 		if p.Type == "string" {
-			fmt.Fprintf(&b, "%sif body%s != \"\" {\n", indent, ident)
+			fmt.Fprintf(&b, "%sif %s {\n", indent, paramPresenceExpr(p, "body"+ident, flagChangedExpr(p), presenceSiteQuery))
 			fmt.Fprintf(&b, "%s\tfields.Set(%q, body%s)\n", indent, p.BodyWireName(), ident)
 			fmt.Fprintf(&b, "%s}\n", indent)
 			continue
 		}
-		fmt.Fprintf(&b, "%sif body%s != %s {\n", indent, ident, zeroValForParamRequired(p.Name, p.Type, p.Required, paramHasDefault(p)))
+		fmt.Fprintf(&b, "%sif %s {\n", indent, paramPresenceExpr(p, "body"+ident, flagChangedExpr(p), presenceSiteQuery))
 		fmt.Fprintf(&b, "%s\tfields.Set(%q, fmt.Sprintf(\"%%v\", body%s))\n", indent, p.BodyWireName(), ident)
 		fmt.Fprintf(&b, "%s}\n", indent)
 	}
