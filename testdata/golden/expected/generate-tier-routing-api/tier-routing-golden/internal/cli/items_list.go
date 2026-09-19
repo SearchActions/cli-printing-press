@@ -26,7 +26,8 @@ func newItemsListCmd(flags *rootFlags) *cobra.Command {
 				return err
 			}
 			c = c.WithTier("free")
-			data, prov, err := resolvePaginatedReadWithStrategy(cmd.Context(), c, flags, "auto", "items", path, map[string]string{}, nil, flagAll, "cursor", "cursor", "limit", 100, "", "", cmd.ErrOrStderr())
+			paginatedParams := map[string]string{}
+			data, prov, err := resolvePaginatedReadWithStrategy(cmd.Context(), c, flags, "auto", "items", path, paginatedParams, nil, flagAll, "cursor", "cursor", "limit", 100, "", "", cmd.ErrOrStderr())
 			if err != nil {
 				return classifyAPIError(err, flags)
 			}

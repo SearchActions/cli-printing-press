@@ -48,12 +48,12 @@ func newProjectsAvatarUploadProjectCmd(flags *rootFlags) *cobra.Command {
 				return err
 			}
 			params := map[string]string{}
-			if flagOverwrite != false {
+			if cmd.Flags().Changed("overwrite") || flagOverwrite != false {
 				params["overwrite"] = formatCLIParamValue(flagOverwrite)
 			}
 			fields := map[string]string{}
 			fileFields := map[string]string{}
-			if bodyCaption != "" {
+			if cmd.Flags().Changed("caption") || bodyCaption != "" {
 				fields["caption"] = bodyCaption
 			}
 			if bodyFile != "" {

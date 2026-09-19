@@ -87,7 +87,11 @@ func TestGenerateGlobalScopeParamDefaultsFromEnv(t *testing.T) {
 	assert.Contains(t, content, `func newUsersListCmd`)
 	assert.Contains(t, content, `StringVar(&flagTenantFilter, "tenant-filter", globalScopeParamDefault("CIPP_TENANT_FILTER", ""), "Tenant scope (env: CIPP_TENANT_FILTER)")`)
 	assert.Contains(t, content, `!cmd.Flags().Changed("tenant-filter") && flagTenantFilter == ""`)
-	assert.Contains(t, content, `"TenantFilter": formatCLIParamValue(flagTenantFilter)`)
+	// An env-defaulted global-scope param gates on a non-empty value, not on
+	// Flags().Changed: an explicit empty clears the scope rather than sending
+	// it. See paramPresenceExpr's paramHasEnvDefault branch.
+	assert.Contains(t, content, `if flagTenantFilter != "" {`)
+	assert.Contains(t, content, `paginatedParams["TenantFilter"] = formatCLIParamValue(flagTenantFilter)`)
 	assert.NotContains(t, strings.ToLower(content), `markflagrequired`)
 
 	syncContent := readGeneratedFile(t, outputDir, "internal", "cli", "sync.go")

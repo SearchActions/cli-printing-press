@@ -640,16 +640,16 @@ func replacePathParam(path, name, value string) string {
 func paginatedGet(ctx context.Context, c interface {
 	GetWithHeaders(ctx context.Context, path string, params map[string]string, headers map[string]string) (json.RawMessage, error)
 }, path string, params map[string]string, headers map[string]string, fetchAll bool, cursorParam, paginationType, limitParam string, defaultPageSize int, nextCursorPath, hasMoreField string) (json.RawMessage, error) {
-	// Cursor params are exempt from the "0"/"false" strip: offset-paginated
-	// APIs send offset=0 on the first page.
+	// Callers gate on param presence before populating params, so whatever
+	// arrives here the user supplied - an explicit "0", "false" or "" is a
+	// real value and is kept. The cursor is the one exception: it is
+	// populated unconditionally and is empty on the first page.
 	clean := map[string]string{}
 	for k, v := range params {
-		if v == "" {
+		if v == "" && k == cursorParam {
 			continue
 		}
-		if k == cursorParam || (v != "0" && v != "false") {
-			clean[k] = v
-		}
+		clean[k] = v
 	}
 	cursorLookupPath := nextCursorPath
 	if cursorLookupPath == "" && paginationType != "offset" && paginationType != "page" {

@@ -64,7 +64,7 @@ func newWidgetsDeleteCmd(flags *rootFlags) *cobra.Command {
 			} else {
 				bodyMap := map[string]any{}
 				body = bodyMap
-				if bodyWidgetId != "" {
+				if cmd.Flags().Changed("widget-id") || bodyWidgetId != "" {
 					bodyMap["widgetId"] = bodyWidgetId
 				}
 			}

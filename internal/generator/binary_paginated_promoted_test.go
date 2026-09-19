@@ -62,11 +62,15 @@ func TestGenerateBinaryPaginatedPromotedThreadsHeader(t *testing.T) {
 		"binary paginated promoted must declare headerOverrides")
 	assert.Contains(t, endpointSrc, `"X-Printing-Press-Binary-Response": "true",`,
 		"binary paginated promoted must include the binary sentinel")
-	assert.Contains(t, endpointSrc, `paginatedGet(cmd.Context(), c, path, map[string]string{`,
+	// Params are built into a named map first so each one can be gated on
+	// presence (see paramPresence); the call itself then takes that variable.
+	assert.Contains(t, endpointSrc, `paginatedParams := map[string]string{}`,
+		"paginated endpoint must build its params map before the call")
+	assert.Contains(t, endpointSrc, `paginatedGet(cmd.Context(), c, path, paginatedParams,`,
 		"non-HasStore pagination must use paginatedGet")
-	assert.NotContains(t, endpointSrc, `}, nil, flagAll,`,
+	assert.NotContains(t, endpointSrc, `paginatedParams, nil, flagAll,`,
 		"paginated binary endpoint must pass headerOverrides, not nil")
-	assert.Contains(t, endpointSrc, `}, headerOverrides, flagAll,`,
+	assert.Contains(t, endpointSrc, `paginatedParams, headerOverrides, flagAll,`,
 		"paginated binary endpoint must thread headerOverrides into paginatedGet")
 }
 

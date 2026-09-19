@@ -70,13 +70,13 @@ func newProjectsCreateCmd(flags *rootFlags) *cobra.Command {
 			} else {
 				bodyMap := map[string]any{}
 				body = bodyMap
-				if bodyName != "" {
+				if cmd.Flags().Changed("name") || bodyName != "" {
 					bodyMap["name"] = bodyName
 				}
-				if bodyOwnerEmail != "" {
+				if cmd.Flags().Changed("owner-email") || bodyOwnerEmail != "" {
 					bodyMap["owner_email"] = bodyOwnerEmail
 				}
-				if bodyVisibility != "" {
+				if cmd.Flags().Changed("visibility") || bodyVisibility != "" {
 					bodyMap["visibility"] = bodyVisibility
 				}
 			}
