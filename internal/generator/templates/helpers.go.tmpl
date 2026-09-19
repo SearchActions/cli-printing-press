@@ -1757,6 +1757,11 @@ func unwrapSingleKeyArray(data json.RawMessage) json.RawMessage {
 // filterFields keeps only the specified fields (comma-separated) from JSON objects/arrays.
 // Supports dotted paths like "events.shortName" to descend into nested structures.
 // Arrays are traversed element-wise: "events.shortName" keeps shortName on each event.
+// Selectors that match no top-level key descend one level into list envelopes
+// (non-null array siblings and `_embedded`, e.g. `{"total_count":N,"items":[...]}`),
+// so record field names work without naming the wrapper key. Composition is
+// monotonic: every token that resolves alone contributes to the combined result,
+// and a token that resolves nowhere is named on stderr.
 func filterFields(data json.RawMessage, fields string) json.RawMessage {
 	var paths [][]string
 	var requestedPaths []string
@@ -1837,6 +1842,16 @@ func (s *selectMatchState) merge(other selectMatchState) {
 	s.fallbackIndeterminate = s.fallbackIndeterminate || other.fallbackIndeterminate
 }
 
+// contributes reports whether a fallback-rewritten key carried selector
+// content: a direct match, or an empty collection reached through a named
+// selector prefix. A bare fallbackIndeterminate (an empty array found only
+// by the fallback) does not count; with 2+ paths the warning pass treats
+// that token as unmatched, and merging its state would flip the caller's
+// all-miss decision.
+func (s selectMatchState) contributes() bool {
+	return s.matched || s.anchoredIndeterminate
+}
+
 // filterFieldsRec applies path filters to a JSON value. Each path is a list of
 // lowercase segments; arrays descend element-wise. pathAnchored distinguishes
 // empty arrays reached through a known selector prefix from empty arrays found
@@ -1874,39 +1889,103 @@ func filterFieldsRec(data json.RawMessage, paths [][]string, pathAnchored bool) 
 			}
 		}
 		filtered := map[string]json.RawMessage{}
-		headMatched := false
+		matchedHeads := map[string]bool{}
+		keyHeads := map[string][]string{}
 		state := selectMatchState{}
 		for k, v := range obj {
-			matched := matchSelectSegment(k, keepWhole, subPaths)
-			if matched == "" {
+			heads := matchSelectSegments(k, keepWhole, subPaths)
+			if len(heads) == 0 {
 				continue
 			}
-			headMatched = true
-			if keepWhole[matched] {
+			keyHeads[k] = heads
+			keepWholeKey := false
+			for _, head := range heads {
+				matchedHeads[head] = true
+				if keepWhole[head] {
+					keepWholeKey = true
+				}
+			}
+			if keepWholeKey {
 				filtered[k] = v
 				state.matched = true
 				continue
 			}
-			if subs := subPaths[matched]; subs != nil {
-				var childState selectMatchState
-				filtered[k], childState = filterFieldsRec(v, subs, true)
-				state.merge(childState)
+			// Fresh slice: two keys can resolve to the same head, and
+			// appending onto subPaths in place would write into a shared
+			// backing array.
+			subs := make([][]string, 0, len(heads))
+			for _, head := range heads {
+				subs = append(subs, subPaths[head]...)
+			}
+			var childState selectMatchState
+			filtered[k], childState = filterFieldsRec(v, subs, true)
+			state.merge(childState)
+		}
+		var unmatched [][]string
+		for _, p := range paths {
+			if len(p) > 0 && !matchedHeads[p[0]] {
+				unmatched = append(unmatched, p)
 			}
 		}
-		// Envelope fallback: when no top-level keys matched but at least one
-		// sibling is a non-null array, treat the object as a list envelope
-		// (`{"items":[...]}`, `{"data":[...]}`, `{"total_count":N,"items":[...]}`)
-		// and apply the selector inside the array(s). Non-array siblings pass
-		// through verbatim so envelope metadata (counts, null pagination
-		// cursors) stays visible. The foundArray guard keeps flat objects
-		// without matching keys as an all-miss result for the caller to
-		// diagnose and preserve. The `arr != nil` check rejects JSON null,
-		// which json.Unmarshal otherwise accepts into a []json.RawMessage
-		// as a nil slice and would coerce to `[]`.
-		if !headMatched {
-			if pending, foundArray, nestedState := filterListEnvelopeFields(obj, paths); foundArray {
+		if len(matchedHeads) > 0 && len(unmatched) > 0 {
+			// Mixed selection: some selectors matched top-level keys, others
+			// did not. The unmatched selectors still descend through the
+			// list-envelope fallback, so a token that resolves alone also
+			// resolves in combination. This branch is deliberately narrower
+			// than the pure fallback below: when the caller names top-level
+			// fields, narrowing wins, and envelope metadata does not pass
+			// through. Record-level objects inside arrays reach this branch
+			// too, so verbatim passthrough would re-add every unselected
+			// scalar.
+			pending, rewritten := filterListEnvelopeFields(obj, unmatched, true)
+			for r, rs := range rewritten {
+				if _, collided := keyHeads[r]; collided || !rs.contributes() {
+					continue
+				}
+				filtered[r] = pending[r]
+				state.merge(rs)
+			}
+			for k, heads := range keyHeads {
+				if _, collided := rewritten[k]; !collided {
+					continue
+				}
+				// The key both matched at the top level and was rewritten by
+				// the fallback: re-filter the original value with the union
+				// of both path sets. A whole-value selection wins outright
+				// and needs no recursion.
+				wholeKept := false
+				for _, head := range heads {
+					if keepWhole[head] {
+						wholeKept = true
+						break
+					}
+				}
+				if wholeKept {
+					continue
+				}
+				subs := make([][]string, 0, len(heads)+len(unmatched))
+				for _, head := range heads {
+					subs = append(subs, subPaths[head]...)
+				}
+				subs = append(subs, unmatched...)
+				var childState selectMatchState
+				filtered[k], childState = filterFieldsRec(obj[k], subs, true)
+				state.merge(childState)
+			}
+		} else if len(matchedHeads) == 0 {
+			// Envelope fallback: when no top-level keys matched but at least one
+			// sibling is a non-null array, treat the object as a list envelope
+			// (`{"items":[...]}`, `{"data":[...]}`, `{"total_count":N,"items":[...]}`)
+			// and apply the selector inside the array(s). Non-array siblings pass
+			// through verbatim so envelope metadata (counts, null pagination
+			// cursors) stays visible. The rewritten guard keeps flat objects
+			// without matching keys as an all-miss result for the caller to
+			// diagnose and preserve.
+			if pending, rewritten := filterListEnvelopeFields(obj, paths, false); len(rewritten) > 0 {
 				filtered = pending
-				state.merge(nestedState)
+				for _, rs := range rewritten {
+					state.merge(rs)
+				}
 			}
 		}
 		result, _ := json.Marshal(filtered)
@@ -1916,61 +1995,94 @@ func filterFieldsRec(data json.RawMessage, paths [][]string, pathAnchored bool) 
 	return data, selectMatchState{}
 }
 
-func filterListEnvelopeFields(obj map[string]json.RawMessage, paths [][]string) (map[string]json.RawMessage, bool, selectMatchState) {
+// filterListEnvelopeFields applies paths inside list-envelope arrays:
+// non-null object-array siblings and `_embedded`, one level deep. Non-array
+// siblings pass through verbatim so envelope metadata (counts, null pagination
+// cursors) stays visible. The `arr != nil` check rejects JSON null, which
+// json.Unmarshal otherwise accepts into a []json.RawMessage as a nil slice and
+// would coerce to `[]`. rewritten records the per-key match state of every
+// key the fallback actually filtered; a non-empty rewritten map is the signal
+// that an envelope was found. narrow drops the verbatim passthrough: only
+// rewritten keys land in pending, for mixed selections where the caller named
+// top-level fields and narrowing wins over metadata.
+func filterListEnvelopeFields(obj map[string]json.RawMessage, paths [][]string, narrow bool) (map[string]json.RawMessage, map[string]selectMatchState) {
 	pending := map[string]json.RawMessage{}
-	foundArray := false
-	state := selectMatchState{}
+	rewritten := map[string]selectMatchState{}
 	for k, v := range obj {
 		if envelopeMetadataArrayKeys[k] {
-			pending[k] = v
+			if !narrow {
+				pending[k] = v
+			}
 			continue
 		}
 		var arr []json.RawMessage
 		if json.Unmarshal(v, &arr) == nil && arr != nil {
-			foundArray = true
-			var childState selectMatchState
-			pending[k], childState = filterFieldsRec(v, paths, false)
-			state.merge(childState)
+			filtered, childState := filterFieldsRec(v, paths, false)
+			pending[k] = filtered
+			rewritten[k] = childState
 			continue
 		}
 		if k == "_embedded" {
-			if nested, ok, nestedState := filterNestedListEnvelopeFields(v, paths); ok {
-				foundArray = true
+			if nested, ok, nestedState := filterNestedListEnvelopeFields(v, paths, narrow); ok {
 				pending[k] = nested
-				state.merge(nestedState)
+				rewritten[k] = nestedState
 				continue
 			}
 		}
-		pending[k] = v
+		if !narrow {
+			pending[k] = v
+		}
 	}
-	return pending, foundArray, state
+	return pending, rewritten
 }
 
-func filterNestedListEnvelopeFields(data json.RawMessage, paths [][]string) (json.RawMessage, bool, selectMatchState) {
+func filterNestedListEnvelopeFields(data json.RawMessage, paths [][]string, narrow bool) (json.RawMessage, bool, selectMatchState) {
 	var obj map[string]json.RawMessage
 	if err := json.Unmarshal(data, &obj); err != nil {
 		return nil, false, selectMatchState{}
 	}
-	filtered, found, state := filterListEnvelopeFields(obj, paths)
-	if !found {
+	pending, rewritten := filterListEnvelopeFields(obj, paths, narrow)
+	if len(rewritten) == 0 {
 		return nil, false, selectMatchState{}
 	}
-	result, _ := json.Marshal(filtered)
+	if narrow {
+		// The nested `_embedded` object keeps only sub-keys that carry
+		// selector content; merging a non-qualifying sub-state would let a
+		// fallback-indeterminate empty array leak into the caller's
+		// all-miss decision.
+		state := selectMatchState{}
+		for k, rs := range rewritten {
+			if !rs.contributes() {
+				delete(pending, k)
+				continue
+			}
+			state.merge(rs)
+		}
+		result, _ := json.Marshal(pending)
+		return result, true, state
+	}
+	state := selectMatchState{}
+	for _, rs := range rewritten {
+		state.merge(rs)
+	}
+	result, _ := json.Marshal(pending)
 	return result, true, state
 }
 
-// matchSelectSegment returns the matching lowercase segment, or "" if no match.
-// Supports direct case-insensitive match and camelCase→kebab-case conversion.
-func matchSelectSegment(fieldName string, keepWhole map[string]bool, subPaths map[string][][]string) string {
+// matchSelectSegments returns every selector segment the field name matches,
+// in both the lowercase and kebab spellings. A token set can spell one key
+// both ways (orderdate.a + order-date.b); both heads resolve to the same key.
+func matchSelectSegments(fieldName string, keepWhole map[string]bool, subPaths map[string][][]string) []string {
+	var heads []string
 	lower := strings.ToLower(fieldName)
 	if keepWhole[lower] || subPaths[lower] != nil {
-		return lower
+		heads = append(heads, lower)
 	}
 	kebab := camelToKebab(fieldName)
 	if kebab != lower && (keepWhole[kebab] || subPaths[kebab] != nil) {
-		return kebab
+		heads = append(heads, kebab)
 	}
-	return ""
+	return heads
 }
 
 // camelToKebab converts "orderDate" or "orderdate" to "order-date" by splitting on

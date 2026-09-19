@@ -45,7 +45,9 @@ EOF
 )"
 
 run() {
-  printf '%s\n' "$fixture" | "$@" "$actual_abs" "$actual_root" "$repo_root" "$home"
+  # MSYS2_ARG_CONV_EXCL keeps leading-/ args raw for a native Windows python,
+  # matching how golden.sh invokes the normalizer.
+  printf '%s\n' "$fixture" | MSYS2_ARG_CONV_EXCL='*' "$@" "$actual_abs" "$actual_root" "$repo_root" "$home"
 }
 
 have_python=""

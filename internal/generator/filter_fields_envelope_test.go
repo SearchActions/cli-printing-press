@@ -203,6 +203,114 @@ func TestFilterFieldsEnvelopeDescent_EmptyEnvelopeSelectorWarnings(t *testing.T)
 	}
 }
 
+// TestFilterFieldsEnvelopeDescent_MixedSelectors pins the composition rule:
+// every --select token that resolves alone also resolves in combination.
+// The guarded regression: one sibling token matching a top-level key used
+// to suppress list-envelope descent for every other token, silently
+// dropping fields while the per-token warning pass believed they matched.
+func TestFilterFieldsEnvelopeDescent_MixedSelectors(t *testing.T) {
+	cases := []struct {
+		name         string
+		fields       string
+		input        string
+		want         string
+		wantWarnings []string
+	}{
+		{"sibling top-level match does not suppress envelope descent", "domain,mailboxes",
+			`+"`"+`{"fleet":[{"domain":"a.io","status":"ok"}],"mailboxes":0}`+"`"+`,
+			`+"`"+`{"fleet":[{"domain":"a.io"}],"mailboxes":0}`+"`"+`, nil},
+		{"token order does not change the result", "mailboxes,domain",
+			`+"`"+`{"fleet":[{"domain":"a.io","status":"ok"}],"mailboxes":0}`+"`"+`,
+			`+"`"+`{"fleet":[{"domain":"a.io"}],"mailboxes":0}`+"`"+`, nil},
+		{"dotted path and sibling whole-value", "fleet.domain,mailboxes",
+			`+"`"+`{"fleet":[{"domain":"a.io","status":"ok"}],"mailboxes":0}`+"`"+`,
+			`+"`"+`{"fleet":[{"domain":"a.io"}],"mailboxes":0}`+"`"+`, nil},
+		{"nested object sibling is not an envelope", "domain,mailboxes",
+			`+"`"+`{"fleet":{"domain":"a.io"},"mailboxes":0}`+"`"+`,
+			`+"`"+`{"mailboxes":0}`+"`"+`, []string{"domain"}},
+		{"collision keeps subpath and fallback token in one array", "items.name,id",
+			`+"`"+`{"items":[{"id":1,"name":"x","z":0}]}`+"`"+`,
+			`+"`"+`{"items":[{"id":1,"name":"x"}]}`+"`"+`, nil},
+		{"whole-value collision keeps the original array", "items,id",
+			`+"`"+`{"items":[{"id":1,"name":"x","z":0}]}`+"`"+`,
+			`+"`"+`{"items":[{"id":1,"name":"x","z":0}]}`+"`"+`, nil},
+		{"unmatched path warns beside a valid whole-value", "total,naem",
+			`+"`"+`{"items":[{"id":1}],"total":1}`+"`"+`,
+			`+"`"+`{"total":1}`+"`"+`, []string{"naem"}},
+		{"kebab token counts as matched head", "order-date,domain",
+			`+"`"+`{"orderDate":"x","fleet":[{"domain":"a.io"}]}`+"`"+`,
+			`+"`"+`{"orderDate":"x","fleet":[{"domain":"a.io"}]}`+"`"+`, nil},
+		{"empty fallback array does not count as a contribution", "domain,mailboxes",
+			`+"`"+`{"fleet":[],"mailboxes":0}`+"`"+`,
+			`+"`"+`{"mailboxes":0}`+"`"+`, []string{"domain"}},
+		{"empty fallback array beside whole-value warns on typo", "total,naem",
+			`+"`"+`{"items":[],"total":0}`+"`"+`,
+			`+"`"+`{"total":0}`+"`"+`, []string{"naem"}},
+		{"record-level narrowing inside a bare array", "number,name",
+			`+"`"+`[{"number":1,"title":"t","body":"b","labels":[{"name":"bug","color":"red"}]}]`+"`"+`,
+			`+"`"+`[{"number":1,"labels":[{"name":"bug"}]}]`+"`"+`, nil},
+		{"embedded collision merges subpath and fallback token", "_embedded.count,id",
+			`+"`"+`{"_embedded":{"count":2,"items":[{"id":1,"z":0}]}}`+"`"+`,
+			`+"`"+`{"_embedded":{"count":2,"items":[{"id":1}]}}`+"`"+`, nil},
+		{"anchored empty collision with unmatched typo", "items.id,naem",
+			`+"`"+`{"items":[]}`+"`"+`,
+			`+"`"+`{"items":[]}`+"`"+`, []string{"naem"}},
+		{"embedded narrowing drops non-qualifying sub-keys", "id,title",
+			`+"`"+`{"id":1,"_embedded":{"author":{"n":"a"},"comments":[{"title":"t","z":0}]}}`+"`"+`,
+			`+"`"+`{"id":1,"_embedded":{"comments":[{"title":"t"}]}}`+"`"+`, nil},
+		{"duplicate spellings union their sub-paths", "orderdate.a,order-date.b",
+			`+"`"+`{"orderDate":{"a":1,"b":2,"c":3}}`+"`"+`,
+			`+"`"+`{"orderDate":{"a":1,"b":2}}`+"`"+`, nil},
+		{"duplicate spelling whole-value wins", "orderdate.a,order-date",
+			`+"`"+`{"orderDate":{"a":1,"b":2}}`+"`"+`,
+			`+"`"+`{"orderDate":{"a":1,"b":2}}`+"`"+`, nil},
+		{"duplicate spelling whole-value suppresses descent", "orderdate,order-date",
+			`+"`"+`{"orderDate":"x","fleet":[{"orderDate":"y","z":0}]}`+"`"+`,
+			`+"`"+`{"orderDate":"x"}`+"`"+`, nil},
+		{"heterogeneous records pick up envelope descent per record", "id,name",
+			`+"`"+`[{"id":1,"name":"a","tags":[{"name":"t"}]},{"id":2,"tags":[{"name":"u"}]}]`+"`"+`,
+			`+"`"+`[{"id":1,"name":"a"},{"id":2,"tags":[{"name":"u"}]}]`+"`"+`, nil},
+		{"second array sibling that matches nothing is dropped", "domain,mailboxes",
+			`+"`"+`{"fleet":[{"domain":"a"}],"pending":[{"x":1}],"mailboxes":0}`+"`"+`,
+			`+"`"+`{"fleet":[{"domain":"a"}],"mailboxes":0}`+"`"+`, nil},
+		{"metadata array is never a descent target", "domain,mailboxes",
+			`+"`"+`{"errors":[{"domain":"e"}],"mailboxes":0}`+"`"+`,
+			`+"`"+`{"mailboxes":0}`+"`"+`, []string{"domain"}},
+		{"null array sibling is not an envelope", "domain,mailboxes",
+			`+"`"+`{"fleet":null,"mailboxes":0}`+"`"+`,
+			`+"`"+`{"mailboxes":0}`+"`"+`, []string{"domain"}},
+		{"partly matching elements keep empty objects", "domain,mailboxes",
+			`+"`"+`{"fleet":[{"domain":"a"},{"status":"x"}],"mailboxes":0}`+"`"+`,
+			`+"`"+`{"fleet":[{"domain":"a"},{}],"mailboxes":0}`+"`"+`, nil},
+		{"scalar array sibling does not resolve the token", "domain,mailboxes",
+			`+"`"+`{"tags":["a"],"mailboxes":0}`+"`"+`,
+			`+"`"+`{"mailboxes":0}`+"`"+`, []string{"domain"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, warning := filterFieldsWithWarning(t, tc.input, tc.fields)
+			assertJSONEqual(t, got, tc.want)
+			for _, field := range strings.Split(tc.fields, ",") {
+				field = strings.TrimSpace(field)
+				msg := "--select \"" + field + "\" matched no fields"
+				wantWarned := false
+				for _, w := range tc.wantWarnings {
+					if w == field {
+						wantWarned = true
+						break
+					}
+				}
+				if warned := strings.Contains(string(warning), msg); warned != wantWarned {
+					t.Fatalf("warning = %q, %q warned=%v, want %v", warning, field, warned, wantWarned)
+				}
+			}
+			if n := strings.Count(string(warning), "warning: "); n != len(tc.wantWarnings) {
+				t.Fatalf("warning = %q, want exactly %d warning line(s), got %d", warning, len(tc.wantWarnings), n)
+			}
+		})
+	}
+}
+
 func filterFieldsWithWarning(t *testing.T, input, fields string) (json.RawMessage, []byte) {
 	t.Helper()
 	oldStderr := os.Stderr
@@ -236,5 +344,5 @@ func assertJSONEqual(t *testing.T, got json.RawMessage, want string) {
 }
 `), 0o644))
 
-	runGoCommand(t, outputDir, "test", "./internal/cli", "-run", "^(TestFilterFieldsEnvelopeDescent|TestFilterFieldsEnvelopeDescent_UnknownSelector|TestFilterFieldsEnvelopeDescent_EmptyCollectionsDoNotWarn|TestFilterFieldsEnvelopeDescent_PartiallyInvalidSelectorWarns|TestFilterFieldsEnvelopeDescent_EmptyEnvelopeSelectorWarnings)$", "-count=1")
+	runGoCommand(t, outputDir, "test", "./internal/cli", "-run", "^(TestFilterFieldsEnvelopeDescent|TestFilterFieldsEnvelopeDescent_UnknownSelector|TestFilterFieldsEnvelopeDescent_EmptyCollectionsDoNotWarn|TestFilterFieldsEnvelopeDescent_PartiallyInvalidSelectorWarns|TestFilterFieldsEnvelopeDescent_EmptyEnvelopeSelectorWarnings|TestFilterFieldsEnvelopeDescent_MixedSelectors)$", "-count=1")
 }

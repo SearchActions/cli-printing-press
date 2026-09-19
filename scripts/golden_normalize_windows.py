@@ -67,6 +67,15 @@ def main() -> int:
         )
         return 2
 
+    # native Windows Python translates "\n" to os.linesep ("\r\n") on write,
+    # even through a pipe, CRLF-ifying every normalized artifact and failing
+    # every golden case with a byte-identical-looking diff. the perl port
+    # writes raw bytes, so reconfigure to LF to stay byte-equivalent with it.
+    try:
+        sys.stdout.reconfigure(newline="\n")
+    except AttributeError:
+        pass
+
     actual_abs, actual_root, repo_root, home = sys.argv[1:]
     text = sys.stdin.read()
 

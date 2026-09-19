@@ -21,7 +21,7 @@ cd "$repo_root"
 NORMALIZER=""
 for candidate in python3 python; do
   if command -v "$candidate" >/dev/null 2>&1 && "$candidate" -c "" >/dev/null 2>&1; then
-    NORMALIZER=("$candidate" "$repo_root/scripts/golden_normalize_windows.py")
+    NORMALIZER=("$candidate" scripts/golden_normalize_windows.py)
     break
   fi
 done
@@ -30,7 +30,7 @@ if [ -z "${NORMALIZER:-}" ]; then
   # Store shim is the only "Python". The port is byte-equivalent; see
   # scripts/golden_normalize_test.sh.
   if command -v perl >/dev/null 2>&1; then
-    NORMALIZER=(perl "$repo_root/scripts/golden_normalize_windows.pl")
+    NORMALIZER=(perl scripts/golden_normalize_windows.pl)
   else
     echo "scripts/golden.sh requires a working python3/python or perl on PATH" >&2
     exit 1
@@ -69,7 +69,11 @@ normalize_text() {
     -e "s|$actual_root_pattern|<ARTIFACT_DIR>|g" \
     -e "s|$repo_root_pattern|<REPO>|g" \
     -e "s|$home_pattern|<HOME>|g" |
-    "${NORMALIZER[@]}" \
+    # MSYS converts leading-/ args to drive form for native binaries, so a
+    # native Windows python would receive C:/... instead of /c/... and lose
+    # the MSYS-backslash variants. The normalizer script path is relative, so
+    # it is unaffected by the exclusion.
+    MSYS2_ARG_CONV_EXCL='*' "${NORMALIZER[@]}" \
       "$actual_abs" "$actual_root" "$repo_root" "$HOME"
 }
 

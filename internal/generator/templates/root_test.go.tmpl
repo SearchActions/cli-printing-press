@@ -183,6 +183,168 @@ func TestFilterFields(t *testing.T) {
 			fields: "id",
 			want:   `{"data":{"items":[{"id":"a","other":"y"}]}}`,
 		},
+		// Mixed selections below pin the composition rule: every --select
+		// token that resolves alone also resolves in combination. The
+		// guarded regression: one sibling token matching a top-level key
+		// used to suppress envelope descent for every other token.
+		{
+			name:   "sibling top-level match does not suppress envelope descent",
+			input:  `{"fleet":[{"domain":"a.io","status":"ok"}],"mailboxes":0}`,
+			fields: "domain,mailboxes",
+			want:   `{"fleet":[{"domain":"a.io"}],"mailboxes":0}`,
+		},
+		{
+			name:   "token order does not change the result",
+			input:  `{"fleet":[{"domain":"a.io","status":"ok"}],"mailboxes":0}`,
+			fields: "mailboxes,domain",
+			want:   `{"fleet":[{"domain":"a.io"}],"mailboxes":0}`,
+		},
+		{
+			name:   "dotted path and sibling whole-value",
+			input:  `{"fleet":[{"domain":"a.io","status":"ok"}],"mailboxes":0}`,
+			fields: "fleet.domain,mailboxes",
+			want:   `{"fleet":[{"domain":"a.io"}],"mailboxes":0}`,
+		},
+		{
+			// A nested object sibling is not a list envelope; the plain
+			// object stays one level deep and the token warns upstream.
+			name:   "nested object sibling is not an envelope",
+			input:  `{"fleet":{"domain":"a.io"},"mailboxes":0}`,
+			fields: "domain,mailboxes",
+			want:   `{"mailboxes":0}`,
+		},
+		{
+			// One key, two selectors: a dotted sub-path applied at the top
+			// level and an unqualified token applied through descent both
+			// land on the same array.
+			name:   "collision keeps subpath and fallback token in one array",
+			input:  `{"items":[{"id":1,"name":"x","z":0}]}`,
+			fields: "items.name,id",
+			want:   `{"items":[{"id":1,"name":"x"}]}`,
+		},
+		{
+			// A whole-value selection of the array key wins over descent;
+			// the original elements pass through untouched.
+			name:   "whole-value collision keeps the original array",
+			input:  `{"items":[{"id":1,"name":"x","z":0}]}`,
+			fields: "items,id",
+			want:   `{"items":[{"id":1,"name":"x","z":0}]}`,
+		},
+		{
+			name:   "unmatched path warns beside a valid whole-value",
+			input:  `{"items":[{"id":1}],"total":1}`,
+			fields: "total,naem",
+			want:   `{"total":1}`,
+		},
+		{
+			name:   "kebab token counts as matched head",
+			input:  `{"orderDate":"x","fleet":[{"domain":"a.io"}]}`,
+			fields: "order-date,domain",
+			want:   `{"orderDate":"x","fleet":[{"domain":"a.io"}]}`,
+		},
+		{
+			name:   "empty fallback array does not count as a contribution",
+			input:  `{"fleet":[],"mailboxes":0}`,
+			fields: "domain,mailboxes",
+			want:   `{"mailboxes":0}`,
+		},
+		{
+			name:   "empty fallback array beside whole-value warns on typo",
+			input:  `{"items":[],"total":0}`,
+			fields: "total,naem",
+			want:   `{"total":0}`,
+		},
+		{
+			// Record-level objects inside a bare array get the same
+			// mixed treatment: number matches the record directly, name
+			// arrives through descent into the nested labels array.
+			name:   "record-level narrowing inside a bare array",
+			input:  `[{"number":1,"title":"t","body":"b","labels":[{"name":"bug","color":"red"}]}]`,
+			fields: "number,name",
+			want:   `[{"number":1,"labels":[{"name":"bug"}]}]`,
+		},
+		{
+			name:   "embedded collision merges subpath and fallback token",
+			input:  `{"_embedded":{"count":2,"items":[{"id":1,"z":0}]}}`,
+			fields: "_embedded.count,id",
+			want:   `{"_embedded":{"count":2,"items":[{"id":1}]}}`,
+		},
+		{
+			name:   "anchored empty collision with unmatched typo",
+			input:  `{"items":[]}`,
+			fields: "items.id,naem",
+			want:   `{"items":[]}`,
+		},
+		{
+			// When the caller names top-level fields, narrowing wins:
+			// non-qualifying _embedded sub-keys (author) do not pass
+			// through verbatim.
+			name:   "embedded narrowing drops non-qualifying sub-keys",
+			input:  `{"id":1,"_embedded":{"author":{"n":"a"},"comments":[{"title":"t","z":0}]}}`,
+			fields: "id,title",
+			want:   `{"id":1,"_embedded":{"comments":[{"title":"t"}]}}`,
+		},
+		{
+			// Both spellings of one key resolve; their sub-paths union.
+			name:   "duplicate spellings union their sub-paths",
+			input:  `{"orderDate":{"a":1,"b":2,"c":3}}`,
+			fields: "orderdate.a,order-date.b",
+			want:   `{"orderDate":{"a":1,"b":2}}`,
+		},
+		{
+			// A whole-value spelling beats a sub-path spelling.
+			name:   "duplicate spelling whole-value wins",
+			input:  `{"orderDate":{"a":1,"b":2}}`,
+			fields: "orderdate.a,order-date",
+			want:   `{"orderDate":{"a":1,"b":2}}`,
+		},
+		{
+			name:   "duplicate spelling whole-value suppresses descent",
+			input:  `{"orderDate":"x","fleet":[{"orderDate":"y","z":0}]}`,
+			fields: "orderdate,order-date",
+			want:   `{"orderDate":"x"}`,
+		},
+		{
+			// Accepted consequence of per-record composition: a record
+			// omitting an optional selected field picks up a nested array
+			// reusing the token's name. Extra output, never lost data.
+			name:   "heterogeneous records pick up envelope descent per record",
+			input:  `[{"id":1,"name":"a","tags":[{"name":"t"}]},{"id":2,"tags":[{"name":"u"}]}]`,
+			fields: "id,name",
+			want:   `[{"id":1,"name":"a"},{"id":2,"tags":[{"name":"u"}]}]`,
+		},
+		{
+			// Only array siblings that carry selector content survive the
+			// mixed branch; pending contributes nothing and is dropped.
+			name:   "second array sibling that matches nothing is dropped",
+			input:  `{"fleet":[{"domain":"a"}],"pending":[{"x":1}],"mailboxes":0}`,
+			fields: "domain,mailboxes",
+			want:   `{"fleet":[{"domain":"a"}],"mailboxes":0}`,
+		},
+		{
+			name:   "metadata array is never a descent target",
+			input:  `{"errors":[{"domain":"e"}],"mailboxes":0}`,
+			fields: "domain,mailboxes",
+			want:   `{"mailboxes":0}`,
+		},
+		{
+			name:   "null array sibling is not an envelope",
+			input:  `{"fleet":null,"mailboxes":0}`,
+			fields: "domain,mailboxes",
+			want:   `{"mailboxes":0}`,
+		},
+		{
+			name:   "partly matching elements keep empty objects",
+			input:  `{"fleet":[{"domain":"a"},{"status":"x"}],"mailboxes":0}`,
+			fields: "domain,mailboxes",
+			want:   `{"fleet":[{"domain":"a"},{}],"mailboxes":0}`,
+		},
+		{
+			name:   "scalar array sibling does not resolve the token",
+			input:  `{"tags":["a"],"mailboxes":0}`,
+			fields: "domain,mailboxes",
+			want:   `{"mailboxes":0}`,
+		},
 	}
 	for _, tc := range cases {
 		tc := tc
