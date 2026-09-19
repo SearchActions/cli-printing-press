@@ -48,7 +48,7 @@ func newWidgetsCreateCmd(flags *rootFlags) *cobra.Command {
 				if !cmd.Flags().Changed("name") && !flags.dryRun {
 					return fmt.Errorf("required flag \"%s\" not set", "name")
 				}
-				if bodyViewportWidth != 0 || bodyViewportHeight != 0 {
+				if (cmd.Flags().Changed("viewport-width") || bodyViewportWidth != 0) || (cmd.Flags().Changed("viewport-height") || bodyViewportHeight != 0) {
 					if !cmd.Flags().Changed("viewport-width") && !flags.dryRun {
 						return fmt.Errorf("required flag \"%s\" not set", "viewport-width")
 					}
@@ -74,7 +74,7 @@ func newWidgetsCreateCmd(flags *rootFlags) *cobra.Command {
 			} else {
 				bodyMap := map[string]any{}
 				body = bodyMap
-				if bodyName != "" {
+				if cmd.Flags().Changed("name") || bodyName != "" {
 					bodyMap["name"] = bodyName
 				}
 				if cmd.Flags().Changed("tags") {
@@ -86,10 +86,10 @@ func newWidgetsCreateCmd(flags *rootFlags) *cobra.Command {
 				}
 				{
 					nestedViewport := map[string]any{}
-					if bodyViewportWidth != 0 {
+					if cmd.Flags().Changed("viewport-width") || bodyViewportWidth != 0 {
 						nestedViewport["width"] = bodyViewportWidth
 					}
-					if bodyViewportHeight != 0 {
+					if cmd.Flags().Changed("viewport-height") || bodyViewportHeight != 0 {
 						nestedViewport["height"] = bodyViewportHeight
 					}
 					if len(nestedViewport) > 0 {

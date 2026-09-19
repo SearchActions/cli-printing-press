@@ -49,7 +49,7 @@ func newDigestsPromotedCmd(flags *rootFlags) *cobra.Command {
 
 			path := "/v1/tools/mcp/send_digest"
 			params := map[string]string{}
-			if flagDigestId != "" {
+			if cmd.Flags().Changed("digest-id") || flagDigestId != "" {
 				params["digestId"] = formatCLIParamValue(flagDigestId)
 			}
 			data, prov, err := resolveReadWithStrategyAndResponsePath(cmd.Context(), c, flags, "auto", "digests", false, path, params, nil, "", cmd.ErrOrStderr())
