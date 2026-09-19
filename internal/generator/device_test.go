@@ -14,6 +14,7 @@ import (
 	"github.com/mvanhorn/cli-printing-press/v4/internal/naming"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"gopkg.in/yaml.v3"
 )
 
 func TestGenerateMinimalBLEDeviceCLICompiles(t *testing.T) {
@@ -151,6 +152,66 @@ func TestGeneratedBLESkillEmitsCanonicalInstallSection(t *testing.T) {
 	got, ok := ExtractSkillInstallSection(string(skillSrc))
 	require.True(t, ok, "device SKILL.md must contain the canonical install section")
 	assert.Equal(t, want, got, "device SKILL install section must match the canonical generator output")
+}
+
+// TestDeviceSkillFrontmatterConvention locks the device SKILL.md frontmatter
+// to the same pp-<slug> name and openclaw requires.bins convention that
+// internal/generator/templates/skill.md.tmpl already emits for HTTP/API and
+// MCP-intake CLIs. Before this test, deviceSkillTemplate emitted the raw
+// spec slug as name (no pp- prefix) and no metadata block at all.
+func TestDeviceSkillFrontmatterConvention(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name        string
+		displayName string
+	}{
+		{name: "default display name"},
+		{name: "display name with colon", displayName: "BLE: Kitchen Sensor"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			ds, err := devicespec.Parse(filepath.Join("..", "..", "testdata", "device", "fixtures", "ble-minimal.yaml"))
+			require.NoError(t, err)
+			if tc.displayName != "" {
+				ds.DisplayName = tc.displayName
+			}
+
+			outputDir := filepath.Join(t.TempDir(), "ble-temperature-sensor")
+			require.NoError(t, NewDevice(ds, outputDir).Generate())
+
+			skillSrc, err := os.ReadFile(filepath.Join(outputDir, "SKILL.md"))
+			require.NoError(t, err)
+			content := string(skillSrc)
+
+			require.True(t, strings.HasPrefix(content, "---\n"), "frontmatter should open with ---")
+			end := strings.Index(content[4:], "\n---\n")
+			require.NotEqual(t, -1, end, "frontmatter should close with ---")
+			body := strings.TrimSuffix(strings.TrimPrefix(content[:4+end+5], "---\n"), "---\n")
+
+			var parsed struct {
+				Name        string `yaml:"name"`
+				Description string `yaml:"description"`
+				Metadata    struct {
+					Openclaw struct {
+						Requires struct {
+							Bins []string `yaml:"bins"`
+						} `yaml:"requires"`
+					} `yaml:"openclaw"`
+				} `yaml:"metadata"`
+			}
+			require.NoError(t, yaml.Unmarshal([]byte(body), &parsed),
+				"device SKILL.md frontmatter must parse as YAML; content was:\n%s", body)
+
+			assert.Equal(t, "pp-"+ds.Name, parsed.Name, "device SKILL.md name must follow the pp-<slug> convention")
+			assert.NotEmpty(t, parsed.Description, "device SKILL.md description must not be empty")
+			assert.Equal(t, []string{naming.CLI(ds.Name)}, parsed.Metadata.Openclaw.Requires.Bins,
+				"device SKILL.md must declare its own binary as an openclaw requires.bins entry")
+		})
+	}
 }
 
 func TestGeneratedBLEDeviceEmitsMCPSurface(t *testing.T) {

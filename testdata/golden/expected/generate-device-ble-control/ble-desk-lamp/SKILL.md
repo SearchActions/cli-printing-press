@@ -1,6 +1,11 @@
 ---
-name: ble-desk-lamp
-description: Control BLE Desk Lamp through the generated BLE device CLI.
+name: pp-ble-desk-lamp
+description: "Control BLE Desk Lamp through the generated BLE device CLI."
+metadata:
+  openclaw:
+    requires:
+      bins:
+        - ble-desk-lamp-pp-cli
 ---
 
 ## Prerequisites: Install the CLI
