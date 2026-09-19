@@ -57,7 +57,7 @@ func newProjectsTasksUpdateProjectCmd(flags *rootFlags) *cobra.Command {
 				return err
 			}
 			params := map[string]string{}
-			if flagNotify != false {
+			if cmd.Flags().Changed("notify") || flagNotify != false {
 				params["notify"] = formatCLIParamValue(flagNotify)
 			}
 			var body any
@@ -77,10 +77,10 @@ func newProjectsTasksUpdateProjectCmd(flags *rootFlags) *cobra.Command {
 				if cmd.Flags().Changed("completed") {
 					bodyMap["completed"] = bodyCompleted
 				}
-				if bodyPriority != "" {
+				if cmd.Flags().Changed("priority") || bodyPriority != "" {
 					bodyMap["priority"] = bodyPriority
 				}
-				if bodyTitle != "" {
+				if cmd.Flags().Changed("title") || bodyTitle != "" {
 					bodyMap["title"] = bodyTitle
 				}
 			}

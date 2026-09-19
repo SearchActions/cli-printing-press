@@ -32,13 +32,13 @@ func newRecordsListCmd(flags *rootFlags) *cobra.Command {
 				path = appendArrayQueryParam(path, "columns", flagColumns, "form", true)
 			}
 			params := map[string]string{}
-			if flagFilterColumn != "" {
+			if cmd.Flags().Changed("filter-column") || flagFilterColumn != "" {
 				params["filter_column"] = formatCLIParamValue(flagFilterColumn)
 			}
-			if flagFilterValue != "" {
+			if cmd.Flags().Changed("filter-value") || flagFilterValue != "" {
 				params["filter_value"] = formatCLIParamValue(flagFilterValue)
 			}
-			if flagLimit != 0 {
+			if cmd.Flags().Changed("limit") || flagLimit != 0 {
 				params["limit"] = formatCLIParamValue(flagLimit)
 			}
 			data, prov, err := resolveReadWithStrategyAndResponsePath(cmd.Context(), c, flags, "auto", "records", true, path, params, nil, "", cmd.ErrOrStderr())

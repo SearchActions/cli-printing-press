@@ -229,7 +229,7 @@ func new{{cmdIdent .FuncPrefix .EndpointName}}Cmd(flags *rootFlags) *cobra.Comma
 			htmlRequestParams["{{.Name}}"] = args[{{positionalIndex $.Endpoint .Name}}]
 {{- end}}
 {{- if and (not .Positional) (not .PathParam) (not (isArrayQueryParam .))}}
-			if flag{{camel (paramIdent .)}} != {{zeroValForParamRequired .Name .Type .Required (hasDefault .)}} {
+			if {{paramPresence . (printf "flag%s" (camel (paramIdent .)))}} {
 				htmlRequestParams["{{.Name}}"] = formatCLIParamValue(flag{{camel (paramIdent .)}})
 			}
 {{- end}}
@@ -354,16 +354,22 @@ func new{{cmdIdent .FuncPrefix .EndpointName}}Cmd(flags *rootFlags) *cobra.Comma
 			}
 {{- end}}
 {{- if .HasStore}}
-			{{if eq .Endpoint.ResponseFormat "html"}}data, prov, err := resolvePaginatedReadWithStrategyAndJSONGuard{{else}}data, prov, err := resolvePaginatedReadWithStrategy{{end}}(cmd.Context(), c, flags, "{{if localReadSupported .Endpoint}}{{$dataSourceStrategy}}{{else}}live{{end}}", "{{lower .ResourceName}}", path, map[string]string{
+			paginatedParams := map[string]string{}
 {{- range .Endpoint.Params}}
 {{- if and .Positional (not (pathContainsParam $.Endpoint.Path .Name))}}
-				"{{paramWireName .}}": args[{{positionalIndex $.Endpoint .Name}}],
+			paginatedParams["{{paramWireName .}}"] = args[{{positionalIndex $.Endpoint .Name}}]
 {{- end}}
 {{- if and (not .Positional) (not .PathParam) (not (isArrayQueryParam .))}}
-				"{{paramWireName .}}": formatCLIParamValue(flag{{camel (paramIdent .)}}),
+{{- if eq (paramWireName .) $.Endpoint.Pagination.CursorParam}}
+			paginatedParams["{{paramWireName .}}"] = formatCLIParamValue(flag{{camel (paramIdent .)}})
+{{- else}}
+			if {{paramPresence . (printf "flag%s" (camel (paramIdent .)))}} {
+				paginatedParams["{{paramWireName .}}"] = formatCLIParamValue(flag{{camel (paramIdent .)}})
+			}
 {{- end}}
 {{- end}}
-			}, {{if or .Endpoint.HeaderOverrides .Endpoint.UsesBinaryResponse}}headerOverrides{{else}}nil{{end}}, flagAll, "{{.Endpoint.Pagination.CursorParam}}", "{{.Endpoint.Pagination.Type}}", "{{.Endpoint.Pagination.LimitParam}}", {{.PageSize}}, "{{.Endpoint.Pagination.NextCursorPath}}", "{{.Endpoint.Pagination.HasMoreField}}", {{if eq .Endpoint.ResponseFormat "html"}}false, {{end}}cmd.ErrOrStderr())
+{{- end}}
+			{{if eq .Endpoint.ResponseFormat "html"}}data, prov, err := resolvePaginatedReadWithStrategyAndJSONGuard{{else}}data, prov, err := resolvePaginatedReadWithStrategy{{end}}(cmd.Context(), c, flags, "{{if localReadSupported .Endpoint}}{{$dataSourceStrategy}}{{else}}live{{end}}", "{{lower .ResourceName}}", path, paginatedParams, {{if or .Endpoint.HeaderOverrides .Endpoint.UsesBinaryResponse}}headerOverrides{{else}}nil{{end}}, flagAll, "{{.Endpoint.Pagination.CursorParam}}", "{{.Endpoint.Pagination.Type}}", "{{.Endpoint.Pagination.LimitParam}}", {{.PageSize}}, "{{.Endpoint.Pagination.NextCursorPath}}", "{{.Endpoint.Pagination.HasMoreField}}", {{if eq .Endpoint.ResponseFormat "html"}}false, {{end}}cmd.ErrOrStderr())
 {{- else}}
 {{- if eq $dataSourceStrategy "local"}}
 			return fmt.Errorf("data_source_strategy local requires the local store data layer")
@@ -372,16 +378,22 @@ func new{{cmdIdent .FuncPrefix .EndpointName}}Cmd(flags *rootFlags) *cobra.Comma
 				return fmt.Errorf("no local data source for this command; use --data-source live or --data-source auto")
 			}
 {{- end}}
-			data, err := paginatedGet(cmd.Context(), c, path, map[string]string{
+			paginatedParams := map[string]string{}
 {{- range .Endpoint.Params}}
 {{- if and .Positional (not (pathContainsParam $.Endpoint.Path .Name))}}
-				"{{paramWireName .}}": args[{{positionalIndex $.Endpoint .Name}}],
+			paginatedParams["{{paramWireName .}}"] = args[{{positionalIndex $.Endpoint .Name}}]
 {{- end}}
 {{- if and (not .Positional) (not .PathParam) (not (isArrayQueryParam .))}}
-				"{{paramWireName .}}": formatCLIParamValue(flag{{camel (paramIdent .)}}),
+{{- if eq (paramWireName .) $.Endpoint.Pagination.CursorParam}}
+			paginatedParams["{{paramWireName .}}"] = formatCLIParamValue(flag{{camel (paramIdent .)}})
+{{- else}}
+			if {{paramPresence . (printf "flag%s" (camel (paramIdent .)))}} {
+				paginatedParams["{{paramWireName .}}"] = formatCLIParamValue(flag{{camel (paramIdent .)}})
+			}
 {{- end}}
 {{- end}}
-			}, {{if or .Endpoint.HeaderOverrides .Endpoint.UsesBinaryResponse}}headerOverrides{{else}}nil{{end}}, flagAll, "{{.Endpoint.Pagination.CursorParam}}", "{{.Endpoint.Pagination.Type}}", "{{.Endpoint.Pagination.LimitParam}}", {{.PageSize}}, "{{.Endpoint.Pagination.NextCursorPath}}", "{{.Endpoint.Pagination.HasMoreField}}")
+{{- end}}
+			data, err := paginatedGet(cmd.Context(), c, path, paginatedParams, {{if or .Endpoint.HeaderOverrides .Endpoint.UsesBinaryResponse}}headerOverrides{{else}}nil{{end}}, flagAll, "{{.Endpoint.Pagination.CursorParam}}", "{{.Endpoint.Pagination.Type}}", "{{.Endpoint.Pagination.LimitParam}}", {{.PageSize}}, "{{.Endpoint.Pagination.NextCursorPath}}", "{{.Endpoint.Pagination.HasMoreField}}")
 {{- end}}
 {{- else}}
 			params := map[string]string{}
@@ -390,7 +402,7 @@ func new{{cmdIdent .FuncPrefix .EndpointName}}Cmd(flags *rootFlags) *cobra.Comma
 			params["{{paramWireName .}}"] = args[{{positionalIndex $.Endpoint .Name}}]
 {{- end}}
 {{- if and (not .Positional) (not .PathParam) (not (isArrayQueryParam .))}}
-			if flag{{camel (paramIdent .)}} != {{zeroValForParamRequired .Name .Type .Required (hasDefault .)}} {
+			if {{paramPresence . (printf "flag%s" (camel (paramIdent .)))}} {
 				params["{{paramWireName .}}"] = formatCLIParamValue(flag{{camel (paramIdent .)}})
 			}
 {{- end}}
@@ -423,7 +435,7 @@ func new{{cmdIdent .FuncPrefix .EndpointName}}Cmd(flags *rootFlags) *cobra.Comma
 			params["{{paramWireName .}}"] = args[{{positionalIndex $.Endpoint .Name}}]
 {{- end}}
 {{- if and (not .Positional) (not .PathParam) (not (isArrayQueryParam .))}}
-			if flag{{camel (paramIdent .)}} != {{zeroValForParamRequired .Name .Type .Required (hasDefault .)}} {
+			if {{paramPresence . (printf "flag%s" (camel (paramIdent .)))}} {
 				params["{{paramWireName .}}"] = formatCLIParamValue(flag{{camel (paramIdent .)}})
 			}
 {{- end}}
@@ -503,7 +515,7 @@ func new{{cmdIdent .FuncPrefix .EndpointName}}Cmd(flags *rootFlags) *cobra.Comma
 			params["{{paramWireName .}}"] = args[{{positionalIndex $.Endpoint .Name}}]
 {{- end}}
 {{- if and (not .Positional) (not .PathParam) (not (isArrayQueryParam .))}}
-			if flag{{camel (paramIdent .)}} != {{zeroValForParamRequired .Name .Type .Required (hasDefault .)}} {
+			if {{paramPresence . (printf "flag%s" (camel (paramIdent .)))}} {
 				params["{{paramWireName .}}"] = formatCLIParamValue(flag{{camel (paramIdent .)}})
 			}
 {{- end}}
@@ -564,7 +576,7 @@ func new{{cmdIdent .FuncPrefix .EndpointName}}Cmd(flags *rootFlags) *cobra.Comma
 			params["{{paramWireName .}}"] = args[{{positionalIndex $.Endpoint .Name}}]
 {{- end}}
 {{- if and (not .Positional) (not .PathParam) (not (isArrayQueryParam .))}}
-			if flag{{camel (paramIdent .)}} != {{zeroValForParamRequired .Name .Type .Required (hasDefault .)}} {
+			if {{paramPresence . (printf "flag%s" (camel (paramIdent .)))}} {
 				params["{{paramWireName .}}"] = formatCLIParamValue(flag{{camel (paramIdent .)}})
 			}
 {{- end}}
@@ -651,7 +663,7 @@ func new{{cmdIdent .FuncPrefix .EndpointName}}Cmd(flags *rootFlags) *cobra.Comma
 			params["{{paramWireName .}}"] = args[{{positionalIndex $.Endpoint .Name}}]
 {{- end}}
 {{- if and (not .Positional) (not .PathParam) (not (isArrayQueryParam .))}}
-			if flag{{camel (paramIdent .)}} != {{zeroValForParamRequired .Name .Type .Required (hasDefault .)}} {
+			if {{paramPresence . (printf "flag%s" (camel (paramIdent .)))}} {
 				params["{{paramWireName .}}"] = formatCLIParamValue(flag{{camel (paramIdent .)}})
 			}
 {{- end}}

@@ -64,7 +64,7 @@ func newRecordsDeleteCmd(flags *rootFlags) *cobra.Command {
 			} else {
 				bodyMap := map[string]any{}
 				body = bodyMap
-				if bodyRecordId != "" {
+				if cmd.Flags().Changed("record-id") || bodyRecordId != "" {
 					bodyMap["record_id"] = bodyRecordId
 				}
 			}
