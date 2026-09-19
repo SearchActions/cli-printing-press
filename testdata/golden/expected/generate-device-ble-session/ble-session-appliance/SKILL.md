@@ -1,6 +1,11 @@
 ---
-name: ble-session-appliance
-description: Control BLE Session Appliance through the generated BLE device CLI.
+name: pp-ble-session-appliance
+description: "Control BLE Session Appliance through the generated BLE device CLI."
+metadata:
+  openclaw:
+    requires:
+      bins:
+        - ble-session-appliance-pp-cli
 ---
 
 ## Prerequisites: Install the CLI
