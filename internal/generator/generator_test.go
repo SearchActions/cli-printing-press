@@ -2501,6 +2501,28 @@ func requireGeneratedCompiles(t *testing.T, dir string) {
 	runGoCommand(t, dir, "build", "./...")
 }
 
+// requireGeneratedCompilesForGOOS cross-compiles the generated tree for a
+// non-host GOOS. The //go:build windows files in internal/cliutil are never
+// compiled by a host-GOOS build on linux/darwin CI, so without this a
+// duplicate symbol or a missing helper on Windows ships unnoticed.
+func requireGeneratedCompilesForGOOS(t *testing.T, dir, goos string) {
+	t.Helper()
+	if testing.Short() {
+		t.Skip("generated CLI compile tests run in the full generated-test CI lane")
+	}
+	runGoCommandRequired(t, dir, "build", "./...")
+	cmd := exec.Command("go", "build", "-mod=mod", "./...")
+	cmd.Dir = dir
+	cmd.Env = append(os.Environ(),
+		"GOOS="+goos, "GOARCH=amd64", "CGO_ENABLED=0",
+	)
+	cacheDir, err := goBuildCacheDir(dir)
+	require.NoError(t, err)
+	cmd.Env = append(cmd.Env, "GOCACHE="+cacheDir)
+	output, err := cmd.CombinedOutput()
+	require.NoError(t, err, string(output))
+}
+
 func runGoCommandRequired(t *testing.T, dir string, args ...string) {
 	t.Helper()
 
