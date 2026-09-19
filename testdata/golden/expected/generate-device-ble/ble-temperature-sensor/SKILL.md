@@ -1,6 +1,11 @@
 ---
-name: ble-temperature-sensor
-description: Control BLE Temperature Sensor through the generated BLE device CLI.
+name: pp-ble-temperature-sensor
+description: "Control BLE Temperature Sensor through the generated BLE device CLI."
+metadata:
+  openclaw:
+    requires:
+      bins:
+        - ble-temperature-sensor-pp-cli
 ---
 
 ## Prerequisites: Install the CLI

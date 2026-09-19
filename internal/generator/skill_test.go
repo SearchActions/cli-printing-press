@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/mvanhorn/cli-printing-press/v4/internal/devicespec"
+	"github.com/mvanhorn/cli-printing-press/v4/internal/naming"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/spec"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -753,4 +755,76 @@ func TestSkillNoExtraCommandsIsBackwardCompatible(t *testing.T) {
 
 	assert.NotContains(t, content, "**Hand-written commands**",
 		"Hand-written commands subsection should not appear when ExtraCommands is absent")
+}
+
+// TestSkillFrontmatterPPConventionAllPaths locks the name: pp-<slug> +
+// metadata.openclaw.requires.bins convention across every SKILL.md emit
+// path: the HTTP/API template (skill.md.tmpl) and the BLE device template
+// (deviceSkillTemplate). Any future emit path that forgets this convention
+// should fail here rather than surface as another hand-fixed printed CLI.
+func TestSkillFrontmatterPPConventionAllPaths(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name    string
+		slug    string
+		cliName string
+		content string
+	}{
+		{
+			name:    "HTTP/API path",
+			slug:    "convention",
+			cliName: naming.CLI("convention"),
+			content: func() string {
+				apiSpec := minimalSpec("convention")
+				outputDir := filepath.Join(t.TempDir(), "convention-pp-cli")
+				gen := New(apiSpec, outputDir)
+				require.NoError(t, gen.Generate())
+				skill, err := os.ReadFile(filepath.Join(outputDir, "SKILL.md"))
+				require.NoError(t, err)
+				return string(skill)
+			}(),
+		},
+		{
+			name:    "BLE device path",
+			slug:    "ble-temperature-sensor",
+			cliName: naming.CLI("ble-temperature-sensor"),
+			content: func() string {
+				ds, err := devicespec.Parse(filepath.Join("..", "..", "testdata", "device", "fixtures", "ble-minimal.yaml"))
+				require.NoError(t, err)
+				outputDir := filepath.Join(t.TempDir(), "ble-temperature-sensor")
+				require.NoError(t, NewDevice(ds, outputDir).Generate())
+				skill, err := os.ReadFile(filepath.Join(outputDir, "SKILL.md"))
+				require.NoError(t, err)
+				return string(skill)
+			}(),
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			require.True(t, strings.HasPrefix(tc.content, "---\n"), "frontmatter should open with ---")
+			end := strings.Index(tc.content[4:], "\n---\n")
+			require.NotEqual(t, -1, end, "frontmatter should close with ---")
+			body := strings.TrimSuffix(strings.TrimPrefix(tc.content[:4+end+5], "---\n"), "---\n")
+
+			var parsed struct {
+				Name     string `yaml:"name"`
+				Metadata struct {
+					Openclaw struct {
+						Requires struct {
+							Bins []string `yaml:"bins"`
+						} `yaml:"requires"`
+					} `yaml:"openclaw"`
+				} `yaml:"metadata"`
+			}
+			require.NoError(t, yaml.Unmarshal([]byte(body), &parsed),
+				"frontmatter must parse as YAML; content was:\n%s", body)
+
+			assert.True(t, strings.HasPrefix(parsed.Name, "pp-"),
+				"SKILL.md name must start with pp-, got %q", parsed.Name)
+			assert.Contains(t, parsed.Metadata.Openclaw.Requires.Bins, tc.cliName,
+				"SKILL.md must declare its own binary in metadata.openclaw.requires.bins")
+		})
+	}
 }
