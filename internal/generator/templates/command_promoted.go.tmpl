@@ -458,14 +458,11 @@ func new{{cmdIdent .PromotedName}}PromotedCmd(flags *rootFlags) *cobra.Command {
 			// Machine-format flags (--json, --csv, --compact, --quiet, --plain,
 			// --select) and piped stdout suppress this line; the JSON envelope
 			// already carries meta.source for those consumers.
-			// SYNC: keep this gate aligned with command_endpoint.go.tmpl.
+			// SYNC: keep this gate and the JSON-envelope branch below aligned
+			// with command_endpoint.go.tmpl; the item count lives in
+			// countProvenanceItems.
 			if wantsHumanTable(cmd.OutOrStdout(), flags) {
-				var countItems []json.RawMessage
-				if json.Unmarshal(data, &countItems) != nil {
-					// Single object, not an array
-					countItems = []json.RawMessage{data}
-				}
-				printProvenance(cmd, len(countItems), prov)
+				printProvenance(cmd, countProvenanceItems(data), prov)
 			}
 			// For JSON output, wrap with provenance envelope. --select wins over
 			// --compact when both are set; --compact only runs when no explicit

@@ -8181,6 +8181,7 @@ func TestGeneratedHelpers_ConditionalDataLayerFunctions(t *testing.T) {
 	assert.NotContains(t, content, "DataProvenance")
 	assert.NotContains(t, content, "printProvenance")
 	assert.NotContains(t, content, "wrapWithProvenance")
+	assert.NotContains(t, content, "countProvenanceItems")
 	assert.NotContains(t, content, "defaultDBPath")
 
 	// Core helpers should still be present
@@ -8351,10 +8352,42 @@ func TestWrapWithProvenance_NonJSONRejected(t *testing.T) {
 		t.Fatalf("wrapWithProvenance accepted non-JSON payload")
 	}
 }
+
+func TestCountProvenanceItems(t *testing.T) {
+	cases := []struct {
+		name string
+		in   json.RawMessage
+		want int
+	}{
+		{"array of three", json.RawMessage(` + "`[{\"id\":1},{\"id\":2},{\"id\":3}]`" + `), 3},
+		{"empty array", json.RawMessage(` + "`[]`" + `), 0},
+		{"single object", json.RawMessage(` + "`{\"id\":1}`" + `), 1},
+		{"null", json.RawMessage(` + "`null`" + `), 0},
+		{"data envelope", json.RawMessage(` + "`{\"data\":[1,2,3]}`" + `), 3},
+		{"results envelope", json.RawMessage(` + "`{\"results\":[1,2,3]}`" + `), 3},
+		{"multi-key envelope with cursor", json.RawMessage(` + "`{\"data\":[1],\"next\":\"x\"}`" + `), 1},
+		{"single-key non-array value", json.RawMessage(` + "`{\"data\":{}}`" + `), 1},
+		{"nil raw message", json.RawMessage(nil), 0},
+		{"empty raw message", json.RawMessage(""), 0},
+		{"whitespace only", json.RawMessage(" \n"), 0},
+		{"scalar", json.RawMessage(` + "`42`" + `), 1},
+		{"json string", json.RawMessage(` + "`\"str\"`" + `), 1},
+		{"non-JSON body", json.RawMessage(` + "`<xml/>`" + `), 1},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			got := countProvenanceItems(tc.in)
+			if got != tc.want {
+				t.Fatalf("countProvenanceItems(%q) = %d, want %d", tc.in, got, tc.want)
+			}
+		})
+	}
+}
 `
 	testPath := filepath.Join(outputDir, "internal", "cli", "wrap_provenance_unwrap_test.go")
 	require.NoError(t, os.WriteFile(testPath, []byte(behaviorTest), 0o644))
-	runGoCommand(t, outputDir, "test", "./internal/cli", "-run", "TestUnwrapSingleKeyArray|TestWrapWithProvenance_")
+	runGoCommand(t, outputDir, "test", "./internal/cli", "-run", "TestUnwrapSingleKeyArray|TestWrapWithProvenance_|TestCountProvenanceItems")
 }
 
 // findMatchingBrace returns the index of the `}` that closes the `{` at
@@ -8430,14 +8463,19 @@ func TestGeneratedListCommand_ProvenanceGatedByHumanTable(t *testing.T) {
 
 	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
 	gen := New(apiSpec, outputDir)
-	gen.VisionSet = VisionTemplateSet{Store: true}
+	// MCP: true because requireGeneratedCompiles below builds ./... — the
+	// cmd/*-pp-mcp entry point is always emitted, but internal/mcp is only
+	// populated when VisionSet.MCP is set, so a Store-only override without
+	// it fails the build on an unrelated package.
+	gen.VisionSet = VisionTemplateSet{Store: true, MCP: true}
 	require.NoError(t, gen.Generate())
 
 	cases := []struct {
 		name string
 		file string
 	}{
-		{"endpoint template", "items_list.go"},
+		{"endpoint list template", "items_list.go"},
+		{"endpoint get template", "items_get.go"},
 		{"promoted template", "promoted_things.go"},
 	}
 	for _, tc := range cases {
@@ -8448,6 +8486,10 @@ func TestGeneratedListCommand_ProvenanceGatedByHumanTable(t *testing.T) {
 
 			require.Equal(t, 1, strings.Count(src, "printProvenance(cmd,"),
 				"exactly one printProvenance call should remain; a second ungated call would re-leak the diagnostic")
+			require.Contains(t, src, "printProvenance(cmd, countProvenanceItems(data), prov)",
+				"item count must come from the shared countProvenanceItems helper")
+			require.NotContains(t, src, "countItems",
+				"the inline countItems block must be gone now that countProvenanceItems is shared")
 
 			gateIdx := strings.Index(src, "if wantsHumanTable(cmd.OutOrStdout(), flags) {")
 			require.GreaterOrEqual(t, gateIdx, 0,
@@ -8465,6 +8507,13 @@ func TestGeneratedListCommand_ProvenanceGatedByHumanTable(t *testing.T) {
 				"printProvenance must appear between the gate's open and close braces, not after the block")
 		})
 	}
+
+	helpersSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "helpers.go"))
+	require.NoError(t, err)
+	assert.Contains(t, string(helpersSrc), "func countProvenanceItems(",
+		"helpers.go must emit the shared provenance-count helper when HasDataLayer is set")
+
+	requireGeneratedCompiles(t, outputDir)
 }
 
 // --- Unit 3: Top-Level Command Promotion Tests ---
@@ -8861,8 +8910,17 @@ func TestGeneratedOutput_PromotedCommandExists(t *testing.T) {
 	// break) would fail one of these two assertions.
 	promotedSrc, err := os.ReadFile(promotedFile)
 	require.NoError(t, err)
-	assert.Contains(t, string(promotedSrc), "data = extractResponseData(data)",
+	promotedStr := string(promotedSrc)
+	assert.Contains(t, promotedStr, "data = extractResponseData(data)",
 		"promoted command must call extractResponseData on the envelope path")
+	assert.Contains(t, promotedStr, "printProvenance(cmd, countProvenanceItems(data), prov)",
+		"promoted command must count via the shared countProvenanceItems helper")
+	unwrapIdx := strings.Index(promotedStr, "data = extractResponseData(data)")
+	countIdx := strings.Index(promotedStr, "countProvenanceItems(data)")
+	require.NotEqual(t, -1, unwrapIdx)
+	require.NotEqual(t, -1, countIdx)
+	assert.Less(t, unwrapIdx, countIdx,
+		"countProvenanceItems must run on the already-unwrapped data so a 3-item {\"data\":[...]} envelope counts 3, not 1")
 	requireGeneratedCompiles(t, outputDir)
 
 	// The resource parent command should NOT be generated — the promoted command replaces it.

@@ -2910,6 +2910,23 @@ func printProvenance(cmd *cobra.Command, count int, prov DataProvenance) {
 	fmt.Fprintf(cmd.ErrOrStderr(), "%s%d results (cached, synced %s)\n", prefix, count, age)
 }
 
+// countProvenanceItems counts the result records in data using the same
+// definition of the result set as wrapWithProvenance, so the human-terminal
+// provenance line and the --json envelope describe the same response. An
+// empty or whitespace-only body has no items. A single object, a scalar,
+// a multi-key object, or a non-JSON body counts as one record.
+func countProvenanceItems(data json.RawMessage) int {
+	if len(bytes.TrimSpace(data)) == 0 {
+		return 0
+	}
+	data = unwrapSingleKeyArray(data)
+	var items []json.RawMessage
+	if json.Unmarshal(data, &items) == nil {
+		return len(items)
+	}
+	return 1
+}
+
 func nonJSONPayloadError(data json.RawMessage) error {
 	trimmed := bytes.TrimSpace(data)
 	if len(trimmed) > 0 && trimmed[0] == '<' {
