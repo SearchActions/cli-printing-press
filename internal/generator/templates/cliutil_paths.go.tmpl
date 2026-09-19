@@ -137,6 +137,13 @@ func AtomicWritePrivateFile(path string, data []byte, fileMode, dirMode os.FileM
 		_ = os.Remove(tmpPath)
 		return fmt.Errorf("securing temporary private file: %w", err)
 	}
+	// Sever NTFS DACL inheritance and lock the file to owner-only BEFORE the
+	// payload lands, so a token/config file written under a home that carries
+	// broad inherited ACEs is never group/world-readable, even briefly. No-op on
+	// POSIX, where the Chmod(0600) above already suffices. Best effort by design:
+	// the read-time VerifyCredsPerms guard is the fail-closed backstop, so a
+	// failure here (network filesystem, restricted token) must not fail the write.
+	_ = lockdownPrivateFile(tmpPath)
 	if _, err := tmp.Write(data); err != nil {
 		_ = tmp.Close()
 		_ = os.Remove(tmpPath)

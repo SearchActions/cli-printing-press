@@ -28,3 +28,9 @@ func VerifyCredsPerms(path string) error {
 	}
 	return nil
 }
+
+// lockdownPrivateFile is a no-op on POSIX. AtomicWritePrivateFile's
+// Chmod(0600) already yields an owner-only file independent of the parent
+// directory's mode, so 0600 is the sole, sufficient POSIX mechanism; the
+// inheritance/DACL problem it solves on NTFS does not exist here.
+func lockdownPrivateFile(string) error { return nil }

@@ -46,3 +46,57 @@ func VerifyCredsPerms(path string) error {
 	}
 	return evalCredsSecurity(sd.String(), me)
 }
+
+// lockdownPrivateFile sets a PROTECTED (inheritance-broken) DACL on path that
+// grants full control to exactly the current user, SYSTEM, and
+// BUILTIN\Administrators — the same three principals evalCredsSecurity permits
+// (ownerAllowed). NTFS files inherit their parent directory's ACEs, so a token
+// file written under a home that carries broad inherited ACEs (common on
+// AzureAD-joined / domain Windows) is group/world-readable until this runs; the
+// PROTECTED flag severs that inheritance and the explicit ACL removes every
+// broad trustee. Owner is deliberately left untouched (no
+// OWNER_SECURITY_INFORMATION): forcing owner needs SeRestorePrivilege and would
+// fight the evaluator's carve-out for Administrators-owned files created by an
+// elevated process. Best effort by contract — callers proceed on error and the
+// read-time VerifyCredsPerms guard is the fail-closed backstop.
+func lockdownPrivateFile(path string) error {
+	tok, err := windows.OpenCurrentProcessToken()
+	if err != nil {
+		return err
+	}
+	defer tok.Close()
+	user, err := tok.GetTokenUser()
+	if err != nil {
+		return err
+	}
+	system, err := windows.CreateWellKnownSid(windows.WinLocalSystemSid)
+	if err != nil {
+		return err
+	}
+	admins, err := windows.CreateWellKnownSid(windows.WinBuiltinAdministratorsSid)
+	if err != nil {
+		return err
+	}
+	entries := make([]windows.EXPLICIT_ACCESS, 0, 3)
+	for _, sid := range []*windows.SID{user.User.Sid, system, admins} {
+		entries = append(entries, windows.EXPLICIT_ACCESS{
+			AccessPermissions: windows.GENERIC_ALL,
+			AccessMode:        windows.GRANT_ACCESS,
+			Inheritance:       windows.NO_INHERITANCE,
+			Trustee: windows.TRUSTEE{
+				TrusteeForm:  windows.TRUSTEE_IS_SID,
+				TrusteeValue: windows.TrusteeValueFromSID(sid),
+			},
+		})
+	}
+	dacl, err := windows.ACLFromEntries(entries, nil)
+	if err != nil {
+		return err
+	}
+	return windows.SetNamedSecurityInfo(
+		path,
+		windows.SE_FILE_OBJECT,
+		windows.DACL_SECURITY_INFORMATION|windows.PROTECTED_DACL_SECURITY_INFORMATION,
+		nil, nil, dacl, nil,
+	)
+}
