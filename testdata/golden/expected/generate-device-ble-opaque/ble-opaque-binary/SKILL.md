@@ -1,6 +1,11 @@
 ---
-name: ble-opaque-binary
-description: Control BLE Opaque Binary Device through the generated BLE device CLI.
+name: pp-ble-opaque-binary
+description: "Control BLE Opaque Binary Device through the generated BLE device CLI."
+metadata:
+  openclaw:
+    requires:
+      bins:
+        - ble-opaque-binary-pp-cli
 ---
 
 ## Prerequisites: Install the CLI

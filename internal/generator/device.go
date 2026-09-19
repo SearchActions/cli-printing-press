@@ -291,6 +291,7 @@ func (g *DeviceGenerator) render(relPath, tmplText string, data deviceTemplateDa
 		"quote":              func(value string) string { return fmt.Sprintf("%q", value) },
 		"goDirectiveVersion": resolveCurrentGoDirectiveVersion,
 		"goToolchainVersion": resolveCurrentGoToolchainVersion,
+		"yamlDoubleQuoted":   yamlDoubleQuoted,
 	}).Parse(tmplText)
 	if err != nil {
 		return fmt.Errorf("parse %s template: %w", relPath, err)
@@ -2527,8 +2528,13 @@ By default this CLI is replay-backed and never opens a connection. To control a 
 `
 
 const deviceSkillTemplate = `---
-name: {{.Name}}
-description: Control {{.DisplayName}} through the generated BLE device CLI.
+name: pp-{{.Name}}
+description: "{{yamlDoubleQuoted (printf "Control %s through the generated BLE device CLI." .DisplayName)}}"
+metadata:
+  openclaw:
+    requires:
+      bins:
+        - {{.CLIName}}
 ---
 
 {{.InstallSection}}
