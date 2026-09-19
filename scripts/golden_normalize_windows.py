@@ -68,7 +68,12 @@ def main() -> int:
         return 2
 
     actual_abs, actual_root, repo_root, home = sys.argv[1:]
-    text = sys.stdin.read()
+    # Binary I/O throughout: text-mode stdin/stdout on native Windows Python
+    # translates newlines on both directions, which would rewrite every LF in a
+    # captured artifact as CRLF and fail the byte-for-byte golden comparison
+    # whole-file. The bytes in must equal the bytes out apart from the
+    # substitutions below.
+    text = sys.stdin.buffer.read().decode("utf-8")
 
     for variant in windows_variants(actual_abs):
         text = text.replace(variant, "<ARTIFACT_DIR>")
@@ -90,7 +95,7 @@ def main() -> int:
     )
     text = re.sub(r"(<(?:ARTIFACT_DIR|REPO)>/[A-Za-z0-9._\-/]+)\.exe", r"\1", text)
 
-    sys.stdout.write(text)
+    sys.stdout.buffer.write(text.encode("utf-8"))
     return 0
 
 

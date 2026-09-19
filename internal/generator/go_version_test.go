@@ -17,10 +17,10 @@ func TestGoDirectiveVersionFromRuntime(t *testing.T) {
 		version string
 		want    string
 	}{
-		{name: "patch", version: "go1.26.5", want: "1.26.5"},
+		{name: "patch", version: "go1.26.6", want: "1.26.6"},
 		{name: "minor", version: "go1.26", want: "1.26.0"},
 		{name: "devel", version: "devel go1.27-abc123", want: "1.27.0"},
-		{name: "suffix", version: "go1.26.5 X:cacheprog", want: "1.26.5"},
+		{name: "suffix", version: "go1.26.6 X:cacheprog", want: "1.26.6"},
 		{name: "unknown", version: "unknown", want: ""},
 	}
 
