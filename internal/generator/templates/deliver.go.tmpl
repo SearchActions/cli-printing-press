@@ -5,13 +5,23 @@ package cli
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 )
+
+// deliverWebhookAllowlistEnv names the operator-set env var that permits
+// non-loopback --deliver webhook targets. Loopback targets are always
+// allowed; every other origin must be an exact member of this
+// comma-separated allowlist.
+const deliverWebhookAllowlistEnv = "{{envName .Name}}_DELIVER_WEBHOOK_ALLOWLIST"
 
 // DeliverSink describes where command output should be routed when
 // --deliver is set. Parsed from the sink specifier "scheme:target".
@@ -21,9 +31,10 @@ type DeliverSink struct {
 }
 
 // ParseDeliverSink parses a --deliver value. Supported schemes:
-//   stdout          -> default, no redirection
-//   file:<path>     -> write output atomically to <path>
-//   webhook:<url>   -> POST output body to <url>
+//
+//	stdout          -> default, no redirection
+//	file:<path>     -> write output atomically to <path>
+//	webhook:<url>   -> POST output body to <url>
 //
 // Returns an error for unknown schemes with a message naming the
 // supported set, so agents see a structured refusal rather than a
@@ -34,7 +45,7 @@ func ParseDeliverSink(spec string) (DeliverSink, error) {
 	}
 	idx := strings.Index(spec, ":")
 	if idx == -1 {
-		return DeliverSink{}, fmt.Errorf("unknown --deliver sink %q: expected scheme:target (supported: stdout, file:<path>, webhook:<url>)", spec)
+		return DeliverSink{}, errors.New("--deliver: expected scheme:target (supported: stdout, file:<path>, webhook:<url>)")
 	}
 	scheme := spec[:idx]
 	target := spec[idx+1:]
@@ -44,8 +55,8 @@ func ParseDeliverSink(spec string) (DeliverSink, error) {
 			return DeliverSink{}, fmt.Errorf("--deliver file:<path> requires a path")
 		}
 	case "webhook":
-		if !strings.HasPrefix(target, "http://") && !strings.HasPrefix(target, "https://") {
-			return DeliverSink{}, fmt.Errorf("--deliver webhook:<url> requires an http:// or https:// URL, got %q", target)
+		if _, _, verr := validateWebhookTarget(target); verr != nil {
+			return DeliverSink{}, verr
 		}
 	default:
 		return DeliverSink{}, fmt.Errorf("unknown --deliver scheme %q (supported: stdout, file, webhook)", scheme)
@@ -88,25 +99,218 @@ func deliverFile(path string, body []byte) error {
 	return nil
 }
 
-func deliverWebhook(url string, body []byte, compact bool) error {
+// validateWebhookTarget is the single gate for --deliver webhook:<url>.
+// It allows loopback destinations unconditionally, and every other
+// origin only when it is an exact member of the deliverWebhookAllowlistEnv
+// allowlist. Callers must build the outbound request from the returned
+// *url.URL (never re-parse raw) and pick the transport from viaLoopback.
+func validateWebhookTarget(raw string) (*url.URL, bool, error) {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return nil, false, errors.New("--deliver webhook: target is not a valid URL")
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return nil, false, errors.New("--deliver webhook: target must use http:// or https://")
+	}
+	if u.Host == "" {
+		return nil, false, errors.New("--deliver webhook: target is missing a host")
+	}
+	if u.User != nil {
+		return nil, false, errors.New("--deliver webhook: target must not include userinfo")
+	}
+	host := u.Hostname()
+	if !isASCIIHost(host) {
+		return nil, false, errors.New("--deliver webhook: target host must be ASCII")
+	}
+
+	if isLoopbackHost(host) {
+		return u, true, nil
+	}
+
+	origin := canonicalOrigin(u)
+	rawAllow := os.Getenv(deliverWebhookAllowlistEnv)
+	if rawAllow == "" {
+		return nil, false, fmt.Errorf("--deliver webhook: origin %s is not allowed (loopback is always allowed; to permit this origin set %s=%s)", origin, deliverWebhookAllowlistEnv, origin)
+	}
+	allowed, aerr := parseWebhookAllowlist(rawAllow)
+	if aerr != nil {
+		return nil, false, aerr
+	}
+	if !allowed[origin] {
+		return nil, false, fmt.Errorf("--deliver webhook: origin %s is not allowed (loopback is always allowed; to permit this origin set %s=%s)", origin, deliverWebhookAllowlistEnv, origin)
+	}
+	return u, false, nil
+}
+
+// canonicalOrigin renders scheme+host+port with the host lowercased and
+// the default port filled in explicitly, so allowlist comparison is exact
+// string equality with no implicit-port ambiguity. The port is taken
+// verbatim from the URL (never renumbered), so a leading-zero spelling
+// like ":0443" never aliases ":443".
+func canonicalOrigin(u *url.URL) string {
+	host := strings.ToLower(u.Hostname())
+	port := u.Port()
+	if port == "" {
+		if u.Scheme == "https" {
+			port = "443"
+		} else {
+			port = "80"
+		}
+	}
+	return u.Scheme + "://" + net.JoinHostPort(host, port)
+}
+
+// isLoopbackHost reports whether h (a URL hostname, no port/brackets) is
+// "localhost" or a loopback IP literal. It never performs a DNS lookup,
+// so a hosts-file redirect of "localhost" elsewhere does not fool it;
+// the dial-time pin in rejectNonLoopback is the second, authoritative
+// check for that case.
+func isLoopbackHost(h string) bool {
+	if strings.EqualFold(h, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(h)
+	return ip != nil && ip.IsLoopback()
+}
+
+// isASCIIHost rejects hosts containing any non-ASCII byte. strings.ToLower
+// and IDNA case-folding disagree on characters like fullwidth Latin
+// letters; refusing them outright removes the ambiguity rather than
+// trying to normalise it.
+func isASCIIHost(h string) bool {
+	for i := 0; i < len(h); i++ {
+		if h[i] > 127 {
+			return false
+		}
+	}
+	return true
+}
+
+// parseWebhookAllowlist parses the comma-separated allowlist env value.
+// Every non-empty entry must be a bare http(s) origin: no path, query,
+// fragment, userinfo, or wildcard. A malformed entry fails the whole
+// list closed (never silently skipped) so a typo cannot widen the
+// allowlist. Entries are identified by position in error text, never by
+// their raw value, since an entry may itself carry a secret.
+func parseWebhookAllowlist(v string) (map[string]bool, error) {
+	set := make(map[string]bool)
+	for i, rawEntry := range strings.Split(v, ",") {
+		e := strings.TrimSpace(rawEntry)
+		if e == "" {
+			continue
+		}
+		if e == "*" {
+			return nil, fmt.Errorf("%s: entry %d: wildcards are not supported", deliverWebhookAllowlistEnv, i+1)
+		}
+		u, err := url.Parse(e)
+		if err != nil || u.Scheme == "" || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") {
+			return nil, fmt.Errorf("%s: entry %d: not a valid http(s) origin", deliverWebhookAllowlistEnv, i+1)
+		}
+		if u.User != nil {
+			return nil, fmt.Errorf("%s: entry %d: must not include userinfo", deliverWebhookAllowlistEnv, i+1)
+		}
+		if (u.Path != "" && u.Path != "/") || u.RawQuery != "" || u.Fragment != "" {
+			return nil, fmt.Errorf("%s: entry %d: must be an origin only, not a path/query/fragment", deliverWebhookAllowlistEnv, i+1)
+		}
+		if !isASCIIHost(u.Hostname()) {
+			return nil, fmt.Errorf("%s: entry %d: host must be ASCII", deliverWebhookAllowlistEnv, i+1)
+		}
+		set[canonicalOrigin(u)] = true
+	}
+	return set, nil
+}
+
+// redactedWebhookTarget renders a target down to its origin for safe
+// logging. Webhook URLs routinely carry a secret in the path or query
+// (Slack/Discord-style hooks), so no error or warning path may print
+// more than this.
+func redactedWebhookTarget(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil || u.Scheme == "" || u.Host == "" {
+		return "<invalid url>"
+	}
+	return canonicalOrigin(u)
+}
+
+// rejectNonLoopback is a net.Dialer.Control hook that refuses to
+// complete a dial whose resolved remote address is not a loopback IP.
+// It is the authoritative check for the loopback transport: even if a
+// hostname like "localhost" resolves off-box via the hosts file, the
+// actual dial target is pinned here.
+func rejectNonLoopback(_, address string, _ syscall.RawConn) error {
+	host, _, err := net.SplitHostPort(address)
+	if err != nil {
+		return errors.New("deliver: invalid dial address")
+	}
+	ip := net.ParseIP(host)
+	if ip == nil || !ip.IsLoopback() {
+		return errors.New("deliver: refusing to dial a non-loopback address")
+	}
+	return nil
+}
+
+// newWebhookClient builds the HTTP client for a validated webhook
+// target. Loopback targets get a dedicated transport with the system
+// proxy disabled (http.ProxyFromEnvironment's bypass is case-sensitive
+// on "localhost", so leaving the default proxy in place could route a
+// "LOCALHOST" target through a configured HTTP_PROXY) and a dial-time
+// loopback pin. Allowlisted non-loopback targets use the default
+// proxy-aware transport, since reaching an operator's allowlisted host
+// may legitimately require a corporate proxy. Both clients refuse to
+// follow redirects: a redirect could otherwise bounce an allowed
+// request to a target that was never validated.
+func newWebhookClient(viaLoopback bool) *http.Client {
+	checkRedirect := func(*http.Request, []*http.Request) error {
+		return http.ErrUseLastResponse
+	}
+	if viaLoopback {
+		return &http.Client{
+			Timeout:       30 * time.Second,
+			CheckRedirect: checkRedirect,
+			Transport: &http.Transport{
+				Proxy:       nil,
+				DialContext: (&net.Dialer{Control: rejectNonLoopback}).DialContext,
+			},
+		}
+	}
+	return &http.Client{
+		Timeout:       30 * time.Second,
+		CheckRedirect: checkRedirect,
+	}
+}
+
+func deliverWebhook(target string, body []byte, compact bool) error {
+	u, viaLoopback, verr := validateWebhookTarget(target)
+	if verr != nil {
+		return verr
+	}
+
 	contentType := "application/json"
 	if compact {
 		contentType = "application/x-ndjson"
 	}
-	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(body))
+	req, err := http.NewRequest(http.MethodPost, u.String(), bytes.NewReader(body))
 	if err != nil {
-		return fmt.Errorf("building webhook request: %w", err)
+		return errors.New("--deliver webhook: building request failed")
 	}
 	req.Header.Set("Content-Type", contentType)
 	req.Header.Set("User-Agent", "{{.Name}}-pp-cli/deliver")
 
-	client := &http.Client{Timeout: 30 * time.Second}
+	client := newWebhookClient(viaLoopback)
 	resp, err := client.Do(req)
 	if err != nil {
-		return fmt.Errorf("posting to webhook: %w", err)
+		var uerr *url.Error
+		if errors.As(err, &uerr) {
+			return fmt.Errorf("posting to webhook: %w", uerr.Err)
+		}
+		return errors.New("posting to webhook failed")
 	}
-	defer resp.Body.Close()
-	if resp.StatusCode >= 400 {
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode >= 300 && resp.StatusCode < 400 {
+		return fmt.Errorf("webhook returned %s: redirects are not followed", resp.Status)
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return fmt.Errorf("webhook returned %s", resp.Status)
 	}
 	return nil

@@ -166,7 +166,11 @@ func Execute() error {
 	}
 	if err == nil && flags.deliverBuf != nil {
 		if derr := Deliver(flags.deliverSink, flags.deliverBuf.Bytes(), flags.compact); derr != nil {
-			fmt.Fprintf(os.Stderr, "warning: deliver to %s:%s failed: %v\n", flags.deliverSink.Scheme, flags.deliverSink.Target, derr)
+			target := flags.deliverSink.Target
+			if flags.deliverSink.Scheme == "webhook" {
+				target = redactedWebhookTarget(target)
+			}
+			fmt.Fprintf(os.Stderr, "warning: deliver to %s:%s failed: %v\n", flags.deliverSink.Scheme, target, derr)
 			return derr
 		}
 	}
@@ -324,7 +328,7 @@ Run '{{.Name}}-pp-cli doctor' to verify auth and connectivity.{{backtick}},
 	rootCmd.PersistentFlags().DurationVar(&flags.maxAge, "max-age", 30*time.Minute, "Maximum acceptable age of local-store data before a stderr hint suggests sync; 0 disables")
 {{- end}}
 	rootCmd.PersistentFlags().StringVar(&flags.profileName, "profile", "", "Apply values from a saved profile (see '{{.Name}}-pp-cli profile list')")
-	rootCmd.PersistentFlags().StringVar(&flags.deliverSpec, "deliver", "", "Route output to a sink: stdout (default), file:<path>, webhook:<url>")
+	rootCmd.PersistentFlags().StringVar(&flags.deliverSpec, "deliver", "", "Route output to a sink: stdout (default), file:<path>, webhook:<url> (loopback, or origins in {{envName .Name}}_DELIVER_WEBHOOK_ALLOWLIST)")
 {{- /* --rate-limit default precedence: an explicit spec default_rate_limit
        ("auto" or a number) wins; else the legacy provenance rule ("sniffed"
        browser-captured specs pace at 2/s, everything else disabled). "auto"

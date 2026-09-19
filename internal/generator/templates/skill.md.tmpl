@@ -602,7 +602,7 @@ Every command accepts `--deliver <sink>`. The output goes to the named sink in a
 | `file:<path>` | Atomically write output to `<path>` (tmp + rename) |
 | `webhook:<url>` | POST the output body to the URL (`application/json` or `application/x-ndjson` when `--compact`) |
 
-Unknown schemes are refused with a structured error naming the supported set. Webhook failures return non-zero and log the URL + HTTP status on stderr.
+Webhook targets are gated to an origin allowlist: loopback destinations (`localhost`, `127.0.0.1`, `[::1]`, etc.) are always allowed; any other origin must be an exact `scheme://host:port` match in the comma-separated `{{envName .Name}}_DELIVER_WEBHOOK_ALLOWLIST` env var. Redirects are never followed (a 3xx response is treated as a failure). Unknown schemes are refused with a structured error naming the supported set. Webhook failures return non-zero and log the origin + HTTP status on stderr; never the full URL, which may carry a secret in its path or query.
 
 ## Named Profiles
 
