@@ -67,10 +67,12 @@ func new{{cmdIdent .PromotedName}}PromotedCmd(flags *rootFlags) *cobra.Command {
 			// instead of pflag's terse "required flag not set" error. Optional-
 			// only reads fall through so a bare call still executes; positional
 			// commands keep their existing usageErr (exit 2 + JSON envelope).
-			// Machine callers (--json/--agent, which sets asJSON) get a usage
-			// error + exit 2 instead of silent exit-0 help.
+			// A caller in any machine-output mode can't consume help prose, so
+			// it gets a usage error with exit 2 instead of silent exit-0 help;
+			// --quiet still suppresses the envelope itself, leaving the exit
+			// code to carry the result.
 			if !hasChangedLocalFlags(cmd) && len(args) == 0 && !flags.dryRun {
-				if flags.asJSON {
+				if wantsMachineOutput(flags) {
 					if printErr := printJSONFiltered(cmd.OutOrStdout(), map[string]any{
 						"error": "requires input",
 						"usage": cmd.CommandPath() + " --help",
@@ -155,7 +157,7 @@ func new{{cmdIdent .PromotedName}}PromotedCmd(flags *rootFlags) *cobra.Command {
 			if len(args) < {{add $pi 1}}{{if pathContainsParam $.Endpoint.Path .Name}} || args[{{$pi}}] == ""{{end}} {
 				// JSON envelope: {error, usage}. Written first; the
 				// usageErr return preserves exit code 2 across modes.
-				if flags.asJSON {
+				if wantsMachineOutput(flags) {
 					if printErr := printJSONFiltered(cmd.OutOrStdout(), map[string]any{
 						"error": "{{.Name}} is required",
 						"usage": fmt.Sprintf("%s <%s>", cmd.CommandPath(), "{{.Name}}"),

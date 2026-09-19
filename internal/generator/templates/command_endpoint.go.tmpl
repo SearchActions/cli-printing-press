@@ -80,11 +80,12 @@ func new{{cmdIdent .FuncPrefix .EndpointName}}Cmd(flags *rootFlags) *cobra.Comma
 			// Bare invocation of a command with required input prints help
 			// instead of pflag's terse "required flag not set" error. Optional-
 			// only read commands fall through so a bare call still executes.
-			// Machine callers (--json/--agent, which sets asJSON) get a usage
-			// error + exit 2 instead of silent exit-0 help, so an incomplete
-			// invocation is never mistaken for success.
+			// A caller in any machine-output mode can't consume help prose, so
+			// it gets a usage error with exit 2 instead of silent exit-0 help;
+			// --quiet still suppresses the envelope itself, leaving the exit
+			// code to carry the result.
 			if !hasChangedLocalFlags(cmd) && len(args) == 0 && !flags.dryRun {
-				if flags.asJSON {
+				if wantsMachineOutput(flags) {
 					if printErr := printJSONFiltered(cmd.OutOrStdout(), map[string]any{
 						"error": "requires input",
 						"usage": cmd.CommandPath() + " --help",
@@ -99,10 +100,10 @@ func new{{cmdIdent .FuncPrefix .EndpointName}}Cmd(flags *rootFlags) *cobra.Comma
 {{- if positionalArgs .Endpoint}}
 			if len(args) == 0 {
 				// A missing required positional is a usage error in every output
-				// mode (matches command_promoted.go.tmpl). Machine callers
-				// (--json/--agent) also get a JSON error envelope on stdout;
-				// usageErr sets exit 2.
-				if flags.asJSON {
+				// mode (matches command_promoted.go.tmpl). A caller in any
+				// machine-output mode also gets a JSON error envelope on
+				// stdout; usageErr sets exit 2.
+				if wantsMachineOutput(flags) {
 					if printErr := printJSONFiltered(cmd.OutOrStdout(), map[string]any{
 						"error": "missing required argument",
 						"usage": fmt.Sprintf("%s%s", cmd.CommandPath(), "{{positionalArgs .Endpoint}}"),

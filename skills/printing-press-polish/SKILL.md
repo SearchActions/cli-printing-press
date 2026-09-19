@@ -626,10 +626,17 @@ For each command that fails verify dry-run or exec:
 3. Remove the `Args:` field
 4. Add at the top of `RunE`:
    ```go
-   if len(args) == 0 {
+   if len(args) == 0 && cmd.Flags().NFlag() == 0 {
        return cmd.Help()
    }
    ```
+   The `cmd.Flags().NFlag() == 0` half matters: without it, a caller in any
+   machine-output mode (`--quiet`, `--csv`, `--plain`, `--compact`,
+   `--select`, `--json`, `--agent`) with no positional args gets help prose
+   under exit 0 instead of a usage error, and can't tell "nothing to return"
+   from "you ignored my request." See the verify-friendly `RunE` template in
+   `skills/printing-press/SKILL.md` for the full shape, including the
+   required-input branch that follows.
 5. For commands needing 2+ args, use `if len(args) < 2`
 6. Check for dry-run nil-data crashes and add guards:
    ```go
