@@ -20,6 +20,17 @@ import (
 func resetCredentialEnv(t *testing.T) (home, configPath string) {
 	t.Helper()
 	home = t.TempDir()
+	// On Windows hosts whose temp tree carries inherited ACEs for principals
+	// beyond the current user (e.g. AzureAD-joined machines), any file a
+	// test creates under it inherits those principals, and the strict
+	// credentials read guard then refuses the file — failing these tests
+	// for reasons unrelated to what they assert. Give the isolated home a
+	// protected owner+SYSTEM DACL so every file created inside it, by the
+	// atomic writer or by direct os.WriteFile, inherits a clean ACL.
+	// No-op on non-Windows.
+	if err := cliutil.RestrictPrivateTree(home); err != nil {
+		t.Fatalf("restricting test home permissions: %v", err)
+	}
 	// os.UserHomeDir reads HOME on unix, USERPROFILE on Windows, and home on
 	// plan9. Setting only HOME leaves the real user home in play on Windows,
 	// so path resolution under test would escape the temp directory.

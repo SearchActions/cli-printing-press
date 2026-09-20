@@ -101,3 +101,70 @@ func TestGenerate_NoCredsPermsForNonAuthSpec(t *testing.T) {
 	_, err = os.Stat(filepath.Join(outputDir, "internal", "cliutil", "creds_perms_eval.go"))
 	require.True(t, os.IsNotExist(err), "creds_perms_eval.go must not be emitted for a non-auth spec")
 }
+
+// TestGenerate_EmitsPrivpermsForEverySpec proves the write-time private-file
+// DACL surface is emitted UNCONDITIONALLY: AtomicWritePrivateFile serves
+// config, credentials, and journal writes on every CLI, auth or not, so the
+// privperms pair cannot be auth-gated. Also pins the D2 symbol contract:
+// processUserSID lives here (new name), currentUserSID stays in the
+// auth-gated creds_perms_windows.go — an mcp-sync'd tree that still carries
+// an older creds_perms_windows.go with its own token lookup must not gain a
+// duplicate definition.
+func TestGenerate_EmitsPrivpermsForEverySpec(t *testing.T) {
+	t.Parallel()
+
+	specs := []struct {
+		name  string
+		parse func() (*spec.APISpec, error)
+	}{
+		{"token-spec", func() (*spec.APISpec, error) {
+			return openapi.ParseFile(filepath.Join("..", "..", "testdata", "golden", "fixtures", "golden-api-oauth2-cc.yaml"))
+		}},
+		{"non-auth-spec", func() (*spec.APISpec, error) {
+			return spec.Parse(filepath.Join("..", "..", "testdata", "golden", "fixtures", "public-param-names.yaml"))
+		}},
+	}
+	for _, tc := range specs {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			apiSpec, err := tc.parse()
+			require.NoError(t, err)
+
+			outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+			require.NoError(t, New(apiSpec, outputDir).Generate())
+
+			winSrc := readGeneratedFile(t, outputDir, "internal", "cliutil", "privperms_windows.go")
+			require.Contains(t, winSrc, "func processUserSID", "privperms_windows.go must own processUserSID")
+			require.Contains(t, winSrc, "func createPrivateTemp", "privperms_windows.go must define createPrivateTemp")
+			require.NotContains(t, winSrc, "func currentUserSID", "privperms_windows.go must NOT define currentUserSID (owned by the auth-gated creds_perms_windows.go)")
+
+			unixSrc := readGeneratedFile(t, outputDir, "internal", "cliutil", "privperms_unix.go")
+			require.Contains(t, unixSrc, "func createPrivateTemp", "privperms_unix.go must keep the symbol on non-Windows GOOS")
+
+			// The writer must route its temp file through the DACL-bearing
+			// creator on Windows; a bare os.CreateTemp inside
+			// AtomicWritePrivateFile would silently drop the hardening.
+			pathsSrc := readGeneratedFile(t, outputDir, "internal", "cliutil", "paths.go")
+			require.Contains(t, pathsSrc, "createPrivateTemp(dir, filepath.Base(path))",
+				"AtomicWritePrivateFile must create its temp file via createPrivateTemp")
+			require.NotContains(t, pathsSrc, "os.CreateTemp(dir, ",
+				"AtomicWritePrivateFile must not fall back to os.CreateTemp on the Windows path")
+
+			// A non-auth bundle imports x/sys/windows only through the
+			// unconditional privperms file, so its go.mod must carry the
+			// same DIRECT require as a token-bearing one.
+			goMod := readGeneratedFile(t, outputDir, "go.mod")
+			require.Contains(t, goMod, "golang.org/x/sys v0.46.0",
+				"go.mod must require golang.org/x/sys for every spec")
+			for line := range strings.SplitSeq(goMod, "\n") {
+				if strings.HasPrefix(strings.TrimSpace(strings.TrimPrefix(line, "require ")), "golang.org/x/sys ") {
+					require.NotContains(t, line, "// indirect",
+						"x/sys must be a DIRECT require for %s (privperms_windows.go imports it)", tc.name)
+				}
+			}
+
+			requireGeneratedCompilesForGOOS(t, outputDir, "windows")
+		})
+	}
+}

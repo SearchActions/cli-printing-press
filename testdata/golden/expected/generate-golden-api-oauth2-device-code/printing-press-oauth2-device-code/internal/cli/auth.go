@@ -8,7 +8,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -288,14 +287,13 @@ type pendingDeviceCodeState struct {
 
 func savePendingDeviceCode(cfg *config.Config, state pendingDeviceCodeState) error {
 	path := pendingDeviceCodePath(cfg)
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return err
-	}
 	data, err := json.MarshalIndent(state, "", "  ")
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(path, data, 0o600)
+	// Holds the device code pending exchange - same protection as
+	// credentials.json, since a 0600 literal is inert on NTFS.
+	return cliutil.AtomicWritePrivateFile(path, data, 0o600, 0o700)
 }
 
 func loadPendingDeviceCode(cfg *config.Config) (pendingDeviceCodeState, error) {
