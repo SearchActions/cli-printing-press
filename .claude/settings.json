@@ -1,5 +1,15 @@
 {
   "permissions": {
+    "allow": [
+      "Bash(npx tsc --noEmit *)",
+      "Bash(git check-ignore *)",
+      "Bash(git cherry *)",
+      "Bash(ruff check *)",
+      "Bash(go build ./...)",
+      "Bash(bash scripts/golden.sh verify)",
+      "mcp__plugin_playwright_playwright__browser_navigate",
+      "mcp__plugin_playwright_playwright__browser_take_screenshot"
+    ],
     "deny": [
       "Bash(git commit --no-verify:*)",
       "Bash(git push --no-verify:*)"
