@@ -144,6 +144,16 @@ for case_name in "${cases[@]}"; do
       echo "FAIL $case_name: go build ./... failed in $module_dir" >&2
       failures=$((failures + 1))
     fi
+
+    # The only compile coverage of the //go:build windows files in the
+    # generated tree (privperms_windows.go, creds_perms_windows.go): a
+    # host-GOOS build never compiles them, so a duplicate symbol or a
+    # missing helper would otherwise ship unnoticed to every Windows user.
+    echo "Cross-building generated module for Windows ${module_dir#$repo_root/}"
+    if ! (cd "$module_dir" && GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build ./...); then
+      echo "FAIL $case_name: GOOS=windows go build ./... failed in $module_dir" >&2
+      failures=$((failures + 1))
+    fi
   done < <(find "$case_output" -name go.mod -type f -print | sort)
 
   if [[ "$module_count" -eq 0 ]]; then

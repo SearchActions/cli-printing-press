@@ -16,17 +16,11 @@ import (
 )
 
 // currentUserSID returns the current process's user SID as an SDDL string.
+// The lookup itself lives in the unconditional privperms_windows.go (as
+// processUserSID) so the write path can share it without depending on this
+// auth-gated file; the wrapper keeps older call sites compiling unchanged.
 func currentUserSID() (string, error) {
-	tok, err := windows.OpenCurrentProcessToken()
-	if err != nil {
-		return "", err
-	}
-	defer tok.Close()
-	u, err := tok.GetTokenUser()
-	if err != nil {
-		return "", err
-	}
-	return u.User.Sid.String(), nil
+	return processUserSID()
 }
 
 // VerifyCredsPerms returns a non-nil error if path's owner/DACL is unsafe for a

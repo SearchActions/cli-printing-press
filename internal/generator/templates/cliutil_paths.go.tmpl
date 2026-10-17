@@ -127,7 +127,19 @@ func AtomicWritePrivateFile(path string, data []byte, fileMode, dirMode os.FileM
 	if err := os.MkdirAll(dir, dirMode); err != nil {
 		return fmt.Errorf("creating private file dir: %w", err)
 	}
-	tmp, err := os.CreateTemp(dir, "."+filepath.Base(path)+".*.tmp")
+	// Protect the DIRECTORY, not just the files this function writes.
+	// Not every secret-bearing write in a printed CLI comes through here -
+	// the cookie jar, the session-handshake record and the device-code
+	// state each call os.WriteFile with a 0600 literal, which is inert on
+	// NTFS. Giving the directory a protected, inheritable DACL means those
+	// writers inherit an owner-only ACL instead of whatever the parent
+	// tree carries. Best-effort: a printed CLI must still work on a volume
+	// that stores no ACLs, and RestrictPrivateTree already warns once.
+	_ = EnsurePrivateTree(dir)
+	// On Windows the temp file is created with a protected owner-only
+	// DACL (see privperms_windows.go); on POSIX this is os.CreateTemp and
+	// the Chmod below is what secures it.
+	tmp, err := createPrivateTemp(dir, filepath.Base(path))
 	if err != nil {
 		return fmt.Errorf("creating temporary private file: %w", err)
 	}

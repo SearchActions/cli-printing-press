@@ -113,9 +113,13 @@ func TestGenerateProjectsCompile(t *testing.T) {
 		// +1 more (A4): credentials_perms_test.go, the behavioral test proving the
 		// read-time guard is wired into cliutil.LoadCredentials — also auth-gated,
 		// so it lands for every token-bearing spec.
-		{name: "stytch", specPath: filepath.Join("..", "..", "testdata", "stytch.yaml"), expectedFiles: 149},
-		{name: "clerk", specPath: filepath.Join("..", "..", "testdata", "clerk.yaml"), expectedFiles: 153},
-		{name: "loops", specPath: filepath.Join("..", "..", "testdata", "loops.yaml"), expectedFiles: 151},
+		// +2 more: privperms_unix.go and privperms_windows.go, the write-time
+		// half of the private-file permission contract. Unlike the guard files
+		// above these are NOT auth-gated — every bundle writes private files —
+		// so all three fixtures gain both.
+		{name: "stytch", specPath: filepath.Join("..", "..", "testdata", "stytch.yaml"), expectedFiles: 151},
+		{name: "clerk", specPath: filepath.Join("..", "..", "testdata", "clerk.yaml"), expectedFiles: 155},
+		{name: "loops", specPath: filepath.Join("..", "..", "testdata", "loops.yaml"), expectedFiles: 153},
 	}
 
 	for _, tt := range tests {
@@ -1857,7 +1861,9 @@ func TestGenerateOAuth2DeviceCodeAuth(t *testing.T) {
 	assert.Contains(t, authGo, `cmd.Flags().BoolVar(&deviceCode, "device-code", true`, "auth login accepts --device-code")
 	assert.Contains(t, authGo, `cmd.Flags().BoolVar(&poll, "poll", outputIsTerminal()`, "headless login should print and return instead of blocking")
 	assert.Contains(t, authGo, `savePendingDeviceCode(cfg, state)`, "headless login stores pending device_code locally")
-	assert.Contains(t, authGo, `os.WriteFile(path, data, 0o600)`, "pending device_code state must be user-only readable")
+	// Not os.WriteFile with a 0600 literal: that mode is inert on NTFS and
+	// the file would inherit the parent directory's access entries.
+	assert.Contains(t, authGo, `cliutil.AtomicWritePrivateFile(path, data, 0o600, 0o700)`, "pending device_code state must be user-only readable")
 	assert.Contains(t, authGo, `_ = clearPendingDeviceCode(cfg)`, "logout and completed poll must remove pending device_code state")
 	assert.Contains(t, authGo, `fmt.Fprintln(w, "  deviceauth-pp-cli auth poll")`, "headless login resumes without exposing the raw device_code")
 	assert.NotContains(t, authGo, `auth poll --device-code`, "raw device_code must not be printed into shell commands")
@@ -2499,6 +2505,28 @@ func requireGeneratedCompiles(t *testing.T, dir string) {
 	// No-op in this test harness; module resolution is exercised via -mod=mod.
 	runGoCommand(t, dir, "mod", "tidy")
 	runGoCommand(t, dir, "build", "./...")
+}
+
+// requireGeneratedCompilesForGOOS cross-compiles the generated tree for a
+// non-host GOOS. The //go:build windows files in internal/cliutil are never
+// compiled by a host-GOOS build on linux/darwin CI, so without this a
+// duplicate symbol or a missing helper on Windows ships unnoticed.
+func requireGeneratedCompilesForGOOS(t *testing.T, dir, goos string) {
+	t.Helper()
+	if testing.Short() {
+		t.Skip("generated CLI compile tests run in the full generated-test CI lane")
+	}
+	runGoCommandRequired(t, dir, "build", "./...")
+	cmd := exec.Command("go", "build", "-mod=mod", "./...")
+	cmd.Dir = dir
+	cmd.Env = append(os.Environ(),
+		"GOOS="+goos, "GOARCH=amd64", "CGO_ENABLED=0",
+	)
+	cacheDir, err := goBuildCacheDir(dir)
+	require.NoError(t, err)
+	cmd.Env = append(cmd.Env, "GOCACHE="+cacheDir)
+	output, err := cmd.CombinedOutput()
+	require.NoError(t, err, string(output))
 }
 
 func runGoCommandRequired(t *testing.T, dir string, args ...string) {

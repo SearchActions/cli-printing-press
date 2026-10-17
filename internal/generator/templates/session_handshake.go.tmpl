@@ -23,7 +23,6 @@ import (
 	"net/http"
 	"net/http/cookiejar"
 	"net/url"
-	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -326,8 +325,8 @@ func (m *SessionManager) saveToDisk() {
 	if err != nil {
 		return
 	}
-	_ = os.MkdirAll(filepath.Dir(path), 0o700)
-	_ = os.WriteFile(path, data, 0o600)
+	// Bearer token plus cookies - same protection as credentials.json.
+	_ = cliutil.AtomicWritePrivateFile(path, data, 0o600, 0o700)
 }
 
 // extractJSONToken pulls a token from a JSON body by dot-separated path.
